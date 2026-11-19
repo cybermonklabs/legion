@@ -339,9 +339,9 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
 
 // A read of the thread asked before the decline was answered - an event's refresh of the ask,
 // say - answers the question as it stood, open. Landing after the decline, it would draw the open
-// question and its Decline to answer again over the record of the decline, until the decline's
-// own refresh came back. On Dispatch's client that refresh waits for the running read rather than
-// cancelling it, so the row reads on that client.
+// question and its Decline to answer again over the record of the decline, until a read asked
+// after the decline came back. On Dispatch's client a refresh waits for the running read rather
+// than cancelling it, so the row reads on that client.
 test("a read of the thread asked before a decline answered does not put back the open question", async () => {
   const user = userEvent.setup();
   const open = openAsk();
@@ -383,16 +383,23 @@ test("a read of the thread asked before a decline answered does not put back the
       reads[0]?.resolve(thread(open));
       await asked;
     });
-    // The decline's own refresh of the thread is out now, asked after the decline.
+    // The decline's answer gave that read up and asked for the thread again, after the decline.
     await waitFor(() => expect(reads).toHaveLength(2));
     expect(badge()).toBe("Declined");
     expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
 
+    // It answers the ask declined. The decline's own refresh of the thread waited behind it, and
+    // asks once it is in: Dispatch still holds the decline then.
     await act(async () => {
       reads[1]?.resolve(thread(declined));
     });
+    await waitFor(() => expect(reads).toHaveLength(3));
+    await act(async () => {
+      reads[2]?.resolve(thread(declined));
+    });
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(badge()).toBe("Declined");
+    expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }

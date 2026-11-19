@@ -219,7 +219,8 @@ test("a refused press brings the rows and the counts back and says nothing was m
 
 // A read of the list asked before the press - an event's refresh, say - answers the rows as they
 // stood, unread. Landing after the press, it would draw both rows unread again under an Inbox
-// count of zero while the press is still going through.
+// count of zero while the press is still going through. The press gives it up and asks for the
+// list again, and on Dispatch's own client (`main.tsx`) that read waits for the press's answer.
 test("a read of the list asked before Mark all read does not put back the rows the press drew read", async () => {
   const user = userEvent.setup();
   const marked = answerInboxReads();
@@ -232,7 +233,7 @@ test("a read of the list asked before Mark all read does not put back the rows t
     .mockImplementationOnce(() => asked.promise)
     .mockImplementation(async (page) => repliesAnswer(page, after));
   try {
-    const client = renderBar(before, 2);
+    const client = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     let read = Promise.resolve();
     await act(async () => {
       read = client.refetchQueries({ queryKey: inboxThreadsQuery().queryKey });
@@ -248,12 +249,14 @@ test("a read of the list asked before Mark all read does not put back the rows t
     });
     expect(unread()).toBe("0");
     expect(listed()).toBe("2");
+    // The list the press asked for again waits for its answer, and has asked Dispatch nothing.
+    expect(listMyReplies).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       settle.resolve({ marked: 2 });
     });
-    // The press's own refresh reads the list and the count again, after the mark.
-    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(3));
+    // That read and the press's own refresh of the list and the count each ask after the mark.
+    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(unread()).toBe("0");
     expect(inboxCount()).toBe("0");
@@ -264,7 +267,8 @@ test("a read of the list asked before Mark all read does not put back the rows t
 
 // A read of the shared count asked before the press answers the count as it stood. Landing after
 // the press, it would put the sidebar's Inbox count and the compact header's Inbox link back at
-// two over rows the press drew read.
+// two over rows the press drew read. The press gives it up and asks for the count again, and on
+// Dispatch's own client (`main.tsx`) that read waits for the press's answer.
 test("a read of the unread count asked before Mark all read does not put back the count the press zeroed", async () => {
   const user = userEvent.setup();
   const marked = answerInboxReads();
@@ -277,7 +281,7 @@ test("a read of the unread count asked before Mark all read does not put back th
     .mockImplementationOnce(() => asked.promise)
     .mockImplementation(async (page) => repliesAnswer(page, after));
   try {
-    const client = renderBar(before, 2);
+    const client = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     let read = Promise.resolve();
     await act(async () => {
       read = client.refetchQueries({ queryKey: myRepliesCountQuery().queryKey });
@@ -292,11 +296,14 @@ test("a read of the unread count asked before Mark all read does not put back th
       await read;
     });
     expect(inboxCount()).toBe("0");
+    // The count the press asked for again waits for its answer, and has asked Dispatch nothing.
+    expect(listMyReplies).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       settle.resolve({ marked: 2 });
     });
-    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(3));
+    // That read and the press's own refresh of the list and the count each ask after the mark.
+    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(inboxCount()).toBe("0");
     expect(unread()).toBe("0");

@@ -162,7 +162,9 @@ test("a read asked before a pin press does not unpin the item when it answers", 
     writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
     expect(shown(client)?.dismissed).toEqual([pinnedItemMarker("ask:a")]);
     await settle();
-    reads.asked[2]?.resolve({ "CORE-1": fresh });
+    // The pin reads the state for itself, last; a read the press gave up and asked again comes
+    // before it, and is left out here.
+    reads.asked.at(-1)?.resolve({ "CORE-1": fresh });
     await settle();
     expect(put).toHaveBeenCalledTimes(1);
 

@@ -185,6 +185,9 @@ test("a read of the document asked before a version is named does not take the v
     await user.paste("Settled the rollout");
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(createArtifactVersion).toHaveBeenCalledTimes(1));
+    // The answer gives up the read still out and asks for the document again, after the version
+    // is named: Dispatch lists the version then.
+    getArtifact.mockResolvedValueOnce({ ...artifact, versions: [named] });
     await act(async () => {
       answer.resolve(named);
       await settle();
@@ -200,6 +203,7 @@ test("a read of the document asked before a version is named does not take the v
       expect(queryClient.getQueryState(["artifact", artifact.id])?.fetchStatus).toBe("idle")
     );
     expect(toolbar.current?.versions).toEqual([named]);
+    expect(getArtifact).toHaveBeenCalledTimes(3);
   } finally {
     getArtifact.mockRestore();
     createArtifactVersion.mockRestore();

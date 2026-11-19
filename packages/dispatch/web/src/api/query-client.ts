@@ -196,15 +196,25 @@ export class DispatchQueryClient extends QueryClient {
  * two. A refetch `DispatchQueryClient` held behind the cancelled read (`#refetch`) starts only once
  * that read has settled, after this write, so it asks for the state the write is of. An awaited
  * cancel would put the write after that refetch has started, and every reader of this step would
- * still read the value the write replaces. Answers what `setQueryData` answers.
+ * still read the value the write replaces. A read it cancels was asked for a reason - news of
+ * another change, a view mounting - and its answer would have brought that news beside the old
+ * value, so once the write is in the query is read again, if anything still shows it: the read
+ * asked then is asked after the write, and answers both. A write made before Dispatch has taken it
+ * holds its query's reads first (`holdBackReads`), so that read waits for the write's answer too.
+ * Answers what `setQueryData` answers.
  */
 export function replaceQueryData<T>(
   client: QueryClient,
   queryKey: QueryKey,
   updater: Updater<T | undefined, T | undefined>
 ): T | undefined {
+  const fetchStatus = client.getQueryState(queryKey)?.fetchStatus ?? "idle";
   void client.cancelQueries({ exact: true, queryKey });
-  return client.setQueryData<T>(queryKey, updater);
+  const written = client.setQueryData<T>(queryKey, updater);
+  if (fetchStatus !== "idle") {
+    void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
+  }
+  return written;
 }
 
 /** The holds a client's writes keep on its reads (`holdBackReads`): the query keys each names,
@@ -267,9 +277,10 @@ function holdEnded(
  * cancels it (`replaceQueryData`). The write's answer, put in over the reads still out, cancels a
  * held read too, though it has asked nothing yet, and what it was asked for - news of another
  * change, a view mounting - would go unread: such a query is read again once no hold names it,
- * if anything still shows it. `DispatchQueryClient` holds a read back in its query's function,
- * after `onAttempt` is told, so a plain `QueryClient` lets every read go. The function this
- * answers ends the hold once; called again, it does nothing.
+ * if anything still shows it and no read of it is out already (the one `replaceQueryData` asks).
+ * `DispatchQueryClient` holds a read back in its query's function, after `onAttempt` is told, so
+ * a plain `QueryClient` lets every read go. The function this answers ends the hold once; called
+ * again, it does nothing.
  */
 export function holdBackReads(client: QueryClient, queryKeys: readonly QueryKey[]): () => void {
   let holds = readHolds.get(client);
@@ -286,6 +297,7 @@ export function holdBackReads(client: QueryClient, queryKeys: readonly QueryKey[
     for (const [hash, queryKey] of ours.givenUp) {
       if (holdsRead(ours, queryKey)) continue;
       ours.givenUp.delete(hash);
+      if ((client.getQueryState(queryKey)?.fetchStatus ?? "idle") !== "idle") continue;
       void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
     }
   };

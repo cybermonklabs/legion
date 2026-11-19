@@ -454,6 +454,12 @@ function listedPrefixes(): (string | null)[] {
 test("a list read asked before a mint answered does not drop the token the mint made", async () => {
   const user = userEvent.setup();
   const page = await renderWithListReadOut([token]);
+  const reviewer: AgentToken = {
+    ...token,
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "reviewer",
+    prefix: "ZyXw9876",
+  };
   const minted = Promise.withResolvers<CreatedAgentToken>();
   const createAgentToken = spyOn(api, "createAgentToken").mockReturnValue(minted.promise);
 
@@ -462,14 +468,11 @@ test("a list read asked before a mint answered does not drop the token the mint 
     await user.paste("reviewer");
     await user.click(screen.getByRole("button", { name: "New token" }));
     await waitFor(() => expect(createAgentToken).toHaveBeenCalledTimes(1));
+    // The answer gives up the read still out and asks for the list again, after the mint: Dispatch
+    // lists the new token then.
+    page.listAgentTokens.mockResolvedValueOnce([reviewer, token]);
     await act(async () => {
-      minted.resolve({
-        ...token,
-        id: "22222222-2222-2222-2222-222222222222",
-        name: "reviewer",
-        prefix: "ZyXw9876",
-        token: "dsp_ZyXw9876abcdefghijklmnopqrstuvwxyz0123456789",
-      });
+      minted.resolve({ ...reviewer, token: "dsp_ZyXw9876abcdefghijklmnopqrstuvwxyz0123456789" });
     });
     await waitFor(() => expect(listedPrefixes()).toEqual(["dsp_ZyXw9876…", "dsp_AbCdEf12…"]));
 
@@ -479,7 +482,7 @@ test("a list read asked before a mint answered does not drop the token the mint 
       await settle();
     });
     expect(listedPrefixes()).toEqual(["dsp_ZyXw9876…", "dsp_AbCdEf12…"]);
-    expect(page.listAgentTokens).toHaveBeenCalledTimes(2);
+    expect(page.listAgentTokens).toHaveBeenCalledTimes(3);
   } finally {
     page.restore();
     createAgentToken.mockRestore();
@@ -499,6 +502,9 @@ test("a list read asked before a revoke answered does not show the revoked token
   try {
     await user.click(screen.getByRole("button", { name: "Revoke architect" }));
     await waitFor(() => expect(revokeAgentToken).toHaveBeenCalledWith(token.id, keyedAttempt));
+    // The answer gives up the read still out and asks for the list again, after the revoke:
+    // Dispatch lists the token revoked then.
+    page.listAgentTokens.mockResolvedValueOnce([{ ...token, revoked_at: "2026-09-13T00:00:00Z" }]);
     await act(async () => {
       revoked.resolve();
     });
@@ -511,6 +517,7 @@ test("a list read asked before a revoke answered does not show the revoked token
     });
     expect(screen.queryByText("Revoked")).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Revoke architect" })).toBeNull();
+    expect(page.listAgentTokens).toHaveBeenCalledTimes(3);
   } finally {
     window.confirm = originalConfirm;
     page.restore();
@@ -523,6 +530,7 @@ test("a list read asked before a revoke answered does not show the revoked token
 test("a list read asked before a scope change answered does not put back the scopes it replaced", async () => {
   const user = userEvent.setup();
   const personOnly: AgentToken = { ...token, scopes: ["person"] };
+  const both: AgentToken = { ...personOnly, scopes: ["person", "approve"] };
   const page = await renderWithListReadOut([personOnly]);
   const changed = Promise.withResolvers<AgentToken>();
   const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes").mockReturnValue(changed.promise);
@@ -536,8 +544,11 @@ test("a list read asked before a scope change answered does not put back the sco
         keyedAttempt
       )
     );
+    // The answer gives up the read still out and asks for the list again, after the change:
+    // Dispatch lists the token with both scopes then.
+    page.listAgentTokens.mockResolvedValueOnce([both]);
     await act(async () => {
-      changed.resolve({ ...personOnly, scopes: ["person", "approve"] });
+      changed.resolve(both);
     });
     await waitFor(() =>
       expect(box("Approve and control credentials", "architect").checked).toBe(true)
@@ -550,6 +561,7 @@ test("a list read asked before a scope change answered does not put back the sco
     });
     expect(box("Approve and control credentials", "architect").checked).toBe(true);
     expect(box("Act as you", "architect").checked).toBe(true);
+    expect(page.listAgentTokens).toHaveBeenCalledTimes(3);
   } finally {
     page.restore();
     setAgentTokenScopes.mockRestore();

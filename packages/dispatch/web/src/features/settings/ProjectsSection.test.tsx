@@ -79,9 +79,9 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
 
 // A defaults read asked while a pick's save is out - after the press cancelled the reads out then
 // - can reach Dispatch before the save and still be out when the save's answer lands. Landing
-// after the answer, it would put back the person the pick replaced. Dispatch's own client, as
-// the app runs, holds the refetch the save makes as it settles behind that read rather than
-// cancelling it, so the read's answer is not dropped for the reader by the refetch either.
+// after the answer, it would put back the person the pick replaced. The answer gives that read up
+// and asks for the defaults again. Dispatch's own client, as the app runs, holds each refetch
+// behind the read out rather than cancelling it, so no refetch drops that read's answer either.
 test("a defaults read asked while a pick saved does not put back the assignee the pick replaced", async () => {
   const user = userEvent.setup();
   const alice: ProjectDefaultAssignee[] = [{ assignee: "alice", project: "CORE" }];
@@ -93,7 +93,8 @@ test("a defaults read asked while a pick saved does not put back the assignee th
   const listDefaults = spyOn(api, "listProjectDefaultAssignees")
     .mockResolvedValueOnce(alice)
     .mockReturnValueOnce(staleRead.promise)
-    .mockReturnValueOnce(freshRead.promise);
+    .mockReturnValueOnce(freshRead.promise)
+    .mockResolvedValueOnce(bob);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
     { login: "bob" },
@@ -130,6 +131,7 @@ test("a defaults read asked while a pick saved does not put back the assignee th
       void queryClient.invalidateQueries({ queryKey: projectDefaultAssigneesQuery().queryKey });
     });
     expect(listDefaults).toHaveBeenCalledTimes(2);
+    // The save's answer gives that read up and asks for the defaults again, after the save.
     await act(async () => {
       saved.resolve({ assignee: "bob", project: "CORE" });
     });
@@ -142,13 +144,16 @@ test("a defaults read asked while a pick saved does not put back the assignee th
       await settle();
     });
     expect(control.value).toBe("bob");
+    expect(listDefaults).toHaveBeenCalledTimes(3);
 
-    // The read the save made as it settled answers what the save left.
-    await waitFor(() => expect(listDefaults).toHaveBeenCalledTimes(3));
+    // The read asked again answers what the save left. The refetch the save made as it settled
+    // waited behind it, and asks once it is in: Dispatch still holds the save then.
     await act(async () => {
       freshRead.resolve(bob);
     });
-    await waitFor(() => expect(control.value).toBe("bob"));
+    await waitFor(() => expect(listDefaults).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(control.value).toBe("bob");
     expect(
       queryClient.getQueryData<ProjectDefaultAssignee[]>(projectDefaultAssigneesQuery().queryKey)
     ).toEqual(bob);

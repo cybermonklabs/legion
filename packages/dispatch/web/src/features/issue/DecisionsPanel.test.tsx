@@ -245,14 +245,24 @@ test("a read of the decisions asked before a Keep does not put the kept decision
 
     await user.click(within(waiting).getByRole("button", { name: "Keep" }));
     await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
+    const kept: DecisionKeep = {
+      artifact_id: documentId,
+      block_id: "store",
+      changed_version: 3,
+      kept_at: "2026-11-02T00:00:00Z",
+      kept_by: "alice",
+    };
+    // The answer gives up the read still out and asks for the decisions again, after the Keep:
+    // Dispatch holds the decision kept then.
+    const view = issueView();
+    read.mockResolvedValueOnce({
+      ...view,
+      decisions: (view.decisions ?? []).map((row) =>
+        row.block_id === kept.block_id ? { ...row, kept, waiting_review: false } : row
+      ),
+    });
     await act(async () => {
-      answer.resolve({
-        artifact_id: documentId,
-        block_id: "store",
-        changed_version: 3,
-        kept_at: "2026-11-02T00:00:00Z",
-        kept_by: "alice",
-      });
+      answer.resolve(kept);
       await settle();
     });
     await waitFor(() =>
@@ -271,6 +281,7 @@ test("a read of the decisions asked before a Keep does not put the kept decision
       within(list("Waiting for your review")).queryByText("Store notices in a table")
     ).not.toBeInTheDocument();
     expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined();
+    expect(read).toHaveBeenCalledTimes(3);
   } finally {
     read.mockRestore();
     keep.mockRestore();
