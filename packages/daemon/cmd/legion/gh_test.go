@@ -797,6 +797,218 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 	}
 }
 
+// A read naming an owner the bundle holds no gh directory for, through any selector main's
+// reader counts, runs with the directory a call naming no owner runs with, GH_CONFIG_DIR's (R4 of
+// dispatch://INFRA-3399): octocat's repository or account, read through each, runs with acme's
+// directory, the pane's, and is not refused, and the same read naming sjawhar, whom the bundle
+// serves, runs with sjawhar's directory as main routes it. R4 is a rule over a class, so the
+// class is read from the code and from gh's own saved help rather than from memory, at both saved
+// gh releases: each kind of argument (ghSlot.kind) and of option (ghOptionKind) the help of a
+// leaf of ghReadLeaves gives, but the kinds that select nothing, must have a row reading octocat
+// through it, and a leaf an older help does not list is skipped at that release. To those come,
+// by name, the members no help lists: the endpoint forms of gh api ghWritesNothing admits, a
+// GraphQL query's owner variables (ghGraphQLQueryRead), a search query's repo:, owner:, user: and
+// org: qualifiers, and GH_REPO. Two members main's reader counts are no read ghWritesNothing
+// admits, so they keep main's refusal of octocat: a whole URL as gh api's endpoint, since
+// ghAPIRESTEndpoint admits a relative path alone, and a search endpoint's q given as a field,
+// since ghAPIReadOptions holds neither -f nor -F, and gh sends a call with a field as a POST
+// (gh api's help: "adding request parameters will automatically switch the request method to
+// `POST`").
+func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
+	// The pane of the issue owner acme, whose bundle under /owners serves acme and sjawhar and
+	// holds no directory for octocat, which dirFor answers as ghConfigDirFor answers an owner it
+	// holds none for: a bare OwnerNotServedError, wrapping nothing.
+	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
+	dirFor := func(owner, _ string) (string, error) {
+		if owner == "acme" || owner == "sjawhar" {
+			return ghconfig.Dir("/owners", owner), nil
+		}
+		return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: "/owners"}
+	}
+	const refusal = `the role's GitHub App is not installed on "octocat"`
+	// Each row is octocat's read, with the leaf whose path it is typed with and the kind it reads
+	// octocat through: an argument's or an option's as the help's kinds are named below, or, for a
+	// member no help lists, what it is. GH_REPO, where the row sets it, joins the pane's
+	// environment. The read naming sjawhar is the same row with sjawhar in octocat's place.
+	// refused marks a member main's reader counts that is no read ghWritesNothing admits.
+	type read struct {
+		leaf, kind string
+		argv       []string
+		env        map[string]string
+		refused    bool
+	}
+	const viaRepo = "option --repo (repository)"
+	reads := []read{
+		{leaf: "pr view", kind: "argument url", argv: []string{"pr", "view", "https://github.com/octocat/hello/pull/1", "--json", "number"}},
+		{leaf: "pr view", kind: viaRepo, argv: []string{"pr", "view", "1", "-R", "octocat/hello", "--json", "number"}},
+		{leaf: "pr list", kind: viaRepo, argv: []string{"pr", "list", "-R", "octocat/hello"}},
+		{leaf: "pr diff", kind: "argument url", argv: []string{"pr", "diff", "https://github.com/octocat/hello/pull/1"}},
+		{leaf: "pr diff", kind: viaRepo, argv: []string{"pr", "diff", "1", "-R", "octocat/hello"}},
+		{leaf: "pr checks", kind: "argument url", argv: []string{"pr", "checks", "https://github.com/octocat/hello/pull/1"}},
+		{leaf: "pr checks", kind: viaRepo, argv: []string{"pr", "checks", "1", "-R", "octocat/hello"}},
+		{leaf: "pr status", kind: viaRepo, argv: []string{"pr", "status", "-R", "octocat/hello"}},
+		{leaf: "run view", kind: viaRepo, argv: []string{"run", "view", "1", "-R", "octocat/hello"}},
+		{leaf: "run list", kind: viaRepo, argv: []string{"run", "list", "-R", "octocat/hello"}},
+		{leaf: "run watch", kind: viaRepo, argv: []string{"run", "watch", "1", "-R", "octocat/hello"}},
+		{leaf: "issue view", kind: "argument url", argv: []string{"issue", "view", "https://github.com/octocat/hello/issues/1", "--json", "number"}},
+		{leaf: "issue view", kind: viaRepo, argv: []string{"issue", "view", "1", "-R", "octocat/hello"}},
+		{leaf: "issue list", kind: viaRepo, argv: []string{"issue", "list", "-R", "octocat/hello"}},
+		{leaf: "issue status", kind: viaRepo, argv: []string{"issue", "status", "-R", "octocat/hello"}},
+		{leaf: "repo view", kind: "argument repository", argv: []string{"repo", "view", "octocat/hello", "--json", "name"}},
+		{leaf: "repo list", kind: "argument owner", argv: []string{"repo", "list", "octocat", "--json", "name"}},
+		{leaf: "release view", kind: viaRepo, argv: []string{"release", "view", "v1", "-R", "octocat/hello"}},
+		{leaf: "release list", kind: viaRepo, argv: []string{"release", "list", "-R", "octocat/hello"}},
+		{leaf: "workflow view", kind: viaRepo, argv: []string{"workflow", "view", "ci.yml", "-R", "octocat/hello"}},
+		{leaf: "workflow list", kind: viaRepo, argv: []string{"workflow", "list", "-R", "octocat/hello"}},
+		{leaf: "label list", kind: viaRepo, argv: []string{"label", "list", "-R", "octocat/hello"}},
+		{leaf: "cache list", kind: viaRepo, argv: []string{"cache", "list", "-R", "octocat/hello"}},
+		{leaf: "search code", kind: viaRepo, argv: []string{"search", "code", "hello", "--repo", "octocat/hello"}},
+		{leaf: "search code", kind: "option --owner (owner)", argv: []string{"search", "code", "hello", "--owner", "octocat"}},
+		{leaf: "search commits", kind: viaRepo, argv: []string{"search", "commits", "fix", "--repo", "octocat/hello"}},
+		{leaf: "search commits", kind: "option --owner (owner)", argv: []string{"search", "commits", "fix", "--owner", "octocat"}},
+		{leaf: "search issues", kind: viaRepo, argv: []string{"search", "issues", "bug", "--repo", "octocat/hello"}},
+		{leaf: "search issues", kind: "option --owner (owner)", argv: []string{"search", "issues", "bug", "--owner", "octocat"}},
+		{leaf: "search issues", kind: "option --project (owner/name)", argv: []string{"search", "issues", "--project", "octocat/1", "--json", "number"}},
+		{leaf: "search prs", kind: viaRepo, argv: []string{"search", "prs", "fix", "--repo", "octocat/hello"}},
+		{leaf: "search prs", kind: "option --owner (owner)", argv: []string{"search", "prs", "fix", "--owner", "octocat"}},
+		{leaf: "search prs", kind: "option --project (owner/name)", argv: []string{"search", "prs", "--project", "octocat/1", "--json", "number"}},
+		{leaf: "search repos", kind: "option --owner (owner)", argv: []string{"search", "repos", "--owner", "octocat", "--json", "name"}},
+		// gh api's endpoint forms, the GraphQL variables naming an owner and GH_REPO, which no
+		// help lists.
+		{leaf: "api", kind: "endpoint repos/<owner>/<repo>/…", argv: []string{"api", "repos/octocat/hello/pulls"}},
+		{leaf: "api", kind: "endpoint repos/<owner>/<repo>", argv: []string{"api", "repos/octocat/hello"}},
+		{leaf: "api", kind: "endpoint orgs/<owner>", argv: []string{"api", "orgs/octocat"}},
+		{leaf: "api", kind: "endpoint users/<owner>", argv: []string{"api", "users/octocat"}},
+		{leaf: "api", kind: "GraphQL variable owner", argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "query=query($owner: String!) { repositoryOwner(login: $owner) { login } }"}},
+		{leaf: "api", kind: "GraphQL variable org", argv: []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org: String!) { organization(login: $org) { login } }"}},
+		{leaf: "api", kind: "GraphQL variable organization", argv: []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization: String!) { organization(login: $organization) { login } }"}},
+		{leaf: "api", kind: "GraphQL variable login", argv: []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login: String!) { user(login: $login) { login } }"}},
+		{leaf: "pr list", kind: "GH_REPO", argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "octocat/hello"}},
+		// The two members that are no read: main refuses octocat's.
+		{leaf: "api", kind: "endpoint https://api.github.com/…", argv: []string{"api", "https://api.github.com/repos/octocat/hello"}, refused: true},
+		{leaf: "api", kind: "a search endpoint's q field", argv: []string{"api", "search/issues", "-f", "q=repo:octocat/hello"}, refused: true},
+	}
+	// A search query's qualifiers naming an owner, as the query words of every search leaf, and
+	// as the q of gh api's search endpoint.
+	for _, qualifier := range []string{"repo:octocat/hello", "owner:octocat", "user:octocat", "org:octocat"} {
+		for _, leaf := range []string{"search code", "search commits", "search issues", "search prs", "search repos"} {
+			reads = append(reads, read{leaf: leaf, kind: "argument query", argv: append(strings.Fields(leaf), qualifier)})
+		}
+		reads = append(reads, read{leaf: "api", kind: "endpoint search/<kind>?q=…", argv: []string{"api", "search/issues?q=" + qualifier}})
+	}
+	covered := map[[2]string]bool{}
+	for _, r := range reads {
+		covered[[2]string{r.leaf, r.kind}] = true
+	}
+	// The kinds no read leaf carries are out of R4's reach, since every leaf whose help gives one
+	// is outside ghReadLeaves, and so writes as ghWritesNothing reads it: a repository the command
+	// creates (new-repository: repo create's <name>), another repository it acts on beside its
+	// own (second-repository: repo sync's, issue transfer's and label clone's), the repositories
+	// of an --org (org-repositories: secret set's and variable set's --repos), an option naming an
+	// issue or a pull request by URL (url: issue edit's --add-blocked-by, project item-add's
+	// --url), and a host (host: --hostname, gh api's, auth's and attestation's). No row reads
+	// octocat through one, and a read leaf or option that gives one fails here, to be given rows
+	// and R4 a reading of it.
+	outOfReach := map[string]bool{"org-repositories": true, "url": true, "host": true}
+	for _, version := range []string{"2.98.0", "2.104.0"} {
+		t.Run(version, func(t *testing.T) {
+			help := savedGhHelpOf(t, version)
+			// lists says whether this release's help lists path: whether its parent's help
+			// lists its last word.
+			lists := func(path []string) bool {
+				parent, err := readGhCommand(path[:len(path)-1], help)
+				if err != nil {
+					t.Fatalf("gh %s: %v", version, err)
+				}
+				return parent.listed[path[len(path)-1]]
+			}
+			leaves := 0
+			for _, leaf := range slices.Sorted(maps.Keys(ghReadLeaves)) {
+				path := strings.Fields(leaf)
+				if !lists(path) {
+					continue
+				}
+				leaves++
+				cmd, err := readGhCommand(path, help)
+				if err != nil {
+					t.Errorf("gh %s: %v", version, err)
+					continue
+				}
+				var kinds []string
+				for _, slot := range cmd.slots {
+					if slot.takes("new-repository") || slot.takes("second-repository") {
+						t.Errorf("gh %s's `gh %s` takes %v, a repository it creates or acts on beside its own, out of R4's reach", version, leaf, slot.args)
+					}
+					// An argument of no kind, or a number, names nothing main's reader counts
+					// (fromCommand); one whose name no table knows is listed, and no row reads
+					// octocat through it, since main refuses it.
+					switch kind, unknown := slot.kind(); {
+					case unknown != "":
+						kinds = append(kinds, "argument <"+unknown+"> of no known kind")
+					case kind != "" && kind != "number":
+						kinds = append(kinds, "argument "+kind)
+					}
+				}
+				for _, name := range slices.Sorted(maps.Keys(cmd.flags)) {
+					switch kind := ghOptionKind(cmd.path, name, cmd.flags[name]); {
+					case outOfReach[kind]:
+						t.Errorf("gh %s's `gh %s` takes --%s, a selector of kind %q, out of R4's reach", version, leaf, name, kind)
+					case kind != "" && kind != "nothing":
+						kinds = append(kinds, "option --"+name+" ("+kind+")")
+					}
+				}
+				for _, kind := range kinds {
+					if !covered[[2]string{leaf, kind}] {
+						t.Errorf("gh %s's `gh %s` gives the %s, and no row reads octocat through it", version, leaf, kind)
+					}
+				}
+			}
+			rows := 0
+			for _, r := range reads {
+				if !lists(strings.Fields(r.leaf)) {
+					continue
+				}
+				rows++
+				name := "gh " + strings.Join(r.argv, " ")
+				if repo := r.env["GH_REPO"]; repo != "" {
+					name = "GH_REPO=" + repo + " " + name
+				}
+				t.Run(name, func(t *testing.T) {
+					for _, owner := range []string{"octocat", "sjawhar"} {
+						t.Run(owner, func(t *testing.T) {
+							argv := make([]string, len(r.argv))
+							for i, word := range r.argv {
+								argv[i] = strings.ReplaceAll(word, "octocat", owner)
+							}
+							env := maps.Clone(pane)
+							for key, value := range r.env {
+								env[key] = strings.ReplaceAll(value, "octocat", owner)
+							}
+							target, err := ghTargetOfKept(t, argv, env, help, noGitRepository, dirFor)
+							switch {
+							case owner == "sjawhar":
+								if err != nil || target.dir != ghconfig.Dir("/owners", "sjawhar") {
+									t.Errorf("ghTargetOf(%q, %v) at gh %s = %+v, %v; want sjawhar's directory", argv, env, version, target, err)
+								}
+							case r.refused:
+								if err == nil || !strings.Contains(err.Error(), refusal) {
+									t.Errorf("ghTargetOf(%q, %v) at gh %s = %+v, %v; want main's refusal, %q", argv, env, version, target, err, refusal)
+								}
+							case err != nil || target.dir != pane["GH_CONFIG_DIR"]:
+								t.Errorf("ghTargetOf(%q, %v) at gh %s = %+v, %v; want GH_CONFIG_DIR's directory, %s", argv, env, version, target, err, pane["GH_CONFIG_DIR"])
+							}
+						})
+					}
+				})
+			}
+			t.Logf("gh %s: %d read leaves, %d rows", version, leaves, rows)
+			if leaves == 0 || rows == 0 {
+				t.Errorf("gh %s lists %d read leaves and %d rows ran, want each read leaf and every row", version, leaves, rows)
+			}
+		})
+	}
+}
+
 // noGitRepository is the git remotes of a working directory that is no git repository: none.
 func noGitRepository() ([]ghRemote, error) { return nil, nil }
 
