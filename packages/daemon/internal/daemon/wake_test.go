@@ -238,7 +238,7 @@ func (h *terminalHandler) applied() []string {
 // supervisor ends up holding shows it.
 //
 // R5: the first turn is stamped from the woken claim reaching working, not from a delivery's
-// confirmation, because a wake for a notice or a phase-ended message carries no delivery.
+// confirmation, because a wake for a notice or a hook prompt carries no delivery.
 func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *testing.T) {
 	w, pool, _ := wakeRuntime(t)
 	facts := &terminalHandler{}
