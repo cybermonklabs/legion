@@ -1735,6 +1735,55 @@ func TestCookieAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
 	})
 }
 
+// Under IAP a browser presents IAP's cookie, not Dispatch's, and IAP adds a valid assertion to a
+// write another site's page makes with it, so the assertion is held to Dispatch's origin as a
+// session cookie is: a member's write from another origin is refused before its route, and the
+// same write from Dispatch's origin reaches it.
+func TestIAPAuthenticatedUnsafeRequestsRequireSameOrigin(t *testing.T) {
+	const audience = "/projects/123456789012/global/backendServices/9876543210"
+	keys := oidctest.New(t)
+	signing := oidctest.NewES256Key(t, "iap-key")
+	keys.Publish(signing)
+	people := newMemoryPeople()
+	ctx, err := BuildAppContext(AppContextOptions{
+		SigningKey: testSigningKey,
+		People:     people,
+		Sessions:   &memorySessionStore{generations: map[string]int64{}},
+		Identity: identity.IAPIdentity{
+			Verifier: oidc.NewIAPVerifier(audience, oidc.NewKeysAt(keys.URL()+"/keys")),
+			Rule:     identity.DomainRule{Domain: "d.example"},
+			People:   people,
+		},
+		AgentTokens: sharedAgentTokens(t, "agent-token"),
+		ServerURL:   "https://dispatch.example",
+		Lifetime:    t.Context(),
+	})
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	standInEventLog(ctx, 0)
+	handler, _ := New(ctx)
+	now := time.Now()
+	assertion := keys.Mint(t, signing, map[string]any{
+		"iss": oidc.IAPIssuer, "aud": audience, "sub": "accounts.google.com:118000000000000000001",
+		"email": "sami@d.example", "hd": "d.example", "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(),
+	})
+	logout := func(origin string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "https://dispatch.example/auth/logout", nil)
+		request.Header.Set(identity.IAPAssertionHeader, assertion)
+		request.Header.Set("Origin", origin)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := logout("https://other.dispatch.example"); response.Code != http.StatusForbidden {
+		t.Errorf("a member's write from another origin: %d %s, want 403", response.Code, response.Body.String())
+	}
+	if response := logout("https://dispatch.example"); response.Code != http.StatusOK {
+		t.Errorf("a member's write from Dispatch's origin: %d %s, want 200", response.Code, response.Body.String())
+	}
+}
+
 func (s *memoryPeopleStore) EndSubject(ctx context.Context, email, subject string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

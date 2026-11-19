@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // This file is the listener's half of the check c-dispatch-role-route: Dispatch's sends for a
@@ -420,7 +421,7 @@ func listenerSend(handler http.Handler, target, role, key, authorize string) *ht
 // refusedForRole fails the test unless response is the 403 naming the field role.
 func refusedForRole(t *testing.T, what string, response *httptest.ResponseRecorder) {
 	t.Helper()
-	var refusal apiError
+	var refusal listenerwire.APIError
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if response.Code != http.StatusForbidden || len(refusal.Expected) != 1 || refusal.Expected[0] != "role" {
 		t.Fatalf("%s: status %d body %s, want 403 naming the field role", what, response.Code, response.Body.String())

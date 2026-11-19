@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // roleMarkRefusal is why a send carrying a role mark is refused, or "" for one this listener takes
@@ -32,35 +33,17 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 	return ""
 }
 
-// keptSendResponse is the send route's 202 for a send marked with a role whose claim named another
-// session than the target, or none, when the send arrived: the send's envelope as the role's kept
-// lane holds it, its recipient as the request named it, the session the claim names (holder, absent
-// for a role nobody claims), and kept and kept_until, the end of the kept copy's hour in Unix
-// milliseconds, named as the publish route's kept answer names them (publishResponse). It carries
-// no recipient_state and no state: the message was not stored for the target, so nothing about the
-// target was read.
-type keptSendResponse struct {
-	contracts.Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
-	// (expectsReplyAnswer), shadowing the embedded envelope's own field as sendResponse's does.
-	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
-	Recipient    string          `json:"recipient"`
-	Holder       string          `json:"holder,omitempty"`
-	Kept         bool            `json:"kept"`
-	KeptUntil    int64           `json:"kept_until"`
-}
-
 // keepRoleSend keeps item, a send marked with its role whose claim names holder rather than the
 // target the send names, for the role's next live holder, with the keep the publish route's role
 // send takes (keepForNextHolder), which also hands the role's kept lane to whoever holds the role
 // now: a live holder that took the role while the send was on its way receives it at once. It
 // raises the role's wake report first, as the publish route's send to a role with no live holder
 // does (roleSend.noHolder): a role released with its pod is brought back only by the wake, and the
-// daemons decide what a wake of a role whose holder is live means. It answers keptSendResponse's
-// 202, with the copy the lane holds as the record's envelope. The wake costs the sender one, and so
-// does a copy the keep stored; one the lane already held inside its hour costs nothing
-// (senderCharge). A keep that stored nothing is the bus-unavailable 503, which the sender retries
-// under the same key, and the lane stores that message once (bus.KeptMsgID).
+// daemons decide what a wake of a role whose holder is live means. It answers the 202
+// listenerwire.KeptSendResponse, with the copy the lane holds as the record's envelope. The wake
+// costs the sender one, and so does a copy the keep stored; one the lane already held inside its
+// hour costs nothing (senderCharge). A keep that stored nothing is the bus-unavailable 503, which
+// the sender retries under the same key, and the lane stores that message once (bus.KeptMsgID).
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, target, holder string, expectsReply json.RawMessage) {
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
@@ -76,7 +59,7 @@ func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord,
 	}
 	*item = kept.item
 	record.holder = holder
-	record.acceptWith(w, http.StatusAccepted, keptSendResponse{
+	record.acceptWith(w, http.StatusAccepted, listenerwire.KeptSendResponse{
 		Envelope:     kept.item,
 		ExpectsReply: expectsReply,
 		Recipient:    target,

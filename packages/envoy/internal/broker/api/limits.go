@@ -64,8 +64,8 @@ var DefaultTokenLimit = ratelimit.Limit{Every: 500 * time.Millisecond, Burst: 60
 
 // DefaultAccountLimit bounds, per source address, every route a caller's ServiceAccount token
 // authenticates, the approval page's own routes and the public GET /signin/status, in one bucket
-// they all share: the ten Dispatch's server relays a person's pages and decisions through, POST
-// /v1/oauth/revoke among them and the two decide routes, which spend it in their own handler
+// they all share: the twelve Dispatch's server relays a person's pages and decisions through,
+// POST /v1/oauth/revoke among them and the two decide routes, which spend it in their own handler
 // (accountAuthAfterRecordKind, decideRecord), POST /v1/oauth/introspect, the page's routes a
 // sign-in authenticates, which spend it in authenticate's authSignIn case, and GET
 // /signin/status, which spends it in its own handler. It is a burst of 200 and fifty a second,

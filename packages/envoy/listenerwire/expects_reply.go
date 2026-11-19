@@ -1,4 +1,4 @@
-package contracts
+package listenerwire
 
 import (
 	"encoding/json"
@@ -7,10 +7,10 @@ import (
 
 // ExpectsReply is the envelope's expects_reply field: what the sender wants back. On the wire it
 // is the JSON literal false, "optional" or "required"; absent from a message that says nothing
-// about a reply. This type is hand-written beside the generated mirror in generated.go, whose
-// Envelope holds the field as this type and whose Validate() calls the Validate below, so one
-// vocabulary is decided here and nowhere else. A constant's Go string is this package's own name
-// for the value, not a word the wire carries: MarshalJSON writes the wire form and
+// about a reply. This type is hand-written beside the generated mirror in envelope_generated.go,
+// whose Envelope holds the field as this type and whose Validate() calls the Validate below, so
+// one vocabulary is decided here and nowhere else. A constant's Go string is this package's own
+// name for the value, not a word the wire carries: MarshalJSON writes the wire form and
 // ParseExpectsReply reads every form accepted, the retired one named below among them.
 type ExpectsReply string
 
@@ -101,8 +101,8 @@ func ParseExpectsReply(raw json.RawMessage) (ExpectsReply, error) {
 	return ExpectsReplyUnset, expectsReplyRefusal()
 }
 
-// Validate refuses a value no producer may write. generated.go's Envelope.Validate calls it for
-// expects_reply, the one property whose own type the generator defers to (valueChecks in
+// Validate refuses a value no producer may write. envelope_generated.go's Envelope.Validate calls
+// it for expects_reply, the one property whose own type the generator defers to (valueChecks in
 // packages/contracts/scripts/gen-go.ts), in place of a switch over words.
 func (e ExpectsReply) Validate() error {
 	switch e {

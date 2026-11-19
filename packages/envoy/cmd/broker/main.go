@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -990,15 +991,17 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
 // that the boot and airlock-check refuse the same file in the same words: a host the proxy
 // never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
-// is the Lean model's, then an entry whose name is not a name a session can ask for. The hosts
-// come first because ruleHostRefusal names each host's reason and repeats no text of the file,
-// where Validate's refusal of a host HostShapeOK refuses quotes the host as written; and because
-// every host ruleHostRefusal accepts HostShapeOK accepts too, Validate then refuses no host. So a
-// file with two faults reports its first bad host ahead of any other fault Validate finds (a
-// repeated name, an entry with no host, a judge above 900 seconds, another kind). Two of the host
-// refusals are this program's own and not the Lean model's: a last label that is 0x and hex
-// digits (0x1f, a.0x7f000001), which HostShapeOK accepts as no all-digit label but clients read
-// as an IPv4 address, and a wildcard over one.
+// is the Lean model's, then the two refusals that are this program's own and not that model's —
+// an entry whose name is not a name a session can ask for, and guidance longer than the judge is
+// shown (maxGuidanceRunes). The hosts come first because ruleHostRefusal names each host's reason
+// and repeats no text of the file, where Validate's refusal of a host HostShapeOK refuses quotes
+// the host as written; and because every host ruleHostRefusal accepts HostShapeOK accepts too,
+// Validate then refuses no host. So a file with two faults reports its first bad host ahead of
+// any other fault Validate finds (a repeated name, a judge above 900 seconds, another kind). An
+// entry with no hosts has no host to refuse, and Validate accepts it: it says who decides its key
+// and binds the value nowhere. Two of the host refusals are this program's own and not the Lean
+// model's: a last label that is 0x and hex digits (0x1f, a.0x7f000001), which HostShapeOK accepts
+// as no all-digit label but clients read as an IPv4 address, and a wildcard over one.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -1021,9 +1024,18 @@ func validateRulesFile(rules airlock.Rules) error {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
 		}
+		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
+			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
+		}
 	}
 	return nil
 }
+
+// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
+// whole text to its model beside the request's reason and what Dispatch holds of it, all within
+// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
+// at the boot and in airlock-check, where its author reads why.
+const maxGuidanceRunes = 2000
 
 // ruleHostRefusal is why validateRulesFile refuses one host of an entry, h as fold.ASCII writes
 // it, or "" for a host it serves.

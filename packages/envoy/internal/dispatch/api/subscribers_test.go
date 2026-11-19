@@ -648,3 +648,135 @@ func TestUnsubscribeArtifactSessionRejectsIssueLinkedArtifacts(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+// The completion of a subscription removal reads, under its owner's lock, whether a
+// subscription.removed already answers the pending request, and appends one only where none does
+// (completeSubscriptionRemoval). The test holds the issue's owner lock as another completion of the
+// same request does, lets this completion queue behind it, and commits that other completion's
+// subscription.removed: read under the lock, the request is answered and nothing more is appended;
+// read before it, the request would be answered twice.
+func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "Removed once", "A spec")
+	ctx := context.Background()
+	own := issueOwner(issue.Key)
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	const session = "s1"
+	topics := []string{"notifications.dispatch.issue." + issue.Key}
+
+	seed, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the request: %v", err)
+	}
+	request, err := served.appendEvent(ctx, seed, own.event("subscription.remove_requested", actor,
+		subscriptionRemovedPayload{SessionID: session, By: actor, Topics: topics, Pending: true}))
+	if err != nil {
+		t.Fatalf("append the pending removal request: %v", err)
+	}
+	if err := seed.Commit(ctx); err != nil {
+		t.Fatalf("commit the request: %v", err)
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the other completion: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock: %v", err)
+	}
+	type completion struct {
+		event *model.Event
+		err   error
+	}
+	completed := make(chan completion, 1)
+	go func() {
+		event, err := served.completeSubscriptionRemoval(ctx, own, session, request.ID, actor)
+		completed <- completion{event: event, err: err}
+	}()
+	if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the removal's completion", completed); answered {
+		t.Fatalf("the completion answered (%v, %v) while this test held the issue's owner lock", early.event, early.err)
+	} else if holdingXid != 0 {
+		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+	}
+	if _, err := served.appendEvent(ctx, holder, own.event("subscription.removed", actor,
+		subscriptionRemovedPayload{SessionID: session, By: actor, Topics: topics, RequestEventID: request.ID})); err != nil {
+		t.Fatalf("append the other completion's removal: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the other completion: %v", err)
+	}
+	select {
+	case got := <-completed:
+		if got.err != nil {
+			t.Fatalf("the completion: %v", got.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the completion never answered once the other one committed")
+	}
+	var removals int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events where issue_key = $1 and type = 'subscription.removed'
+	`, issue.Key).Scan(&removals); err != nil {
+		t.Fatalf("count the removals: %v", err)
+	}
+	if removals != 1 {
+		t.Fatalf("the request is answered by %d subscription.removed events, want one: the completion read whether "+
+			"it was answered before the issue's owner lock", removals)
+	}
+}
+
+// An unsubscribe reads, under the owner's lock, whether a removal of the same topics is already
+// pending, and appends its own subscription.remove_requested only where none is
+// (unsubscribeSession, pendingSubscriptionRemoval). The test holds the issue's owner lock as a
+// second unsubscribe of the same session does, lets this one queue behind it, and commits that
+// other unsubscribe's request: read under the lock, this one takes the pending request as its own
+// and the issue holds one request; read before it, the issue would hold two.
+func TestAnUnsubscribeQueuedBehindAnotherTakesItsPendingRequest(t *testing.T) {
+	database := storetest.Open(t)
+	bootstrap := newSubscribersHandler(t, database, "")
+	key := createTestIssue(t, bootstrap, "TEST", "Issue")
+	topic := "notifications.dispatch.issue." + key + ".>"
+	envoyURL, _ := newFakeListener(t, map[string][]string{"planner": {topic}}, nil)
+	handler := newSubscribersHandler(t, database, envoyURL)
+	ctx := context.Background()
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the other unsubscribe: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(key)); err != nil {
+		t.Fatalf("take the issue's owner lock: %v", err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodDelete, "/api/v1/issues/"+key+"/subscribers/planner", nil, "alice")
+	}()
+	if early, answeredEarly, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the unsubscribe", answered); answeredEarly {
+		t.Fatalf("the unsubscribe answered %d %s while this test held the issue's owner lock", early.Code, early.Body.String())
+	} else if holdingXid != 0 {
+		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+	}
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	if _, err := events.NewBroker().Append(ctx, holder, issueOwner(key).event("subscription.remove_requested", actor,
+		subscriptionRemovedPayload{SessionID: "planner", By: actor, Topics: []string{topic}, Pending: true})); err != nil {
+		t.Fatalf("append the other unsubscribe's request: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the other unsubscribe: %v", err)
+	}
+	if response := awaitResponse(t, answered); response.Code != http.StatusNoContent {
+		t.Fatalf("the unsubscribe once the lock was released: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var requests int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events where issue_key = $1 and type = 'subscription.remove_requested'
+	`, key).Scan(&requests); err != nil {
+		t.Fatalf("count the removal requests: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("the issue holds %d subscription.remove_requested events, want the one pending request: the "+
+			"unsubscribe read what was pending before the issue's owner lock", requests)
+	}
+}
