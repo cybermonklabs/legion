@@ -1531,6 +1531,7 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-release-credentials.test.sh'
               - '.github/scripts/check-release-credentials.sh'
+              - '.github/scripts/shell_commands.py'
             repo_paths_test: &repo_paths_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'

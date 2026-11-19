@@ -48,11 +48,11 @@
 #      it would report a clean result over no project at all;
 #   7. a Dispatch link: the link scheme Dispatch's references are written in, in any case.
 #
-# Rules 6 and 7 read new text only, until a cleanup leaves the tree with no key and no link.
-# PRIVATE_NAME_RULES picks the rules a run reads: `names` (the default) reads rules 1 to 5, and
-# rules 6 and 7 too when issue_keys_in_tree below is `yes`; `keys` reads rules 6 and 7 alone,
-# which check-pr-text.sh asks for over a pull request's new text (its header says which text, and
-# from when). issue_keys_in_tree is the one setting that holds the whole tree to rules 6 and 7.
+# Rules 6 and 7 read new text only: the tree keeps the keys and links from before them, which the
+# operator's rule ("Stop new leaks only") leaves in place. PRIVATE_NAME_RULES picks the rules a run
+# reads: `names` (the default) reads rules 1 to 5, and `keys` reads rules 6 and 7 alone, which
+# check-pr-text.sh asks for over a pull request's new text (its header says which text, and from
+# when).
 #
 # One matching engine reads everything: GNU grep, in the run's locale. The repository's contents
 # and a named path's are read by the same grep over the same file list, a file's path by grep -z,
@@ -177,9 +177,6 @@ issue_key_label="names an issue key of the deployment's own projects (PRIVATE_NA
 link_label='holds a Dispatch link'
 # The seventh rule's link scheme, spelled in pieces so that this file holds no whole one.
 link_rule='dispatch'':''//'
-# Whether the whole tree is held to rules 6 and 7, as well as a pull request's new text: `no`
-# while the tree still holds keys and links from before the rule, `yes` once a cleanup leaves none.
-issue_keys_in_tree=no
 rules=${PRIVATE_NAME_RULES:-names}
 case $rules in
   names | keys) ;;
@@ -385,11 +382,10 @@ if [ ${#terms[@]} -eq 0 ]; then
       ;;
   esac
 fi
-# Rule 6 reads the `key:` lines of the list. A run that reads it (a `keys` run, or a tree run once
-# issue_keys_in_tree is `yes`) under a list that holds terms and no `key:` line would check no
-# project and report clean, so it fails instead. A list with no term at all is handled above.
-if { [ "$rules" = keys ] || [ "$issue_keys_in_tree" = yes ]; } &&
-  [ ${#terms[@]} -gt 0 ] && [ ${#keys[@]} -eq 0 ]; then
+# Rule 6 reads the `key:` lines of the list. A keys run under a list that holds terms and no `key:`
+# line would check no project and report clean, so it fails instead. A list with no term at all is
+# handled above.
+if [ "$rules" = keys ] && [ ${#terms[@]} -gt 0 ] && [ ${#keys[@]} -eq 0 ]; then
   echo "::error::check-private-names: PRIVATE_NAME_TERMS holds no key: line, so the issue-key" \
     "rule has no project to read; add one key:<KEY> line for each of the deployment's own" \
     "Dispatch projects to that Actions secret" >&2
@@ -510,10 +506,9 @@ if [ "$rules" = names ]; then
     search_paths "$term_label" -E -i -f "$patterns_file"
   fi
 fi
-# Rules 6 and 7: over everything this run reads when it is a `keys` run, and over the whole tree
-# too once issue_keys_in_tree is `yes`. A key or a link has no allowed form, so each is a `term`
-# search, which drops nothing.
-if [ "$rules" = keys ] || [ "$issue_keys_in_tree" = yes ]; then
+# Rules 6 and 7: over everything a `keys` run reads. A key or a link has no allowed form, so each
+# is a `term` search, which drops nothing.
+if [ "$rules" = keys ]; then
   if [ -n "$key_pattern" ]; then
     search "$issue_key_label" term -E -e "$key_pattern"
     search_paths "$issue_key_label" -E -e "$key_pattern"

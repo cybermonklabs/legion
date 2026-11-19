@@ -11,8 +11,9 @@
 # over named patterns (the commands, actions and paths its lists hold), not a proof that no other
 # code runs, and these cases exercise those patterns, on each side of each line.
 #
-# Each case builds a miniature repository under a temporary directory, with the real script
-# symlinked into it and the four workflows written green, and mutates one file.
+# Each case builds a miniature repository under a temporary directory, with the real script and
+# the shell_commands.py module it imports symlinked into it and the four workflows written green,
+# and mutates one file.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.test.sh
 # CI runs it in ci.yaml's test job.
@@ -27,8 +28,8 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
-# fixture <name>: a tree with the script linked in and the four green workflows written. Echoes
-# its root.
+# fixture <name>: a tree with the script and its module linked in and the four green workflows
+# written. Echoes its root.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -37,6 +38,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows"
   ln -s "$check_script" "$root/.github/scripts/check-release-credentials.sh"
+  ln -s "$script_dir/shell_commands.py" "$root/.github/scripts/shell_commands.py"
   write_green "$root/.github/workflows"
   echo "$root"
 }
