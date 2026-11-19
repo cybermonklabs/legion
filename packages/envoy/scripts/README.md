@@ -655,6 +655,7 @@ producer that moves first stops the fleet's workflow in silence.
 ```bash
 packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>
 packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --listeners <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --clients [--dotfiles <dir>] <commit>
 ```
 
 `--deployment` names the deployment repository whose Pulumi stacks pin the readers' images; it is
@@ -666,18 +667,17 @@ The deployment's Legion projects are the files of its `legion/projects/` (`<nn>-
 mapping of a project's settings each, in file-name order), as the deployment's legion program reads
 them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
 projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
-listing, a file that is not one mapping, and a deployment that declares no project print `UNKNOWN`
-naming what the gate read.
+listing, a file that is not one mapping, a file that program refuses (a name that is not
+`<nn>-<KEY>.yaml`, or a `key` that is not that KEY), and a deployment that declares no project
+print `UNKNOWN` naming what the gate read. A project whose `replicas` is no count, whose `daemon`
+is no boolean, or whose image is no plain reference prints `UNKNOWN` by name: it is never skipped,
+and its image is never read cut short.
 
-Without `--listeners` it reads the image each Legion daemon runs: each project's `daemonImage` when
+Without a mode it reads the image each Legion daemon runs: each project's `daemonImage` when
 set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
 its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
-by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
-it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
-dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
-Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
-that key (deployment `dispatch/main.go`) and the listener runs no other image. Each pin's
+by name, as does an entry on any runtime but `kubernetes`, the default. Each pin's
 `org.opencontainers.image.source` and `.revision`
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
@@ -690,18 +690,70 @@ is refused by name and never compared. A revision label that is not a commit id,
 hex digits, prints `UNKNOWN` and is never compared: GitHub's compare resolves any ref, so a label
 naming a branch (`main`) would compare as wherever that branch points now.
 
-It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
-`GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
-(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error, a
-missing `--deployment` among them, exits 2 and reads nothing. It needs `gh` with read access to both
-repositories, docker with buildx able to read each pin's
-registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
-`DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
+With `--listeners` it reads the listener pins the same way: envoy-cluster's `envoyImage`,
+dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
+Dispatch server's (a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
+that key, deployment `dispatch/main.go`, and the listener runs no other image), and envoy's
+`listenerImage` when the deployment declares the VM hub, `gcp:NatsHub`, whose listener is that
+pin's only reader. The hub's removal deletes the pin with it, so the gate decides the hub from the
+deployment's program, never from the pin: it fetches the deployment repository as one archive at
+the head of its default branch and reads every Go file in it that is not a `_test.go`, outside
+comments and strings, a link at its target. A use of `NewNatsHub` anywhere but as the name of the
+func that defines it declares the hub: the gate prints `VM HUB: <file>:<line> at <sha> uses
+NewNatsHub` and reads the pin, which, if absent, stays `UNKNOWN`. Used nowhere, every file read, it
+prints `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. A head, archive or
+file it cannot read, a hard link, a link that leaves the repository, a local `replace` or `use` of
+`envoy/go.mod` or a `go.work` that leaves it, and an `envoy/` with no Go file or no `go.mod` print
+`UNKNOWN`, so a missing pin never reads as a hub that is gone.
 
-`daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
-answers a single image and an index the way the real one does. Its fakes, fixture builders and
-assertion helpers are in `lib/daemon-release-gate-harness.sh`, which it sources; CI runs it in the
-`envoy-go-checks` job of `.github/workflows/ci.yaml`.
+With `--clients` it reads the clients that deliver to a session, each of which must carry the
+client follow filter of `<commit>`, since an older one passes a frame in a form it does not match
+in silence:
+
+- In each image a running project names, its `daemonImage` and its `image` (each read once
+  however many projects name it), the two clients the worker build puts at `/opt/legion`:
+  `/opt/legion/pi-envoy/package.json` and `/opt/legion/claude-envoy/package.json` must both be
+  there, each the package it should be, and the image is judged by the commit its build ran at,
+  which `/opt/legion/bin/legion version` in the same image prints (`legion <version> commit
+  <sha>`). A manifest's version names no build: claude-envoy's keeps its source's static version,
+  and pi-envoy's names a release only when a release build sets it. Each command runs in the image
+  with `docker run --rm --quiet --network none --entrypoint`, which pulls an image docker does not
+  hold. A project on a tmux host prints `UNKNOWN`: its sessions run the host's clients.
+- On this developer box, under `--dotfiles` (default `~/.dotfiles`): the `@sjawhar/pi-envoy` pin of
+  `omp/plugins/package.json` and, where it differs, the copy installed beside it; each
+  `claude-envoy@legion-plugins` install the dotfiles' Claude Code plugin record
+  (`.claude/plugins/installed_plugins.json`) holds, by the manifest at its `installPath`, which must
+  lie inside the dotfiles' `.claude`; and the claude-envoy version the marketplace `legion-plugins`
+  serves to `.claude/settings.json`: the highest version `npm view` matches to the range the
+  marketplace's `.claude-plugin/marketplace.json` names, by semantic-version precedence (a release
+  above its own pre-release). Each version must be an exact release version and is judged by the
+  commit of its release tag, `pi-envoy-v<version>` or `claude-envoy-v<version>`. A settings file
+  that enables no `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or
+  a profile's plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or
+  another `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
+  marketplace that names claude-envoy twice, and an npm answer that is not all release versions print
+  `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
+  pins and installs, not processes.
+
+It prints a line per pin or surface (`PASS`, `GATE SHUT`, `UNKNOWN`, `SKIPPED`, `VM HUB` or
+`NO VM HUB`) and the verdict on the last: `GATE OPEN` (exit 0) only when every pin it read passed
+and it read at least one, `GATE SHUT` (exit 1), or `UNKNOWN` (exit 3) for a pin, file, package,
+version or comparison it could not read. A usage error, a missing `--deployment` or both modes
+among them, exits 2 and reads nothing. It needs `gh` with read access to both repositories, docker
+with buildx able to read each pin's registry (for ghcr.io, `gh auth token | docker login ghcr.io -u
+x --password-stdin` into a `DOCKER_CONFIG` of your own), `jq`, python3 with PyYAML and, for
+`--clients`, `npm`. The VM hub, the images' clients and the developer box are read by
+`lib/daemon-release-gate-read-vm-hub.sh`, `lib/daemon-release-gate-read-image-clients.sh` and
+`lib/daemon-release-gate-read-developer-box.sh`, which the gate sources.
+
+`daemon-release-gate.test.sh` proves every verdict behind a fake `gh`, a fake `docker` that
+answers a single image and an index the way the real one does and runs an image's files, and a
+fake `npm`. Its fakes, fixture builders and assertion helpers are in
+`lib/daemon-release-gate-harness.sh`, and its scenarios of the VM hub, the images' clients, the
+developer box, its versions and a project's fields in `lib/daemon-release-gate-cases-*.sh`, which
+it sources; CI runs it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
+with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
+reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
 
 ## Measuring search on a copy of the corpus
 

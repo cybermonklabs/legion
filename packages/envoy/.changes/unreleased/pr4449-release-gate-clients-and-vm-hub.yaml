@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  `scripts/daemon-release-gate.sh --clients` reads the clients that deliver to a session: in each
+  image a running project names, both clients the worker build carries at `/opt/legion`, judged by
+  the commit the image's own `legion version` prints; and on the developer box, under `--dotfiles`
+  (default `~/.dotfiles`), the pi-envoy pin and its installed copy, each claude-envoy install the
+  dotfiles record, and the claude-envoy version the `legion-plugins` marketplace serves, each by
+  its release tag. A client installed outside the dotfiles is `UNKNOWN`. `--listeners` now decides
+  from the deployment's own Go program whether the VM hub is declared: with no hub it prints
+  `NO VM HUB` and reads no VM pin, so it no longer prints `UNKNOWN` once the hub is removed. A
+  project file whose name or key the deployment's program refuses, and a project field of the
+  wrong type, are `UNKNOWN` by name.

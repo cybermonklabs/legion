@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> [--listeners] <commit>
+# packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo>
+#   [--listeners | --clients [--dotfiles <dir>]] <commit>
 #
 # Says whether every production reader of a message name runs a build at or after <commit> of
 # cybermonklabs/legion, the reading a pull request quotes before it moves a producer onto the new
@@ -18,17 +19,49 @@
 # them. Only a deployment with no such directory still declares them in legion/Pulumi.prod.yaml's
 # projects list, as that program did before the files (load_entries).
 #
-# Without --listeners it reads the image that runs each Legion daemon: for each project, its
+# Without a mode it reads the image that runs each Legion daemon: for each project, its
 # `daemonImage` when set, else its `image` (legion/README.md's `daemonImage` row). A project that runs
 # no daemon (`replicas: 0`, or `daemon: false`) is printed SKIPPED, by name. An entry at `runtime:
 # tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from its
 # `image` (deployment legion/host.go, checkHost), and the gate reads no image for it: it is UNKNOWN
-# by name, and so is an entry on any runtime but `kubernetes`, the default. With --listeners it
-# reads the three listener pins instead: envoy/Pulumi.prod.yaml `listenerImage`,
-# envoy-cluster/Pulumi.prod.yaml `envoyImage`, and dispatch/Pulumi.prod.yaml `listenerImage`, which
-# that stack's program sets on its listener in place of `envoyImage`, the Dispatch server's
-# (dispatch/main.go, pinListenerImage). A dispatch stack that sets no `listenerImage` is UNKNOWN:
-# its deployment requires that key, and the listener runs no other image.
+# by name, and so is an entry on any runtime but `kubernetes`, the default. A project file whose
+# name is not `<nn>-<KEY>.yaml` or whose `key` is not its name's KEY, a `replicas` that is no count,
+# a `daemon` that is no boolean and an image that is no plain reference are UNKNOWN by name, never a
+# project skipped or an image cut short.
+#
+# With --listeners it reads the listener pins instead: envoy-cluster/Pulumi.prod.yaml `envoyImage`,
+# dispatch/Pulumi.prod.yaml `listenerImage`, which that stack's program sets on its listener in place
+# of `envoyImage`, the Dispatch server's (dispatch/main.go, pinListenerImage), and, when the
+# deployment declares the VM hub, envoy/Pulumi.prod.yaml `listenerImage`, which only that hub's
+# listener reads. A dispatch stack that sets no `listenerImage` is UNKNOWN: its deployment requires
+# that key, and the listener runs no other image. Whether the deployment declares the VM hub,
+# gcp:NatsHub, is decided from its program, never from the pin, since the hub's removal deletes the
+# pin with it (vm_hub, lib/daemon-release-gate-read-vm-hub.sh): at the head of the deployment
+# repository's default branch, fetched as one archive, a Go file that is not a test and uses
+# NewNatsHub declares it. Declared, it prints `VM HUB: <file>:<line> at <sha> uses NewNatsHub` and
+# reads the pin, a stack that sets none staying UNKNOWN; used nowhere, every file read, it prints
+# `NO VM HUB: envoy/ at <sha> declares no gcp:NatsHub` and reads no VM pin. What it cannot fetch or
+# read is UNKNOWN, so a missing pin never reads as a hub that is gone.
+#
+# With --clients it reads the clients that deliver to a session, each of which must carry the
+# client follow filter of <commit>, since an older one passes a frame in a form it does not match in
+# silence:
+#   - in each image a running project names, its `daemonImage` and its `image` (each read once
+#     however many projects name it), the two clients the worker build puts at /opt/legion,
+#     /opt/legion/pi-envoy and /opt/legion/claude-envoy (packages/daemon/docker/worker.Dockerfile),
+#     each of which must be there, judged by the commit that build ran at, which the image's own
+#     /opt/legion/bin/legion prints (`legion version`), never by its manifests' versions
+#     (lib/daemon-release-gate-read-image-clients.sh). A project that runs no daemon is SKIPPED,
+#     and one on a tmux host is UNKNOWN: its sessions run the host's clients.
+#   - on this developer box, under --dotfiles (default ~/.dotfiles): the `@sjawhar/pi-envoy` pin of
+#     omp/plugins/package.json and the copy installed beside it; each claude-envoy@legion-plugins
+#     install the dotfiles' Claude Code plugin record holds, by its manifest; and the claude-envoy
+#     version the marketplace legion-plugins serves to .claude/settings.json, the highest version
+#     npm matches to the range the marketplace names. Each version is judged by the commit of its
+#     release tag (`pi-envoy-v<version>`, `claude-envoy-v<version>`). A client installed where the
+#     dotfiles' pins say nothing about it (~/.omp/plugins or a profile's plugin tree, ~/.claude,
+#     another CLAUDE_CONFIG_DIR), and a link that does not resolve, are UNKNOWN
+#     (lib/daemon-release-gate-read-developer-box.sh).
 #
 # Each pin's org.opencontainers.image.source and .revision labels are read with `docker buildx
 # imagetools inspect`. A single image is read whole; an OCI image index, which carries no image
@@ -46,17 +79,18 @@
 # never compared: GitHub's compare resolves any ref, so a label naming a branch (`main`) would
 # compare as wherever that branch points now.
 #
-# It prints one line per pin: `PASS`, `GATE SHUT` (behind <commit>, or built elsewhere), `UNKNOWN`
-# (a label, a stack file or a comparison it could not read, a revision that is no commit id, or a
-# daemon whose image it does not read) or `SKIPPED`; then the verdict, alone on
-# the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one,
-# `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A usage error, a
-# missing --deployment among them, exits 2 and reads nothing.
+# It prints one line per pin or surface: `PASS`, `GATE SHUT` (behind <commit>, or built elsewhere),
+# `UNKNOWN` (a label, a file, a package, a version or a comparison it could not read, a revision
+# that is no commit id, or a reader it does not read), `SKIPPED`, or `VM HUB` or `NO VM HUB`; then
+# the verdict, alone on the last line: `GATE OPEN` (exit 0) only when every pin it read passed and it
+# read at least one, `GATE SHUT` (exit 1) when any pin shut it, and `UNKNOWN` (exit 3) otherwise. A
+# usage error, a missing --deployment or both modes among them, exits 2 and reads nothing.
 #
 # It needs bash, gh (signed in with read access to the deployment repository and cybermonklabs/legion),
-# docker with buildx, jq, base64 and python3 with PyYAML. Docker must be able to read each pin's
-# registry: for ghcr.io, a login with a token holding read:packages, made into a config directory of
-# your own so the shared one is untouched:
+# docker with buildx, jq, base64, python3 with PyYAML and, for --clients, npm. Docker must be able to
+# read each pin's registry (and, for --clients, to pull and run each image): for ghcr.io, a login
+# with a token holding read:packages, made into a config directory of your own so the shared one is
+# untouched:
 #   export DOCKER_CONFIG=$(mktemp -d)
 #   gh auth token | docker login ghcr.io -u x --password-stdin
 # A pin docker cannot read prints UNKNOWN with docker's own answer, never GATE OPEN.
@@ -64,19 +98,26 @@ set -euo pipefail
 
 usage() {
   [ -z "${1:-}" ] || echo "daemon-release-gate.sh: $1" >&2
-  echo "usage: daemon-release-gate.sh --deployment <owner/repo> [--listeners] <commit>" >&2
+  echo "usage: daemon-release-gate.sh --deployment <owner/repo> [--listeners | --clients [--dotfiles <dir>]] <commit>" >&2
   echo "  <owner/repo> is the deployment repository whose Pulumi stacks pin the readers' images" >&2
   echo "  <commit> is the cybermonklabs/legion commit, 7 to 40 hex digits, every reader must run at or after" >&2
+  echo "  <dir> is the developer box's dotfiles, whose client pins --clients reads (default ~/.dotfiles)" >&2
   exit 2
 }
 
 mode=daemons
 deployment=""
+dotfiles=${HOME:+${HOME}/.dotfiles}
+listeners=0
+clients=0
 while [ "$#" -gt 1 ]; do
   case "$1" in
-    --listeners) mode=listeners; shift ;;
+    --listeners) listeners=1; shift ;;
+    --clients) clients=1; shift ;;
     --deployment) deployment=$2; shift 2 ;;
     --deployment=*) deployment=${1#--deployment=}; shift ;;
+    --dotfiles) dotfiles=$2; shift 2 ;;
+    --dotfiles=*) dotfiles=${1#--dotfiles=}; shift ;;
     *) break ;;
   esac
 done
@@ -85,7 +126,10 @@ done
 [ "$#" -eq 1 ] && [[ $1 =~ ^[0-9a-f]{7,40}$ ]] || usage
 [ -n "$deployment" ] || usage "--deployment <owner/repo> is required: the deployment repository whose stacks the gate reads"
 [[ $deployment =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || usage "--deployment ${deployment} is not <owner>/<repo>"
-readonly commit=$1 deployment
+[ "$listeners$clients" != 11 ] || usage "--listeners and --clients read different readers; give one"
+[ "$listeners" = 0 ] || mode=listeners
+[ "$clients" = 0 ] || mode=clients
+readonly commit=$1 deployment dotfiles mode
 readonly legion_source="https://github.com/cybermonklabs/legion"
 
 work=$(mktemp -d)
@@ -97,6 +141,7 @@ unknown=0
 compared=0
 
 first_line() { head -n 1 "$1"; }
+last_line() { tail -n 1 "$1"; }
 
 # fetch <path> <dest>: the text of <path> in the deployment repository on its default branch, into
 # <dest>; on failure sets $fetch_error to what could not be done and GitHub's or base64's first
@@ -172,8 +217,9 @@ entries_error=""
 # order, as the deployment's legion program reads them. Only a deployment with no such directory
 # still declares them in the list under <project>:projects of legion/Pulumi.prod.yaml, as that
 # program did before the files. A Pulumi.yaml or stack file it cannot read, a listing that fails
-# other than as a missing directory, a file it cannot read, or one that is not one mapping leaves
-# entries_state failed, with entries_error naming it.
+# other than as a missing directory, a file it cannot read, one that is not one mapping, and one
+# that program refuses (projectFileRule: a name that is not `<nn>-<KEY>.yaml`, or a `key` that is not
+# that KEY) leave entries_state failed, with entries_error naming it.
 load_entries() {
   [ "$entries_state" = unread ] || return 0
   local names name directory=1 legion_project
@@ -209,6 +255,7 @@ load_entries() {
   if ! python3 - "$work/legion.yaml" "${legion_project}:projects" "$work/projects" "$directory" >"$work/entries.json" 2>"$work/err" <<'PY'; then
 import json
 import os
+import re
 import sys
 
 import yaml
@@ -216,7 +263,13 @@ import yaml
 legion, key, directory, has_directory = sys.argv[1:5]
 entries = []
 if has_directory == "1":
+    # The deployment's legion program refuses a file it cannot name a project by: its name must be
+    # <nn>-<KEY>.yaml and its key that KEY (projectFileRule), so the gate takes neither as a project.
+    rule = re.compile(r"[0-9]{2}-([A-Z][A-Z0-9]*)\.yaml")
     for name in sorted(os.listdir(directory)):
+        named = rule.fullmatch(name)
+        if not named:
+            sys.exit(f"legion/projects/{name} is not named <nn>-<KEY>.yaml, so no key is known to be its own")
         try:
             with open(os.path.join(directory, name), encoding="utf-8") as handle:
                 documents = list(yaml.safe_load_all(handle))
@@ -226,6 +279,8 @@ if has_directory == "1":
             sys.exit(f"legion/projects/{name} is not YAML: {str(error).splitlines()[0]}")
         if len(documents) != 1 or not isinstance(documents[0], dict):
             sys.exit(f"legion/projects/{name} is not one mapping of a project's settings")
+        if documents[0].get("key") != named.group(1):
+            sys.exit(f"legion/projects/{name} declares key {documents[0].get('key')!r}, not {named.group(1)}")
         entries.append(documents[0])
     found, missing = bool(entries), "legion/projects/ holds no file"
 else:
@@ -260,34 +315,57 @@ PY
   entries_state="read"
 }
 
-# daemon_pins: one line per project of $work/entries.json, tab-separated: the project's key, then
-# READ and the image that runs its daemon, SKIP and why it runs none, HOST for a project whose
-# daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, or NOIMAGE. When the
-# deployment declares no project it prints ERROR and where it looked.
+# daemon_pins <daemons|clients>: one line per project of $work/entries.json, tab-separated: the
+# project's key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for a
+# project whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, NOIMAGE,
+# or INVALID and the field it cannot take. With clients, a running project's READ lines are one for
+# each image it names, its daemonImage and its image, keyed `<key> daemonImage` and `<key> image`,
+# since a session pod runs the second and the daemon the first. A field of the wrong type (a
+# replicas that is no count, as YAML's false would equal 0; a daemon that is no boolean) or an image
+# that is no plain reference (a tab in it would cut this line, and the gate would read another
+# image) is INVALID, never a project skipped or an image cut short. When the deployment declares no
+# project it prints ERROR and where it looked.
 daemon_pins() {
-  python3 - "$work/entries.json" <<'PY'
+  python3 - "$work/entries.json" "$1" <<'PY'
 import json
+import re
 import sys
 
 with open(sys.argv[1]) as handle:
     loaded = json.load(handle)
+clients = sys.argv[2] == "clients"
+reference = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@+-]*")
 if not loaded["found"]:
     print(f"ERROR\tdeclares no project: {loaded['missing']}")
     sys.exit(0)
 for entry in loaded["entries"]:
     key = entry.get("key") or "<an entry with no key>"
-    if entry.get("replicas") == 0:
+    replicas, daemon, runtime = entry.get("replicas"), entry.get("daemon"), entry.get("runtime")
+    if "replicas" in entry and (isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 0):
+        print(f"{key}\tINVALID\treplicas {json.dumps(replicas)}, which is no count of replicas")
+        continue
+    if "daemon" in entry and not isinstance(daemon, bool):
+        print(f"{key}\tINVALID\tdaemon {json.dumps(daemon)}, which is neither true nor false")
+        continue
+    images = {field: entry[field] for field in ("daemonImage", "image") if entry.get(field) not in (None, "")}
+    bad = [field for field, image in images.items() if not (isinstance(image, str) and reference.fullmatch(image))]
+    if replicas == 0:
         print(f"{key}\tSKIP\treplicas: 0")
-    elif entry.get("daemon") is False:
+    elif daemon is False:
         print(f"{key}\tSKIP\tdaemon: false")
-    elif entry.get("runtime") == "tmux":
+    elif runtime == "tmux":
         print(f"{key}\tHOST")
-    elif entry.get("runtime") not in (None, "", "kubernetes"):
-        print(f"{key}\tRUNTIME\t{entry.get('runtime')}")
-    elif entry.get("daemonImage") or entry.get("image"):
-        print(f"{key}\tREAD\t{entry.get('daemonImage') or entry.get('image')}")
-    else:
+    elif runtime not in (None, "", "kubernetes"):
+        print(f"{key}\tRUNTIME\t{runtime if isinstance(runtime, str) and runtime.isprintable() else json.dumps(runtime)}")
+    elif bad:
+        print(f"{key}\tINVALID\t{bad[0]} {json.dumps(images[bad[0]])}, which is no image reference")
+    elif not images:
         print(f"{key}\tNOIMAGE")
+    elif clients:
+        for field, image in images.items():
+            print(f"{key} {field}\tREAD\t{image}")
+    else:
+        print(f"{key}\tREAD\t{images.get('daemonImage') or images['image']}")
 PY
 }
 
@@ -450,7 +528,7 @@ PY
 # resolves any ref, so a label naming a branch or a tag (`main`) would compare as wherever that ref
 # points now, not as the commit the image was built from.
 judge() {
-  local key=$1 ref=$2 answer status behind_by repo via=""
+  local key=$1 ref=$2 repo via=""
   compared=$((compared + 1))
   if ! read_pin "$key" "$ref"; then
     unknown=$((unknown + 1))
@@ -477,6 +555,15 @@ judge() {
     unknown=$((unknown + 1))
     return
   fi
+  compare_revision "$key" "$revision" "$revision" "$via"
+}
+
+# compare_revision <key> <what it runs> <revision> <note>: compares <revision>, a commit id, with
+# <commit> in cybermonklabs/legion and prints <key>'s line, saying it runs <what it runs> and ending
+# in <note>: PASS when GitHub answers `ahead` or `identical` with `behind_by` 0, GATE SHUT when it
+# is behind or diverged, UNKNOWN otherwise.
+compare_revision() {
+  local key=$1 runs=$2 revision=$3 via=$4 answer status behind_by
   if ! answer=$(gh api "repos/cybermonklabs/legion/compare/${commit}...${revision}" --jq '{status,behind_by}' 2>"$work/err"); then
     printf 'UNKNOWN: %s: cannot compare %s...%s in cybermonklabs/legion: %s\n' "$key" "$commit" "$revision" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
@@ -488,14 +575,14 @@ judge() {
     return
   fi
   case "$status:$behind_by" in
-    ahead:0) printf 'PASS: %s runs %s (ahead of %s)%s\n' "$key" "$revision" "$commit" "$via" ;;
-    identical:0) printf 'PASS: %s runs %s (identical to %s)%s\n' "$key" "$revision" "$commit" "$via" ;;
+    ahead:0) printf 'PASS: %s runs %s (ahead of %s)%s\n' "$key" "$runs" "$commit" "$via" ;;
+    identical:0) printf 'PASS: %s runs %s (identical to %s)%s\n' "$key" "$runs" "$commit" "$via" ;;
     behind:*)
-      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$revision" "$commit" "$behind_by" "$via"
+      printf 'GATE SHUT: %s runs %s (behind %s by %s)%s\n' "$key" "$runs" "$commit" "$behind_by" "$via"
       shut=$((shut + 1))
       ;;
     diverged:*)
-      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$revision" "$commit" "$behind_by" "$via"
+      printf 'GATE SHUT: %s runs %s (diverged from %s, behind by %s)%s\n' "$key" "$runs" "$commit" "$behind_by" "$via"
       shut=$((shut + 1))
       ;;
     *)
@@ -533,8 +620,30 @@ listener() {
   judge "$key" "$ref"
 }
 
+# The readers in lib/: the VM hub, which --listeners decides before it reads envoy's pin, and the
+# clients --clients reads in each worker image and on the developer box.
+gate_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+readonly gate_lib
+# shellcheck source=lib/daemon-release-gate-read-vm-hub.sh
+source "${gate_lib}/daemon-release-gate-read-vm-hub.sh"
+# shellcheck source=lib/daemon-release-gate-read-image-clients.sh
+source "${gate_lib}/daemon-release-gate-read-image-clients.sh"
+# shellcheck source=lib/daemon-release-gate-read-developer-box.sh
+source "${gate_lib}/daemon-release-gate-read-developer-box.sh"
+
 if [ "$mode" = listeners ]; then
-  listener envoy envoy listenerImage
+  # envoy's listenerImage is read only by the VM hub's listener, and the hub's removal deletes the
+  # key with it, so the leg decides from the deployment's program whether the hub is declared
+  # (vm_hub) before it reads that pin: a declared hub whose pin is gone stays UNKNOWN, and a program
+  # that declares none, every file of it read, reads no VM pin.
+  if ! vm_hub; then
+    unknown=$((unknown + 1))
+  elif [ "$hub" = yes ]; then
+    printf 'VM HUB: %s at %s uses NewNatsHub\n' "$hub_use" "$hub_head"
+    listener envoy envoy listenerImage
+  else
+    printf 'NO VM HUB: envoy/ at %s declares no gcp:NatsHub\n' "$hub_head"
+  fi
   listener envoy-cluster envoy-cluster envoyImage
   # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go requires
   # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
@@ -547,24 +656,33 @@ else
     printf 'UNKNOWN: %s\n' "$entries_error"
     unknown=$((unknown + 1))
     : >"$work/pins"
-  elif ! daemon_pins >"$work/pins" 2>"$work/err"; then
+  elif ! daemon_pins "$mode" >"$work/pins" 2>"$work/err"; then
     printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi
   while IFS=$'\t' read -r key what detail; do
-    case "$what" in
-      SKIP) printf 'SKIPPED: %s runs no daemon (%s)\n' "$key" "$detail" ;;
-      READ) judge "$key" "$detail" ;;
-      NOIMAGE)
+    case "$what:$mode" in
+      SKIP:*) printf 'SKIPPED: %s runs no daemon (%s)\n' "$key" "$detail" ;;
+      READ:clients) client_image "$key" "$detail" ;;
+      READ:*) judge "$key" "$detail" ;;
+      NOIMAGE:*)
         printf 'UNKNOWN: %s runs a daemon and names neither daemonImage nor image\n' "$key"
         unknown=$((unknown + 1))
         ;;
-      HOST)
+      HOST:clients)
+        printf 'UNKNOWN: %s runs its sessions on a tmux host (runtime: tmux), whose clients this gate does not read\n' "$key"
+        unknown=$((unknown + 1))
+        ;;
+      HOST:*)
         printf 'UNKNOWN: %s runs its daemon on a tmux host (runtime: tmux), from host.legionWorker, an image this gate does not read\n' "$key"
         unknown=$((unknown + 1))
         ;;
-      RUNTIME)
+      RUNTIME:*)
         printf 'UNKNOWN: %s names runtime %s, which this gate does not know, so it reads no image for its daemon\n' "$key" "$detail"
+        unknown=$((unknown + 1))
+        ;;
+      INVALID:*)
+        printf 'UNKNOWN: %s names %s\n' "$key" "$detail"
         unknown=$((unknown + 1))
         ;;
       *)
@@ -577,6 +695,8 @@ else
     echo "UNKNOWN: the deployment's Legion projects run no daemon, so no pin was read"
     unknown=1
   fi
+  # The developer box delivers to its own sessions through the clients its dotfiles install.
+  [ "$mode" != clients ] || dotfiles_clients
 fi
 
 if [ "$shut" -gt 0 ]; then

@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/daemon-release-gate.test.sh
 #
-# Proves daemon-release-gate.sh's verdicts with no network: a fake `gh` answers the stack files and
-# the compare calls from files this test writes, and a fake `docker` answers `buildx imagetools
-# inspect` the way the real one answers a single image and an OCI image index (an index's
-# `.Image.Config.Labels` is `null`, and its platforms are read one at a time). Both record every
-# call, so a case asserts what the gate printed and what it asked. The deployment repository is
-# the one `--deployment` names, and each stack's config keys carry the project name its own
-# Pulumi.yaml declares; the fake gh answers that repository alone, so a gate that read any other
-# would fail every row.
+# Proves daemon-release-gate.sh's verdicts with no network: a fake `gh` answers the stack files, the
+# deployment's head and archive, the release tags, the marketplace and the compare calls from files
+# this test writes; a fake `docker` answers `buildx imagetools inspect` the way the real one answers
+# a single image and an OCI image index (an index's `.Image.Config.Labels` is `null`, and its
+# platforms are read one at a time) and `run` from an image's files; and a fake `npm` answers `npm
+# view`. Each records every call, so a case asserts what the gate printed and what it asked. The
+# deployment repository is the one `--deployment` names, and each stack's config keys carry the
+# project name its own Pulumi.yaml declares; the fake gh answers that repository alone, so a gate
+# that read any other would fail every row. Each run's HOME is the case's own, so no row reads the
+# machine's dotfiles. The scenarios of the VM hub, the images' clients, the developer box, its
+# versions and a project's fields are in lib/daemon-release-gate-cases-*.sh, sourced below.
 #
 # Negative control, run when this was written: make the gate read an index with
 # `{{json .Image.Config.Labels}}`, as a single image is read; every --listeners row below that
@@ -202,7 +205,7 @@ echo "case: a commit that is no commit id"
 new_case usage
 run_gate -- "main"
 check "exits 2" "$(is "$status" 2)"
-check "says what it takes" "$(grep -qF "usage: daemon-release-gate.sh --deployment <owner/repo> [--listeners] <commit>" "$err" && echo true || echo false)"
+check "says what it takes" "$(grep -qF "usage: daemon-release-gate.sh --deployment <owner/repo> [--listeners | --clients [--dotfiles <dir>]] <commit>" "$err" && echo true || echo false)"
 
 # The deployment repository is the operator's to name, never a name the gate compiles in.
 echo "case: no --deployment"
@@ -790,6 +793,26 @@ run_gate -- --listeners "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the file in one line" \
   "$(has_line "UNKNOWN: envoy-cluster: cannot read envoy-cluster/Pulumi.prod.yaml: it is not UTF-8 text")"
+
+# The --listeners leg's VM-hub scenarios.
+# shellcheck source=lib/daemon-release-gate-cases-vm-hub.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-vm-hub.sh"
+
+# --clients: the two clients of each worker image.
+# shellcheck source=lib/daemon-release-gate-cases-image-clients.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-image-clients.sh"
+
+# --clients: the developer box.
+# shellcheck source=lib/daemon-release-gate-cases-developer-box.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-developer-box.sh"
+
+# --clients: the developer box's versions.
+# shellcheck source=lib/daemon-release-gate-cases-versions.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-versions.sh"
+
+# A project's fields, read by the daemon leg and --clients alike.
+# shellcheck source=lib/daemon-release-gate-cases-project-fields.sh
+source "${project_root}/packages/envoy/scripts/lib/daemon-release-gate-cases-project-fields.sh"
 
 if [ "$failures" -ne 0 ]; then
   printf '%s check(s) failed\n' "$failures"
