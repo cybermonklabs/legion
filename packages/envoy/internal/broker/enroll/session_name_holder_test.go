@@ -200,6 +200,17 @@ func (m pairedMove) next(t *testing.T) Enrollment {
 	return m.pod(t, pairedWorkerPodAccount, "pod-uid-new")
 }
 
+// otherDaemon is another daemon's token login: an account of its own logged in to the daemon
+// service the replaced pod's daemon logs in to (daemonLogin), which BROKER_SERVICES binds both
+// accounts of the pair to, so it launches the pods of either account under a pair of its own
+// (carryPrincipal), as the daemon of another project whose pods run as the same accounts does.
+func (m pairedMove) otherDaemon(t *testing.T) Credential {
+	t.Helper()
+	const account = "system:serviceaccount:other-project:legion-daemon"
+	m.svc.ServiceLogins[account] = "legion-daemon"
+	return podRig{svc: m.svc}.login(t, account, "")
+}
+
 // tookAllOfIt fails t unless enrollment moved holds everything the replaced pod held — its grant,
 // its pending request, still pending, and its withheld name — and the replaced pod holds none of
 // it and is no longer dormant, with the trail the session rule writes: one enrollment.adopted row
@@ -238,6 +249,36 @@ func (m pairedMove) tookAllOfIt(t *testing.T, moved Enrollment) {
 	if err := m.svc.Store.Pool.QueryRow(context.Background(), `select detail->>'from' from audit where kind='grant.moved' and grant_id=$1 and enrollment_id=$2`,
 		m.grant, moved.ID).Scan(&from); err != nil || from != m.old.ID.String() {
 		t.Fatalf("grant %s is recorded as moved from %q (%v), want the replaced pod %s", m.grant, from, err, m.old.ID)
+	}
+}
+
+// tookNoneOfIt fails t unless enrollment moved, the paired account's pod another daemon's login
+// enrolled (otherDaemon), took the session name and nothing the replaced pod held: the name is
+// held by the moved account; the grant and the pending request still hang off the replaced pod,
+// which still withholds withheldFromReplacedPod and is still dormant holding both for the next pod
+// its own daemon enrols; and moved withholds nothing and has no enrollment.adopted row.
+func (m pairedMove) tookNoneOfIt(t *testing.T, moved Enrollment) {
+	t.Helper()
+	if got := sessionNameHolder(t, m.svc, replacedSession); got != m.movedPrincipal {
+		t.Fatalf("the name %s is held by %q, want the moved account %q: the pair lets any pod of the moved account take the name, which is held under the account alone", replacedSession, got, m.movedPrincipal)
+	}
+	if holder := grantHolder(t, m.svc, m.grant); holder != m.old.ID {
+		t.Fatalf("grant %s hangs off %s, want the replaced pod's %s: another daemon's pod takes none of its grants", m.grant, holder, m.old.ID)
+	}
+	if holder := requestHolder(t, m.svc, m.request); holder != m.old.ID {
+		t.Fatalf("request %s hangs off %s, want the replaced pod's %s: another daemon's pod takes none of its requests", m.request, holder, m.old.ID)
+	}
+	if got, want := withheldNames(t, m.svc, m.old.ID), []string{withheldFromReplacedPod}; !slices.Equal(got, want) {
+		t.Fatalf("the replaced pod withholds %v, want %v still: another daemon's pod takes none of its withheld names", got, want)
+	}
+	if got := withheldNames(t, m.svc, moved.ID); len(got) != 0 {
+		t.Fatalf("another daemon's pod withholds %v, want nothing: it took nothing of the session", got)
+	}
+	if got := adoptionsOf(t, m.svc, moved.ID); len(got) != 0 {
+		t.Fatalf("another daemon's pod has enrollment.adopted rows %+v, want none: it adopted from no predecessor", got)
+	}
+	if left := readCarryState(t, m.svc, m.old.ID); !left.Dormant || left.LiveGrants != 1 || left.Pending != 1 {
+		t.Fatalf("the replaced pod is %+v, want it dormant holding its grant and its pending request for its own daemon's next pod", left)
 	}
 }
 
@@ -543,40 +584,18 @@ func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
 // pod of the paired account that another daemon's login enrols takes the name, which is held under
 // the account alone, as an unpaired pod of another daemon is admitted under a name its own account
 // holds, and takes none of the grant, the pending request and the withheld name the replaced pod's
-// enrollment holds: they stay on it, dormant, for the next pod its own daemon enrols.
+// enrollment holds: they stay on it, dormant, for the next pod its own daemon enrols
+// (tookNoneOfIt).
 func TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries(t *testing.T) {
 	ctx := context.Background()
 	m := replacedPod(t)
 	pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)
-	const otherDaemonAccount = "system:serviceaccount:other-project:legion-daemon"
-	m.svc.ServiceLogins[otherDaemonAccount] = "legion-daemon"
-	other := podRig{svc: m.svc}.login(t, otherDaemonAccount, "")
 
-	moved, err := m.svc.Create(ctx, other, m.next(t))
+	moved, err := m.svc.Create(ctx, m.otherDaemon(t), m.next(t))
 	if err != nil {
 		t.Fatalf("another daemon's pod of the paired account enrolling = %v, want it enrolled: its account takes the name the pair lets it take", err)
 	}
-	if got := sessionNameHolder(t, m.svc, replacedSession); got != m.movedPrincipal {
-		t.Fatalf("the name %s is held by %q, want the moved account %q", replacedSession, got, m.movedPrincipal)
-	}
-	if holder := grantHolder(t, m.svc, m.grant); holder != m.old.ID {
-		t.Fatalf("grant %s hangs off %s, want the replaced pod's %s: another daemon's pod takes none of its grants", m.grant, holder, m.old.ID)
-	}
-	if holder := requestHolder(t, m.svc, m.request); holder != m.old.ID {
-		t.Fatalf("request %s hangs off %s, want the replaced pod's %s", m.request, holder, m.old.ID)
-	}
-	if got := withheldNames(t, m.svc, m.old.ID); !slices.Equal(got, []string{withheldFromReplacedPod}) {
-		t.Fatalf("the replaced pod withholds %v, want [%s] still", got, withheldFromReplacedPod)
-	}
-	if got := withheldNames(t, m.svc, moved.ID); len(got) != 0 {
-		t.Fatalf("another daemon's pod withholds %v, want nothing: it took nothing of the session", got)
-	}
-	if got := adoptionsOf(t, m.svc, moved.ID); len(got) != 0 {
-		t.Fatalf("another daemon's pod has enrollment.adopted rows %+v, want none", got)
-	}
-	if left := readCarryState(t, m.svc, m.old.ID); !left.Dormant || left.LiveGrants != 1 || left.Pending != 1 {
-		t.Fatalf("the replaced pod is %+v, want it dormant holding its grant and its pending request for its own daemon's next pod", left)
-	}
+	m.tookNoneOfIt(t, moved)
 }
 
 // TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds: a row an older broker replica wrote while
@@ -584,8 +603,9 @@ func TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries(
 // only the rows it finds when it runs. Such a row of the account the pods move off is still the
 // session rule's predecessor for the moved account's pod, where a login of the same account
 // enrolled both, as a row of the pair is: the pod takes its grant, its pending request and its
-// withheld name with the same trail. Another daemon's login takes none of it, whichever spelling
-// the row carries.
+// withheld name with the same trail (tookAllOfIt). Another daemon's login takes the name and none
+// of the rest, whichever spelling the row carries, held to every check a row of the pair is held
+// to (tookNoneOfIt).
 func TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds(t *testing.T) {
 	ctx := context.Background()
 	t.Run("the same daemon's login takes all of it", func(t *testing.T) {
@@ -602,22 +622,11 @@ func TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds(t *testing.T) {
 		m := replacedPod(t)
 		spellAccountAlone(t, m.svc, m.old.ID)
 		pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)
-		const otherDaemonAccount = "system:serviceaccount:other-project:legion-daemon"
-		m.svc.ServiceLogins[otherDaemonAccount] = "legion-daemon"
-		other := podRig{svc: m.svc}.login(t, otherDaemonAccount, "")
-		moved, err := m.svc.Create(ctx, other, m.next(t))
+		moved, err := m.svc.Create(ctx, m.otherDaemon(t), m.next(t))
 		if err != nil {
-			t.Fatalf("another daemon's pod of the paired account enrolling = %v, want it enrolled", err)
+			t.Fatalf("another daemon's pod of the paired account enrolling = %v, want it enrolled: its account takes the name the pair lets it take", err)
 		}
-		if holder := grantHolder(t, m.svc, m.grant); holder != m.old.ID {
-			t.Fatalf("grant %s hangs off %s, want the legacy row %s: another daemon's pod takes none of it", m.grant, holder, m.old.ID)
-		}
-		if got := withheldNames(t, m.svc, moved.ID); len(got) != 0 {
-			t.Fatalf("another daemon's pod withholds %v, want nothing", got)
-		}
-		if got := adoptionsOf(t, m.svc, moved.ID); len(got) != 0 {
-			t.Fatalf("another daemon's pod has enrollment.adopted rows %+v, want none", got)
-		}
+		m.tookNoneOfIt(t, moved)
 	})
 }
 
