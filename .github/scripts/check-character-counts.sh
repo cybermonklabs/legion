@@ -23,7 +23,8 @@
 #     `.tsx` and `.jsx`, and each shell here-document, whose body is read in the language of the
 #     program it feeds.
 #   Every other text file (markdown, YAML, JSON, plain text and the rest): its whole text outside
-#     its comments, as prose a person or a model reads.
+#     its comments, as prose a person or a model reads, with a JSON file's \u escapes read as the
+#     characters they stand for. Markdown and plain text have no escape, so a \u0063 there is text.
 #
 # The word is "character", "char" and their plurals, in any case. A count beside the word is a
 # hit, wherever it stands in the sentence: "%d characters", "2,000 characters", "%d-character",
@@ -32,6 +33,7 @@
 # character %d", "chars=%d", "the character limit of 200", "characters used: %d" and "its length
 # in characters is %d"; a constant's name written as the count ("SEARCH_QUERY_MAX characters");
 # and a cap the word names with no number ("the character cap", "the characters left for it").
+# A number after a section sign ("§2.3 Insecure characters") names a section, and is no count.
 # Each count is judged by its counter, wherever it stands, and a hit passes when one of these
 # holds:
 #
@@ -39,9 +41,11 @@
 #                    [...s].length or Array.from(s).length, or shell's ${#s} or `wc -m` in a
 #                    script that sets a UTF-8 LC_ALL itself before the count, and with no other
 #                    counter. The check follows the value, not the code around it: a format verb's
-#                    own argument, an interpolation's expression, a bound's counter in the `if` or
-#                    `case` the message answers or in each comparison of the constant it names, and
-#                    each name in them to every assignment of it that can reach the count.
+#                    own argument, an interpolation's expression, a bound's counter (the other
+#                    side of each comparison that holds the bound, in the `if` or `case` the
+#                    message answers or, for a constant it names, in each comparison of it; a
+#                    comparison that does not hold the bound measures something else), and each
+#                    name in them to every assignment of it that can reach the count.
 #   names its unit   the hit names a unit, between the count and the word or in the 40
 #                    characters after the word inside its sentence ("32,000 characters (UTF-16
 #                    units)", "256 Unicode characters"), and the counter counts that unit. In
@@ -53,6 +57,9 @@
 #                    nothing; a count inside a parenthesis is of the clause before it.
 #   not empty        "at least one character" and "one or more characters", which every unit
 #                    agrees on.
+#   quoted text      the sentence quotes, right after the word, the text the count counts
+#                    ('sends the one character "-"'), and that text is the count long in bytes,
+#                    in code points and in UTF-16 code units alike, so the count is true in each.
 #   exempt           a comment on the line or the two lines above the message, with no other
 #                    message between, reads `characters: ASCII alone, <reason>` (a text of ASCII
 #                    alone is one length in every unit, so it passes any counter), or, where the

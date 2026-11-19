@@ -13,14 +13,18 @@ from character_counts_lexer import (HAS_WORD, PLURAL, SLOT, WORD, Message, blank
 VERB = r"%(?:\[\d+\])?[-+ #0]*\d*(?:\.\d+)?[dvs]"
 # A number: digits ("2,000", "32k"), in code or bold (`2000`, **2,000**), or words ("two",
 # "forty-two", "two hundred"); a range of two ("1-40", "1 to 40", "between 1 and 40"); and a
-# number a word before it holds with hyphens ("over-40-character").
+# number a word before it holds with hyphens ("over-40-character"). A number after a section sign
+# ("§2.3 Insecure characters") names a section, and is no count.
 DIGITS = r"\d[\d,]*(?<!,)(?:\.\d+)?(?:[kK]\b)?"
 NUMBER_WORD = (r"\b(?i:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen"
                r"|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b")
 WORDS = rf"{NUMBER_WORD}(?:[\s-]+(?:(?i:and)\s+)?{NUMBER_WORD})*"
-WRAPPED = rf"(?:(?<![\w.+\-*`])(?:\*\*|`)(?=\d)|(?<![\w.+\-*`])){DIGITS}(?:\*\*|`)?"
+WRAPPED = rf"(?:(?<![\w.+\-*`§])(?<!§\s)(?:\*\*|`)(?=\d)|(?<![\w.+\-*`§])(?<!§\s)){DIGITS}(?:\*\*|`)?"
 HYPHENED = r"(?:(?<=over-)|(?<=under-)|(?<=than-)|(?<=most-)|(?<=least-)|(?<=to-)|(?<=at-))\d[\d,]*(?<!,)(?=-)"
 NUMBER = rf"(?:{WRAPPED}|{WORDS})(?:\s*(?:-|–|—|\b(?i:to|and|or)\b)\s*(?:{DIGITS}|{WORDS}))?|{HYPHENED}"
+SMALL = {word: n for n, word in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+                                          "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+TENS = {word: 10 * n for n, word in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split(), 2)}
 # A constant's name written in the text as the count ("at most SEARCH_QUERY_MAX characters"): its
 # value is a bound the text does not show, so it is judged as one.
 NAMED = r"`?(?<![\w.$])[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+`?(?![\w(])"
@@ -118,6 +122,38 @@ class Hit:
     text: str
     verdict: str
     why: str = ""
+
+
+def number_value(text: str) -> int | None:
+    """The whole number a count writes in digits or in words ("2,000", "32k", "forty-two"), else
+    None."""
+    text = text.strip("`* ")
+    if re.fullmatch(r"\d[\d,]*", text):
+        return int(text.replace(",", ""))
+    if re.fullmatch(r"\d[\d,]*[kK]", text):
+        return int(text[:-1].replace(",", "")) * 1000
+    words = [word for word in re.split(r"[\s-]+", text.lower()) if word and word != "and"]
+    total = current = 0
+    for word in words:
+        if word in SMALL or word in TENS:
+            current += SMALL.get(word, TENS.get(word, 0))
+        elif word == "hundred":
+            current = (current or 1) * 100
+        elif word == "thousand":
+            total, current = total + (current or 1) * 1000, 0
+        else:
+            return None
+    return total + current if words else None
+
+
+def number_values(count: str) -> list[int]:
+    """The numbers a count states: one, or the two ends of a range ("1-40", "two to five"); none
+    for a count that is no number (a verb, a slot, a name)."""
+    one = number_value(count)
+    if one is not None:
+        return [one]
+    ends = [number_value(part) for part in re.split(r"\s*(?:–|—|-|\b(?i:to|and|or)\b)\s*", count.strip("`* "))]
+    return ends if len(ends) == 2 and None not in ends else []
 
 
 # ---------------------------------------------------------------- following a count to its counter
@@ -409,11 +445,63 @@ def header(code: str, pos: int, lang: str) -> str:
     return head if CONDITION.match(head) else ""
 
 
-def judge_condition(condition: str, code: str, pos: int, lang: str) -> tuple[str, str]:
-    """A condition's counter: each side of each comparison judged alone, so the bound a counted
-    value is compared with need not be followed."""
-    atoms = re.split(r"&&|\|\||;|(?<![<>!=:-])[<>]=?(?![=>])|[!=]==?|\b(?:and|or)\b|\s-(?:gt|ge|lt|le|eq|ne)\s", condition)
-    kinds = [judge(atom, code, pos, lang) for atom in atoms if atom.strip()]
+COMPARE = re.compile(r"(?<![<>!=:-])[<>]=?(?![=>])|[!=]==?|\s-(?:gt|ge|lt|le|eq|ne)\s")
+
+
+@dataclass
+class Bound:
+    """A bound a message states: the names that write it and the numbers it is. None stands for a
+    cap the word names with no number and no constant."""
+    names: list[str]
+    values: list[int]
+
+
+def literal_value(code: str, name: str, pos: int, lang: str, depth: int = 0) -> int | None:
+    """The whole number name holds at pos, followed through names to a literal, else None."""
+    found = definition(code, name, pos, lang) if depth < 4 else None
+    if found is None:
+        return None
+    value = found[0].strip().rstrip(";").strip()
+    if re.fullmatch(r"\d[\d_]*", value):
+        return int(value.replace("_", ""))
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", value):
+        return literal_value(code, value, found[1], lang, depth + 1)
+    return None
+
+
+def bound_of(expr: str, code: str, pos: int, lang: str) -> Bound:
+    """The bound a value judged as one writes: its names and the number each holds."""
+    named = [name for name, call in names(expr, lang) if not call]
+    values = [number_value(expr)] + [literal_value(code, name, pos, lang) for name in named]
+    return Bound(named, [value for value in values if value is not None])
+
+
+def holds(side: str, bound: Bound, code: str, pos: int, lang: str) -> bool:
+    """Whether one side of a comparison holds the bound: one of its names, or one of its numbers
+    as a literal or as a name that holds it."""
+    if any(re.search(rf"(?<![\w$.]){re.escape(name)}(?![\w$])", side) for name in bound.names):
+        return True
+    if any(int(n.replace("_", "")) in bound.values for n in re.findall(r"(?<![\w.$])\d[\d_]*(?![\w.])", side)):
+        return True
+    return bool(bound.values) and any(not call and literal_value(code, name, pos, lang) in bound.values
+                                      for name, call in names(side, lang))
+
+
+def judge_bound(condition: str, bound: Bound | None, code: str, pos: int, lang: str) -> tuple[str, str]:
+    """A bound's counter: the other side of each comparison of the condition that holds the bound.
+    A comparison that does not hold it measures something else, so a len() beside the bound in
+    the same `if` says nothing of its unit. A cap with no number is held by each comparison of a
+    value with a bound."""
+    kinds = []
+    for clause in re.split(r"&&|\|\||;|\b(?:and|or)\b", condition):
+        sides = COMPARE.split(clause)
+        for left, right in zip(sides, sides[1:]):
+            for side, other in ((right, left), (left, right)):
+                if (judge(side, code, pos, lang)[0] == "bound" if bound is None else holds(side, bound, code, pos, lang)):
+                    kinds.append(judge(other, code, pos, lang))
+                    break
+    if not kinds:
+        return "unknown", "no comparison of its condition holds it"
     for kind, why in kinds:
         if kind == "other":
             return kind, why
@@ -423,15 +511,15 @@ def judge_condition(condition: str, code: str, pos: int, lang: str) -> tuple[str
 
 
 def compared(code: str, name: str, lang: str) -> tuple[str, str]:
-    """A constant's counter: each comparison in this file that holds the constant, judged as a
-    condition (`if t.length > MAX`)."""
+    """A constant's counter: each comparison in this file that holds the constant, judged as the
+    bound of its line (`if t.length > MAX`)."""
     kinds = []
     for m in re.finditer(rf"(?<![\w$.]){re.escape(name)}(?![\w$])", code):
         line_start = code.rfind("\n", 0, m.start()) + 1
         line_end = code.find("\n", m.end())
         line = code[line_start : len(code) if line_end < 0 else line_end]
         if re.search(r"(?<![<>=!-])[<>]=?(?![<>=])|\s-(?:gt|ge|lt|le)\s", line):
-            kinds.append(judge_condition(line, code, m.start(), lang))
+            kinds.append(judge_bound(line, Bound([name], []), code, m.start(), lang))
     for kind, why in kinds:
         if kind == "other":
             return kind, why
@@ -443,11 +531,13 @@ def compared(code: str, name: str, lang: str) -> tuple[str, str]:
 def judge_count(message: Message, count: str | None, at: int, code: str, lang: str) -> tuple[str, str]:
     """The judgement of one count of a code message by its counter: ("code points" | "other" |
     "unknown", why). count is None for a cap named in the word with no number."""
+    bound = None
     if count is None:
         kind, why = "bound", "a cap with no counter beside it"
     elif (slot := re.fullmatch(r"\x00(\d+)\x00", count)):
         expr, offset = message.exprs[int(slot.group(1))]
         kind, why = judge(expr, code, offset, lang)
+        bound = bound_of(expr, code, offset, lang)
     elif re.fullmatch(VERB, count):
         # Every verb before the count takes an argument, %q and %x as much as %d, so the index
         # counts each one, not only the verbs that can state a count.
@@ -458,17 +548,21 @@ def judge_count(message: Message, count: str | None, at: int, code: str, lang: s
             return "unknown", "its format verb takes no argument in this call"
         expr, offset = message.args[index]
         kind, why = judge(expr, code, offset, lang)
+        bound = bound_of(expr, code, offset, lang)
     elif re.fullmatch(TEMPLATE, count):
         kind, why = "unknown", "a template's value, which the check does not follow"
     else:
         kind, why = "bound", "a bound with no counter beside it"
+        bound = Bound([count.strip("`")] if re.fullmatch(NAMED, count) else [], number_values(count))
     if kind == "bound":
         # A number or a constant is a bound: its counter is the one the `if` or `case` the
         # message answers compares with it, or, for a constant, each comparison of it.
         condition = header(code, message.start, lang)
         constant = re.fullmatch(NAMED, count or "") or (count is None and re.search(NAMED, message.text))
+        if count is None and constant:
+            bound = Bound([constant.group().strip("`")], [])
         if condition:
-            kind, why = judge_condition(condition, code, message.start, lang)
+            kind, why = judge_bound(condition, bound, code, message.start, lang)
             if kind == "unknown":
                 why = "a bound, and " + why
         elif constant:
@@ -553,6 +647,25 @@ def not_empty(text: str, count: str | None, at: int) -> str:
     return ""
 
 
+# A text the sentence quotes right after the word ('sends the one character "-"', "the one
+# character `-`") is the text the count counts, so the check counts it itself: a count that is
+# that text's length in bytes, in code points and in UTF-16 code units alike is true in every unit.
+# A quoted text whose units differ ('the one character "é"', two bytes) passes nothing here, and
+# its count is judged by its counter.
+QUOTE = re.compile(r"\s*:?\s*(?:\"([^\"\n\x00]+)\"|'([^'\n\x00]+)'|`([^`\n\x00]+)`|“([^”\n\x00]+)”)")
+
+
+def quoted_text(text: str, match: re.Match, count: str | None) -> str:
+    """"quoted text" when the count stands before the word and the text quoted right after the
+    word is that count long in each unit."""
+    quote = QUOTE.match(text, match.end()) if count is not None and match.group("w1") is not None else None
+    if quote is None or len(values := number_values(count)) != 1:
+        return ""
+    quoted = next(group for group in quote.groups() if group is not None)
+    units = {len(quoted.encode("utf-8", "surrogatepass")), len(quoted), len(quoted.encode("utf-16-le", "surrogatepass")) // 2}
+    return "quoted text" if units == {values[0]} else ""
+
+
 def exempt(lines: list[str], first: int, last: int, message_lines: list[int] = (), named: str = "", ascii_only: bool = False) -> str:
     """The exemption a comment on the message's lines or the two lines above gives it, when no
     other message starts between that comment and this one. Its unit must be the one the message
@@ -581,6 +694,8 @@ def verdict(message: Message, match: re.Match, count: str | None, at: int, code:
         return "ASCII grammar", ""
     if not_empty(message.text, count, at):
         return "not empty", ""
+    if quoted_text(message.text, match, count):
+        return "quoted text", ""
     kind, why = judge_count(message, count, at, code, lang)
     named = named_unit(message.text, match, False)
     if kind == "code points":
@@ -640,11 +755,12 @@ def scan(path: str, content: str) -> list[Hit]:
     hits: list[Hit] = []
     if lang == "prose":
         comment = next((rx for name, rx in PROSE_COMMENTS if name.search(path)), None)
-        text, offsets = decoded(blanked(content, [m.span() for m in comment.finditer(content)]) if comment else content, 0, "prose")
+        text, offsets = decoded(blanked(content, [m.span() for m in comment.finditer(content)]) if comment else content, 0,
+                                "json" if path.endswith(".json") else None)
         for match, count, at in counts(text, PROSE_HIT):
             line = line_of(starts, offsets[match.start()])
-            passed = (named_unit(text, match, True) and "names its unit") or ascii_grammar(text, match, True) \
-                or not_empty(text, count, at) or exempt(lines, line, line)
+            passed = quoted_text(text, match, count) or (named_unit(text, match, True) and "names its unit") \
+                or ascii_grammar(text, match, True) or not_empty(text, count, at) or exempt(lines, line, line)
             why = "" if passed else f"cannot judge: a {'count' if count else 'cap'} in prose names no counter"
             shown = " ".join(text[max(0, match.start() - 80) : match.end() + 60].split())
             hits.append(Hit(path, line + 1, shown, passed or "instance", why))

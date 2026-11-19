@@ -561,8 +561,9 @@ ESCAPES = {
     "ts": re.compile(r"\\(?:u\{[0-9a-fA-F]{1,6}\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)", re.S),
     "py": re.compile(r"\\(?:N\{[^}\n]*\}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|x[0-9a-fA-F]{2}|[0-7]{1,3}|.)", re.S),
     "sh": re.compile(r"\\(?:u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|x[0-9a-fA-F]{1,2}|[0-7]{1,3}|.)", re.S),
-    # A text file's own escapes are JSON's: \u0063 is "c".
-    "prose": re.compile(r"\\u(?:\{[0-9a-fA-F]{1,6}\}|[0-9a-fA-F]{4})"),
+    # A JSON file's own escape: \u0063 is "c". Markdown, YAML and plain text have no escape of
+    # their own, so a \u0063 there is the six characters a reader sees.
+    "json": re.compile(r"\\u[0-9a-fA-F]{4}"),
 }
 
 
