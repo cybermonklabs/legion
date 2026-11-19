@@ -62,10 +62,15 @@ type SandboxConfig struct {
 
 // MicroVM is runtime.kubernetes.sandbox.microvm: the GKE ComputeClass whose nodes run the microVM
 // pods; the StorageClass of their disks, runtime.kubernetes.storage_class where the block names
-// none, which the loader fills in; and the metadata endpoint their launchers serve, nil for none.
+// none, which the loader fills in; whether an issue pod keeps its volume; and the metadata endpoint
+// their launchers serve, nil for none.
 type MicroVM struct {
 	ComputeClass, StorageClass string
-	Metadata                   *MetadataEndpoint
+	// KeepVolume is microvm.keep_volume. It applies to an issue pod that runs in a microVM alone:
+	// that pod's volume is then a claim that the issue's Sandbox owns, and the claim outlives the
+	// pod. A gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
+	Metadata   *MetadataEndpoint
 }
 
 // MetadataEndpoint is runtime.kubernetes.sandbox.microvm.metadata, which a microVM pod's launcher

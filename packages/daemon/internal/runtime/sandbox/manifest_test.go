@@ -2337,7 +2337,7 @@ func sandboxRuntime(t *testing.T, block SandboxConfig, edits ...func(*Options)) 
 func sandboxOf(c config.SandboxConfig) SandboxConfig {
 	block := SandboxConfig{Type: SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
 	if m := c.MicroVM; m != nil {
-		block.MicroVM = &MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		block.MicroVM = &MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass, KeepVolume: m.KeepVolume}
 		if endpoint := m.Metadata; endpoint != nil {
 			block.MicroVM.Metadata = &MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
@@ -2622,6 +2622,59 @@ func TestAMicroVMPodTakesTheMicroVMStorageClassOrTheDaemons(t *testing.T) {
 		}
 		if got := renderedSandbox(t, r.podTemplate(launchOf(t, r, rootSpec(t)))); got != SandboxMicroVM {
 			t.Errorf("the pod runs in %s, want a microVM", got)
+		}
+	})
+}
+
+// runtime.kubernetes.sandbox.microvm.keep_volume is a row of the key table whose default is
+// `false`. A microvm block without the key settles false, and `keep_volume: true` settles true. The
+// loader refuses a value that is not a boolean with a line that names the key (config's
+// readMicroVM).
+func TestTheMicroVMKeepVolumeKey(t *testing.T) {
+	const key = "runtime.kubernetes.sandbox.microvm.keep_volume"
+	var row *config.ConfigNestedKey
+	for _, entry := range config.ConfigReference() {
+		for i, nested := range entry.Nested {
+			if nested.Path+"."+nested.Name == key {
+				row = &entry.Nested[i]
+			}
+		}
+	}
+	switch {
+	case row == nil:
+		t.Errorf("the config reference has no row for %s", key)
+	case row.Default != "`false`":
+		t.Errorf("the config reference gives %s the default %q, want `false`", key, row.Default)
+	}
+	load := func(t *testing.T, lines string) (config.Config, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "legion.yaml")
+		if err := os.WriteFile(path, []byte(microVMProjectFile+lines), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return config.LoadForValidation(path, func(string) string { return "" })
+	}
+	for _, tc := range []struct {
+		name, lines string
+		want        bool
+	}{
+		{name: "no key", want: false},
+		{name: "keep_volume: true", lines: "        keep_volume: true\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := load(t, tc.lines)
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v", err)
+			}
+			if got := cfg.Runtime.Kubernetes.Sandbox.MicroVM.KeepVolume; got != tc.want {
+				t.Errorf("%s settled %v, want %v", key, got, tc.want)
+			}
+		})
+	}
+	t.Run("keep_volume: maybe", func(t *testing.T) {
+		_, err := load(t, "        keep_volume: maybe\n")
+		if want := key + " must be true or false"; err == nil || err.Error() != want {
+			t.Errorf("LoadForValidation error = %v, want %q", err, want)
 		}
 	})
 }

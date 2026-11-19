@@ -419,7 +419,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
 	settled := sandbox.SandboxConfig{Type: sandbox.SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
 	if m := c.MicroVM; m != nil {
-		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass, KeepVolume: m.KeepVolume}
 		if endpoint := m.Metadata; endpoint != nil {
 			settled.MicroVM.Metadata = &sandbox.MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
