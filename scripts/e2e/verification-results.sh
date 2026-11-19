@@ -42,16 +42,22 @@
 # Each case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case
 # failing stops the run, since every later case records a result too, and any FAIL exits 1.
 #
-# Then the one-pass phases run (one_pass_phase). Each one stops the server, has the driver write
-# its fixture while no server runs, starts the server with a pass at its start and the next pass
-# an hour away, and has the driver assert after that one pass. The phase `boundary` checks that
-# boundary itself: one record of the pass in duty_passes, the lease free, and one attribution line
-# in the log. The phase `k-attribution` stores two rows as the release before writes them, with
-# no texts, and after one pass reads the issue that each row of the attribution case records.
+# Then the one-pass phases run (one_pass_phase). Each one has the driver make the writes that need
+# a server, stops the server, has the driver write its fixture while no server runs, starts the
+# server with a pass at its start and the next pass an hour away, and has the driver assert after
+# that one pass. A phase that reads before its pass first starts the server with no pass at its
+# start, has the driver read, and stops it again. The phase `boundary` checks that boundary
+# itself: the two records of the pass in duty_passes, the lease free, and one attribution line in
+# the log. The phase `k-attribution` stores two rows as the release before writes them, with no
+# texts, and after one pass reads the issue that each row of the attribution case records. The
+# seven checks of the attribution follow, each one or more phases in the project ATT: older-rows,
+# rule-reaches-each-row, key-reading-changes, facts-only, read-compares, stores-agree and
+# limit-of-one (the driver's header says what each one proves).
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+#     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
 #     bash scripts/e2e/verification-results.sh
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
@@ -73,6 +79,12 @@
 # line for its flag; naming the command of a worktree of the head whose rule refuses every value
 # that starts with `-`, `values-kept` fails at step 1, which exits 2 with the line for
 # --negative-control.
+# VERIFICATION_RESULTS_E2E_ONLY and VERIFICATION_RESULTS_E2E_OLD_BUILD reach the driver as they
+# are, and only a negative control of the seven checks sets them: the first names the one case to
+# run, and the driver skips every other case and phase but the boundary's self-check and the
+# writes the named case stands on; the second, set to 1, names a server built before the
+# attribution line of a pass, as DISPATCH_BIN built from a commit before that line is, so the
+# boundary of one pass does not count that line.
 #
 # The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
 # (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
@@ -260,9 +272,10 @@ begin dispatch
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-# start_dispatch INTERVAL starts envoy-dispatch with the delivery reconcile ticking every INTERVAL
-# and its first pass as it starts, and waits for it to answer /healthz. Each start appends to
-# $work/logs/dispatch.log, which the driver reads (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
+# start_dispatch INTERVAL [AT_START] starts envoy-dispatch with the delivery reconcile ticking every
+# INTERVAL and, unless AT_START is given empty, its first pass as it starts, and waits for it to
+# answer /healthz. Each start appends to $work/logs/dispatch.log, which the driver reads
+# (VERIFICATION_RESULTS_E2E_DISPATCH_LOG).
 start_dispatch() {
   start_process dispatch env -i \
     PATH="$PATH" \
@@ -284,7 +297,7 @@ start_dispatch() {
     DISPATCH_SERVER_URL="$dispatch_url" \
     DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$1" \
     DISPATCH_TEST_HOOKS=1 \
-    DISPATCH_TEST_RECONCILE_AT_START=1 \
+    DISPATCH_TEST_RECONCILE_AT_START="${2-1}" \
     DISPATCH_WEB_DIST="$work/web-dist" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" \
     NATS_URLS="$nats_url" \
@@ -300,7 +313,9 @@ export VERIFICATION_RESULTS_E2E_DISPATCH_LOG=$work/logs/dispatch.log
 
 # driver ARG... runs the driver with ARG... before its three URLs. The state file carries what one
 # run of the driver leaves for a later one. A server that exited during the run fails the check,
-# and so does the driver's status: 1 is a case that failed, any other a step outside the cases.
+# and so does the driver's status: 1 is a case that failed, 3 a half of a one-pass phase that
+# VERIFICATION_RESULTS_E2E_ONLY skips (it sets phase_skipped), any other a step outside the cases.
+phase_skipped=''
 driver() {
   local status=0
   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
@@ -315,6 +330,7 @@ driver() {
   case "$status" in
     0) ;;
     1) fail "a case failed (above)" ;;
+    3) phase_skipped=1 ;;
     *) fail "the driver stopped before its cases (status $status)" ;;
   esac
 }
@@ -322,24 +338,60 @@ driver() {
 # dispatch_port_closed succeeds once nothing answers on the server's port.
 dispatch_port_closed() { ! port_answers "$dispatch_port"; }
 
-# one_pass_phase PHASE runs the driver's phase PHASE around one complete pass of the delivery
-# reconcile (the driver's section "the tooling of one complete pass"). It stops the server by its
-# recorded pid and has the driver write the phase's fixture while no server runs. Then it starts
-# the server with a pass at its start and the next pass an hour away, and has the driver assert
-# after that one pass.
-one_pass_phase() {
-  begin "$1"
+# stop_dispatch stops the server by its recorded pid, and waits until nothing answers on its port.
+stop_dispatch() {
   stop_pid "$dispatch_pid"
   dispatch_pid=''
   until_true 30 "envoy-dispatch to stop listening on $dispatch_port" dispatch_port_closed
+}
+
+# one_pass_phase PHASE [--read-before-the-pass] runs the driver's phase PHASE around one complete
+# pass of the delivery reconcile (the driver's section "the tooling of one complete pass"). First
+# the driver makes the phase's writes that need a server (--phase PHASE-prepare), while the server
+# of the step before still runs. Then the shell stops the server by its recorded pid and has the
+# driver write the phase's fixture while no server runs. With --read-before-the-pass, it starts the
+# server with no pass at its start and the next pass an hour away, has the driver read the fixture
+# through it (--phase PHASE-before), and stops it again. Then it starts the server with a pass at
+# its start and the next pass an hour away, and has the driver assert after that one pass. A phase
+# whose assert the driver skipped (VERIFICATION_RESULTS_E2E_ONLY) prints `skip PHASE`, never `ok`.
+one_pass_phase() {
+  begin "$1"
+  driver --phase "$1-prepare"
+  stop_dispatch
   driver --phase "$1-fixture"
+  if [ "${2:-}" = --read-before-the-pass ]; then
+    start_dispatch 1h ''
+    note "envoy-dispatch started with no pass at its start, its delivery reconcile every 1h"
+    driver --phase "$1-before"
+    stop_dispatch
+  fi
   start_dispatch 1h
   note "envoy-dispatch started again, its delivery reconcile every 1h after its start pass"
+  phase_skipped=''
   driver --phase "$1-assert"
-  pass
+  if [ -n "$phase_skipped" ]; then
+    echo "skip $check: the driver asserted nothing (VERIFICATION_RESULTS_E2E_ONLY=${VERIFICATION_RESULTS_E2E_ONLY:-})"
+  else
+    pass
+  fi
 }
 
 check=cases
 driver
 one_pass_phase boundary
 one_pass_phase k-attribution
+# The seven checks of the attribution (the driver's section "the seven checks"), in the order the
+# driver's cases need: each phase that wants no read of GitHub runs before stores-agree writes
+# the delivery settings, since a pass with settings reads GitHub for its other steps.
+one_pass_phase older-rows --read-before-the-pass
+one_pass_phase older-rows-set-back
+one_pass_phase rule-reaches-each-row
+one_pass_phase rule-reaches-each-row-link
+one_pass_phase rule-reaches-each-row-move
+one_pass_phase rule-reaches-each-row-new-issue
+one_pass_phase key-reading-changes
+one_pass_phase facts-only
+one_pass_phase read-compares
+one_pass_phase stores-agree --read-before-the-pass
+one_pass_phase stores-agree-link
+one_pass_phase limit-of-one

@@ -8,8 +8,12 @@ import { harnessPorts } from "./harness-ports";
 // holds no such commit, empty delivery listings, and a seeded pull request with its
 // commits, its head's check runs and workflow runs. The GraphQL route answers the
 // aliased pull request queries of the reconcile's facts reads from the seeded pull
-// requests, and an empty search to every other query. A repository seeded as
-// rate_limited answers as GitHub does once its installation's budget is spent.
+// requests. It answers the merged search of the reconcile from the merged pull requests
+// that a seed marks `searched`. It answers an empty search to every other query. The seed
+// fields of the search and the completion are `searched`, `author`, `created_at`,
+// `merged_at` and `labels`. A pull request with one of them also answers what the
+// completion of a partial row reads. A repository seeded as rate_limited answers as GitHub
+// does once its installation's budget is spent.
 // Tests seed per-repository state through /__fixture/repos and read it back there,
 // and read how many times the server asked for each commit's check runs and for each
 // repository's pull requests through /__fixture/requests; the server reaches this via
@@ -18,7 +22,10 @@ import { harnessPorts } from "./harness-ports";
 const ARCHITECTURE_DIR = ".dispatch/architecture";
 
 /** A pull request the GitHub link reads: its title, state and head commit, and the branch,
- *  base and body Dispatch's pull-request head tracking attributes it by. */
+ *  base and body Dispatch's pull-request head tracking attributes it by. A seed that sets
+ *  `searched`, `author`, `created_at`, `merged_at` or `labels` also gets the fields that the
+ *  completion of a partial row reads (`completes`). A seed without them gets the same answers
+ *  as before these fields. */
 interface FakePull {
   readonly head_sha: string;
   readonly merged?: boolean;
@@ -42,6 +49,19 @@ interface FakePull {
    *  commits, so a REST read stores the texts with the messages not read. A seed without it
    *  clears it. The GraphQL query still answers the messages. */
   readonly commits_status?: number;
+  /** The merged search finds this pull request when the search names its repository. The pull
+   *  request must also be merged and have a merge time (`merged_at` or `updated_at`). */
+  readonly searched?: boolean;
+  /** The author's login in the REST form, where a bot login ends in "[bot]". The default is
+   *  "octocat". The search gives a bot as GraphQL does: the login without "[bot]", type Bot. */
+  readonly author?: string;
+  /** The time of creation. The default is 24 hours before `updated_at`. */
+  readonly created_at?: string;
+  /** The time of the merge of a merged pull request. The default is `updated_at`. */
+  readonly merged_at?: string;
+  /** The names of the labels. The default is no label. In the deploy repository, the population
+   *  rule refuses a pull request without "task" or "non-task". */
+  readonly labels?: readonly string[];
 }
 
 /** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
@@ -169,6 +189,110 @@ function commitShaOf(fullName: string, number: string, pull: FakePull, index: nu
   return hasher.digest("hex");
 }
 
+/** Whether a seed sets a field of the merged search or the completion. Only such a pull request
+ *  answers the fields of the completion, so that the answer to an older seed does not change. */
+function completes(pull: FakePull): boolean {
+  return (
+    pull.searched !== undefined ||
+    pull.author !== undefined ||
+    pull.created_at !== undefined ||
+    pull.merged_at !== undefined ||
+    pull.labels !== undefined
+  );
+}
+
+/** The time `hours` hours before `at`, in GitHub's form. It is undefined when `at` is unset or
+ *  is not a time. */
+function hoursBefore(at: string | undefined, hours: number): string | undefined {
+  const time = at === undefined ? Number.NaN : Date.parse(at);
+  if (Number.isNaN(time)) return undefined;
+  return new Date(time - hours * 3_600_000).toISOString().replace(".000Z", "Z");
+}
+
+/** The login of the author, in the REST form. */
+function authorOf(pull: FakePull): string {
+  return pull.author ?? "octocat";
+}
+
+/** The time of creation, or undefined when the seed gives no time to make it from. */
+function createdAtOf(pull: FakePull): string | undefined {
+  return pull.created_at ?? hoursBefore(pull.updated_at, 24);
+}
+
+/** The time of the merge of a merged pull request. It is undefined for a pull request that is
+ *  not merged. */
+function mergedAtOf(pull: FakePull): string | undefined {
+  return pull.merged === true ? (pull.merged_at ?? pull.updated_at) : undefined;
+}
+
+/** The author date and the committer date of each commit of a pull request that `completes`
+ *  selects: 2 hours before `updated_at`. Without `updated_at`, a commit has no date, and the
+ *  completion of the pull request fails. */
+function commitDatesOf(pull: FakePull): Record<string, unknown> {
+  const date = completes(pull) ? hoursBefore(pull.updated_at, 2) : undefined;
+  return date === undefined ? {} : { author: { date }, committer: { date } };
+}
+
+/** The GraphQL `author` of a login in the REST form. GraphQL gives a bot its login without
+ *  "[bot]" and the type Bot. */
+function actorOf(login: string): { __typename: string; login: string } {
+  const bot = login.match(/^(.+)\[bot\]$/)?.[1];
+  return bot === undefined ? { __typename: "User", login } : { __typename: "Bot", login: bot };
+}
+
+/** The nodes that the merged search `q` finds, in the order of the `repo:` qualifiers of `q`,
+ *  and by number in each repository. The search reads only the repositories of installation
+ *  `installationId`. A node is a merged pull request that the seed marks `searched`. Its merge
+ *  time must be in `merged:<from>..<to>`, and GitHub includes both ends. When `q` has `author:`
+ *  qualifiers, the author must be one of them. */
+function searchNodes(q: string, installationId: number | undefined): unknown[] {
+  const names = new Set<string>();
+  const authors: string[] = [];
+  let from = Number.NEGATIVE_INFINITY;
+  let to = Number.POSITIVE_INFINITY;
+  for (const term of q.split(/\s+/)) {
+    const at = term.indexOf(":");
+    if (at === -1) continue;
+    const qualifier = term.slice(0, at);
+    const value = term.slice(at + 1);
+    if (qualifier === "repo") names.add(value);
+    if (qualifier === "author") authors.push(value);
+    if (qualifier === "merged") {
+      const [start = "", end = ""] = value.split("..");
+      from = Date.parse(start);
+      to = Date.parse(end);
+    }
+  }
+  return [...names].flatMap((fullName) => {
+    const repo = repos.get(fullName);
+    if (
+      repo === undefined ||
+      repo.installation_missing === true ||
+      repo.installation_id !== installationId
+    ) {
+      return [];
+    }
+    return Object.entries(repo.pulls ?? {}).flatMap(([number, pull]) => {
+      const mergedAt = mergedAtOf(pull);
+      if (pull.searched !== true || mergedAt === undefined) return [];
+      const merged = Date.parse(mergedAt);
+      if (!(merged >= from && merged <= to)) return [];
+      if (authors.length > 0 && !authors.includes(authorOf(pull))) return [];
+      return [
+        {
+          author: actorOf(authorOf(pull)),
+          createdAt: createdAtOf(pull) ?? null,
+          labels: { nodes: (pull.labels ?? []).map((name) => ({ name })) },
+          mergedAt,
+          number: Number(number),
+          title: pull.title,
+          url: `https://github.com/${fullName}/pull/${number}`,
+        },
+      ];
+    });
+  });
+}
+
 /** A pull request as GitHub's GraphQL API answers `pullRequest(number:)`, with every field the
  *  facts query of the reconcile reads, and the first `first` messages of its commits. */
 function pullNode(fullName: string, number: number, pull: FakePull, first: number): unknown {
@@ -185,7 +309,7 @@ function pullNode(fullName: string, number: number, pull: FakePull, first: numbe
     headRepository: { nameWithOwner: pull.head_repo ?? fullName },
     mergeCommit: pull.merge_commit_sha === undefined ? null : { oid: pull.merge_commit_sha },
     merged: pull.merged ?? false,
-    mergedAt: pull.merged === true ? (pull.updated_at ?? null) : null,
+    mergedAt: mergedAtOf(pull) ?? null,
     number,
     state: pull.merged === true ? "MERGED" : pull.state === "open" ? "OPEN" : "CLOSED",
     title: pull.title,
@@ -432,8 +556,9 @@ const server = Bun.serve({
     }
 
     // GitHub's GraphQL API. A query of pull requests by number (the reconcile's facts query, and
-    // its proof of absence) answers from the seeded pull requests; every other query, a search
-    // among them, answers an empty search. A repository the token's installation does not hold
+    // its proof of absence) answers from the seeded pull requests. A search answers the nodes of
+    // `searchNodes`, in pages of the size that its `first` argument gives. Every other query
+    // answers an empty search. A repository the token's installation does not hold
     // answers null with NOT_FOUND on its own path, and a number the repository does not hold
     // answers null with NOT_FOUND on the path of its alias, as GitHub answers both. A query made
     // with the token of an installation that has spent its rate limit answers RATE_LIMITED and
@@ -463,9 +588,21 @@ const server = Bun.serve({
         );
       }
       if (asked.length === 0) {
+        const search = query.match(/\bsearch\s*\(([^)]*)\)/)?.[1] ?? "";
+        const { after, first, query: q } = argumentsOf(search, variables);
+        const found = typeof q === "string" ? searchNodes(q, installationId) : [];
+        const offset = typeof after === "string" ? Number(after.replace(/^cursor:/, "")) : 0;
+        const nodes = found.slice(offset, offset + (typeof first === "number" ? first : 100));
         return Response.json({
           data: {
-            search: { issueCount: 0, nodes: [], pageInfo: { endCursor: "", hasNextPage: false } },
+            search: {
+              issueCount: found.length,
+              nodes,
+              pageInfo: {
+                endCursor: nodes.length === 0 ? "" : `cursor:${offset + nodes.length}`,
+                hasNextPage: offset + nodes.length < found.length,
+              },
+            },
           },
         });
       }
@@ -536,7 +673,9 @@ const server = Bun.serve({
 
     // A seeded pull request answers as GitHub does. A stored pull request's attribution read is
     // skipped on a server error, leaving the row as seeded, so an unseeded one answers 500: a 404
-    // would mark it unfetchable and change the delivery data under the test.
+    // would mark it unfetchable and change the delivery data under the test. A pull request that
+    // `completes` selects also answers the fields that the completion of a partial row reads. Its
+    // line counts are always 3 added lines and 1 deleted line.
     const pull = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/);
     if (request.method === "GET" && pull !== null) {
       const seeded = repos.get(`${pull[1]}/${pull[2]}`)?.pulls?.[pull[3] ?? ""];
@@ -544,6 +683,16 @@ const server = Bun.serve({
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
       }
       return Response.json({
+        ...(completes(seeded)
+          ? {
+              additions: 3,
+              created_at: createdAtOf(seeded) ?? null,
+              deletions: 1,
+              labels: (seeded.labels ?? []).map((name) => ({ name })),
+              merged_at: mergedAtOf(seeded) ?? null,
+              user: { login: authorOf(seeded) },
+            }
+          : {}),
         base: { ref: seeded.base_ref ?? "main" },
         body: seeded.body ?? "",
         head: {
@@ -563,7 +712,8 @@ const server = Bun.serve({
 
     // A seeded pull request's commits, paged as GitHub pages them (`pageOf`): each one's sha and
     // message, oldest first, the last at the head. `commits_status` answers that status instead,
-    // with GitHub's error body. An unseeded pull request answers 500, as its own read does.
+    // with GitHub's error body. An unseeded pull request answers 500, as its own read does. Each
+    // commit of a pull request that `completes` selects also has the dates of `commitDatesOf`.
     const pullCommits = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/commits$/);
     if (request.method === "GET" && pullCommits !== null) {
       const fullName = `${pullCommits[1]}/${pullCommits[2]}`;
@@ -578,7 +728,7 @@ const server = Bun.serve({
       return Response.json(
         pageOf(
           messagesOf(seeded).map((message, index) => ({
-            commit: { message },
+            commit: { message, ...commitDatesOf(seeded) },
             sha: commitShaOf(fullName, number, seeded, index),
           })),
           url

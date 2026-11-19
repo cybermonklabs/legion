@@ -7,32 +7,56 @@
 // server: a bare `-` given to a text flag is refused, on every text flag the command's help
 // lists, and every other value of a text flag is kept byte for byte.
 //
-// The shell script runs the driver again for each one-pass phase (onePassPhases): with
-// `--phase <phase>-fixture` while no server runs, and with `--phase <phase>-assert` after it
-// starts the server again with a start pass and an interval of one hour. That is the boundary of
-// one complete pass (prepareOnePass, awaitOnePass). Before its first case the driver checks its
-// counter of pull request reads, and the phase `boundary` checks the boundary of one pass.
+// The shell script runs the driver again for each one-pass phase (onePassPhases), in up to four
+// halves: `--phase <phase>-prepare` while the server of the step before still runs, with no pass
+// to come; `--phase <phase>-fixture` while no server runs; `--phase <phase>-before` through a
+// server that started with no pass, where the shell asks for it; and `--phase <phase>-assert`
+// after it starts the server again with a start pass and an interval of one hour. That is the
+// boundary of one complete pass (prepareOnePass, awaitOnePass). Before its first case the driver
+// checks its counter of pull request reads, and the phase `boundary` checks the boundary of one
+// pass.
+//
+// The seven checks of the attribution run as such phases, in the project ATT and its repository
+// acme/attribution-live, in this order (the section "the seven checks"):
+//   older-rows             300 rows as the release before left them hold their stored issue
+//                          before any pass, and one pass reads each of them and leaves none.
+//   rule-reaches-each-row  the rule reaches 5,000 rows with texts at the read, with no read of
+//                          GitHub: after a person's link, a move of an issue to another
+//                          repository and a new issue that a stored branch names, too.
+//   key-reading-changes    a second key reading reaches the same rows with no read of GitHub.
+//   facts-only             no writer takes a fact from the envelope.
+//   read-compares          a results read compares with the pull request that it learns, and says
+//                          what it does not know yet.
+//   stores-agree           the timeline and the results routes name one issue for each pull
+//                          request.
+//   limit-of-one           the rate limit of one installation ends no step for another.
 //
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
 //     VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<the server's log> \
 //     VERIFICATION_RESULTS_E2E_STATE=<a JSON file> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
-//     bun scripts/e2e/verification-results.ts [--phase <phase>-fixture|<phase>-assert] \
+//     [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] \
+//     bun scripts/e2e/verification-results.ts \
+//       [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert] \
 //       <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
 // The log is the file every start of the server writes to, which attributionLines reads. The state
 // file holds what one process of the driver leaves for a later one: the issues a case seeded, and
-// the length of the log at each phase's fixture.
+// the length of the log at each phase's fixture. Only a negative control's command sets the last
+// two variables: VERIFICATION_RESULTS_E2E_ONLY runs one case of the seven checks alone, and
+// VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a server built before the attribution line of a pass.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
 // The driver writes SQL for the fixtures that no route of Dispatch can write: stored pull request
-// rows as the release before writes them, with no texts, and the delete of the reconcile's records
-// of its passes at each phase's boundary. It reads SQL for the answers that no route gives: the
-// issue and the source a row records, whether its texts are stored, the records of the passes and
-// whether a process holds the reconcile's lease.
+// rows as the release before writes them, with no texts; texts rows as a read of this build
+// writes them; timeline rows, owed reads and partial rows; a second key reading
+// (fixtures/attribution_reading_b.sql); and the delete of the reconcile's records of its passes at
+// each phase's boundary. It reads SQL for the answers that no route gives: the issue and the source
+// a row records, its texts and branch keys, the delivery rows of limit-of-one, the records of the
+// passes and whether a process holds the reconcile's lease.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -44,9 +68,10 @@
 // seed, the probe issue, the counter of reads, a phase's fixture, the boundary of one pass) exits
 // 2 naming it.
 //
-// The run writes no delivery settings, as a deployment that never configured the delivery timeline
-// holds none: the intake writes a pull request's head row from its envelope all the same, and
-// every head below reaches Dispatch that way.
+// Until stores-agree, the run writes no delivery settings, as a deployment that never configured
+// the delivery timeline holds none: the intake writes a pull request's head row from its envelope
+// all the same, and every head of the cases before the phases reaches Dispatch that way.
+// stores-agree and limit-of-one write the settings their passes need.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,6 +98,16 @@ const agentToken = process.env.VERIFICATION_RESULTS_E2E_AGENT_TOKEN ?? "";
 const databaseUrl = process.env.VERIFICATION_RESULTS_E2E_DATABASE_URL ?? "";
 const dispatchLog = process.env.VERIFICATION_RESULTS_E2E_DISPATCH_LOG ?? "";
 const statePath = process.env.VERIFICATION_RESULTS_E2E_STATE ?? "";
+/** Two settings that only a negative control's command gives. VERIFICATION_RESULTS_E2E_ONLY names
+ *  one case of the seven checks: the driver then runs that case alone, with the writes of the case
+ *  it stands on (onePassPhases), and skips every other case. VERIFICATION_RESULTS_E2E_OLD_BUILD=1
+ *  says the server is a build before the attribution line of a pass, so the boundary of one pass
+ *  does not count that line (awaitOnePass). A run of the head sets neither. */
+const onlyCase = process.env.VERIFICATION_RESULTS_E2E_ONLY ?? "";
+const oldBuild = process.env.VERIFICATION_RESULTS_E2E_OLD_BUILD === "1";
+/** The exit status of a half of a one-pass phase that VERIFICATION_RESULTS_E2E_ONLY skips, which
+ *  the shell's `driver` reads as a skip: 0 is a pass, 1 a failed case, 2 a step outside the cases. */
+const phaseSkipped = 3;
 if (
   dispatchUrl === undefined ||
   natsUrl === undefined ||
@@ -84,7 +119,7 @@ if (
   (phaseAt !== -1 && phaseArg === undefined)
 ) {
   process.stderr.write(
-    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> bun verification-results.ts [--phase <phase>-fixture|<phase>-assert] <dispatch-url> <nats-url> <fake-github-url>\n"
+    "usage: VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> VERIFICATION_RESULTS_E2E_DISPATCH_LOG=<log> VERIFICATION_RESULTS_E2E_STATE=<file> [VERIFICATION_RESULTS_E2E_ONLY=<case>] [VERIFICATION_RESULTS_E2E_OLD_BUILD=1] bun verification-results.ts [--phase <phase>-prepare|<phase>-fixture|<phase>-before|<phase>-assert] <dispatch-url> <nats-url> <fake-github-url>\n"
   );
   process.exit(2);
 }
@@ -193,6 +228,70 @@ const storedAttributionRows = [
   { head: commits.attributionStoredOpen, merged: false, number: 45, state: "open" },
   { head: commits.attributionStoredMerged, merged: true, number: 46, state: "merged" },
 ] as const;
+
+// --- the seven checks: names, repositories and commits -------------------------------------------
+//
+// The seven checks of the attribution (the section "the seven checks" below) run in a project of
+// their own, ATT. Its default repository, acme/attribution-live, is on an installation of its
+// own. So the fake's count of the reads of that repository counts the reads of the cases' pull
+// requests and no other reads (caseReads). Each pass also reads again the open pull requests that
+// the earlier cases left in acme/verification-live, once their last read is five minutes old
+// (delivery.PullRequestHeadStaleAfter).
+
+/** The seven checks, in the order the shell runs them. */
+const sevenChecks = [
+  "older-rows",
+  "rule-reaches-each-row",
+  "key-reading-changes",
+  "facts-only",
+  "read-compares",
+  "stores-agree",
+  "limit-of-one",
+] as const;
+type SevenCheck = (typeof sevenChecks)[number];
+
+/** The project of the seven checks, and its repositories: the default one; a second one, which
+ *  an issue of rule-reaches-each-row moves to; and the name the default one had before a rename,
+ *  which older-rows stores rows under. The fake holds no repository of that old name, so its
+ *  installation lookup answers 404, as GitHub answers for a renamed repository's old name. */
+const attributionProject = "ATT";
+const attributionRepo = "acme/attribution-live";
+const attributionSecondRepo = "acme/attribution-second";
+const attributionOldName = "acme/old-name";
+const attributionInstallation = 259;
+/** The repositories of limit-of-one, on another installation: the one whose pull requests wait,
+ *  and the deploy repository of its delivery settings. */
+const betaRepo = "beta/tools";
+const betaDeployRepo = "beta/deploy";
+const betaInstallation = 258;
+/** The repositories whose reads of pull requests a case of the seven checks counts. */
+const attributionRepos = [attributionRepo, attributionSecondRepo, attributionOldName];
+
+/** GitHub's update time of each pull request of older-rows and rule-reaches-each-row. The rows
+ *  that the release before stored hold an earlier event_at, so a read's answer replaces them
+ *  (upsertHeadRow). */
+const attributionUpdatedAt = "2026-11-10T00:00:00Z";
+const releaseBeforeEventAt = "2026-11-09T00:00:00Z";
+
+/** The head commit of pull request `number` of the seven checks: its number in hex, padded to 40
+ *  characters with `pad`. Another pad gives another head of the same pull request. */
+function attributionSha(number: number, pad = "f"): string {
+  return number.toString(16).padStart(40, pad);
+}
+
+/** The commits a case of the seven checks records a result at. The record route refuses a commit
+ *  that the repository does not hold, so the repository's seed holds each one from the start. */
+const sevenCommits = {
+  /** The head of facts-only's open pull request. */
+  factsOnlyHead: "f1".repeat(20),
+  /** An earlier commit of that pull request, which facts-only records a result at. */
+  factsOnlyEarly: "f2".repeat(20),
+  /** read-compares: the head of R1's pull request, and an earlier commit of it. */
+  compareHead: "b1".repeat(20),
+  compareEarly: "b2".repeat(20),
+  /** read-compares: the head of the pull request whose answer is not known. */
+  notKnownHead: "b3".repeat(20),
+};
 
 type Json = Record<string, unknown>;
 
@@ -389,7 +488,14 @@ async function publishPullRequest(payload: Record<string, string>): Promise<Publ
       updated_at: payload.updated_at,
     },
   });
-  const [owner, name] = repo.split("/");
+  return publishEnvelope(payload);
+}
+
+/** Publishes the envelope of `payload` on the subject of its repository and number, as
+ *  publishPullRequest does, with no seed of the fake: a case that sends an envelope that differs
+ *  from GitHub's answer seeds that answer itself. */
+async function publishEnvelope(payload: Record<string, string>): Promise<Published> {
+  const [owner, name] = String(payload.repo).split("/");
   const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${payload.number}`;
   const eventID = `verification-results-pr-${payload.number}-${payload.action}-${payload.head_sha.slice(0, 7)}`;
   const at = Date.now();
@@ -682,7 +788,14 @@ function note(line: string): void {
 
 const results: { name: string; ok: boolean }[] = [];
 
+/** Runs one case and prints its `ok` or `FAIL` line. Under VERIFICATION_RESULTS_E2E_ONLY the run
+ *  of the cases before the phases (no --phase) skips each case, since a control of one case of the
+ *  seven checks needs none of them. A phase decides on its own which of its halves run. */
 async function runCase(name: string, body: () => Promise<string | undefined>): Promise<void> {
+  if (onlyCase !== "" && phaseArg === undefined) {
+    console.log(`skip ${name}: VERIFICATION_RESULTS_E2E_ONLY=${onlyCase} runs that case alone`);
+    return;
+  }
   console.log(`== ${name}`);
   let failure: string | undefined;
   try {
@@ -730,16 +843,18 @@ function readState(): Record<string, unknown> {
 }
 
 /** Every read of pull requests the fake GitHub has answered since resetPullReads, summed over its
- *  repositories and its routes: the read of one pull request, the read of its commits, the read of
- *  the pull requests of a commit, and each pull request that a GraphQL query asks for. */
-async function pullReads(): Promise<number> {
+ *  routes: the read of one pull request, the read of its commits, the read of the pull requests of
+ *  a commit, and each pull request that a GraphQL query asks for. It sums every repository, or the
+ *  `repositories` given, by the name each request used. */
+async function pullReads(repositories?: readonly string[]): Promise<number> {
   const response = await fetch(new URL("/__fixture/requests", githubUrl));
   if (!response.ok) {
     throw new Error(`GET /__fixture/requests: ${response.status} ${await response.text()}`);
   }
   const { pulls } = (await response.json()) as { pulls: Record<string, Record<string, number>> };
-  return Object.values(pulls)
-    .flatMap((routes) => Object.values(routes))
+  return Object.entries(pulls)
+    .filter(([name]) => repositories === undefined || repositories.includes(name))
+    .flatMap(([, routes]) => Object.values(routes))
     .reduce((sum, reads) => sum + reads, 0);
 }
 
@@ -771,8 +886,10 @@ async function prepareOnePass(): Promise<string> {
  *  boundary. duty.Exclusive's recordPass writes two records of one pass, by the lease's name and
  *  by its period: both must be there, at one boundary, at the period of one hour. The lease must
  *  be free, and the log must hold one more attribution line than at the fixture (linesBefore).
- *  Every phase's answer rests on this boundary, so any other reading stops the driver
- *  (setupFailed). It answers what it read. */
+ *  A control of a build before that line (VERIFICATION_RESULTS_E2E_OLD_BUILD=1) writes no such
+ *  line, so for it the boundary rests on the records and the lease alone. A log with no such line
+ *  still fails a run that does not give that setting. Every phase's answer rests on this boundary,
+ *  so any other reading stops the driver (setupFailed). It answers what it read. */
 async function awaitOnePass(linesBefore: number): Promise<string> {
   const deadline = Date.now() + onePassWaitMs;
   const records = () =>
@@ -810,14 +927,16 @@ async function awaitOnePass(linesBefore: number): Promise<string> {
     kept !== wanted ||
     new Set(rows.map((row) => row[2])).size !== 1 ||
     leaseHeld ||
-    lines !== 1
+    (lines !== 1 && !oldBuild)
   ) {
     setupFailed(
       "the boundary of one pass",
-      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/${onePassPeriodNs} at one boundary, each of period ${onePassPeriodNs} ns; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want 1`
+      `duty_passes holds ${shown}, want ${reconcileLease} and ${reconcileLease}/${onePassPeriodNs} at one boundary, each of period ${onePassPeriodNs} ns; the lease is ${leaseHeld ? "still held" : "free"}; the log holds ${lines} more attribution line(s) than at the fixture, want ${oldBuild ? "any (VERIFICATION_RESULTS_E2E_OLD_BUILD=1)" : "1"}`
     );
   }
-  return `one pass: duty_passes holds ${shown}; the lease is free; the log holds 1 more attribution line`;
+  return oldBuild
+    ? `one pass: duty_passes holds ${shown}; the lease is free; the log holds ${lines} more attribution line(s), not counted: VERIFICATION_RESULTS_E2E_OLD_BUILD=1 names a build before that line`
+    : `one pass: duty_passes holds ${shown}; the lease is free; the log holds 1 more attribution line`;
 }
 
 /** Each line `dispatch delivery: pull request attribution` of the server's log, oldest first, as
@@ -893,12 +1012,20 @@ async function attributionCounts(): Promise<AttributionCounts> {
   };
 }
 
-/** One phase that the shell runs around one complete pass: the fixture it writes while no server
- *  runs, and the case that asserts after the start pass, given what awaitOnePass read. */
+/** One phase that the shell runs around one complete pass (one_pass_phase), in up to four halves:
+ *  `prepare`, the writes that need a server, while the server of the step before still runs and
+ *  makes no pass; `fixture`, the writes while no server runs; `before`, the reads through a server
+ *  that started with no pass, where the shell asks for them; and `assert`, the case after the
+ *  start pass, given what awaitOnePass read. `prepare`, `before` and `assert` are parts of the case
+ *  `caseName`. `baseOf` names the cases of the seven checks that stand on this phase's writes:
+ *  under VERIFICATION_RESULTS_E2E_ONLY, the phase writes for them and asserts nothing. */
 interface OnePassPhase {
   readonly assert: (pass: string) => Promise<string | undefined>;
+  readonly baseOf?: readonly SevenCheck[];
+  readonly before?: () => Promise<string | undefined>;
   readonly caseName: string;
   readonly fixture?: () => Promise<void>;
+  readonly prepare?: () => Promise<string | undefined>;
 }
 
 // --- setup ---------------------------------------------------------------------------------------
@@ -924,13 +1051,20 @@ interface OnePassPhase {
 // attribution case adds the two pull requests its own stored rows name. The fixture route
 // replaces the whole map, so every answer set is kept in `githubPulls` and sent again with the
 // next.
+//
+// The seven checks add the repositories of their own project, acme/attribution-live and
+// acme/attribution-second, and limit-of-one adds beta/tools and beta/deploy
+// (attributionRepositories). Each seed sends them again too.
 
 /** One pull request the fake answers for, as its single-pull-request route reads a fixture:
  *  the head commit and branch, the repository the head branch is in, the base branch, the
  *  state, the title and body, the time GitHub last updated it, and the merge's own commit; and
  *  as its commits read and its GraphQL route read it: the messages of its commits, and the status
- *  the commits read answers in place of them. */
+ *  the commits read answers in place of them. limit-of-one sets two more: `searched`, so the
+ *  merged search finds the pull request, and `author`, which also makes the fake answer the
+ *  fields that the completion of a partial pull request reads. */
 interface FakePullRequest {
+  readonly author?: string;
   readonly base_ref?: string;
   readonly body?: string;
   readonly commit_messages?: readonly string[];
@@ -940,16 +1074,41 @@ interface FakePullRequest {
   readonly head_sha: string;
   readonly merge_commit_sha?: string;
   readonly merged: boolean;
+  readonly searched?: boolean;
   readonly state: string;
   readonly title: string;
   readonly updated_at?: string;
 }
 
+/** One repository of the seven checks, as the fake's fixture route reads it: the installation
+ *  and its permissions, the default branch, the commits it holds, the pull requests of each
+ *  commit (`commit_pulls`), its pull requests, and whether its installation spent its rate limit. */
+interface FakeRepository {
+  readonly actions?: string;
+  readonly commit_pulls?: Record<string, readonly number[]>;
+  readonly commits?: readonly string[];
+  readonly contents: string;
+  readonly default_branch?: string;
+  readonly installation_id: number;
+  readonly pull_requests?: string;
+  readonly pulls?: Record<string, FakePullRequest>;
+  readonly rate_limited?: boolean;
+}
+
 /** Every pull request answer set so far, keyed by number. */
 const githubPulls: Record<string, FakePullRequest> = {};
+/** Every repository of the seven checks, as a case seeded it last, keyed by its name. */
+const attributionRepositories: Record<string, FakeRepository> = {};
 
-async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise<void> {
+/** Seeds the fake: the proof's repository with every pull request answer set so far and `pulls`,
+ *  the repository the App is not installed on, and each repository of the seven checks, with
+ *  `repositories` in place of the ones it names. */
+async function seedRepositories(
+  pulls: Record<string, FakePullRequest>,
+  repositories: Record<string, FakeRepository> = {}
+): Promise<void> {
   Object.assign(githubPulls, pulls);
+  Object.assign(attributionRepositories, repositories);
   const seeded = await fetch(new URL("/__fixture/repos", githubUrl), {
     body: JSON.stringify({
       [repo]: {
@@ -963,6 +1122,7 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
         pulls: githubPulls,
       },
       [hiddenRepo]: { contents: "read", installation_id: 257, installation_missing: true },
+      ...attributionRepositories,
     }),
     headers: { "Content-Type": "application/json" },
     method: "PUT",
@@ -970,9 +1130,20 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
   if (!seeded.ok) setupFailed("fake GitHub seed", `${seeded.status} ${await seeded.text()}`);
 }
 
-// One half of a one-pass phase: the fixture while no server runs, or the case after the start
-// pass. The process first takes the pull requests the fake answers, as an earlier process of the
-// driver seeded them, so a seed of this process keeps them.
+/** Seeds the repository `name` of the seven checks again, as `change` makes it from its last
+ *  seed, and every other repository as it was. */
+async function seedAttribution(
+  name: string,
+  change: (seeded: FakeRepository) => FakeRepository
+): Promise<void> {
+  const seeded = attributionRepositories[name];
+  if (seeded === undefined) throw new Error(`the fake holds no seed of ${name}`);
+  await seedRepositories({}, { [name]: change(seeded) });
+}
+
+// One half of a one-pass phase (OnePassPhase). The process first takes the repositories the fake
+// answers for, as an earlier process of the driver seeded them, so a seed of this process keeps
+// them.
 if (phaseArg !== undefined) {
   const onePassPhases: Record<string, OnePassPhase> = {
     // The self-check of the boundary: a fixture of nothing, then one start of the server.
@@ -988,25 +1159,135 @@ if (phaseArg !== undefined) {
       caseName: "k-attribution-after-one-pass",
       fixture: kAttributionFixture,
     },
+    // The seven checks (the section "the seven checks"), in the order the shell runs them.
+    "older-rows": {
+      assert: olderRowsAfterOnePass,
+      before: olderRowsBeforeThePass,
+      caseName: "older-rows",
+      fixture: olderRowsFixture,
+      prepare: olderRowsIssues,
+    },
+    "older-rows-set-back": {
+      assert: olderRowsAfterTheSetBack,
+      caseName: "older-rows",
+      fixture: olderRowsSetBack,
+    },
+    "rule-reaches-each-row": {
+      assert: (pass) => ruleAtTheBoundary(pass, "the rows of the release before"),
+      baseOf: ["key-reading-changes", "stores-agree"],
+      caseName: "rule-reaches-each-row",
+      fixture: ruleFixture,
+      prepare: ruleIssues,
+    },
+    "rule-reaches-each-row-link": {
+      assert: (pass) => ruleAtTheBoundary(pass, "a person's link"),
+      caseName: "rule-reaches-each-row",
+      fixture: resetPullReads,
+      prepare: ruleLink,
+    },
+    "rule-reaches-each-row-move": {
+      assert: (pass) => ruleAtTheBoundary(pass, "a move to the second repository"),
+      caseName: "rule-reaches-each-row",
+      fixture: resetPullReads,
+      prepare: ruleMove,
+    },
+    "rule-reaches-each-row-new-issue": {
+      assert: ruleNewIssue,
+      caseName: "rule-reaches-each-row",
+      fixture: ruleNewIssuePull,
+      prepare: ruleProbe,
+    },
+    "key-reading-changes": {
+      assert: readingAfterOnePass,
+      caseName: "key-reading-changes",
+      fixture: readingFixture,
+      prepare: readingRecorded,
+    },
+    "facts-only": {
+      assert: factsOnlyAfterOnePass,
+      caseName: "facts-only",
+      fixture: factsOnlyFixture,
+      prepare: factsOnlyEnvelope,
+    },
+    "read-compares": {
+      assert: readComparesAfterOnePass,
+      caseName: "read-compares",
+      fixture: readComparesFixture,
+      prepare: readComparesFirstReads,
+    },
+    "stores-agree": {
+      assert: (pass) => storesAgreeRead(pass, "after one pass"),
+      before: () => storesAgreeRead(undefined, "before a pass"),
+      caseName: "stores-agree",
+      fixture: storesAgreeFixture,
+      prepare: storesAgreeSettings,
+    },
+    "stores-agree-link": {
+      assert: (pass) => storesAgreeRead(pass, "after a person's link and one more pass"),
+      caseName: "stores-agree",
+      prepare: storesAgreeLink,
+    },
+    "limit-of-one": {
+      assert: limitAfterOnePass,
+      caseName: "limit-of-one",
+      fixture: limitFixture,
+      prepare: limitSettings,
+    },
   };
-  const [, name = "", half] = /^(.+)-(fixture|assert)$/.exec(phaseArg) ?? [];
+  const [, name = "", half] = /^(.+)-(prepare|fixture|before|assert)$/.exec(phaseArg) ?? [];
   const phase = onePassPhases[name];
   if (phase === undefined || half === undefined) {
     setupFailed(
       `phase ${phaseArg}`,
-      `no one-pass phase answers --phase ${phaseArg}; the phases are ${Object.keys(onePassPhases).join(", ")}, each with -fixture or -assert`
+      `no one-pass phase answers --phase ${phaseArg}; the phases are ${Object.keys(onePassPhases).join(", ")}, each with -prepare, -fixture, -before or -assert`
     );
+  }
+  if (onlyCase !== "" && !sevenChecks.some((check) => check === onlyCase)) {
+    setupFailed(
+      "VERIFICATION_RESULTS_E2E_ONLY",
+      `${onlyCase} is no case of the seven checks (${sevenChecks.join(", ")})`
+    );
+  }
+  // Under VERIFICATION_RESULTS_E2E_ONLY, a phase of that case runs whole, and so does the
+  // self-check of the boundary. A phase that the case stands on makes its writes and asserts
+  // nothing. The driver skips every other phase. A skipped half exits with phaseSkipped, so the
+  // shell prints `skip <phase>` for the phase and never `ok`.
+  const runs =
+    onlyCase === "" || phase.caseName === onlyCase || name === "boundary"
+      ? "whole"
+      : phase.baseOf?.some((check) => check === onlyCase)
+        ? "writes"
+        : "none";
+  if (runs === "none" || (runs === "writes" && (half === "before" || half === "assert"))) {
+    console.log(
+      `skip ${phase.caseName} (--phase ${phaseArg}): VERIFICATION_RESULTS_E2E_ONLY=${onlyCase}`
+    );
+    void nats.close();
+    process.exit(phaseSkipped);
   }
   const seeded = await fetch(new URL("/__fixture/repos", githubUrl)).catch((error: unknown) =>
     setupFailed("read of the fake GitHub's seed", error)
   );
   if (!seeded.ok)
     setupFailed("read of the fake GitHub's seed", `${seeded.status} ${await seeded.text()}`);
-  const repositories = (await seeded.json()) as Record<
-    string,
-    { pulls?: Record<string, FakePullRequest> }
-  >;
-  Object.assign(githubPulls, repositories[repo]?.pulls ?? {});
+  const repositories = (await seeded.json()) as Record<string, FakeRepository>;
+  for (const [fullName, repository] of Object.entries(repositories)) {
+    if (fullName === repo) Object.assign(githubPulls, repository.pulls ?? {});
+    else if (fullName !== hiddenRepo) attributionRepositories[fullName] = repository;
+  }
+  if (half === "prepare") {
+    if (phase.prepare !== undefined && runs === "whole") {
+      await runCase(phase.caseName, phase.prepare);
+      summarise();
+    }
+    if (phase.prepare !== undefined) {
+      const step = `writes of ${phase.caseName}, which VERIFICATION_RESULTS_E2E_ONLY=${onlyCase} stands on`;
+      const failure = await phase.prepare().catch((error: unknown) => setupFailed(step, error));
+      if (failure !== undefined) setupFailed(step, failure);
+    }
+    void nats.close();
+    process.exit(0);
+  }
   const passKey = `${name}/pass`;
   if (half === "fixture") {
     try {
@@ -1023,6 +1304,23 @@ if (phaseArg !== undefined) {
     }
     void nats.close();
     process.exit(0);
+  }
+  if (half === "before") {
+    const before = phase.before;
+    if (before === undefined) {
+      setupFailed(`phase ${phaseArg}`, `the phase ${name} reads nothing before its pass`);
+    }
+    await runCase(phase.caseName, before);
+    // The read is one before any pass only while no pass has run: the server started with no
+    // pass, and its first tick can still fall within the read.
+    const passes = await sql(`select count(*) from duty_passes where ${reconcileRecords}`);
+    if (passes !== "0") {
+      setupFailed(
+        "the read before the pass",
+        `duty_passes holds ${passes} record(s) of the reconcile: a pass ran before the read ended`
+      );
+    }
+    summarise();
   }
   const fixture = readState()[passKey] as { readonly linesBefore?: number } | undefined;
   if (fixture?.linesBefore === undefined) {
@@ -1063,11 +1361,31 @@ try {
 } catch (error) {
   setupFailed("the counter of pull request reads", error);
 }
-await seedRepositories({});
+// The repositories of the seven checks: the project's default one holds the commits a case
+// records at, and its second one holds nothing. stores-agree gives the first the permissions a
+// pass with delivery settings checks.
+await seedRepositories(
+  {},
+  {
+    [attributionRepo]: {
+      commits: Object.values(sevenCommits),
+      contents: "read",
+      default_branch: "main",
+      installation_id: attributionInstallation,
+      pulls: {},
+    },
+    [attributionSecondRepo]: {
+      contents: "read",
+      default_branch: "main",
+      installation_id: attributionInstallation,
+    },
+  }
+);
 
 for (const [key, name, mapped] of [
   ["VRF", "Verification results", repo],
   ["VRH", "Verification results, unreadable repository", hiddenRepo],
+  [attributionProject, "Attribution", attributionRepo],
 ] as const) {
   await asPerson("POST", "/api/v1/projects", { key, name }).catch((error: unknown) =>
     setupFailed(`project ${key}`, error)
@@ -1076,6 +1394,16 @@ for (const [key, name, mapped] of [
     default: true,
     project: key,
   }).catch((error: unknown) => setupFailed(`repository mapping ${mapped}`, error));
+}
+// The project of the seven checks maps two more repositories: a second one, which an issue can
+// move to, and the name its default repository had before a rename.
+for (const [mapped, mapping] of [
+  [attributionSecondRepo, { project: attributionProject }],
+  [attributionOldName, { project: attributionProject, renamed_to: attributionRepo }],
+] as const) {
+  await asSession("PUT", `/api/v1/settings/repo-projects/${mapped}`, mapping).catch(
+    (error: unknown) => setupFailed(`repository mapping ${mapped}`, error)
+  );
 }
 
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding
@@ -1146,7 +1474,7 @@ await runCase("the-results-route-is-served", async () => {
   note(`a result naming a check ${probeIssue} does not have answers ${answer}`);
   return answer === "400 UNKNOWN_CHECK" ? undefined : `the record route answers ${answer}`;
 });
-if (!results[0]?.ok) {
+if (results.some((result) => result.name === "the-results-route-is-served" && !result.ok)) {
   summarise("every later case records a result too, so the run stops at the first result write");
 }
 
@@ -2225,6 +2553,1315 @@ async function kAttributionAfterOnePass(pass: string): Promise<string | undefine
   return counts.facts_left === 0 && counts.reads_left === 0
     ? undefined
     : `dispatch attribution prints ${counts.facts_left} that wait for their facts and ${counts.reads_left} that a pass still reads, want 0 and 0`;
+}
+
+// --- the seven checks ----------------------------------------------------------------------------
+//
+// Seven cases of the attribution, each driven through the server, the `dispatch` command and the
+// fake GitHub, each around one complete pass (onePassPhases): older-rows, rule-reaches-each-row,
+// key-reading-changes, facts-only, read-compares, stores-agree and limit-of-one. Their issues are
+// in the project ATT (attributionProject), and their names in the comments (L1, B7, T7, F2, R2,
+// S3, ...) stand for the keys the server gave them, which the state file holds (sevenState). Each
+// case that wants no read of GitHub runs before stores-agree writes the delivery settings, since a
+// pass with settings reads GitHub for its other steps.
+
+/** What the seven checks leave for a later process of the driver, in the state file. */
+interface SevenChecksState {
+  /** older-rows: the keys of L0 to L5, N0 to N5 and D0 to D5. */
+  readonly olderRows?: {
+    readonly D: readonly string[];
+    readonly L: readonly string[];
+    readonly N: readonly string[];
+  };
+  /** rule-reaches-each-row: the keys of B0 to B99 and T0 to T99, and the steps made so far. */
+  readonly rule?: {
+    readonly B: readonly string[];
+    readonly T: readonly string[];
+    readonly linked?: boolean;
+    readonly moved?: boolean;
+    readonly newIssue?: string;
+    readonly nextKey?: string;
+  };
+  /** key-reading-changes: the reading `dispatch attribution` printed before the change, and how
+   *  many lines `dispatch delivery: keys remade` the log held then. */
+  readonly reading?: { readonly recorded: string; readonly remadeLines?: number };
+  /** facts-only: the keys of F1 and F2, and the checked_at the fixture moved #16001 back to. */
+  readonly factsOnly?: { readonly F1: string; readonly F2: string; readonly movedTo?: string };
+  /** read-compares: the keys of R1 and R2. */
+  readonly readCompares?: { readonly R1: string; readonly R2: string };
+  /** stores-agree: the keys of S1, S2 and S3. */
+  readonly storesAgree?: { readonly S1: string; readonly S2: string; readonly S3: string };
+}
+
+function sevenState(): SevenChecksState {
+  return (readState()["seven-checks"] ?? {}) as SevenChecksState;
+}
+
+/** Writes `change` over what the seven checks left in the state file. */
+function writeSevenState(change: SevenChecksState): void {
+  writeFileSync(
+    statePath,
+    JSON.stringify({ ...readState(), "seven-checks": { ...sevenState(), ...change } })
+  );
+}
+
+/** The part `key` of what the seven checks left, which an earlier phase wrote. */
+function sevenPart<K extends keyof SevenChecksState>(key: K): NonNullable<SevenChecksState[K]> {
+  const part = sevenState()[key];
+  if (part === undefined) throw new Error(`the state file holds no ${key}: its phase did not run`);
+  return part as NonNullable<SevenChecksState[K]>;
+}
+
+/** Seeds one issue of the project ATT for each of `names`, ten at a time, each with one
+ *  `before_merge` check `attribution`, and answers their keys in the order of `names`. */
+async function seedAttributionIssues(names: readonly string[]): Promise<string[]> {
+  const keys: string[] = [];
+  for (let at = 0; at < names.length; at += 10) {
+    keys.push(
+      ...(await Promise.all(
+        names
+          .slice(at, at + 10)
+          .map((name) =>
+            seedIssue(
+              attributionProject,
+              `The issue ${name} of the seven checks`,
+              checkFor(
+                "attribution",
+                "The issue's results are compared with the pull requests the attribution gives it."
+              )
+            )
+          )
+      ))
+    );
+  }
+  return keys;
+}
+
+/** What the check `attribution` of one issue names: the pull requests it compares with, those
+ *  whose head Dispatch has not read, those whose answer is not known, and the reason it compares
+ *  with nothing, empty where it compares with something. */
+interface CheckPulls {
+  readonly compared: readonly number[];
+  readonly notKnown: readonly number[];
+  readonly notRead: readonly number[];
+  readonly nothing: string;
+}
+
+/** Reads GET /api/v1/issues/{key}/results for each of `keys`, ten at a time. */
+async function checkPullsOf(keys: readonly string[]): Promise<Map<string, CheckPulls>> {
+  const answers = new Map<string, CheckPulls>();
+  for (let at = 0; at < keys.length; at += 10) {
+    const chunk = keys.slice(at, at + 10);
+    const checks = await Promise.all(chunk.map((key) => checkOf(key, "attribution")));
+    chunk.forEach((key, index) => {
+      const check = checks[index] as CheckBlock;
+      answers.set(key, {
+        compared: (check.compared_with ?? []).flatMap((basis) =>
+          basis.pull_request === undefined ? [] : [basis.pull_request]
+        ),
+        notKnown: (check.issues_not_known ?? []).map((entry) => entry.number),
+        notRead: (check.heads_not_read ?? []).map((head) => head.number),
+        nothing: check.compared_nothing ?? "",
+      });
+    });
+  }
+  return answers;
+}
+
+/** Each issue of `answers` whose check names pull request number n, by n: through compared_with,
+ *  and through heads_not_read where `withNotRead` is set. */
+function holdersOf(answers: Map<string, CheckPulls>, withNotRead = false): Map<number, string[]> {
+  const holders = new Map<number, string[]>();
+  for (const [key, pulls] of answers) {
+    for (const number of [...pulls.compared, ...(withNotRead ? pulls.notRead : [])]) {
+      holders.set(number, [...(holders.get(number) ?? []), key]);
+    }
+  }
+  return holders;
+}
+
+/** Each pull request from `first` to `last` whose issues in `answers` (by compared_with) are not
+ *  the one issue that `want` gives it, or none where `want` gives undefined, in the words
+ *  `#<n> under <issues>, want <issue>`. */
+function ownersDiffer(
+  answers: Map<string, CheckPulls>,
+  first: number,
+  last: number,
+  want: (number: number) => string | undefined
+): string[] {
+  const holders = holdersOf(answers);
+  const differ: string[] = [];
+  for (let number = first; number <= last; number++) {
+    const held = [...(holders.get(number) ?? [])].sort().join(" and ") || "no issue";
+    const wanted = want(number) ?? "no issue";
+    if (held !== wanted) differ.push(`#${number} under ${held}, want ${wanted}`);
+  }
+  return differ;
+}
+
+/** The reads of pull requests the fake answered for the repositories of the seven checks, and
+ *  for every repository, in the words of a note. */
+async function caseReads(): Promise<{ readonly count: number; readonly shown: string }> {
+  const count = await pullReads(attributionRepos);
+  const all = await pullReads();
+  return {
+    count,
+    shown: `the fake answered ${count} read(s) of pull requests of ${attributionRepos.join(", ")} since the fixture, and ${all} of every repository (each pass reads again the open pull requests of ${repo} that the earlier cases left)`,
+  };
+}
+
+/** The delivery settings a case writes through PUT /api/v1/settings/delivery, with `deployRepo` as
+ *  the deploy repository, whose permissions each pass checks. */
+function deliverySettings(deployRepo: string): Json {
+  return {
+    deploy_repo: deployRepo,
+    deploy_workflow_path: ".github/workflows/deploy.yml",
+    population_authors: ["octocat"],
+    pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+    production_job_names: ["deploy / deploy"],
+  };
+}
+
+/** The SQL array of the quoted `keys`, which a statement indexes from 1. */
+function sqlKeys(keys: readonly string[]): string {
+  return `array[${keys.map((key) => `'${key}'`).join(", ")}]`;
+}
+
+// --- older-rows ----------------------------------------------------------------------------------
+//
+// v-older-rows. 300 merged pull requests #7001 to #7300 (index i = n - 7000) on the branch
+// legion/N(i % 6), as the release before left them: #7001 to #7240 with a results row and no
+// texts, stored as L(i % 6) and read by GitHub, #7221 to #7240 of them under acme/old-name, a name
+// the case's repository had; #7001 to #7060 with a timeline row of D(i % 6) too, and #7051 to
+// #7060 stored as no issue; #7241 to #7260 stored as L(i % 6) and not read; #7261 to #7300 with a
+// timeline row of D(i % 6) alone. Before any pass, each results row's stored answer holds, and
+// D(j) names its pull requests as heads Dispatch has not read, with no read of GitHub. One pass
+// reads all 300 and leaves none to read, and each is then N(i % 6)'s. A second pass, after each
+// stored issue is set back to L(i % 6), reads GitHub for none and leaves each under N(i % 6).
+
+/** older-rows' issue of a list (L, N or D) for pull request `number`, by its index i % 6. */
+function olderRowsIssue(keys: readonly string[], number: number): string {
+  return keys[(number - 7000) % 6] ?? "";
+}
+
+/** older-rows, before the fixture: the issues L0 to L5, N0 to N5 and D0 to D5. */
+async function olderRowsIssues(): Promise<string | undefined> {
+  const names = (letter: string) => [0, 1, 2, 3, 4, 5].map((j) => `${letter}${j}`);
+  const L = await seedAttributionIssues(names("L"));
+  const N = await seedAttributionIssues(names("N"));
+  const D = await seedAttributionIssues(names("D"));
+  writeSevenState({ olderRows: { D, L, N } });
+  note(`L0 to L5 are ${L.join(", ")}; N0 to N5 are ${N.join(", ")}; D0 to D5 are ${D.join(", ")}`);
+  return undefined;
+}
+
+/** older-rows' fixture, while no server runs: GitHub's answer for the 300 pull requests, under
+ *  the case's repository only, and the rows of the release before. */
+async function olderRowsFixture(): Promise<void> {
+  const { D, L, N } = sevenPart("olderRows");
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = 7001; number <= 7300; number++) {
+    pulls[String(number)] = {
+      base_ref: "main",
+      body: `The work of change ${number}.`,
+      commit_messages: [`Work on change ${number}.`],
+      head_ref: `legion/${olderRowsIssue(N, number)}`,
+      head_repo: attributionRepo,
+      head_sha: attributionSha(number),
+      merge_commit_sha: attributionSha(number, "e"),
+      merged: true,
+      state: "closed",
+      title: `Change ${number}`,
+      updated_at: attributionUpdatedAt,
+    };
+  }
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: { ...seeded.pulls, ...pulls },
+  }));
+  const index = "(n - 7000) % 6 + 1";
+  const stored = `case when n between 7221 and 7240 then '${attributionOldName}' else '${attributionRepo}' end`;
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
+       attribution_source, title, url, event_at, checked_at, github_read_at)
+     select ${stored}, n, lpad(to_hex(n), 40, 'f'), 'legion/' || (${sqlKeys(N)})[${index}], 'main',
+       'merged', case when n between 7051 and 7060 then null else (${sqlKeys(L)})[${index}] end,
+       case when n between 7051 and 7060 then 'none' else 'title_body' end, 'Change ' || n,
+       'https://github.com/' || ${stored} || '/pull/' || n, '${releaseBeforeEventAt}', now(),
+       case when n between 7241 and 7260 then null else now() end
+     from generate_series(7001, 7260) n`
+  );
+  await sql(
+    `insert into delivery_pull_requests (repo, number, title, url, author, merged_at, issue_key)
+     select '${attributionRepo}', n, 'Change ' || n, 'https://github.com/${attributionRepo}/pull/' || n,
+       'octocat', now() - interval '1 day', (${sqlKeys(D)})[${index}]
+     from generate_series(7001, 7300) n where n <= 7060 or n >= 7261`
+  );
+  note(
+    `older-rows: 260 results rows with no texts (#7221 to #7240 under ${attributionOldName}, #7241 to #7260 not read), and timeline rows of #7001 to #7060 and #7261 to #7300`
+  );
+  await resetPullReads();
+}
+
+/** older-rows, before any pass, through a server that started with no pass: each pull request
+ *  with a results row is a basis of the issue that row stores, or of none; D(j) names its pull
+ *  requests with a timeline row alone as heads Dispatch has not read; and no read of GitHub. */
+async function olderRowsBeforeThePass(): Promise<string | undefined> {
+  const { D, L, N } = sevenPart("olderRows");
+  const answers = await checkPullsOf([...L, ...N, ...D]);
+  const stored = (number: number) =>
+    number <= 7260 && (number < 7051 || number > 7060) ? olderRowsIssue(L, number) : undefined;
+  for (let number = 7001; number <= 7260; number++) {
+    const key = stored(number);
+    if (key !== undefined && !answers.get(key)?.compared.includes(number)) {
+      const j = (number - 7000) % 6;
+      return `#${number} is not a basis of L${j} before its read (L${j} is ${key}, which compares with ${answers.get(key)?.compared.length ?? 0} pull request(s))`;
+    }
+  }
+  const differ = ownersDiffer(answers, 7001, 7300, stored);
+  note(
+    `before the pass: each of #7001 to #7260 is a basis of the issue its results row stores, or of none; ${differ.length} of the 300 pull requests are under another issue`
+  );
+  if (differ.length > 0) {
+    return `${differ.length} pull request(s) are under another issue before their read: ${differ.slice(0, 5).join("; ")}`;
+  }
+  for (const [j, key] of D.entries()) {
+    const wanted: number[] = [];
+    for (let number = 7261; number <= 7300; number++) {
+      if ((number - 7000) % 6 === j) wanted.push(number);
+    }
+    const notRead = [...(answers.get(key)?.notRead ?? [])].sort((a, b) => a - b);
+    if (notRead.join(",") !== wanted.join(",")) {
+      return `D${j} (${key}) names heads_not_read ${notRead.join(", ") || "none"}, want ${wanted.join(", ")}`;
+    }
+    const printed = await resultsCommand(key);
+    const head = commandHeadLines(printed)[0] ?? "";
+    const named = [
+      ...printed.matchAll(/^ {2}Not read yet: the head of pull request #(\d+)\.$/gm),
+    ].map((match) => Number(match[1]));
+    note(`dispatch results --issue ${key} (D${j}): ${head}`);
+    note(`  and ${named.length} line(s) Not read yet: the head of pull request #N.`);
+    for (const words of [
+      "Compared with nothing: Dispatch has not read the head of a pull request of this issue yet.",
+      "A pass stands: not known.",
+    ]) {
+      if (!head.includes(words)) {
+        return `dispatch results --issue ${key} (D${j}) prints ${JSON.stringify(head)}, want ${JSON.stringify(words)}`;
+      }
+    }
+    if ([...named].sort((a, b) => a - b).join(",") !== wanted.join(",")) {
+      return `dispatch results --issue ${key} (D${j}) names ${named.join(", ") || "no pull request"} in Not read yet: the head of pull request #N., want ${wanted.join(", ")}`;
+    }
+  }
+  const reads = await caseReads();
+  note(reads.shown);
+  return reads.count === 0
+    ? undefined
+    : `the reads before the pass asked GitHub for ${reads.count} read(s) of pull requests, want 0`;
+}
+
+/** older-rows, after one pass: the pass's counts, which leave nothing to read; each pull request
+ *  N(i % 6)'s; and one results row of each of #7221 to #7240, under the case's repository. */
+async function olderRowsAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const line = attributionLines().at(-1) ?? {};
+  note(
+    `the pass logged facts_left_before=${line.facts_left_before} facts_left=${line.facts_left} reads_left=${line.reads_left} facts_refused=${line.facts_refused}`
+  );
+  for (const [field, want] of [
+    ["facts_left_before", "300"],
+    ["facts_left", "0"],
+    ["reads_left", "0"],
+    ["facts_refused", "0"],
+  ] as const) {
+    if (line[field] !== want) return `${field} is ${line[field]} after one pass, want ${want}`;
+  }
+  const counts = await attributionCounts();
+  note(
+    `dispatch attribution: ${counts.facts_left} pull request(s) wait for their facts, and a pass still reads ${counts.reads_left}`
+  );
+  if (counts.facts_left !== 0 || counts.reads_left !== 0) {
+    return `dispatch attribution prints ${counts.facts_left} that wait for their facts and ${counts.reads_left} that a pass still reads, want 0 and 0`;
+  }
+  const failure = await olderRowsUnderN("after one pass");
+  if (failure !== undefined) return failure;
+  const [canonical, oldName] = (
+    await sql(
+      `select count(*) filter (where h.repo = '${attributionRepo}' and exists (select 1 from
+           pull_request_texts t where t.repo = h.repo and t.number = h.number)),
+         count(*) filter (where h.repo = '${attributionOldName}')
+       from pull_request_heads h where h.number between 7221 and 7240`
+    )
+  ).split("|");
+  note(
+    `#7221 to #7240: ${canonical} results row(s) with texts under ${attributionRepo}, ${oldName} under ${attributionOldName}`
+  );
+  return canonical === "20" && oldName === "0"
+    ? undefined
+    : `#7221 to #7240 hold ${canonical} results row(s) with texts under ${attributionRepo} and ${oldName} under ${attributionOldName}, want 20 and 0`;
+}
+
+/** older-rows: each of the 300 pull requests is N(i % 6)'s, and no other issue's. */
+async function olderRowsUnderN(step: string): Promise<string | undefined> {
+  const { D, L, N } = sevenPart("olderRows");
+  const differ = ownersDiffer(await checkPullsOf([...L, ...N, ...D]), 7001, 7300, (number) =>
+    olderRowsIssue(N, number)
+  );
+  note(`${step}: ${300 - differ.length} of the 300 pull requests are under N(i % 6)`);
+  return differ.length === 0
+    ? undefined
+    : `${step}, ${differ.length} pull request(s) are not under N(i % 6): ${differ.slice(0, 5).join("; ")}`;
+}
+
+/** older-rows' second fixture: each of the 300 rows stored as L(i % 6) again. */
+async function olderRowsSetBack(): Promise<void> {
+  const { L } = sevenPart("olderRows");
+  const set = await sql(
+    `with set as (update pull_request_heads set issue_key = (${sqlKeys(L)})[(number - 7000) % 6 + 1]
+       where repo = '${attributionRepo}' and number between 7001 and 7300 returning 1)
+     select count(*) from set`
+  );
+  note(`older-rows: ${set} rows stored as L(i % 6) again`);
+  await resetPullReads();
+}
+
+/** older-rows, after the second pass: each pull request N(i % 6)'s, with no read of GitHub. */
+async function olderRowsAfterTheSetBack(pass: string): Promise<string | undefined> {
+  note(pass);
+  const failure = await olderRowsUnderN("after the rows are set back and one more pass");
+  if (failure !== undefined) return failure;
+  const reads = await caseReads();
+  note(reads.shown);
+  return reads.count === 0
+    ? undefined
+    : `the pass after the set-back asked GitHub for ${reads.count} read(s) of pull requests, want 0`;
+}
+
+// --- rule-reaches-each-row -----------------------------------------------------------------------
+//
+// v-rule-reaches-each-row. 5,000 merged pull requests #10001 to #15000 (k = (n - 10000) % 100) on
+// the branch legion/<B(k) in lower case>, with the body `Follows T(k). Work of B(k).`, each with a
+// results row stored as T(k) and its texts (with no texts table, the build before it, a results
+// row stored as T(k) by attribution rule 2). The branch ranks above the body, so the rule gives
+// each one to B(k) at the read, with no read of GitHub, whatever its row stores. Three more
+// phases: a person links T7 to #10107, B8 moves to the project's second repository, and a person
+// makes the issue that the branch of a new pull request #15001 names. Each reads every B(k) and
+// T(k) again, and none reads GitHub.
+
+/** The issue the rule gives pull request `number` of rule-reaches-each-row, after the steps that
+ *  `rule` records; on the second reading (`readingB`), a branch in lower case names nothing. */
+function ruleOwner(
+  rule: NonNullable<SevenChecksState["rule"]>,
+  number: number,
+  readingB: boolean
+): string | undefined {
+  const k = (number - 10000) % 100;
+  if (rule.linked === true && number === 10107) return rule.T[7];
+  if (readingB || (rule.moved === true && k === 8)) return rule.T[k];
+  return rule.B[k];
+}
+
+/** rule-reaches-each-row, before its fixture: the issues B0 to B99 and T0 to T99. */
+async function ruleIssues(): Promise<string | undefined> {
+  const hundred = Array.from({ length: 100 }, (_, k) => k);
+  const B = await seedAttributionIssues(hundred.map((k) => `B${k}`));
+  const T = await seedAttributionIssues(hundred.map((k) => `T${k}`));
+  writeSevenState({ rule: { B, T } });
+  note(`B0 to B99 are ${B[0]} to ${B[99]}; T0 to T99 are ${T[0]} to ${T[99]}`);
+  return undefined;
+}
+
+/** rule-reaches-each-row's fixture, while no server runs: GitHub's answer for the 5,000 pull
+ *  requests, and their rows. */
+async function ruleFixture(): Promise<void> {
+  const { B, T } = sevenPart("rule");
+  const pulls: Record<string, FakePullRequest> = {};
+  for (let number = 10001; number <= 15000; number++) {
+    const k = (number - 10000) % 100;
+    pulls[String(number)] = {
+      base_ref: "main",
+      body: `Follows ${T[k]}. Work of ${B[k]}.`,
+      commit_messages: [`Work on change ${number}.`],
+      head_ref: `legion/${String(B[k]).toLowerCase()}`,
+      head_repo: attributionRepo,
+      head_sha: attributionSha(number),
+      merge_commit_sha: attributionSha(number, "e"),
+      merged: true,
+      state: "closed",
+      title: `Change ${number}`,
+      updated_at: attributionUpdatedAt,
+    };
+  }
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: { ...seeded.pulls, ...pulls },
+  }));
+  const texts = await textsTableExists();
+  const k = "(n - 10000) % 100 + 1";
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
+       attribution_source, title, url, event_at, checked_at, github_read_at${texts ? "" : ", attribution_rule"})
+     select '${attributionRepo}', n, lpad(to_hex(n), 40, 'f'), 'legion/' || lower((${sqlKeys(B)})[${k}]),
+       'main', 'merged', (${sqlKeys(T)})[${k}], 'title_body', 'Change ' || n,
+       'https://github.com/${attributionRepo}/pull/' || n, '${attributionUpdatedAt}', now(), now()${texts ? "" : ", 2"}
+     from generate_series(10001, 15000) n`
+  );
+  if (texts) {
+    await sql(
+      `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title,
+         body, commit_messages, updated_at)
+       select h.repo, h.number, h.head_sha, h.head_ref, h.repo, h.base_ref, h.title,
+         'Follows ' || (${sqlKeys(T)})[(h.number - 10000) % 100 + 1] || '. Work of '
+           || (${sqlKeys(B)})[(h.number - 10000) % 100 + 1] || '.',
+         array['Work on change ' || h.number || '.'], h.event_at
+       from pull_request_heads h where h.repo = '${attributionRepo}' and h.number between 10001 and 15000`
+    );
+  }
+  note(
+    texts
+      ? "rule-reaches-each-row: 5,000 results rows stored as T(k), each with its texts, which the trigger keys"
+      : "rule-reaches-each-row: no texts table (a build before it): 5,000 results rows stored as T(k) by attribution rule 2, with no texts"
+  );
+  await resetPullReads();
+}
+
+/** rule-reaches-each-row, at the boundary of a pass after `step`. */
+async function ruleAtTheBoundary(pass: string, step: string): Promise<string | undefined> {
+  note(pass);
+  return ruleReads(step, false);
+}
+
+/** The reads of rule-reaches-each-row after `step`: each B(k) and T(k), and the new issue where
+ *  it exists, through GET /api/v1/issues/{key}/results; B0, B50 and T0 through `dispatch results`;
+ *  and the fake's count of reads, which must be 0. Each pull request must be the issue's that
+ *  ruleOwner gives. A failure names the counts under B0 to B99 and under T0 to T99, and the reads. */
+async function ruleReads(step: string, readingB: boolean): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  const answers = await checkPullsOf([
+    ...rule.B,
+    ...rule.T,
+    ...(rule.newIssue === undefined ? [] : [rule.newIssue]),
+  ]);
+  const reads = await caseReads();
+  const holders = holdersOf(answers);
+  const under = (keys: readonly string[]) => {
+    let count = 0;
+    for (let number = 10001; number <= 15000; number++) {
+      if ((holders.get(number) ?? []).some((key) => keys.includes(key))) count++;
+    }
+    return count;
+  };
+  const [underB, underT] = [under(rule.B), under(rule.T)];
+  const differ = ownersDiffer(answers, 10001, 15000, (number) => ruleOwner(rule, number, readingB));
+  note(
+    `after ${step}: ${underB} of the 5,000 pull requests are under B0 to B99 and ${underT} under T0 to T99; ${differ.length} differ from the rule`
+  );
+  note(reads.shown);
+  if (differ.length > 0) {
+    return `after ${step}, ${underT} of 5000 pull requests are under T0 to T99 and ${underB} under B0 to B99 at the boundary, and the fake answered ${reads.count} read(s) of pull requests; ${differ.length} differ from the rule, the first: ${differ.slice(0, 5).join("; ")}`;
+  }
+  for (const [name, key] of [
+    ["B0", rule.B[0]],
+    ["B50", rule.B[50]],
+    ["T0", rule.T[0]],
+  ] as const) {
+    const head = commandHeadLines(await resultsCommand(String(key)))[0] ?? "";
+    const named = [...head.matchAll(/the head of pull request #(\d+)/g)]
+      .map((match) => Number(match[1]))
+      .filter((number) => number >= 10001 && number <= 15000)
+      .sort((a, b) => a - b);
+    const wanted: number[] = [];
+    for (let number = 10001; number <= 15000; number++) {
+      if (ruleOwner(rule, number, readingB) === key) wanted.push(number);
+    }
+    note(
+      `dispatch results --issue ${key} (${name}) compares with ${named.length} of the pull requests`
+    );
+    if (named.join(",") !== wanted.join(",")) {
+      return `after ${step}, dispatch results --issue ${key} (${name}) compares with ${named.length} of the pull requests, want ${wanted.length}: ${JSON.stringify(head.slice(0, 300))}`;
+    }
+  }
+  return reads.count === 0
+    ? undefined
+    : `after ${step}, the pass and the reads asked GitHub for ${reads.count} read(s) of pull requests, want 0`;
+}
+
+/** rule-reaches-each-row: a person links T7 to #10107. */
+async function ruleLink(): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  await asPerson("PATCH", issuePath(String(rule.T[7])), {
+    external_links: [{ url: `https://github.com/${attributionRepo}/pull/10107` }],
+  });
+  writeSevenState({ rule: { ...rule, linked: true } });
+  note(`a person linked ${rule.T[7]} (T7) to ${attributionRepo}#10107, which B7's branch names`);
+  return undefined;
+}
+
+/** rule-reaches-each-row: B8 moves to the project's second repository, so its branch key holds no
+ *  pull request of the first one, and the body gives T8 its 50 pull requests. */
+async function ruleMove(): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  await asPerson("PATCH", issuePath(String(rule.B[8])), { repo: attributionSecondRepo });
+  writeSevenState({ rule: { ...rule, moved: true } });
+  note(`${rule.B[8]} (B8) moved to ${attributionSecondRepo}`);
+  return undefined;
+}
+
+/** rule-reaches-each-row: the probe issue, whose key gives the next number of the project. */
+async function ruleProbe(): Promise<string | undefined> {
+  const rule = sevenPart("rule");
+  const probe = String(
+    (
+      (await asPerson("POST", "/api/v1/issues", {
+        force: true,
+        project: attributionProject,
+        title: "The probe that reads the next number of the project",
+      })) as Json
+    ).key
+  );
+  const number = Number(probe.slice(attributionProject.length + 1));
+  const nextKey = `${attributionProject}-${number + 1}`;
+  writeSevenState({ rule: { ...rule, nextKey } });
+  note(`the probe issue is ${probe}, so the next issue of ${attributionProject} is ${nextKey}`);
+  return undefined;
+}
+
+/** rule-reaches-each-row's last fixture: pull request #15001, whose branch names the key of the
+ *  issue nobody has made yet, in lower case as the other branches are written. */
+async function ruleNewIssuePull(): Promise<void> {
+  const { nextKey } = sevenPart("rule");
+  const branch = `legion/${String(nextKey).toLowerCase()}`;
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: {
+      ...seeded.pulls,
+      "15001": {
+        base_ref: "main",
+        body: "A change whose body names no issue.",
+        commit_messages: ["Work on change 15001."],
+        head_ref: branch,
+        head_repo: attributionRepo,
+        head_sha: attributionSha(15001),
+        merge_commit_sha: attributionSha(15001, "e"),
+        merged: true,
+        state: "closed",
+        title: "Change 15001",
+        updated_at: attributionUpdatedAt,
+      },
+    },
+  }));
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state,
+       attribution_source, title, url, event_at, checked_at, github_read_at)
+     values ('${attributionRepo}', 15001, '${attributionSha(15001)}', '${branch}', 'main', 'merged',
+       'none', 'Change 15001', 'https://github.com/${attributionRepo}/pull/15001',
+       '${attributionUpdatedAt}', now(), now())`
+  );
+  if (await textsTableExists()) {
+    await sql(
+      `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title,
+         body, commit_messages, updated_at)
+       values ('${attributionRepo}', 15001, '${attributionSha(15001)}', '${branch}',
+         '${attributionRepo}', 'main', 'Change 15001', 'A change whose body names no issue.',
+         array['Work on change 15001.'], '${attributionUpdatedAt}')`
+    );
+  }
+  note(`#15001 is stored on ${branch}, whose key no issue holds yet`);
+  await resetPullReads();
+}
+
+/** rule-reaches-each-row, after its last pass: a person makes the issue the branch of #15001
+ *  names, which must take the key the probe foretold, and that issue compares with #15001. */
+async function ruleNewIssue(pass: string): Promise<string | undefined> {
+  note(pass);
+  const rule = sevenPart("rule");
+  const [made] = await seedAttributionIssues(["the issue a branch names"]);
+  note(`a person made ${made}`);
+  if (made !== rule.nextKey) {
+    return `the new issue is ${made}, want ${rule.nextKey}, the key the branch of #15001 names`;
+  }
+  writeSevenState({ rule: { ...rule, newIssue: made } });
+  const [pulls] = (await checkPullsOf([made])).values();
+  note(
+    `${made} compares with ${pulls?.compared.map((number) => `#${number}`).join(", ") || "nothing"}`
+  );
+  if (pulls?.compared.join(",") !== "15001") {
+    return `${made} compares with ${pulls?.compared.join(", ") || "nothing"}, want #15001, whose branch names it`;
+  }
+  return ruleReads("a new issue that a stored branch names", false);
+}
+
+// --- key-reading-changes -------------------------------------------------------------------------
+//
+// v-key-reading-changes, on rule-reaches-each-row's rows. With the server down, the driver applies
+// fixtures/attribution_reading_b.sql, a second reading on which a branch in lower case names
+// nothing. At the boundary of one pass the reading differs from the one recorded before, and each
+// pull request is T(k)'s and no B(k)'s, with no read of GitHub: the statement computes the keys of
+// each row on another reading from its texts. Then the key remake loop writes the keys again.
+
+/** key-reading-changes, before its fixture: the reading `dispatch attribution` prints. */
+async function readingRecorded(): Promise<string | undefined> {
+  const counts = await attributionCounts();
+  writeSevenState({ reading: { recorded: counts.reading } });
+  note(`dispatch attribution prints the key reading ${counts.reading}`);
+  return undefined;
+}
+
+/** The lines `dispatch delivery: keys remade` of the server's log, every start of it. */
+function keysRemadeLines(): string[] {
+  return readFileSync(dispatchLog, "utf8")
+    .split("\n")
+    .filter((line) => line.includes('msg="dispatch delivery: keys remade"'));
+}
+
+/** key-reading-changes' fixture, while no server runs: the second reading. */
+async function readingFixture(): Promise<void> {
+  const file = join(import.meta.dir, "fixtures/attribution_reading_b.sql");
+  const child = Bun.spawn(["psql", databaseUrl, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", file], {
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  if (code !== 0) throw new Error(`psql -f ${file} exited ${code}: ${stderr.trim()}`);
+  writeSevenState({
+    reading: { ...sevenPart("reading"), remadeLines: keysRemadeLines().length },
+  });
+  note(`applied ${file}`);
+  await resetPullReads();
+}
+
+/** key-reading-changes, after one pass: another reading, each pull request T(k)'s, no read of
+ *  GitHub; then, within 60 s, no row whose keys wait, and the log line of the remake. */
+async function readingAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { recorded, remadeLines = 0 } = sevenPart("reading");
+  const counts = await attributionCounts();
+  note(
+    `dispatch attribution: the key reading ${counts.reading} (before the change ${recorded}); ${counts.keys_on_another_reading} pull request(s) whose keys wait`
+  );
+  if (counts.reading === recorded) {
+    return `the key reading is ${counts.reading} at the boundary, the reading recorded before the change`;
+  }
+  const failure = await ruleReads("the change of the reading", true);
+  if (failure !== undefined) return failure;
+  const { newIssue } = sevenPart("rule");
+  if (newIssue !== undefined) {
+    const [pulls] = (await checkPullsOf([newIssue])).values();
+    note(
+      `${newIssue} compares with ${pulls?.compared.join(", ") || "nothing"} on the second reading`
+    );
+    if ((pulls?.compared.length ?? 0) > 0) {
+      return `${newIssue} compares with ${pulls?.compared.join(", ")} on the second reading, want nothing: its branch is in lower case`;
+    }
+  }
+  const deadline = Date.now() + 60_000;
+  let waiting = counts.keys_on_another_reading;
+  let remade = keysRemadeLines().slice(remadeLines);
+  while ((waiting !== 0 || remade.length === 0) && Date.now() < deadline) {
+    await Bun.sleep(1_000);
+    waiting = (await attributionCounts()).keys_on_another_reading;
+    remade = keysRemadeLines().slice(remadeLines);
+  }
+  note(`then dispatch attribution prints ${waiting} pull request(s) whose keys wait`);
+  for (const line of remade) note(`the log: ${line.slice(line.indexOf("msg="))}`);
+  if (waiting !== 0) {
+    return `60 s after the boundary, dispatch attribution prints ${waiting} pull request(s) whose keys wait, want 0`;
+  }
+  return remade.length > 0
+    ? undefined
+    : "the log holds no line dispatch delivery: keys remade since the change of the reading";
+}
+
+// --- facts-only ----------------------------------------------------------------------------------
+//
+// v-facts-only. Issues F1 and F2, and the open pull request #16001 on the branch legion/F2 with
+// the body `Follows F1. Closes F2.`; GitHub names it as the pull request of an earlier commit too.
+// Three writes reach it: an envelope with no head_ref, a pass after its checked_at moves back 10
+// minutes, and a result of F2 at the earlier commit. After each, its texts hold GitHub's body, its
+// branch keys are {F2}, and F2 compares with it while F1 does not: no writer takes a fact from the
+// envelope.
+
+/** facts-only's open pull request, as GitHub answers it. */
+function factsOnlyPull(F1: string, F2: string): FakePullRequest {
+  return {
+    base_ref: "main",
+    body: `Follows ${F1}. Closes ${F2}.`,
+    commit_messages: ["Work on the change of the facts."],
+    head_ref: `legion/${F2}`,
+    head_repo: attributionRepo,
+    head_sha: sevenCommits.factsOnlyHead,
+    merged: false,
+    state: "open",
+    title: "A change of the facts",
+    updated_at: "2026-11-11T00:00:00Z",
+  };
+}
+
+/** facts-only, the first write: the issues, GitHub's answer, and an envelope with no head_ref. */
+async function factsOnlyEnvelope(): Promise<string | undefined> {
+  const [F1 = "", F2 = ""] = await seedAttributionIssues(["F1", "F2"]);
+  writeSevenState({ factsOnly: { F1, F2 } });
+  note(`F1 is ${F1}, F2 is ${F2}`);
+  const pull = factsOnlyPull(F1, F2);
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    commit_pulls: { ...seeded.commit_pulls, [sevenCommits.factsOnlyEarly]: [16001] },
+    pulls: { ...seeded.pulls, "16001": pull },
+  }));
+  const published = await publishEnvelope({
+    action: "opened",
+    base_ref: "main",
+    body: String(pull.body),
+    head_repo: attributionRepo,
+    head_sha: pull.head_sha,
+    kind: "pr",
+    merged: "false",
+    number: "16001",
+    repo: attributionRepo,
+    title: pull.title,
+    updated_at: String(pull.updated_at),
+    url: `https://github.com/${attributionRepo}/pull/16001`,
+  });
+  note(`published the envelope of #16001 with no head_ref on ${published.subject}`);
+  return factsOnlyHolds("the envelope with no head_ref", afterEvent(published));
+}
+
+/** facts-only's wants after the write `step`: the texts of #16001 (waited for until `by`), F1
+ *  comparing with nothing of it, F2 comparing with it, and its texts and branch keys GitHub's. */
+async function factsOnlyHolds(step: string, by = Date.now()): Promise<string | undefined> {
+  const { F1, F2 } = sevenPart("factsOnly");
+  const texts = () =>
+    sql(
+      `select t.head_ref, t.branch_keys::text, t.body from pull_request_texts t
+       where t.repo = '${attributionRepo}' and t.number = 16001 and t.head_sha = '${sevenCommits.factsOnlyHead}'`
+    );
+  let row = await texts();
+  while (row === "" && Date.now() < by) {
+    await Bun.sleep(pollMs);
+    row = await texts();
+  }
+  if (row === "") return `after ${step}, #16001 has no texts at its head`;
+  const [f1, f2] = [
+    (await checkPullsOf([F1])).get(F1)?.compared ?? [],
+    (await checkPullsOf([F2])).get(F2)?.compared ?? [],
+  ];
+  const [headRef, branchKeys, body] = row.split("|");
+  note(
+    `after ${step}: #16001's texts hold the branch ${headRef}, the branch keys ${branchKeys} and the body ${JSON.stringify(body)}; F1 compares with ${f1.join(", ") || "nothing"}, F2 with ${f2.join(", ") || "nothing"}`
+  );
+  if (f1.includes(16001))
+    return `F1 (${F1}) compares with #16001 after ${step}, want F2 (${F2}) alone`;
+  if (!f2.includes(16001)) return `F2 (${F2}) does not compare with #16001 after ${step}`;
+  const wantedBody = factsOnlyPull(F1, F2).body;
+  if (body !== wantedBody) {
+    return `after ${step}, #16001's texts hold the body ${JSON.stringify(body)}, want GitHub's ${JSON.stringify(wantedBody)}`;
+  }
+  return branchKeys === `{${F2}}`
+    ? undefined
+    : `after ${step}, #16001's branch keys are ${branchKeys}, want {${F2}}`;
+}
+
+/** facts-only's fixture, while no server runs: #16001's checked_at moves back 10 minutes, so the
+ *  pass's open arm reads it (delivery.PullRequestHeadStaleAfter is five minutes). */
+async function factsOnlyFixture(): Promise<void> {
+  const movedTo = await sql(
+    `update pull_request_heads set checked_at = checked_at - interval '10 minutes'
+     where repo = '${attributionRepo}' and number = 16001 returning checked_at`
+  );
+  if (movedTo === "") throw new Error(`#16001 has no results row in ${attributionRepo}`);
+  writeSevenState({ factsOnly: { ...sevenPart("factsOnly"), movedTo } });
+  note(`#16001's checked_at moved back to ${movedTo}`);
+}
+
+/** facts-only, after one pass: the pass read #16001, and the wants hold; then a result of F2 at
+ *  the earlier commit, whose read-through writes #16001 again, and the wants hold again. */
+async function factsOnlyAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { F2, movedTo } = sevenPart("factsOnly");
+  const checkedAt = await sql(
+    `select checked_at from pull_request_heads where repo = '${attributionRepo}' and number = 16001`
+  );
+  note(`#16001's checked_at is ${checkedAt}, moved back to ${movedTo} before the pass`);
+  if (checkedAt === movedTo)
+    return `the pass did not read #16001: its checked_at is still ${movedTo}`;
+  const afterPass = await factsOnlyHolds("one pass of the open arm");
+  if (afterPass !== undefined) return afterPass;
+  const readsBefore = await pullReads([attributionRepo]);
+  await record(F2, {
+    check: "attribution",
+    commit: sevenCommits.factsOnlyEarly,
+    observed: "the run passed at an earlier commit of the pull request",
+    run: "bash scripts/e2e/verification-results.sh",
+    surface: "cli",
+  });
+  const readThrough = (await pullReads([attributionRepo])) - readsBefore;
+  note(
+    `recorded a result of F2 at ${sevenCommits.factsOnlyEarly.slice(0, 12)}; its read-through made ${readThrough} read(s) of pull requests`
+  );
+  if (readThrough === 0) return "the result at the earlier commit read no pull request from GitHub";
+  return factsOnlyHolds("a result at an earlier commit");
+}
+
+// --- read-compares -------------------------------------------------------------------------------
+//
+// v-read-compares. R1 holds a pass at Rhead, recorded first, and a newer pass at Rearly; GitHub
+// names no pull request of either at the record, then #16101 at the head Rhead for both. One read
+// of `dispatch results` compares with #16101, and the pass stands. R2 holds a pass at R2head, the
+// head of #16102, whose branch, title and body name no key, whose commit message names R2, and
+// whose commits GitHub answers 500: Dispatch does not know yet whether #16102 is R2's, so the read
+// says so and says nothing of a head it has not read. Once GitHub answers the commits, one pass
+// reads them, and R2 compares with #16102.
+
+/** The head line of `dispatch results --issue <key>` (commandHeadLines), and what it printed. */
+async function resultsHead(
+  key: string
+): Promise<{ readonly head: string; readonly printed: string }> {
+  const printed = await resultsCommand(key);
+  return { head: commandHeadLines(printed)[0] ?? "", printed };
+}
+
+/** read-compares, before its pass: R1's records and its one read, then R2's record and its one
+ *  read. R2's part runs whatever R1's part found, since each proves a rule of its own: a build that
+ *  compares R1 at the first read and still says no for R2, or the other way round, fails on the
+ *  part it breaks. The failure names R2's part first, then R1's. */
+async function readComparesFirstReads(): Promise<string | undefined> {
+  const [R1 = "", R2 = ""] = await seedAttributionIssues(["R1", "R2"]);
+  writeSevenState({ readCompares: { R1, R2 } });
+  note(`R1 is ${R1}, R2 is ${R2}`);
+  const passAt = (issue: string, commit: string, observed: string) =>
+    record(issue, {
+      check: "attribution",
+      commit,
+      observed,
+      run: "bash scripts/e2e/verification-results.sh",
+      surface: "cli",
+    });
+  await passAt(R1, sevenCommits.compareHead, "the run passed at the head");
+  await passAt(R1, sevenCommits.compareEarly, "a newer run passed at an earlier commit");
+  note(
+    `R1 holds a pass at ${sevenCommits.compareHead.slice(0, 12)}, then a newer one at ${sevenCommits.compareEarly.slice(0, 12)}; GitHub named no pull request of either`
+  );
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    commit_pulls: {
+      ...seeded.commit_pulls,
+      [sevenCommits.compareHead]: [16101],
+      [sevenCommits.compareEarly]: [16101],
+    },
+    pulls: {
+      ...seeded.pulls,
+      "16101": {
+        base_ref: "main",
+        body: "The change GitHub names once the passes are recorded.",
+        commit_messages: ["Work on the change GitHub names."],
+        head_ref: `legion/${R1}`,
+        head_repo: attributionRepo,
+        head_sha: sevenCommits.compareHead,
+        merged: false,
+        state: "open",
+        title: "A change GitHub names late",
+        updated_at: "2026-11-12T00:00:00Z",
+      },
+    },
+  }));
+  const first = await resultsHead(R1);
+  note(`dispatch results --issue ${R1}: ${first.head}`);
+  let r1Failure: string | undefined;
+  if (
+    !first.head.includes("the head of pull request #16101") ||
+    !first.head.includes("A pass stands: yes")
+  ) {
+    const second = await resultsHead(R1);
+    note(`a second dispatch results --issue ${R1}: ${second.head}`);
+    r1Failure = `the first dispatch results --issue ${R1} (R1) prints ${JSON.stringify(first.head)}, want Compared with #16101 and A pass stands: yes; a second read prints ${JSON.stringify(second.head)}`;
+  }
+  const r2Failure = await readComparesNotKnown(R2, passAt);
+  const failures = [r2Failure, r1Failure].filter((failure) => failure !== undefined);
+  return failures.length === 0 ? undefined : failures.join("; and ");
+}
+
+/** read-compares' part of R2, before its pass: a pass at the head of #16102, whose answer is not
+ *  known while its commits answer 500, and one read of `dispatch results`. */
+async function readComparesNotKnown(
+  R2: string,
+  passAt: (issue: string, commit: string, observed: string) => Promise<CheckResultRecorded>
+): Promise<string | undefined> {
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    commit_pulls: { ...seeded.commit_pulls, [sevenCommits.notKnownHead]: [16102] },
+    pulls: {
+      ...seeded.pulls,
+      "16102": {
+        base_ref: "main",
+        body: "A change whose texts name no issue.",
+        commit_messages: [`Dispatch: ${R2}`],
+        commits_status: 500,
+        head_ref: "work/no-key-in-this-branch",
+        head_repo: attributionRepo,
+        head_sha: sevenCommits.notKnownHead,
+        merged: false,
+        state: "open",
+        title: "A change whose commits GitHub does not list",
+        updated_at: "2026-11-12T00:00:00Z",
+      },
+    },
+  }));
+  await passAt(R2, sevenCommits.notKnownHead, "the run passed at the head of a change");
+  const r2 = await resultsHead(R2);
+  note(`R2 is ${R2}; dispatch results --issue ${R2}:`);
+  for (const line of r2.printed.split("\n")) note(`  ${line}`);
+  const stands = /A pass stands: ([^.]*)\./.exec(r2.head)?.[1] ?? "nothing";
+  if (stands !== "not known") return `R2 answers A pass stands: ${stands}`;
+  const stored = await sql(
+    `select t.commit_messages is null from pull_request_texts t
+     where t.repo = '${attributionRepo}' and t.number = 16102`
+  );
+  if (stored !== "t") {
+    return `the record's read-through stored #16102 ${stored === "" ? "with no texts" : "with its messages read"}, want its texts with the messages not read`;
+  }
+  for (const words of [
+    "Where that commit stands is not known: Dispatch does not know yet whether a pull request it read is this issue's",
+    "  Not known yet: whether pull request #16102 is this issue's.",
+  ]) {
+    if (!r2.printed.includes(words)) return `the output for R2 holds no ${JSON.stringify(words)}`;
+  }
+  for (const words of ["has not read the head", "of this issue"]) {
+    if (r2.printed.includes(words)) return `the output for R2 holds ${JSON.stringify(words)}`;
+  }
+  return undefined;
+}
+
+/** read-compares' fixture, while no server runs: GitHub answers #16102's commits again. */
+async function readComparesFixture(): Promise<void> {
+  await seedAttribution(attributionRepo, (seeded) => {
+    const { commits_status: _cleared, ...pull } = seeded.pulls?.["16102"] ?? {
+      head_repo: attributionRepo,
+      head_sha: sevenCommits.notKnownHead,
+      merged: false,
+      state: "open",
+      title: "",
+    };
+    return { ...seeded, pulls: { ...seeded.pulls, "16102": pull } };
+  });
+  note("GitHub answers the commits of #16102 again");
+}
+
+/** read-compares, after one pass: R2 compares with #16102, and its pass stands. */
+async function readComparesAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const { R2 } = sevenPart("readCompares");
+  const { head } = await resultsHead(R2);
+  note(`dispatch results --issue ${R2}: ${head}`);
+  return head.includes("the head of pull request #16102") && head.includes("A pass stands: yes")
+    ? undefined
+    : `after one pass, dispatch results --issue ${R2} (R2) prints ${JSON.stringify(head)}, want Compared with #16102 and A pass stands: yes`;
+}
+
+// --- stores-agree --------------------------------------------------------------------------------
+//
+// v-stores-agree, on rule-reaches-each-row's rows as the cases before it left them. The delivery
+// settings, the 5,000 timeline rows of those pull requests stored as T(k), and #16201, which has
+// no facts: its timeline row says S1, its results row says S2, and GitHub's branch is legion/S3.
+// Before a pass, after one pass, and after a person links T9 to #10109 and one more pass, the
+// timeline route and the results routes name one issue for each pull request: S2 for #16201 before
+// its read and S3 after it, and T9 for #10109 after the link. It counts no reads: a pass with
+// settings reads GitHub for its other steps.
+
+/** stores-agree, before its fixture: the permissions, the delivery settings, and S1 to S3. */
+async function storesAgreeSettings(): Promise<string | undefined> {
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    actions: "read",
+    pull_requests: "read",
+  }));
+  await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(attributionRepo));
+  const [S1 = "", S2 = "", S3 = ""] = await seedAttributionIssues(["S1", "S2", "S3"]);
+  writeSevenState({ storesAgree: { S1, S2, S3 } });
+  note(`the delivery settings name ${attributionRepo}; S1 is ${S1}, S2 is ${S2}, S3 is ${S3}`);
+  return undefined;
+}
+
+/** stores-agree's fixture, while no server runs: the timeline rows and #16201. */
+async function storesAgreeFixture(): Promise<void> {
+  const { T } = sevenPart("rule");
+  const { S1, S2, S3 } = sevenPart("storesAgree");
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: {
+      ...seeded.pulls,
+      "16201": {
+        base_ref: "main",
+        body: "A change whose texts Dispatch has not read.",
+        commit_messages: ["Work on change 16201."],
+        head_ref: `legion/${S3}`,
+        head_repo: attributionRepo,
+        head_sha: attributionSha(16201),
+        merge_commit_sha: attributionSha(16201, "e"),
+        merged: true,
+        state: "closed",
+        title: "Change 16201",
+        updated_at: attributionUpdatedAt,
+      },
+    },
+  }));
+  await sql(
+    `insert into delivery_pull_requests (repo, number, title, url, author, merged_at, issue_key)
+     select '${attributionRepo}', n, 'Change ' || n, 'https://github.com/${attributionRepo}/pull/' || n,
+       'octocat', now() - interval '1 hour',
+       case when n = 16201 then '${S1}' else (${sqlKeys(T)})[(n - 10000) % 100 + 1] end
+     from (select generate_series(10001, 15000) n union all select 16201) pulls`
+  );
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key,
+       attribution_source, title, url, event_at, checked_at, github_read_at)
+     values ('${attributionRepo}', 16201, '${attributionSha(16201)}', 'legion/${S3}', 'main', 'merged',
+       '${S2}', 'title_body', 'Change 16201', 'https://github.com/${attributionRepo}/pull/16201',
+       '${releaseBeforeEventAt}', now(), now())`
+  );
+  note(
+    `stores-agree: 5,000 timeline rows stored as T(k); #16201 with a timeline row of ${S1}, a results row of ${S2} and no texts, on GitHub's branch legion/${S3}`
+  );
+}
+
+/** stores-agree's reads at `step`: GET /api/v1/delivery/timeline and the results route of every
+ *  issue of the seven checks name one issue for each pull request of the case's repository, and
+ *  #16201 and #10109 take the issue the step wants. */
+async function storesAgreeRead(
+  pass: string | undefined,
+  step: string
+): Promise<string | undefined> {
+  if (pass !== undefined) note(pass);
+  const seven = sevenState();
+  const { S2, S3 } = sevenPart("storesAgree");
+  const timeline = (await asSession("GET", "/api/v1/delivery/timeline")) as {
+    prs: { issue: string | null; number: number; repo: string }[];
+  };
+  const inTimeline = new Map<number, string>();
+  for (const pull of timeline.prs) {
+    if (pull.repo === attributionRepo) inTimeline.set(pull.number, pull.issue ?? "no issue");
+  }
+  const keys = [
+    ...(seven.olderRows === undefined
+      ? []
+      : [...seven.olderRows.L, ...seven.olderRows.N, ...seven.olderRows.D]),
+    ...(seven.rule === undefined
+      ? []
+      : [
+          ...seven.rule.B,
+          ...seven.rule.T,
+          ...(seven.rule.newIssue === undefined ? [] : [seven.rule.newIssue]),
+        ]),
+    ...Object.values(seven.factsOnly ?? {}).filter((value) =>
+      value.startsWith(`${attributionProject}-`)
+    ),
+    ...Object.values(seven.readCompares ?? {}),
+    ...Object.values(seven.storesAgree ?? {}),
+  ];
+  const holders = holdersOf(await checkPullsOf(keys), true);
+  const numbers = new Set([...inTimeline.keys(), ...holders.keys()]);
+  const two: string[] = [];
+  for (const number of [...numbers].sort((a, b) => a - b)) {
+    const named = holders.get(number) ?? [];
+    const listed = inTimeline.get(number);
+    if (named.length > 1) {
+      two.push(`#${number} under ${named.join(" and ")} in the results`);
+    } else if (listed !== undefined && listed !== (named[0] ?? "no issue")) {
+      two.push(
+        `#${number} under ${listed} in the timeline and ${named[0] ?? "no issue"} in the results`
+      );
+    }
+  }
+  note(
+    `${step}: the timeline lists ${inTimeline.size} pull requests of ${attributionRepo}, and the results routes of ${keys.length} issues name ${holders.size}; ${two.length} with two issues`
+  );
+  if (two.length > 0) {
+    return `${step}, ${two.length} pull request(s) have two issues: ${two.slice(0, 5).join("; ")}`;
+  }
+  const wants: (readonly [number, string, string])[] = [
+    [16201, step === "before a pass" ? S2 : S3, step === "before a pass" ? "S2" : "S3"],
+  ];
+  if (step.includes("link")) wants.push([10109, String(seven.rule?.T[9]), "T9"]);
+  for (const [number, key, name] of wants) {
+    const listed = inTimeline.get(number) ?? "no row";
+    const named = holders.get(number)?.join(" and ") ?? "no issue";
+    note(`${step}: #${number} is under ${listed} in the timeline and ${named} in the results`);
+    if (listed !== key || named !== key) {
+      return `${step}, #${number} is under ${listed} in the timeline and ${named} in the results, want ${name} (${key}) in both`;
+    }
+  }
+  return undefined;
+}
+
+/** stores-agree: a person links T9 to #10109. */
+async function storesAgreeLink(): Promise<string | undefined> {
+  const { T } = sevenPart("rule");
+  await asPerson("PATCH", issuePath(String(T[9])), {
+    external_links: [{ url: `https://github.com/${attributionRepo}/pull/10109` }],
+  });
+  note(`a person linked ${T[9]} (T9) to ${attributionRepo}#10109`);
+  return undefined;
+}
+
+// --- limit-of-one --------------------------------------------------------------------------------
+//
+// v-limit-of-one, T10's case through the server. beta/tools, on an installation of its own, has
+// five pull requests that wait: #11 owed a read, #12 open and read an hour ago, #13 merged with no
+// facts, #14 a partial timeline row, and #15, which only the merged search finds. The case's
+// repository's installation has spent its rate limit, and it has a read owed (#16301) and a partial
+// row (#16302) too. After one pass each beta/tools pull request is read and written, and the
+// pass's log line names the first installation's limit.
+
+/** One pull request of limit-of-one as GitHub answers it, as T10's test seeds it: open or merged,
+ *  updated an hour ago, with an author, so the fake answers what the completion reads. */
+function limitPull(
+  repository: string,
+  number: number,
+  open: boolean,
+  updatedAt: string
+): FakePullRequest {
+  return {
+    author: "octocat",
+    base_ref: "main",
+    body: `The body of change ${number}.`,
+    commit_messages: [`Work on change ${number}.`],
+    head_ref: `work/change-${number}`,
+    head_repo: repository,
+    head_sha: attributionSha(number, "e"),
+    ...(open ? {} : { merge_commit_sha: attributionSha(number, "d") }),
+    merged: !open,
+    state: open ? "open" : "closed",
+    title: `Change ${number}`,
+    updated_at: updatedAt,
+  };
+}
+
+/** limit-of-one, before its fixture: the two beta repositories, and delivery settings whose deploy
+ *  repository is beta/deploy, as T10's test writes them. */
+async function limitSettings(): Promise<string | undefined> {
+  const updatedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 3_600_000).toISOString();
+  const permissions = {
+    actions: "read",
+    contents: "read",
+    default_branch: "main",
+    installation_id: betaInstallation,
+    pull_requests: "read",
+  };
+  const pulls: Record<string, FakePullRequest> = {};
+  for (const number of [11, 12, 13, 14, 15]) {
+    pulls[String(number)] = {
+      ...limitPull(betaRepo, number, number === 12, updatedAt),
+      ...(number === 15 ? { searched: true } : {}),
+    };
+  }
+  await seedRepositories(
+    {},
+    { [betaDeployRepo]: { ...permissions }, [betaRepo]: { ...permissions, pulls } }
+  );
+  await asPerson("PUT", "/api/v1/settings/delivery", deliverySettings(betaDeployRepo));
+  note(
+    `the delivery settings name ${betaDeployRepo}; ${betaRepo} holds #11 to #15, updated at ${updatedAt}`
+  );
+  return undefined;
+}
+
+/** limit-of-one's fixture, while no server runs: the first installation's limit, and the rows. */
+async function limitFixture(): Promise<void> {
+  const updatedAt =
+    attributionRepositories[betaRepo]?.pulls?.["12"]?.updated_at ?? attributionUpdatedAt;
+  await seedAttribution(attributionRepo, (seeded) => ({
+    ...seeded,
+    pulls: {
+      ...seeded.pulls,
+      "16301": limitPull(attributionRepo, 16301, false, updatedAt),
+      "16302": limitPull(attributionRepo, 16302, false, updatedAt),
+    },
+    rate_limited: true,
+  }));
+  await sql(
+    `insert into pull_request_reads_owed (repo, number, reason)
+     values ('${betaRepo}', 11, 'failure'), ('${attributionRepo}', 16301, 'failure')`
+  );
+  await sql(
+    `insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state,
+       attribution_source, title, url, event_at, checked_at, github_read_at)
+     values
+       ('${betaRepo}', 12, '${attributionSha(12, "0")}', 'work/none', 'main', 'open', 'none',
+        'Change 12', 'https://github.com/${betaRepo}/pull/12', '2026-11-01T00:00:12Z',
+        now() - interval '1 hour', now() - interval '1 hour'),
+       ('${betaRepo}', 13, '${attributionSha(13, "0")}', 'work/change-13', 'main', 'merged', 'none',
+        'Change 13', 'https://github.com/${betaRepo}/pull/13', '2026-11-01T00:00:13Z', now(), now())`
+  );
+  if (await textsTableExists()) {
+    await sql(
+      `insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title,
+         body, commit_messages, updated_at)
+       values ('${betaRepo}', 12, '${attributionSha(12, "0")}', 'work/none', '${betaRepo}', 'main',
+         'Change 12', 'The body before the rename.', '{}', '2026-11-01T00:00:12Z')`
+    );
+  }
+  await sql(
+    `insert into delivery_pull_requests (repo, number, title, url, author, created_at, partial)
+     values
+       ('${betaRepo}', 14, 'the title of the search', 'https://github.com/${betaRepo}/pull/14',
+        'octocat', '2026-11-01T00:00:14Z', true),
+       ('${attributionRepo}', 16302, 'the title of the search',
+        'https://github.com/${attributionRepo}/pull/16302', 'octocat', '2026-11-01T00:00:14Z', true)`
+  );
+  note(
+    `limit-of-one: ${attributionRepo}'s installation has spent its rate limit; ${betaRepo} holds #11 owed a read, #12 open, #13 merged with no facts and #14 partial, and the merged search alone finds #15`
+  );
+}
+
+/** limit-of-one, after one pass: each beta/tools pull request read and written, and the log line
+ *  naming the first installation's limit. A build before the texts table (a negative control)
+ *  answers #13's messages as "no texts table", which fails the case as well. */
+async function limitAfterOnePass(pass: string): Promise<string | undefined> {
+  note(pass);
+  const line = attributionLines().at(-1) ?? {};
+  const scope = line.rate_limit_scope ?? "no rate_limit_scope";
+  note(`the pass logged rate_limit_scope=${scope}`);
+  const messages13 = (await textsTableExists())
+    ? `(select count(*)::text from pull_request_heads h where h.repo = '${betaRepo}' and h.number = 13
+          and exists (select 1 from pull_request_texts t where t.repo = h.repo and t.number = h.number
+            and t.commit_messages is not null))`
+    : "'no texts table'";
+  const rows = await sql(
+    `select
+       (select count(*) from pull_request_heads where repo = '${betaRepo}' and number = 11),
+       (select count(*) from pull_request_reads_owed where repo = '${betaRepo}' and number = 11),
+       (select head_sha from pull_request_heads where repo = '${betaRepo}' and number = 12),
+       ${messages13},
+       (select coalesce(partial::text, 'missing') || ' ' || (first_commit_at is not null)::text
+          from delivery_pull_requests where repo = '${betaRepo}' and number = 14),
+       (select coalesce(partial::text, 'missing') from delivery_pull_requests
+          where repo = '${betaRepo}' and number = 15),
+       (select coalesce(partial::text, 'missing') from delivery_pull_requests
+          where repo = '${attributionRepo}' and number = 16302)`
+  );
+  const [heads11, owed11, head12, read13, row14 = "", row15 = "", row16302 = ""] = rows.split("|");
+  note(
+    `${betaRepo}: #11 ${heads11} results row(s) and ${owed11} owed read(s); #12 at ${String(head12).slice(0, 12)}; #13 ${read13} row(s) with its messages; #14 partial and a first commit: ${row14 || "missing"}; #15 partial: ${row15 || "missing"}; ${attributionRepo} #16302 partial: ${row16302 || "missing"}`
+  );
+  const failures: string[] = [];
+  if (scope !== `installation:${attributionInstallation}`) {
+    failures.push(
+      `the pass logged rate_limit_scope=${scope}, want installation:${attributionInstallation}`
+    );
+  }
+  if (heads11 !== "1" || owed11 !== "0")
+    failures.push(`#11 holds ${heads11} results row(s) and ${owed11} owed read(s), want 1 and 0`);
+  if (head12 !== attributionSha(12, "e"))
+    failures.push(`#12 is at ${head12}, want GitHub's head ${attributionSha(12, "e")}`);
+  if (read13 !== "1") failures.push(`#13 has no texts with its messages (${read13})`);
+  if (row14 !== "false true")
+    failures.push(
+      row14.startsWith("true")
+        ? "#14 is still partial"
+        : `#14 reads ${row14 || "missing"}, want written and not partial, with its first commit`
+    );
+  if (row15 !== "false")
+    failures.push(row15 === "" ? "#15 is missing" : `#15 reads partial ${row15}, want false`);
+  return failures.length === 0 ? undefined : failures.join("; ");
 }
 
 // --- a bare `-` given to a text flag -----------------------------------------------------------
