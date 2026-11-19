@@ -49,11 +49,11 @@ const mkdir = hostTool("mkdir") ?? "mkdir";
  *  is decided by the verdicts and exit codes its runs print, and its work is counted (one runner
  *  per row; 85 `Bun.spawn` calls in one run of the input file, 86 where zsh is present). A hang
  *  guard is at least twice the longest correct run, read on the machines that run it. The slowest
- *  such row measured, the byte row (64 runners of 12 runs of the script), took 53.7 s on two CPUs
- *  shared with eight busy loops and five other runs of the file, so the guard is twice that, rounded
- *  up to the second. Alone on the dev box at a 1-minute load of 339 to 695 the whole file took
- *  1.4 to 1.5 s. */
-const rowTimeout = 108_000;
+ *  such row measured, the byte row (64 runners of 12 runs of the script), took 54.5 s on two CPUs
+ *  shared with eight busy loops and five other runs of the file (378 row results, none failing;
+ *  53.7 s in an earlier such run), so the guard is twice that, rounded up to the second. Alone on
+ *  the dev box at a 1-minute load of 339 to 695 the whole file took 1.4 to 1.5 s. */
+const rowTimeout = 109_000;
 
 /** One row that stops before the probes: `test.skipIf(skip)` with `rowTimeout`. */
 export function row(skip: boolean) {
