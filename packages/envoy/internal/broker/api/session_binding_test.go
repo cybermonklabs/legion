@@ -2,7 +2,8 @@
 // it, at POST /v1/oauth/exchange/pod-sessions and at the token exchange on the real broker
 // api_test.go mounts: a second daemon listed for the same pod account is refused a name the first
 // registered, for good, whatever the first's registrations of it, and a pod it registered cannot
-// trade under that name.
+// trade under that name; nor can a pod under a name bound to no daemon, until a registration of
+// it binds the name.
 package api_test
 
 import (
@@ -187,5 +188,63 @@ func TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName(t *testing.T) {
 	}
 	if answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, podB), ownSession); answer.status != http.StatusOK || !answer.issued {
 		t.Errorf("%s's trade under %s, which %s registered it for = %+v, want 200 with an access token: the refusal above is the name, not the pod", podB, ownSession, otherDaemonAccount, answer)
+	}
+}
+
+// boundToNoDaemonMessage is the exchange's WARN line for a pod's trade under a session name bound
+// to no daemon, though the registration of the pod the trade found names a registrar.
+const boundToNoDaemonMessage = "broker: the token exchange refused a pod's trade under a session name bound to no daemon"
+
+// TestATradeUnderANameBoundToNoDaemonIsRefused: a live registration of pod P for S naming daemon
+// A (daemonAccount), while pod_session_registrars binds S to no daemon, does not admit P's trade
+// under S. The test writes that row by hand: no route of this build writes it, since the route
+// binds the name in the transaction that writes the row; a broker of another build does. P's
+// trade under S is refused invalid_grant with a description beginning
+// session_name_not_this_registrars: that names S, says it is bound to no daemon and does not name
+// A, with no token, and one WARN line naming the principal, P, S and A and no holder, and no line
+// of a name another daemon holds. Once A registers P for S at the route, which binds S to A, P's
+// trade under S is answered: a registration that binds the name to the pod's registrar admits the
+// pod.
+func TestATradeUnderANameBoundToNoDaemonIsRefused(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServer(t)
+	const session, pod = "implementer-g1", "pod-uid-of-a"
+	daemonA := ts.accountToken(t, daemonAccount, "", time.Hour)
+
+	if _, err := ts.Store.Pool.Exec(context.Background(), `insert into oauth_pod_sessions (pod_uid, session, expires_at, registrar)
+		values ($1, $2, now() + interval '1 day', $3)`, pod, session, daemonAccount); err != nil {
+		t.Fatalf("write a live registration of %s for %s naming %s by hand: %v", pod, session, daemonAccount, err)
+	}
+	if bound := ts.column(t, `select registrar from pod_session_registrars where session_name = $1`, session); len(bound) != 0 {
+		t.Fatalf("pod_session_registrars binds %s to %v once the test wrote %s's row by hand, want no binding: the test is about a name bound to no daemon", session, bound, pod)
+	}
+	// Each check below reports and goes on, so a refusal that is missing also shows what the
+	// checks after it find.
+	answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, pod), session)
+	if answer.status != http.StatusBadRequest || answer.code != "invalid_grant" || answer.issued ||
+		!strings.HasPrefix(answer.description, oauthwire.SessionNameNotThisRegistrars+":") ||
+		!strings.Contains(answer.description, session) || !strings.Contains(answer.description, "is bound to no daemon") {
+		t.Errorf("%s's trade under %s, with a live registration of it for %s naming %s, while %s is bound to no daemon = %+v; want 400 invalid_grant, its description beginning %s:, naming %s and saying it is bound to no daemon, and no token",
+			pod, session, session, daemonAccount, session, answer, oauthwire.SessionNameNotThisRegistrars, session)
+	}
+	if strings.Contains(answer.description, daemonAccount) {
+		t.Errorf("%s's refused trade under %s reads %q, which names %s, the registrar of its registration; want a description that names no daemon", pod, session, answer.description, daemonAccount)
+	}
+	wantWarned := []map[string]any{{
+		"level": slog.LevelWarn, "msg": boundToNoDaemonMessage, "principal": exchange.AccountPrincipal(brokertest.ExchangeRolesAccount),
+		"pod": pod, "session": session, "registrar": daemonAccount,
+	}}
+	if logged := loggedAs(capture, boundToNoDaemonMessage); !reflect.DeepEqual(logged, wantWarned) {
+		t.Errorf("%s's refused trade under %s, a name bound to no daemon, logged %v, want exactly %v", pod, session, logged, wantWarned)
+	}
+	if logged := loggedAs(capture, notThisRegistrarsMessage); len(logged) != 0 {
+		t.Errorf("%s's refused trade under %s, a name bound to no daemon, logged %v, want no line of a name another daemon holds", pod, session, logged)
+	}
+
+	ts.admits(t, "A's registration of "+pod+" for "+session+", which binds "+session+" to A", daemonA, ts.rolesPodToken(t, pod), pod, session)
+	if answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, pod), session); answer.status != http.StatusOK || !answer.issued {
+		t.Errorf("%s's trade under %s, once %s registered it for %s at the route = %+v, want 200 with an access token: a registration that binds the name to the pod's registrar admits the pod",
+			pod, session, daemonAccount, session, answer)
 	}
 }
