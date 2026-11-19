@@ -56,6 +56,13 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import {
+  attributesReordered,
+  type ReorderedBlock,
+  reorderedBlockLine,
+  storedTextProblem,
+  withoutFinalLineFeed,
+} from "./stored-spelling";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -704,89 +711,6 @@ function artifactNameExistsProblem(held: Artifact, owner: string): string {
 }
 
 /**
- * How much of one line a refusal quotes whole. A line of a document is bounded by the document
- * itself, so one differing line can be as long as the whole text, and a quote nobody can read
- * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
- * text below, and the cut is named the same way.
- */
-const STORED_LINE_QUOTED = 200;
-
-/** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
- *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
-function quotedStoredLine(line: string): string {
-  if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
-  const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
-  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
-}
-
-/** The first line the store would write otherwise, which is the line a reader fixes first. The
- *  two texts differ, so one of the three arms answers. Each quote is bounded, since the line it
- *  names can be as long as the document itself. */
-function firstStoredDifference(given: string, stored: string): string {
-  const written = given.split("\n");
-  const holds = stored.split("\n");
-  // Each side is read as `string | undefined`, since a line past the end of its own text is
-  // undefined and the strict packages that compile this file say so. The two are not equal
-  // here, so exactly one arm below answers and the pair can never both be undefined.
-  for (let line = 0; line < Math.max(written.length, holds.length); line += 1) {
-    const wrote = written[line];
-    const held = holds[line];
-    if (wrote === held) continue;
-    if (wrote === undefined && held !== undefined) {
-      return `the store writes a line ${line + 1}, ${quotedStoredLine(held)}`;
-    }
-    if (held === undefined && wrote !== undefined) {
-      return `the store drops line ${line + 1}, ${quotedStoredLine(wrote)}`;
-    }
-    if (wrote !== undefined && held !== undefined) {
-      return `line ${line + 1} reads ${quotedStoredLine(wrote)} and is stored as ${quotedStoredLine(held)}`;
-    }
-  }
-  return "the stored text differs from the text given";
-}
-
-/**
- * How much of the stored text a refusal prints whole. Past it the refusal prints the first whole
- * lines that fit and says how much it cut: a document is up to 1 MiB, and a refusal nobody can
- * read to the end is one nobody acts on. The line a reader fixes first is named before the text
- * either way, so a cut refusal still says what to change.
- */
-const STORED_TEXT_PRINTED = 2000;
-
-/** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
- *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
-function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
-  if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
-  const head = stored.slice(0, STORED_TEXT_PRINTED);
-  const lastLineFeed = head.lastIndexOf("\n");
-  const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
-  return {
-    text,
-    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
-  };
-}
-
-/**
- * The refusal of inline text the store would change: where the two first differ, the way out
- * this name has, and the text the store writes, so the writer can send exactly that text. The
- * markers hold the stored text apart from the prose around it. A name `--path` would store as
- * bytes has a second way out, which keeps the text as it was written; a Markdown name has none,
- * since `--path` parses and renders it the same way (`pathKeepsBytesOf`).
- */
-function storedTextProblem(given: string, stored: string, name: string): string {
-  const asBytes = pathKeepsBytesOf(name)
-    ? ` To keep the text as you wrote it, send it as a file with ${PATH_KEEPS_BYTES}.`
-    : "";
-  const printed = storedTextPrinted(stored);
-  return [
-    `Dispatch stores this text under another spelling: ${firstStoredDifference(given, stored)}.`,
-    ` Send the text Dispatch stores, which is between the two marker lines below.${asBytes}`,
-    `${printed.cut}\n--- the text Dispatch stores ---\n${printed.text}`,
-    "--- end of the text Dispatch stores ---",
-  ].join("");
-}
-
-/**
  * The refusal of an upload whose stored-text check could not run. The check is the one thing that
  * says whether the store would write this text under another spelling, so a failure that is not
  * the route's absence leaves that question open, and an upload sent anyway would store the
@@ -824,14 +748,6 @@ function storedTextCheckFailed(error: unknown, name: string): string {
  */
 function roundTripRouteAbsent(error: unknown): boolean {
   return dispatchAnswered(error, 404) || dispatchAnswered(error, 405);
-}
-
-/** `text` without a final line feed, which is what the stored-text check compares. The store
- *  ends every document it holds with one, so text a writer gave without one comes back with one
- *  and nothing else changed (`markdown_round_trip_test.go` pins "one" stored as "one\n"). That
- *  one line feed is the only difference the check forgives. */
-function withoutFinalLineFeed(text: string): string {
-  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
@@ -878,6 +794,10 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       ]);
     }
   }
+  // The text the upload sends: the text given, or the text Dispatch stores for it when the two
+  // differ only in the order of a typed block's attributes. `reordered` names each such block.
+  let sent = content;
+  let reordered: readonly ReorderedBlock[] = [];
   // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
   // text it would write under another spelling is refused here rather than stored changed.
   // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
@@ -901,13 +821,21 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     }
     // The store ends a document with a line feed the writer's own text need not carry, and
     // that one line feed is no other spelling: both sides lose at most one before they are
-    // compared. Every other difference is refused.
+    // compared. An attribute's position carries no meaning either, so a text whose typed
+    // blocks differ only in that is sent as Dispatch stores it, and the answer says so. Every
+    // other difference is refused.
     if (stored !== undefined && withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)) {
-      throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+      const inOrder = attributesReordered(content, stored);
+      if (inOrder === undefined) {
+        throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+      }
+      sent = stored;
+      reordered = inOrder;
     }
   }
-  // A call with a path uploads that file, one with content stores that text, and one with
-  // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
+  // A call with a path uploads that file, one with content stores that text (`sent`, above),
+  // and one with neither makes an empty document the writer fills in afterwards with dispatch
+  // doc-edit.
   const artifactInput =
     path !== undefined
       ? {
@@ -921,8 +849,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
                   type: Bun.file(resolvePath(input.cwd, path)).type,
                 }),
         }
-      : content !== undefined
-        ? { ...options, content }
+      : sent !== undefined
+        ? { ...options, content: sent }
         : options;
   const result =
     artifactOwner.kind === "project"
@@ -943,6 +871,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       path === undefined && content === undefined
         ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
         : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+      ...reordered.map(reorderedBlockLine),
       ...adviceLines,
     ].join("\n"),
     details:

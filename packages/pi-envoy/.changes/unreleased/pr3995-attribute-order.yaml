@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr3995
+body: |-
+  `dispatch artifact` no longer refuses a document whose typed blocks write their attributes in
+  another order than Dispatch stores. It uploads the text with them in Dispatch's order, and names
+  each such block and that order. A refusal of any other spelling names the first word or
+  attribute that differs, whole. Before, it quoted only the first 200 characters of each line,
+  which could hide the difference.

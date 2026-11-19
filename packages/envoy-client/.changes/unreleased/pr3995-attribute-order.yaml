@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: pr3995
+body: |-
+  `dispatch artifact` uploads inline text whose typed blocks differ from what Dispatch stores only
+  in the order of their attributes. It sends the text with the attributes in Dispatch's order, and
+  its answer names each such block, its line and that order. Before, it refused the text. Its
+  refusal of any other spelling now names the first word or attribute that differs, whole, with
+  the character where a word starts. Before, it quoted only the first 200 characters of each line,
+  so a difference past them did not show, and an attribute moved to the end of a long line looked
+  dropped.

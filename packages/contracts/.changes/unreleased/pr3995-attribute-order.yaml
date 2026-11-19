@@ -1,0 +1,8 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  The `dispatch_artifact` description, its `content` field and `ARTIFACT_STORED_TEXT_RULE` say that
+  a typed block whose attributes differ from Dispatch's only in their order is uploaded with them
+  in Dispatch's order, not refused, and that a refusal names the first word or attribute that
+  differs.

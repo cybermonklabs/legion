@@ -147,11 +147,13 @@ export const ARTIFACT_NAME_EXISTS_RULE =
  * What `dispatch artifact` says of inline text the store would change. The command renders the
  * text as Dispatch renders a document it stores and compares the two, so a text stored under
  * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
- * line feed) is refused before the upload rather than stored changed. The rule holds for both
- * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
- * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
+ * line feed) is refused before the upload rather than stored changed. A typed block's attributes
+ * in another order are the one spelling it stores rather than refuses, since an attribute's
+ * position carries no meaning. The rule holds for both kinds of name: `--path` keeps the bytes of
+ * a name that is not Markdown, and a Markdown name is parsed and rendered whichever flag sends
+ * it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first word or attribute that differs. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /** A name's extension, or undefined for a name with none: what follows its last dot when that
  *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
@@ -1861,7 +1863,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
+          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. Nor is a typed block whose attributes differ only in their order: the upload puts them in Dispatch's order. The refusal prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z
