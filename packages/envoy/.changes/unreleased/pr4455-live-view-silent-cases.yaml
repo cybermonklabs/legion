@@ -7,8 +7,9 @@ body: |-
     that saw it: **Not answering** with the relay's reasons when the relay hears nobody;
     **Unresponsive** with the last-seen time, and a line that the session has not ended, when the
     session list marks it missing its heartbeats; and **Not in the session list** when it leaves
-    the list while the view is open. The line shows above stored messages too, and stays through a
-    lost connection to Dispatch.
+    the list while the view is open. Where the relay and the list both say so, the header reads
+    **Not answering** and the line gives the relay's reasons and then the list's words. The line
+    shows above stored messages too, and stays through a lost connection to Dispatch.
   - The live view, the Inbox thread, the agent card, the mention composer and the default send
     modes treat a session whose capabilities hold no delivery mode as one that takes no messages,
     an empty list included, and the warning names the cause for each list.

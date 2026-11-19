@@ -901,13 +901,15 @@ const NOT_ANSWERING_ABOVE_TURNS =
   "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Only the messages Dispatch keeps show here until it answers.";
 
 /** What the live view says, in the empty transcript or above its turns alike, of a session the
- *  registry holds as unresponsive while the relay still hears it, word for word:
- *  `MISSED_HEARTBEATS_TEXT` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
+ *  registry holds as unresponsive, word for word: alone while the relay still hears it, or after
+ *  the relay's text where it does not. `MISSED_HEARTBEATS_TEXT` in
+ *  `web/src/features/agent-view/AgentConversationPage.tsx`. */
 const MISSED_HEARTBEATS =
   "This session has missed its heartbeats, so the live session list marks it unresponsive. It has not ended.";
 
 /** What the live view says, in the empty transcript or above its turns alike, of a session the
- *  registry no longer holds while the relay still hears it, word for word: `LEFT_LIST_TEXT` in
+ *  registry no longer holds, word for word: alone while the relay still hears it, or after the
+ *  relay's text where it does not. `LEFT_LIST_TEXT` in
  *  `web/src/features/agent-view/AgentConversationPage.tsx`. */
 const LEFT_LIST = "The live session list no longer holds this session.";
 

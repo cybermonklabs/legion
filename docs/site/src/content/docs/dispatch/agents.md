@@ -270,6 +270,9 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   list**, and the line says so.
   A turn the session still streams changes neither of the last two, and a lost connection to
   Dispatch does not remove the line.
+  When the session does not answer the live view and the list also marks it or no longer holds it,
+  the header reads **Not answering**, beside **Unresponsive** where the list marks it, and the line
+  says first what can cause that and then what the list says.
   When Dispatch cannot read the session list for a while (it is refilling or unreachable), the
   page keeps what the list last said: the header does not go back to **Live**, and the line stays.
   The page reads the session list every 15 seconds, and Dispatch's copy of that list is at most
