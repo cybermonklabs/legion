@@ -1,4 +1,4 @@
-import { DOCUMENT_CLIENT_ID_MESSAGE_PREFIX, DOCUMENT_CLIENT_ID_PARAMETER } from "@legion/contracts";
+import { DOCUMENT_CLIENT_ID_PARAMETER } from "@legion/contracts";
 import {
   createDecoder,
   type Decoder,
@@ -8,14 +8,16 @@ import {
 } from "lib0/decoding";
 import * as Y from "yjs";
 
+import { readClientIdMessage } from "../web/src/features/doc/sync-frame";
+import { createIssue, createProject, getArtifactText, newestArtifactVersion } from "./api";
 import {
-  createIssue,
-  createProject,
-  getArtifact,
-  getArtifactText,
-  getArtifactVersion,
-} from "./api";
-import { connectedDot, cursorLabel, documentEditor, placeCaret, typeAtEnd } from "./editor";
+  connectedDot,
+  cursorLabel,
+  documentEditor,
+  pendingEditCount,
+  placeCaret,
+  typeAtEnd,
+} from "./editor";
 import { expect, type Page, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
@@ -104,17 +106,7 @@ function messageOf(frame: Uint8Array): { decoder: Decoder; type: number } {
 /** The client id a socket's first frame gave the page, as the page reads it. */
 function givenId(received: Uint8Array[]): number | undefined {
   const first = received[0];
-  if (first === undefined) {
-    return undefined;
-  }
-  const { decoder, type } = messageOf(first);
-  if (type !== 5) {
-    return undefined;
-  }
-  const payload = readVarString(decoder);
-  return payload.startsWith(DOCUMENT_CLIENT_ID_MESSAGE_PREFIX)
-    ? Number(payload.slice(DOCUMENT_CLIENT_ID_MESSAGE_PREFIX.length))
-    : undefined;
+  return first === undefined ? undefined : readClientIdMessage(first);
 }
 
 /** The client of every struct in the Update frames a socket sent, decoded as the server decodes it. */
@@ -144,32 +136,6 @@ function announcedClients(sent: Uint8Array[]): number[] {
     }
     return clients;
   });
-}
-
-/** How many rows the page's browser holds for the document. */
-function pendingEditCount(page: Page, artifactId: string): Promise<number> {
-  return page.evaluate(async (id) => {
-    const opened = Promise.withResolvers<IDBDatabase>();
-    const opening = indexedDB.open("dispatch-pending-edits");
-    opening.onerror = () => opened.reject(opening.error);
-    opening.onsuccess = () => opened.resolve(opening.result);
-    const database = await opened.promise;
-    try {
-      if (!database.objectStoreNames.contains("edits")) {
-        return 0;
-      }
-      const counted = Promise.withResolvers<number>();
-      const counting = database
-        .transaction("edits", "readonly")
-        .objectStore("edits")
-        .count(IDBKeyRange.bound([id], [id, []]));
-      counting.onerror = () => counted.reject(counting.error);
-      counting.onsuccess = () => counted.resolve(counting.result);
-      return await counted.promise;
-    } finally {
-      database.close();
-    }
-  }, artifactId);
 }
 
 test("a page given a client id above 2^32 types, settles a version, reconnects under it, shows its cursor and replays a saved row under it", async ({
@@ -211,18 +177,13 @@ test("a page given a client id above 2^32 types, settles a version, reconnects u
     // A version settles holding what was typed under it, attributed to alice.
     await expect
       .poll(async () => {
-        const versions = (await getArtifact(artifactId)).versions ?? [];
-        const newest = versions.reduce<(typeof versions)[number] | undefined>(
-          (latest, version) => (latest && latest.number > version.number ? latest : version),
-          undefined
-        );
+        const newest = await newestArtifactVersion(artifactId);
         if (newest === undefined) {
           return undefined;
         }
-        const { markdown } = await getArtifactVersion(artifactId, newest.number);
         return {
-          alice: newest.authors?.some(({ id }) => id === "alice") ?? false,
-          holds: markdown.includes("minted"),
+          alice: newest.version.authors?.some(({ id }) => id === "alice") ?? false,
+          holds: newest.markdown.includes("minted"),
         };
       })
       .toEqual({ alice: true, holds: true });

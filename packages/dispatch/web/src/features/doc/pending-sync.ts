@@ -504,7 +504,7 @@ export function startPendingSync({
           return;
         }
         // The store counts and reads from the moment it opens, and keys a row only once it knows
-        // the client id this document writes under (`PendingEdits.keyed`).
+        // the client id this tab's rows are keyed by, the document's first (`PendingEdits.keyed`).
         await edits.keyed;
         const row = edits.record(update);
         entry.seq = row.seq;
@@ -526,12 +526,17 @@ export function startPendingSync({
     return entry;
   };
 
-  // The stored rows of every client but this tab's. This tab's own rows hold edits this document
-  // already has: applying them again records nothing anew, and judged against this document they
-  // always look as if they changed nothing, so restoring or pruning them would drop what the
-  // server may not have acknowledged yet.
-  const otherClientsRows = (rows: readonly RestoredEdit[]): RestoredEdit[] =>
-    rows.filter((row) => row.key[1] !== doc.clientID);
+  // The stored rows of every client but this tab's. This tab's rows are the ones under the id its
+  // store keys them by (`PendingEdits.keyed`): the document's first id, which is not always the one
+  // it writes under, since a later socket can move a document that has written nothing to another
+  // id (`connection.ts`, `takeClientId`). They hold edits this document already has: applying them
+  // again records nothing anew, and judged against this document they always look as if they
+  // changed nothing, so restoring or pruning them would drop what the server may not have
+  // acknowledged yet.
+  const otherClientsRows = async (edits: PendingEdits): Promise<RestoredEdit[]> => {
+    const own = await edits.keyed;
+    return (await edits.restoreRows()).filter((row) => row.key[1] !== own);
+  };
 
   // Judges the stored rows of a read-only admission again, one pass at a time: a pass queued while
   // none has started yet covers every request made before it starts.
@@ -549,7 +554,7 @@ export function startPendingSync({
         if (destroyed || edits === undefined) {
           return;
         }
-        const rows = await edits.restoreRows();
+        const rows = await otherClientsRows(edits);
         if (destroyed) {
           return;
         }
@@ -559,7 +564,7 @@ export function startPendingSync({
         // after; a read-only load that derives the same stamp leaves that first row alone
         // changing nothing, yet dropping it would lose the typing.
         const byClient = new Map<number, RestoredEdit[]>();
-        for (const row of otherClientsRows(rows)) {
+        for (const row of rows) {
           const client = byClient.get(row.key[1]);
           if (client === undefined) {
             byClient.set(row.key[1], [row]);
@@ -712,7 +717,7 @@ export function startPendingSync({
       return;
     }
     try {
-      const restored = otherClientsRows(await edits.restoreRows());
+      const restored = await otherClientsRows(edits);
       if (destroyed || restored.length === 0) {
         await report();
         return;
@@ -859,20 +864,21 @@ export function startPendingSync({
       // document replays each restored row as an Update of its own, and the client of the one
       // the server refuses then is the one whose rows go.
       const named = new Set(
-        clients ??
-          (entry?.kind === "update"
-            ? Y.decodeUpdate(entry.update).structs.map((struct) => struct.id.client)
-            : [])
+        clients ?? (entry?.kind === "update" ? Y.parseUpdateMeta(entry.update).from.keys() : [])
       );
       if (destroyed || named.size === 0) {
         return 0;
       }
       const writesUnder = (update: Uint8Array): boolean =>
-        Y.decodeUpdate(update).structs.some((struct) => named.has(struct.id.client));
+        [...Y.parseUpdateMeta(update).from.keys()].some((client) => named.has(client));
       try {
         derived = derived.filter((held) => !writesUnder(held.update));
-        const dropping = recorded.filter((entry) => writesUnder(entry.update));
-        recorded = recorded.filter((entry) => !writesUnder(entry.update));
+        const dropping: RecordedUpdate[] = [];
+        const kept: RecordedUpdate[] = [];
+        for (const entry of recorded) {
+          (writesUnder(entry.update) ? dropping : kept).push(entry);
+        }
+        recorded = kept;
         await Promise.all(dropping.map((entry) => entry.written));
         for (const entry of dropping) {
           persistedSeqByOrdinal.delete(entry.ordinal);

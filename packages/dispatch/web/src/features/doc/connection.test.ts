@@ -1321,6 +1321,92 @@ test("a page that has written under its client id and is given another is refuse
   });
 });
 
+// The room took every edit the page typed under the id its first socket gave it, and a later
+// socket gives it another: its person signed in again as someone else, say, whose admission is
+// given an id of its own (client_ids.go, keepsClient). The page is refused as one holding edits
+// under an id Dispatch did not give it, though no saved row goes with the refusal: the room holds
+// every edit, so the notice names none as lost.
+test("a page refused its client id after the room took every edit under it is told no edit went", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const given = 2 ** 32 + 21;
+  await withProvider(artifact, async ({ connection, dropped, refusals, socket, synced }) => {
+    const first = await socket(0);
+    first.receive(clientIdFrame(given, artifact));
+    serveInYgoOrder(first, server, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    typeInto(connection.doc, " typed");
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, given, 1]]));
+    answerUpdates(first, server, artifact);
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([]));
+
+    first.drop();
+    const second = await socket(1);
+    second.receive(clientIdFrame(given + 1, artifact));
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON]));
+    expect(dropped).toEqual([0]);
+    expect(refusedEditNotice(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, dropped[0])).toBe(
+      "Dispatch has reloaded the document: this page had it open under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept."
+    );
+  });
+});
+
+// A page that has typed nothing under the id its first socket gave it takes the one a later
+// socket gives it instead (`takeClientId`): its person signed in again as someone else, say. Its
+// saved rows stay keyed by the first id (`PendingEdits.keyed`), so what it types after is saved
+// under that key and written under the new id, and is still this page's own: a read-only
+// admission, which judges the rows of other tabs, leaves it saved until the room takes it.
+test("a page given another client id before it typed keeps what it types after as its own saved rows", async () => {
+  const artifact = artifactId();
+  const server = serverWith("shared", 100);
+  const firstGiven = 2 ** 32 + 31;
+  const laterGiven = 2 ** 32 + 32;
+  // Each admission's restore or prune of the saved rows, which the transport starts.
+  const running: Promise<void>[] = [];
+  const realStart = startPendingSync;
+  const started = spyOn(pendingSyncModule, "startPendingSync").mockImplementation((options) => {
+    const sync = realStart(options);
+    return {
+      ...sync,
+      synced() {
+        const admitting = sync.synced();
+        running.push(admitting);
+        return admitting;
+      },
+    };
+  });
+  try {
+    await withProvider(artifact, async ({ connection, pending, socket, synced }) => {
+      const first = await socket(0);
+      first.receive(clientIdFrame(firstGiven, artifact));
+      serveInYgoOrder(first, server, "read-write", artifact);
+      await waitFor(() => expect(synced()).toBe(true));
+
+      first.drop();
+      const second = await socket(1);
+      second.receive(clientIdFrame(laterGiven, artifact));
+      expect(connection.doc.clientID).toBe(laterGiven);
+      serveInYgoOrder(second, server, "read-write", artifact);
+      typeInto(connection.doc, " typed");
+      await waitFor(() => expect(updateClients(second, artifact)).toEqual([laterGiven]));
+      await waitFor(async () =>
+        expect(await rowsOf(artifact)).toEqual([[artifact, firstGiven, 1]])
+      );
+
+      // The issue closes before the room takes the edit, and the socket reconnects read-only.
+      second.drop();
+      const third = await socket(2);
+      third.receive(clientIdFrame(laterGiven, artifact));
+      serveInYgoOrder(third, server, "readonly", artifact);
+      await Promise.all(running);
+      expect(await rowsOf(artifact)).toEqual([[artifact, firstGiven, 1]]);
+      expect(pending.at(-1)).toMatchObject({ count: 1, readOnly: true });
+    });
+  } finally {
+    started.mockRestore();
+  }
+});
+
 test("a server that gives no client id leaves the page the id its document drew, and its presence goes out once that is known", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);

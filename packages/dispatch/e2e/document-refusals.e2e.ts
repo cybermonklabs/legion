@@ -22,6 +22,7 @@ import {
   documentTransport,
   openSpec,
   paste,
+  pendingEditCount,
   placeCaret,
   typeAtEnd,
 } from "./editor";
@@ -101,40 +102,6 @@ async function documentAtTheBound(title: string) {
     name: "at-the-bound.md",
   });
   return { artifact, issue, path: `/issues/${issue.key}/artifacts/${artifact.slug}` };
-}
-
-async function pendingEditCount(page: Page, artifactId: string): Promise<number> {
-  return page.evaluate(async (id) => {
-    const database = await new Promise<IDBDatabase | undefined>((resolve, reject) => {
-      let request: IDBOpenDBRequest;
-      try {
-        request = indexedDB.open("dispatch-pending-edits");
-      } catch {
-        resolve(undefined);
-        return;
-      }
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-    });
-    if (database === undefined) {
-      return 0;
-    }
-    try {
-      if (!database.objectStoreNames.contains("edits")) {
-        return 0;
-      }
-      return await new Promise<number>((resolve, reject) => {
-        const request = database
-          .transaction("edits", "readonly")
-          .objectStore("edits")
-          .count(IDBKeyRange.bound([id], [id, []]));
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-      });
-    } finally {
-      database.close();
-    }
-  }, artifactId);
 }
 
 /** What a page's document sockets were told, as a row reads it: the close code of every document

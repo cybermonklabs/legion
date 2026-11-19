@@ -597,7 +597,7 @@ const MOUNTS: readonly Mount[] = [
         <ConnectionDot connection="failed" pending={undefined} />
         <ConnectionDot
           connection="offline"
-          pending={{ count: 2, readOnly: false, rebuiltAt: undefined, stored: true }}
+          pending={{ count: 2, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false }}
         />
       </>
     ),

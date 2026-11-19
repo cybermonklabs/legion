@@ -2654,7 +2654,7 @@ test("the default shapes keep main's class strings", async () => {
         <ConnectionDot connection="failed" pending={undefined} />
         <ConnectionDot
           connection="offline"
-          pending={{ count: 2, readOnly: false, rebuiltAt: undefined, stored: true }}
+          pending={{ count: 2, readOnly: false, rebuiltAt: undefined, stored: true, unsent: false }}
         />
       </div>
       <div data-case="closed picker">

@@ -1,9 +1,9 @@
 /**
  * The edits a browser made to a live document that the server has not yet said it applied, kept
  * in IndexedDB so a reload does not lose them. One database for every document, one object store
- * of rows keyed `[artifactId, clientId, seq]`: each tab writes under its own document's client id,
- * so no tab overwrites another's rows, and `seq` counts that client's edits in the order it made
- * them. `pending-sync.ts` decides what is recorded and when a row is cleared.
+ * of rows keyed `[artifactId, clientId, seq]`: each tab keys its rows by the first client id its
+ * document took, so no tab overwrites another's rows, and `seq` counts that client's edits in the
+ * order it made them. `pending-sync.ts` decides what is recorded and when a row is cleared.
  */
 
 const DATABASE = "dispatch-pending-edits";
@@ -30,11 +30,12 @@ export interface RestoredEdit {
 }
 
 export interface PendingEdits {
-  /** Settles once the store holds the client id this browser's rows are keyed by and has read
-   * that client's last sequence number: `record`, `clear` and `clearThrough` are that client's, and
-   * are called only after it has, while the reads of every client's rows answer from the moment
-   * the store opens. */
-  keyed: Promise<void>;
+  /** Settles with the client id this browser's rows are keyed by, once the store holds it and has
+   * read that client's last sequence number: `record`, `clear` and `clearThrough` are that
+   * client's, and are called only after it has, while the reads of every client's rows answer from
+   * the moment the store opens. The id never changes after, so the rows under it are the ones this
+   * store recorded, whatever id its document writes under later (`pending-sync.ts`). */
+  keyed: Promise<number>;
   /** Appends `update` as this client's next row. The sequence number is assigned at once;
    * `written` settles when the row is stored. */
   record(update: Uint8Array): { seq: number; written: Promise<void> };
@@ -126,6 +127,7 @@ export async function openPendingEdits(
         )
     );
     own = { id, seq: last === null ? 0 : (last.primaryKey as PendingKey)[2] };
+    return id;
   });
   // A store closed before its id came refuses that read; whoever waits on `keyed` is told.
   void keyed.catch(() => undefined);

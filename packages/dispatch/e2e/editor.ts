@@ -377,6 +377,39 @@ export function openDocumentSockets(page: Page): () => number {
   return () => open;
 }
 
+/** How many saved rows the page's browser holds for the document, in the database the page keeps
+ *  its unsent edits in (web/src/features/doc/pending-edits.ts): 0 where the browser holds no such
+ *  database yet or refuses to open one. */
+export function pendingEditCount(page: Page, artifactId: string): Promise<number> {
+  return page.evaluate(async (id) => {
+    let opening: IDBOpenDBRequest;
+    try {
+      opening = indexedDB.open("dispatch-pending-edits");
+    } catch {
+      return 0;
+    }
+    const opened = Promise.withResolvers<IDBDatabase>();
+    opening.onerror = () => opened.reject(opening.error);
+    opening.onsuccess = () => opened.resolve(opening.result);
+    const database = await opened.promise;
+    try {
+      if (!database.objectStoreNames.contains("edits")) {
+        return 0;
+      }
+      const counted = Promise.withResolvers<number>();
+      const counting = database
+        .transaction("edits", "readonly")
+        .objectStore("edits")
+        .count(IDBKeyRange.bound([id], [id, []]));
+      counting.onerror = () => counted.reject(counting.error);
+      counting.onsuccess = () => counted.resolve(counting.result);
+      return await counted.promise;
+    } finally {
+      database.close();
+    }
+  }, artifactId);
+}
+
 /** Identifies a Hocuspocus server acknowledgement without duplicating its wire constants. */
 function isSyncStatusFrame(message: string | Buffer): boolean {
   if (typeof message === "string") {

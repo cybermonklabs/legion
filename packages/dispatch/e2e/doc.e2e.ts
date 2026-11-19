@@ -12,8 +12,8 @@ import {
   editArtifact,
   getArtifact,
   getArtifactText,
-  getArtifactVersion,
   holdDocumentAdmission,
+  newestArtifactVersion,
   patchIssue,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
@@ -240,20 +240,17 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     // attributed to both of them and holds what each of them typed.
     await expect
       .poll(async () => {
-        const versions = (await getArtifact(artifactId)).versions ?? [];
-        const newest = versions.reduce<(typeof versions)[number] | undefined>(
-          (latest, version) => (latest && latest.number > version.number ? latest : version),
-          undefined
-        );
+        const newest = await newestArtifactVersion(artifactId);
         if (!newest) {
           return undefined;
         }
-        const { markdown } = await getArtifactVersion(artifactId, newest.number);
         return {
-          authors: newest.authors?.map(({ id }) => id).sort(),
-          named: newest.named,
-          summary: newest.summary,
-          typed: ["hello from alice", "hello from bob"].filter((typed) => markdown.includes(typed)),
+          authors: newest.version.authors?.map(({ id }) => id).sort(),
+          named: newest.version.named,
+          summary: newest.version.summary,
+          typed: ["hello from alice", "hello from bob"].filter((typed) =>
+            newest.markdown.includes(typed)
+          ),
         };
       })
       .toEqual({

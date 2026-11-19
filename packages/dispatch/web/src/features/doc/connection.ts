@@ -113,9 +113,13 @@ export function reconnectingNotice(
  * replaced history is: the restore drops each of those rows and reports when they were saved
  * (`pending-sync.ts`, `addsParking`). The client id refusal names how many edits went, `dropped`:
  * every saved row under the refused id goes with the refused edit, since each would meet the same
- * refusal (`dropClientRows`), so its notice says no more than that. Of these refusals the page
- * offers a rebuild only for `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps
- * (`ProofDocument`); a rebuild of a document just rebuilt is answered 409.
+ * refusal (`dropClientRows`), so its notice says no more than that. Where none went, the notice
+ * names no edit as lost and says only that what reached Dispatch is kept: the browser held no
+ * saved row under that id, as when every edit the page made under it had reached Dispatch before a
+ * later socket would not give the id back (`takeClientId`). A browser that keeps no rows
+ * (`PendingState.stored`) counts none either, whatever its document held unsent. Of these refusals
+ * the page offers a rebuild only for `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild
+ * helps (`ProofDocument`); a rebuild of a document just rebuilt is answered 409.
  */
 export function refusedEditNotice(reason: string, dropped?: number): string {
   switch (reason) {
@@ -128,7 +132,10 @@ export function refusedEditNotice(reason: string, dropped?: number): string {
     case DOCUMENT_UPDATE_REFUSED_CLOSE_REASON:
       return "Your last edit was not saved: it holds content this document does not take.";
     case DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON: {
-      const count = Math.max(1, dropped ?? 1);
+      if (dropped === 0) {
+        return "Dispatch has reloaded the document: this page had it open under an editing identity Dispatch did not give you. Every edit of yours that reached Dispatch is kept.";
+      }
+      const count = dropped ?? 1;
       return count === 1
         ? "1 of your edits was not saved: it was made under an editing identity Dispatch did not give you, so it cannot be sent. Dispatch has reloaded the document."
         : `${count} of your edits were not saved: they were made under an editing identity Dispatch did not give you, so they cannot be sent. Dispatch has reloaded the document.`;
@@ -300,8 +307,10 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // The document starts with the id Yjs drew for it, which it never writes or announces under:
     // the first frame of its first socket gives it the one Dispatch gave this page
     // (`takeClientId`), and every later socket presents that id back and is given it again. So
-    // the same document keeps one client id across every reconnect, its offline edits included,
-    // and only a new document - the host's rebuild after a refusal - takes a fresh one.
+    // the same document writes under one client id across every reconnect, its offline edits
+    // included, and only a new document - the host's rebuild after a refusal - takes a fresh one.
+    // A later socket that gives another id moves the document to it only while it has written
+    // nothing under the one it holds.
     const doc = new Doc();
     // y-protocols makes an awareness with an empty state under the document's id. That id is not
     // the one this document will write under, so the state is taken back before the provider
@@ -309,11 +318,11 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // and set again under the id the first socket gives (`takeClientId`).
     const presence = new Presence(doc);
     presence.setLocalState(null);
-    // `clientId` settles as the document takes the id it writes under, which is when its saved
-    // rows can be keyed by it; `socketAnswered` is whether the current socket has delivered its
-    // first frame, the one that names that id.
+    // `clientId` settles as the document takes its first id, which its saved rows are keyed by
+    // from then on, under whatever id a later socket moves it to (`PendingEdits.keyed`);
+    // `socketAnswered` is whether the current socket has delivered its first frame, the one that
+    // names that id.
     const clientId = Promise.withResolvers<number>();
-    let clientIdTaken = false;
     let socketAnswered = false;
     let destroyed = false;
     // Whether any admission has been handed to the pending sync: the first one's restore ends in
@@ -443,13 +452,16 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // Takes the client id the current socket's first frame names (`readClientIdMessage`), or
     // keeps the one the document holds when that frame names none, as a server of a build from
     // before Dispatch gave client ids out sends none. The id is the document's own until it has
-    // written under it: a document that has not - the first socket's, before any edit - takes
-    // the id it is given, with its awareness, whose client id y-protocols copied from the document
-    // when the provider made it. One that has, and is given another id, holds edits the server
-    // will not take as this person's: it is refused as such an edit is, and the host rebuilds it
-    // under a fresh id. Its presence is announced only from here (the provider's own announcement
-    // at each socket's open sends nothing while the local state is null), so no other reader ever
-    // sees it under an id the server did not give it.
+    // written under it: a document that has not - the first socket's, and a later one's that has
+    // written nothing yet - takes the id it is given, with its awareness, whose client id
+    // y-protocols copied from the document when this connection made it (`new Presence(doc)`,
+    // above). One that has, and is given another id, holds edits the server will not take as this
+    // person's: it is refused as such an edit is, and the host rebuilds it under a fresh id. Only
+    // the first id it takes settles `clientId`, so its saved rows stay keyed by that one whatever
+    // id a later socket moves it to, and the pending sync reads them as this page's own by that
+    // key (`otherClientsRows`). Its presence is announced only from here (the provider's own
+    // announcement at each socket's open sends nothing while the local state is null), so no other
+    // reader ever sees it under an id the server did not give it.
     const takeClientId = (given: number | undefined) => {
       const held = doc.clientID;
       if (given !== undefined && given !== held) {
@@ -470,10 +482,7 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         presence.setLocalState({});
       }
       parameters[DOCUMENT_CLIENT_ID_PARAMETER] = String(doc.clientID);
-      if (!clientIdTaken) {
-        clientIdTaken = true;
-        clientId.resolve(doc.clientID);
-      }
+      clientId.resolve(doc.clientID);
     };
     // Decides when the next socket goes out after every close that ends no refusal: a socket the
     // server answered and one that failed before any answer alike, `DOCUMENT_BUSY_CLOSE_CODE`
@@ -608,26 +617,20 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       token: String(callbacks.schemaVersion),
       websocketProvider: websocket,
     });
-    const awareness = provider.awareness;
-    if (awareness === null) {
-      provider.destroy();
-      websocket.destroy();
-      doc.destroy();
-      throw new Error("Dispatch document provider did not create awareness.");
-    }
     sync = startPendingSync({
       doc,
       onChange: callbacks.onPending,
       remoteOrigin: provider,
       // The store opens at once, so the rows earlier pages saved are named while no socket has
       // answered yet - a reload with the network down shows them. The rows this document saves
-      // are keyed by the id it writes under, which its first socket gives it; no edit is typed
-      // before then, since the editor is made only once that socket has synced (`onSynced`).
+      // are keyed by the first id it takes, which its first socket gives it (`clientId`); no edit
+      // is typed before then, since the editor is made only once that socket has synced
+      // (`onSynced`).
       store: openPendingEdits(artifactId, clientId.promise),
     });
     void websocket.connect();
     return {
-      awareness,
+      awareness: presence,
       destroy() {
         if (destroyed) {
           return;

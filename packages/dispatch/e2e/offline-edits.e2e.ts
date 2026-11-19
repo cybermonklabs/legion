@@ -1,6 +1,12 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
-import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import {
+  connectedDot,
+  documentEditor,
+  documentTransport,
+  pendingEditCount,
+  typeAtEnd,
+} from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -25,40 +31,6 @@ async function reconnectNow(page: Parameters<typeof documentTransport>[0]): Prom
     }, PROBE)
     .toBe(1);
   await expect(connectedDot(page)).toHaveText("connected");
-}
-
-async function pendingEditCount(page: Parameters<typeof documentTransport>[0], artifactId: string) {
-  return page.evaluate(async (id) => {
-    const database = await new Promise<IDBDatabase | undefined>((resolve, reject) => {
-      let request: IDBOpenDBRequest;
-      try {
-        request = indexedDB.open("dispatch-pending-edits");
-      } catch {
-        resolve(undefined);
-        return;
-      }
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-    });
-    if (database === undefined) {
-      return 0;
-    }
-    try {
-      if (!database.objectStoreNames.contains("edits")) {
-        return 0;
-      }
-      return await new Promise<number>((resolve, reject) => {
-        const request = database
-          .transaction("edits", "readonly")
-          .objectStore("edits")
-          .count(IDBKeyRange.bound([id], [id, []]));
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => resolve(request.result);
-      });
-    } finally {
-      database.close();
-    }
-  }, artifactId);
 }
 
 async function makeIssue() {

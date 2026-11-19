@@ -908,6 +908,21 @@ export function getArtifactVersion(id: string, version: number, options: ApiOpti
   );
 }
 
+/** The document's newest version, as `getArtifact` lists its versions, with the markdown that
+ *  version holds; undefined while it has none. */
+export async function newestArtifactVersion(id: string, options: ApiOptions = {}) {
+  const versions = (await getArtifact(id, options)).versions ?? [];
+  const newest = versions.reduce<(typeof versions)[number] | undefined>(
+    (latest, version) => (latest && latest.number > version.number ? latest : version),
+    undefined
+  );
+  if (newest === undefined) {
+    return undefined;
+  }
+  const { markdown } = await getArtifactVersion(id, newest.number, options);
+  return { markdown, version: newest };
+}
+
 export function editArtifact(
   id: string,
   input: Body<"/api/v1/artifacts/{id}/edits", "post">,
