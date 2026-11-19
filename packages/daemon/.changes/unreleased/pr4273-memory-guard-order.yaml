@@ -1,22 +1,25 @@
 kind: Changed
 body: |-
     The memory guard in a gVisor issue pod's launcher ends processes in a new order: first the one
-    that grew the most over its last few reads, then the largest one new to its stay near the
-    limit that holds memory of its own, then the one that grew the most since the guard's first
-    kill of that stay, and the largest only where none of these applies, with a fork that still
-    runs its parent's program counted by what it holds over its parent. From halfway between the
-    share it acts at (`act_percent`, the mark) and the limit, 92.5% at the default 85, it ends at
-    one reading every process that grew and every one new to its stay that holds memory of its
-    own, each with its own `ended` line, the first naming its rule and the others `rule=urgent`;
-    below that it ends one a reading. At the first reading at the mark it decides on the sizes it
-    read below the mark, so its first kill comes within one interval, or two where it must search
-    for a process started just before. After a kill it waits only until the processes it killed
-    have exited, and at most `wait_seconds`, which stays 5 for issue pods, and then goes on at each
-    reading. Each `ended` line gains `rule=`, `sizes=`, `less_parent=` and `new_read=` before
-    `executable=`, saying which rule chose the process and from what, and each
-    `stopped for this rise` line gains `unread_processes=` at its end, naming the processes the
-    guard could not read. docs/kubernetes.md, "The memory guard in an issue pod", gives the whole
-    order, what each field means and the gVisor measurements behind them.
+    that grew the most over its last few reads, then the largest one new to its stay near the limit
+    that holds memory of its own, then the one that grew the most since the guard's first kill of
+    that stay, and the largest only where none of these applies, with a fork that still runs its
+    parent's program counted by what it holds over its parent. From halfway between the share it
+    acts at (`act_percent`, the mark) and the limit, 92.5% at the default 85, it ends at one
+    reading every process that grew and, where one it may end is not new to its stay, every one new
+    to its stay that holds memory of its own, each with its own `ended` line, the first naming its
+    rule and the others `rule=urgent`; below that it ends one a reading.
+    `runtime.kubernetes.memory_guard.issue_pods.act_percent` now goes up to 90, where it went up to
+    95, so that this share stays at most 95% of the limit, below the point where the host ends a 4
+    GiB pod; a file that sets 91 to 95 is refused at load, naming the key. At the first reading at
+    the mark it decides on the sizes it read below the mark, so its first kill comes within one
+    interval, or two where it must search for a process started just before. After a kill it waits
+    only until the processes it killed have exited, and at most `wait_seconds`, which stays 5 for
+    issue pods, and then goes on at each reading. Each `ended` line gains `rule=`, `sizes=`,
+    `less_parent=` and `new_read=` before `executable=`, saying which rule chose the process and
+    from what, and each `stopped for this rise` line gains `unread_processes=` at its end, naming
+    the processes the guard could not read. docs/kubernetes.md, "The memory guard in an issue pod",
+    gives the whole order, what each field means and the gVisor measurements behind them.
 time: 2026-11-17T09:37:25Z
 custom:
     Issue: pr4273
