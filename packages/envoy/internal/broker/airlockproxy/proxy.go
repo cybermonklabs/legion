@@ -42,7 +42,6 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
-	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -125,7 +124,9 @@ type Options struct {
 	// of megabytes the real budget takes to fill.
 	HashBudget int64
 	// Log is where the line for each call to a bound host goes, and the line for each refusal of
-	// this port. Nil is slog.Default().
+	// this port. Nil is slog.Default(), which in the broker writes through the placeholder mask
+	// (cmd/broker's setUpLogging, logmask.Writer): a line can name a placeholder a command wrote
+	// into its own text, so a logger given here must write through that mask too.
 	Log *slog.Logger
 	// Answers is broker_answers_total (answer.NewAnswers), which each answer a handler of this
 	// port writes is counted on under caller class airlock, beside the API port's answers; an
@@ -234,6 +235,15 @@ type Server struct {
 	// forwards, a socket of its own for each (New).
 	upstream *http.Transport
 	forward  *http.Transport
+	// errorLog is the log.Logger both servers' ErrorLog and both ReverseProxies' (servePlain,
+	// serveBound) are: the lines net/http's servers and httputil write of their own go through
+	// log, so each is the airlock's own line, cut and with its peer bytes hidden (slogWriter), and
+	// an error httputil logs can quote what a service sent, its trailers among it. net/http's
+	// Transport has no ErrorLog: what it logs - what a service sent on an idle connection, which
+	// it quotes - it writes with log.Printf to the standard logger, which cmd/broker writes through
+	// its own handler in the same way (logmask.StandardLog), and which is the one place a line of
+	// the proxy's goes that is not this logger.
+	errorLog *log.Logger
 	serveOne sync.Once
 
 	// conns is the CONNECT target and the grant of each decrypted connection, which
@@ -327,9 +337,6 @@ func New(o Options) *Server {
 	if s.log == nil {
 		s.log = slog.Default()
 	}
-	// Every line this package writes - net/http's through slogWriter among them - is written
-	// with each placeholder in its text masked (maskedHandler).
-	s.log = slog.New(maskedHandler{s.log.Handler()})
 	if s.resolve == nil {
 		s.resolve = ResolveHost
 	}
@@ -381,7 +388,7 @@ func New(o Options) *Server {
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
-	errorLog := log.New(slogWriter{log: s.log}, "", 0)
+	s.errorLog = log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): a CONNECT the
 		// proxy takes over answers 200 on the connection itself. net/http's own answers, which
@@ -390,7 +397,7 @@ func New(o Options) *Server {
 		Handler:           s.record(http.StatusOK, s.serveProxy),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
-		ErrorLog:          errorLog,
+		ErrorLog:          s.errorLog,
 	}
 	s.inner = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): an upgrade
@@ -401,7 +408,7 @@ func New(o Options) *Server {
 		Handler:           s.record(http.StatusSwitchingProtocols, s.serveBound),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
-		ErrorLog:          errorLog,
+		ErrorLog:          s.errorLog,
 		// The two protocols connectBound's TLS offers, named rather than left to net/http's
 		// default, which a TLSNextProto map set beside it would narrow to HTTP/1 alone. The
 		// one switch that still takes HTTP/2 away is GODEBUG=http2server=0, which net/http
@@ -886,6 +893,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	proxy := &httputil.ReverseProxy{
 		Transport:     s.forward,
 		FlushInterval: -1,
+		// httputil's own lines - a body copy that failed, which quotes what the service sent -
+		// go through this package's log rather than the standard logger (Server.errorLog).
+		ErrorLog: s.errorLog,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
 			pr.Out.Header.Del("Proxy-Authorization")
@@ -896,22 +906,6 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	// The service's answer, which the proxy carries and does not write (record).
 	answerOf(w).carry()
 	proxy.ServeHTTP(w, r)
-}
-
-// upstreamMessage is the message of the line a call the proxy could not carry to its service logs
-// (badGateway).
-const upstreamMessage = "airlock proxy: upstream"
-
-// badGateway answers a service that could not be reached or did not answer: a failure, which it
-// logs and counts, and no refusal. The error is the transport's own and carries no header of the
-// request, so nothing of the grant is in it. The path, and on a plain request the host, are the
-// caller's, and the error may quote the host, so the line passes answer.ClipFields as a call's
-// line does, and stays one Cloud Logging entry whatever the caller sent.
-func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
-	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", err})...)
-		fail(w, http.StatusBadGateway, codeUpstream, host+": "+err.Error())
-	}
 }
 
 // hijack takes the client's connection over from the outer server, with whatever the client
@@ -934,42 +928,6 @@ func hijack(hijacker http.Hijacker) (net.Conn, error) {
 		return &prefixConn{Conn: conn, rest: bytes.NewReader(slices.Clone(ahead))}, nil
 	}
 	return conn, nil
-}
-
-// netHTTPMessage is the message of the line net/http writes through the ErrorLog of either
-// server (slogWriter): for example a connection that failed before a handler saw it, such as a
-// TLS handshake on a bound connection that failed, an accept that failed, and a handler's panic,
-// which net/http recovers and logs with the stack of the goroutine that panicked.
-const netHTTPMessage = "airlock proxy: net/http"
-
-// slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage: the first line
-// of net/http's text as its error, and the rest of the text, where there is any, as its stack.
-//
-// The first line can quote what the client sent: a handshake that failed on a bound connection is
-// logged with crypto/tls's error, which for an ALPN list without http/1.1 quotes the client's
-// whole list, up to about 64 KB of protocol names, each byte of which %q may write as four and
-// the JSON handler then escapes again. So the error passes answer.ClipFields as a call's line
-// does.
-//
-// The rest is the stack net/http writes under a handler's panic it recovered, after any further
-// lines of the panic value's own text, and it is kept whole, with no cut of its own: neither
-// server recovers a panic before net/http does (record), so this line is the one record of where
-// the panic happened, and the handler's own frames come after the runtime's, past the first 256
-// bytes of the text. The stack is the server's own text, not the client's - frames, file paths,
-// tabs and newlines, which the JSON handler writes in one or two bytes each - and net/http bounds
-// it at 64 KiB, so it writes at most 128 KiB, and the line stays one Cloud Logging entry whatever
-// the client sent. No handler of the airlock panics with a value that holds a newline: a panic
-// value that did, and quoted the client, would put that text in this field uncut.
-type slogWriter struct{ log *slog.Logger }
-
-func (w slogWriter) Write(p []byte) (int, error) {
-	text, stack, stacked := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
-	fields := answer.ClipFields([]any{"error", text})
-	if stacked {
-		fields = append(fields, "stack", stack)
-	}
-	w.log.Warn(netHTTPMessage, fields...)
-	return len(p), nil
 }
 
 // hostHeaderOf is the Host a request on target carries, and the Host the proxy sends upstream:

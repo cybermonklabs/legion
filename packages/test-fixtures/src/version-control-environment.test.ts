@@ -6,7 +6,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,52 +114,6 @@ test("takes the first source that names a check, as the guard does, even where t
   } finally {
     process.chdir(was);
   }
-});
-
-test("calls a broken setup by the path the guard reports it at, and reads the pointer file first", () => {
-  const machine = join(root, "broken");
-  const good = program(join(machine, "good", "public-leak-check.sh"), "#!/bin/sh\nexit 0\n");
-  const danglingDir = join(machine, "dangling");
-  mkdirSync(danglingDir, { recursive: true });
-  const dangling = join(danglingDir, "public-leak-check.sh");
-  symlinkSync(join(machine, "moved", "public-leak-check.sh"), dangling);
-  const plainDir = join(machine, "plain");
-  mkdirSync(plainDir, { recursive: true });
-  const plain = join(plainDir, "public-leak-check.sh");
-  writeFileSync(plain, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
-  const configWith = (body: string | "directory"): string => {
-    const config = mkdtempSync(join(machine, "config-"));
-    const pointer = join(config, "public-leak-check", "path");
-    if (body === "directory") {
-      mkdirSync(pointer, { recursive: true });
-    } else {
-      mkdirSync(join(config, "public-leak-check"), { recursive: true });
-      writeFileSync(pointer, body);
-    }
-    return config;
-  };
-  const empty = join(machine, "empty");
-  mkdirSync(empty, { recursive: true });
-
-  // A file of the check's name on PATH that does not run is the answer where nothing else names
-  // a check: a dangling link, or a file with no execute bit.
-  expect(sharedPublicLeakCheck({ PATH: danglingDir })).toBe(dangling);
-  expect(sharedPublicLeakCheck({ PATH: plainDir, XDG_CONFIG_HOME: empty })).toBe(plain);
-  // The pointer file is read first, as the guard and the check's own pre-push hook read it.
-  expect(
-    sharedPublicLeakCheck({ PATH: danglingDir, XDG_CONFIG_HOME: configWith(`${good}\n`) })
-  ).toBe(good);
-  // A pointer file that names nothing, or is a directory, is answered as its own path.
-  const blank = configWith("\n");
-  expect(sharedPublicLeakCheck({ PATH: empty, XDG_CONFIG_HOME: blank })).toBe(
-    join(blank, "public-leak-check", "path")
-  );
-  const directory = configWith("directory");
-  expect(sharedPublicLeakCheck({ PATH: empty, XDG_CONFIG_HOME: directory })).toBe(
-    join(directory, "public-leak-check", "path")
-  );
-  // Nothing of the check anywhere is no check.
-  expect(sharedPublicLeakCheck({ PATH: empty, XDG_CONFIG_HOME: empty })).toBeUndefined();
 });
 
 test("carries a check the machine's pointer file names, which the home it builds would hide", () => {

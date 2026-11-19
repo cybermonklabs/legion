@@ -19,8 +19,9 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { isHttpUrl } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-import { messageOf } from "./error-text";
+import { messageOf, readErrorCode } from "./error-text";
 
 /** Names the directory a machine keeps its sign-ins in, for a deployment that places it itself
  *  (Go's `SignInDirVar`). Unset, {@link signInDirectory} answers the XDG state directory. */
@@ -281,8 +282,9 @@ export function signInSessionName(record: Pick<SignInRecord, "person" | "thumbpr
  * `SignInFlow`). {@link SIGNIN_CLIENT_ID_VAR} and {@link SIGNIN_CLIENT_SECRET_FILE_VAR} go
  * together, and one without the other is an error naming both. The secret is read from its file
  * here, so a refusal names the variable rather than failing at the first renewal, and no refusal
- * carries the secret. The issuer is {@link SIGNIN_ISSUER_VAR}, else
- * {@link DEFAULT_SIGNIN_ISSUER}, without its trailing slashes.
+ * carries the secret, nor the file's path, which a secret pasted into the variable would be. The
+ * issuer is {@link SIGNIN_ISSUER_VAR}, else {@link DEFAULT_SIGNIN_ISSUER}, without its trailing
+ * slashes; one that is no http or https URL is refused naming the variable alone.
  */
 export async function signInFlow(env: Environment): Promise<SignInFlow | undefined> {
   const clientId = (env[SIGNIN_CLIENT_ID_VAR] ?? "").trim();
@@ -297,12 +299,15 @@ export async function signInFlow(env: Environment): Promise<SignInFlow | undefin
   try {
     secret = await readFile(secretFile, "utf8");
   } catch (error) {
+    // No `cause`: the runtime's read error repeats the path.
     throw new Error(
-      `read the sign-in client's secret (${SIGNIN_CLIENT_SECRET_FILE_VAR}): ${messageOf(error)}`,
-      { cause: error }
+      `read the sign-in client's secret: ${SIGNIN_CLIENT_SECRET_FILE_VAR} names a file that could not be read (${readErrorCode(error)})`
     );
   }
   const issuer = (env[SIGNIN_ISSUER_VAR] ?? "").trim();
+  // Not quoted: a value that is no URL may be a secret pasted into the variable.
+  if (issuer !== "" && !isHttpUrl(issuer))
+    throw new Error(`${SIGNIN_ISSUER_VAR} is not an http or https URL`);
   return {
     issuer: withoutTrailingSlashes(issuer === "" ? DEFAULT_SIGNIN_ISSUER : issuer),
     clientId,

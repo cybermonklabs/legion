@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
@@ -23,6 +24,7 @@ import {
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
+import { sessionAdmission } from "../src/envoy-channel-server"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
 
 const directory = temporaryDirectory("codex-session")
@@ -152,15 +154,18 @@ describe("the Codex session record", () => {
   })
 })
 
-/** A connection that records what is published and hands control messages to the stream. */
+/** A connection that records what is published, the subjects subscribed and given up, and hands
+ *  control messages to the stream. */
 function fakeConnection() {
   const published: { subject: string; payload: unknown }[] = []
   const queues: { push(message: { data: Uint8Array; reply?: string }): void }[] = []
+  const subscribed = new Set<string>()
   const connection = {
     publish(subject: string, data: Uint8Array) {
       published.push({ payload: JSON.parse(new TextDecoder().decode(data)), subject })
     },
-    subscribe(): ChannelTopicSubscription {
+    subscribe(subject: string): ChannelTopicSubscription {
+      subscribed.add(subject)
       const pending: { data: Uint8Array; reply?: string }[] = []
       let wake: (() => void) | undefined
       let closed = false
@@ -181,6 +186,7 @@ function fakeConnection() {
       }
       return Object.assign(iterator, {
         unsubscribe() {
+          subscribed.delete(subject)
           closed = true
           wake?.()
         },
@@ -195,7 +201,7 @@ function fakeConnection() {
       })
     }
   }
-  return { connection, control, published }
+  return { connection, control, published, subscribed }
 }
 
 describe("the Codex live view", () => {
@@ -269,6 +275,71 @@ describe("the Codex live view", () => {
     expect(published.find((entry) => entry.subject === "_INBOX.2")?.payload).toMatchObject({
       frames: [],
     })
+    stream.stop()
+  })
+
+  // Under a broker token the connection is admitted as one session at a time, and the server
+  // refuses and closes a subscribe to a subject the session it is admitted as may not take. These
+  // run the channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+  test("a /new takes the new id's control subject only once the connection is admitted as it", async () => {
+    const { connection, subscribed } = fakeConnection()
+    const admission = sessionAdmission("s3")
+    const stream = startCodexAgentStream({
+      admitted: admission.admitted,
+      connection,
+      sessionId: "s3",
+    })
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s3")])
+    stream.rebind("s4")
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([])
+    admission.admit("s4")
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s4")])
+    stream.stop()
+  })
+
+  test("a second /new before the first id is admitted takes only the latest id's subject", async () => {
+    const { connection, subscribed } = fakeConnection()
+    const admission = sessionAdmission("s5")
+    const stream = startCodexAgentStream({
+      admitted: admission.admitted,
+      connection,
+      sessionId: "s5",
+    })
+    stream.rebind("s6")
+    stream.rebind("s7")
+    admission.admit("s6")
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([])
+    admission.admit("s7")
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s7")])
+    stream.stop()
+  })
+
+  test("an admission that lands for an id the session has left takes nothing", async () => {
+    // An `admitted` that settles every wait it handed out, the stale one included: the stream
+    // takes only the id it is on now.
+    const { connection, subscribed } = fakeConnection()
+    const waits = new Map<string, PromiseWithResolvers<void>>()
+    const stream = startCodexAgentStream({
+      admitted: (session) => {
+        const wait = Promise.withResolvers<void>()
+        waits.set(session, wait)
+        return wait.promise
+      },
+      connection,
+      sessionId: "s8",
+    })
+    stream.rebind("s9")
+    stream.rebind("s10")
+    waits.get("s9")?.resolve()
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([])
+    waits.get("s10")?.resolve()
+    await Bun.sleep(10)
+    expect([...subscribed]).toEqual([agentStreamControlSubject("s10")])
     stream.stop()
   })
 })

@@ -74,7 +74,7 @@ var stepRecordsTen = []stepWant{
 // record from Dispatch's store, its node and its tuples, and the same assertion must then name the
 // missing record.
 func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
@@ -90,7 +90,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	failed := read.find("step", 4, 1)
 
 	t.Run("control", func(t *testing.T) {
-		r.deleteStepRecord(failed.ID)
+		r.deleteNode(failed.ID)
 		read, err := r.readSteps()
 		if err != nil {
 			t.Fatalf("read the issue's steps after the delete: %v", err)
@@ -110,7 +110,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 // issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
 // stopped, the outbox holds the issue's step records unfinished and the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
@@ -121,7 +121,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r.merge()
 
 	t.Run("control", func(t *testing.T) {
-		if unfinished := r.unfinishedStepRows(); unfinished == 0 {
+		if unfinished := r.unfinishedRows(record.OutboxKindStepRecord); unfinished == 0 {
 			t.Fatal("the outbox holds no unfinished step record of the issue while Dispatch is stopped: either Dispatch took each record (no outage) or the daemon wrote none")
 		}
 		if _, err := r.readSteps(); err == nil {
@@ -130,18 +130,11 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	})
 
 	r.dispatch.start()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
-	// A row Dispatch refused while it was stopped waits out its backoff, at most retryBackoff's
-	// cap, before it runs again, and the sweep finds a lease that lapsed within one more lease.
-	within := retryBackoff(6) + outboxLease
+	want := stepRecordsSeven
+	// A row Dispatch refused while it was stopped waits out its backoff, at most
+	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
+	// one more lease.
+	within := record.RetryBackoffMost + outboxLease
 	started := time.Now()
 	if !testwait.Holds(within, time.Second, func() bool { got, err := r.readSteps(); return err == nil && stepsHold(got, want) == nil }) {
 		got, err := r.readSteps()
@@ -156,7 +149,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 // boot token it holds. The tester answers again and completes, the walk ends at done, and the read
 // holds exactly one record of testing for that run, ended, under the id its start wrote.
 func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	tester := r.worker(claim.RoleTester)
@@ -177,20 +170,22 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 	r.accept()
 	r.retro()
 	r.merge()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
 	var read stepRecordsRead
-	r.waitSteps("the seven records of the walk across the restart", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	r.waitSteps("the seven records of the walk across the restart", func(got stepRecordsRead) error { read = got; return stepsHold(got, stepRecordsSeven) })
 	if before, after := started.find("step", 3, 1), read.find("step", 3, 1); before.ID != after.ID {
 		t.Fatalf("the testing record read after the restart is %s, want the one its start wrote before it, %s", after.ID, before.ID)
 	}
+}
+
+// stepRecordsSeven is the seven records of a walk whose first review approves.
+var stepRecordsSeven = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
 }
 
 // A rollback of this release and its roll forward, through the whole daemon and the store it
@@ -207,7 +202,7 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 // record of its own at the next count, started when its entry was raised, and the tester's run
 // this release counted under its own id.
 func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
@@ -393,7 +388,7 @@ func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
 		})
 	}
 	t.Run("the child's own architect holds its role", func(t *testing.T) {
-		r := newStepRecordsRig(t)
+		r := newStepRecordsRig(t, 1)
 		child, number := r.seedChildInReviewing()
 		own := r.tokenOf(child, claim.RoleArchitect)
 		if _, err := r.st.AdmitClaim(context.Background(), supervise.Claim{
@@ -420,7 +415,7 @@ func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
 		acceptance(r, child, own, architect.session, "stand-in/child-architect-second")
 	})
 	t.Run("control: the child's own architect was never started", func(t *testing.T) {
-		r := newStepRecordsRig(t)
+		r := newStepRecordsRig(t, 1)
 		child := r.childInAccepting()
 		r.signOff(child)
 		architect := r.worker(claim.RoleArchitect)
@@ -445,7 +440,7 @@ func (r *stepRecordsRig) childInAccepting() string {
 // (api.Options.AwaitStream, which serve gives the daemon's awaitStream), so the record of planning
 // ends naming the planner's session and that answer's model, not the model of the answer before.
 func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner-first"
 	planner.take()
@@ -477,7 +472,7 @@ func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 // with another, and the child's acceptance ends failed, back at implementing, with the architect's
 // session and the second model.
 func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
 	architect.model = "stand-in/architect-first"
@@ -510,7 +505,7 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 // read ahead of the request (heldRequest). The child leaves the workflow, and its acceptance ends
 // stopped, returned nowhere, with the architect's session and the second model.
 func TestAParkOfAChildInAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
 	architect.model = "stand-in/architect-first"
@@ -645,7 +640,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 // planner's session and no model, as for an agent that named none. The model that answered first
 // did not answer last, so the record does not name it.
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/first"
 	planner.answer()
@@ -670,7 +665,7 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 // the merge names its token and no session and no model. A step that runs names no session yet:
 // its end names the session and the model together.
 func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
-	r := newStepRecordsRig(t)
+	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner"
 	planner.take()

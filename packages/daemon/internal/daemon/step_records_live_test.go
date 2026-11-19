@@ -37,9 +37,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -62,24 +64,43 @@ type stepRecordsLive struct {
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
-	fixtureenv.Live(t)
-	root := liveCLICheckout(t)
-	proof := newLiveProof(t, "scripts/e2e/step-records.sh")
-	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigOn(t, proof, startHandoffDispatch(t, root).scratchDispatch), root: root, cliHome: t.TempDir()}
-	var minted struct {
-		Token string `json:"token"`
-	}
-	l.person(http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "steps-reader"}, http.StatusCreated, &minted)
-	if minted.Token == "" {
-		t.Fatal("Dispatch minted the person a personal token with no plaintext")
-	}
-	l.reader = minted.Token
+	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
 	l.step("a-phase-moves-while-dispatch-is-down", l.outage)
 	l.step("walk-to-done-with-one-failed-review", l.readByIssue)
 	l.step("a-write-that-names-another-session-is-refused", l.writerRefused)
+}
+
+// newStepRecordsLive is the run a live driver of the walk makes around its steps: the broker the
+// script names (or a skip naming script), the checkout its script runs from and bun on PATH
+// (liveCLICheckout), the walk's rig over issues issues on a Dispatch this checkout builds, the
+// person's CLI home, and a personal token named reader minted for the person, which every read of
+// the CLI carries. The broker comes first, as newHandoffRecordsLive takes it, so a run that names
+// none skips before it needs bun.
+func newStepRecordsLive(t *testing.T, script string, issues int, reader string) *stepRecordsLive {
+	t.Helper()
+	fixtureenv.Live(t)
+	proof := newLiveProof(t, script)
+	root := liveCLICheckout(t)
+	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues), root: root, cliHome: t.TempDir()}
+	l.mintReader(reader)
+	return l
+}
+
+// mintReader has Dispatch mint a personal token, named name, for the person who set the run's
+// project up (POST /api/v1/me/agent-tokens), which every read of the CLI then carries.
+func (l *stepRecordsLive) mintReader(name string) {
+	l.t.Helper()
+	var minted struct {
+		Token string `json:"token"`
+	}
+	l.person(http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": name}, http.StatusCreated, &minted)
+	if minted.Token == "" {
+		l.t.Fatal("Dispatch minted the person a personal token with no plaintext")
+	}
+	l.reader = minted.Token
 }
 
 // walkToTheSecondReview walks the issue with Dispatch up through the rounds whose completions read
@@ -118,7 +139,7 @@ func (l *stepRecordsLive) outage() {
 		t.Fatalf("control: with Dispatch stopped `dispatch steps --issue %s` exited %d and printed %q, want a non-zero exit naming the unreachable server; the walk rode through no outage", l.key, code, out)
 	}
 	l.note("control: `dispatch steps --issue %s` with Dispatch stopped exits %d: %s", l.key, code, firstLine(strings.TrimSpace(out)))
-	unfinished := l.unfinishedStepRows()
+	unfinished := l.unfinishedRows(record.OutboxKindStepRecord)
 	if unfinished == 0 {
 		t.Fatalf("control: the outbox holds no unfinished step record of %s while Dispatch is stopped: either Dispatch took each record (no outage) or the daemon wrote none", l.key)
 	}
@@ -127,9 +148,10 @@ func (l *stepRecordsLive) outage() {
 	l.dispatch.start()
 	l.note("Dispatch started again on the same database and port")
 	want := []stepWant{stepRecordsTen[6], stepRecordsTen[7], stepRecordsTen[8], stepRecordsTen[9]}
-	// A row Dispatch refused while it was stopped waits out its backoff, at most retryBackoff's
-	// cap, before it runs again, and the sweep finds a lease that lapsed within one more lease.
-	within := retryBackoff(6) + outboxLease
+	// A row Dispatch refused while it was stopped waits out its backoff, at most
+	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
+	// one more lease.
+	within := record.RetryBackoffMost + outboxLease
 	started := time.Now()
 	var last error
 	var lines []stepLine
@@ -180,7 +202,7 @@ func (l *stepRecordsLive) readByIssue() {
 	if failed == "" {
 		t.Fatalf("GET /api/v1/issues/%s/steps holds no record of step 4 attempt 1", l.key)
 	}
-	l.deleteStepRecord(failed)
+	l.deleteNode(failed)
 	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", failed)
 	out, err = l.stepsHoldTen("in the control, after the delete,")
 	if err == nil {
@@ -209,8 +231,8 @@ func (l *stepRecordsLive) writerRefused() {
 		}
 	}
 	status, answer := l.putStep(l.dispatch.token, id, write("ses_step_agent"))
-	if status != http.StatusForbidden || !strings.Contains(string(answer), "STEP_WRITER") {
-		t.Fatalf("PUT /api/v1/issues/%s/steps/%s as ses_step_agent = %d %s, want 403 STEP_WRITER", l.key, id, status, answer)
+	if status != http.StatusForbidden || !strings.Contains(string(answer), steprecord.CodeWriter) {
+		t.Fatalf("PUT /api/v1/issues/%s/steps/%s as ses_step_agent = %d %s, want 403 %s", l.key, id, status, answer, steprecord.CodeWriter)
 	}
 	if read, err := l.readSteps(); err != nil || l.holdsID(read, id) {
 		t.Fatalf("after the refused write the steps of %s read %v (%v), want no record %s", l.key, read, err, id)
@@ -236,9 +258,21 @@ func (l *stepRecordsLive) writerRefused() {
 // for that person, and returns what it printed on stdout, then on stderr, and its exit code.
 func (l *stepRecordsLive) steps() (string, int) {
 	l.t.Helper()
-	shell := cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
-	out, code := shell.bun(nil, dispatchCLI(l.root), "steps", "--issue", l.key)
+	return l.cli("steps", "--issue", l.key)
+}
+
+// cli runs the dispatch CLI with args in the person's shell and returns what it printed on stdout,
+// then on stderr, and its exit code.
+func (l *stepRecordsLive) cli(args ...string) (string, int) {
+	l.t.Helper()
+	out, code := l.personsShell().bun(nil, dispatchCLI(l.root), args...)
 	return string(out.stdout) + string(out.stderr), code
+}
+
+// personsShell is the shell of a person running dispatch by hand: the reader's own session, the
+// run's Dispatch and the personal token Dispatch minted for that person, under the run's CLI home.
+func (l *stepRecordsLive) personsShell() cliShell {
+	return cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
 }
 
 // stepsHoldTen runs `dispatch steps --issue <KEY>` as the person, failing the test when the

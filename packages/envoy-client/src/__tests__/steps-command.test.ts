@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   type FakeDispatchFetch,
@@ -39,6 +40,8 @@ const implementer: StepRecord = {
   result: "passed",
   returned_to: null,
   report: "9b2e4d6f-8a1c-4e3b-a5d7-c9f1e3b5d7a9",
+  rating: null,
+  rating_reason: null,
 };
 
 /** The tester's run of step 3, still running: no end, no result, and no session or model, which
@@ -61,6 +64,8 @@ const tester: StepRecord = {
   result: "",
   returned_to: null,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 /**
@@ -85,6 +90,8 @@ const mergedByGitHub: StepRecord = {
   result: "passed",
   returned_to: null,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 /** The docs task's first run, which started before any run of task default. */
@@ -106,6 +113,8 @@ const docsDraft: StepRecord = {
   result: "passed",
   returned_to: null,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 /** A second run of a review of another task, sent back to step 1 of that task. */
@@ -127,6 +136,32 @@ const docsReview: StepRecord = {
   result: "failed",
   returned_to: 1,
   report: null,
+  rating: null,
+  rating_reason: null,
+};
+
+/** The implementer's retro of LEG-1, which rated the plan: a retro is the one kind of run that
+ *  holds a rating and its reason. */
+const ratedRetro: StepRecord = {
+  id: "2f6b4d8a-3c7e-5f1b-9d2a-4e6f8a0c2e47",
+  issue: "LEG-1",
+  task: "default",
+  step: 0,
+  kind: "retro",
+  role: "implementer",
+  type: "",
+  agent: "legion-leg-leg-1-implementer",
+  session: "ses-implementer",
+  model: "anthropic/claude-opus-5",
+  generation: 1,
+  attempt: 1,
+  started_at: "2026-11-16T11:30:00Z",
+  ended_at: "2026-11-16T11:45:00Z",
+  result: "passed",
+  returned_to: null,
+  report: null,
+  rating: 4,
+  rating_reason: "The plan fit the work; the review sent it back once.",
 };
 
 /** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
@@ -149,6 +184,8 @@ const mergeSentBack: StepRecord = {
   result: "failed",
   returned_to: 0,
   report: null,
+  rating: null,
+  rating_reason: null,
 };
 
 const config = {
@@ -222,6 +259,25 @@ describe("dispatch steps", () => {
     expect(result.text.split("\n")[2]).toBe(
       "default 0 merge merger - attempt 1 - - - 2026-11-16T12:00:00Z passed"
     );
+  });
+
+  // The line keeps its columns and prints no rating; the details a host is handed are the
+  // records as Dispatch answered them, so a retro's rating and its reason reach it.
+  test("a retro's rating and its reason reach the details, and its line keeps the columns", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[2]).toBe(
+      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed"
+    );
+    expect(result.details).toEqual({
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
+    });
   });
 
   // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of
@@ -423,7 +479,7 @@ describe("dispatch steps on the command line", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: server.url,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: fixtureSecret("dsp"),
         DISPATCH_STATE_DIR: stateDir,
       },
       {

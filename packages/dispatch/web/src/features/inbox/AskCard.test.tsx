@@ -22,6 +22,7 @@ import type {
   Comment,
   CreateCommentInput,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
@@ -221,7 +222,8 @@ test("a stale change says the answer changed", async () => {
 
   try {
     await user.click(await view.findByRole("button", { name: "Change answer" }));
-    await user.click(view.getByRole("radio", { name: "Hold" }));
+    // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await view.findByRole("radio", { name: "Hold" }));
     await user.click(view.getByRole("button", { name: "Save answer" }));
     expect(
       await view.findByText("The answer changed since you opened it; here is the current one.")
@@ -253,7 +255,8 @@ for (const [code, message] of [
     );
     try {
       await user.click(await view.findByRole("button", { name: "Change answer" }));
-      await user.click(view.getByRole("radio", { name: "Hold" }));
+      // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+      await user.click(await view.findByRole("radio", { name: "Hold" }));
       await user.click(view.getByRole("button", { name: "Save answer" }));
       expect(await view.findByText(message)).toBeTruthy();
       // The refusal meets the same send again, so the form it was sent from closes.
@@ -273,7 +276,8 @@ test("mode change opens the seeded form only when the viewer can change the answ
   try {
     expect(await editable.view.findByRole("button", { name: "Save answer" })).toBeTruthy();
     expect(editable.view.queryByText(/Answered by/)).not.toBeInTheDocument();
-    const ship = editable.view.getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = (await editable.view.findByRole("radio", { name: "Ship" })) as HTMLInputElement;
     expect(ship.checked).toBe(true);
   } finally {
     editable.view.unmount();
@@ -359,11 +363,13 @@ function askReply(id: string, createdAt: string): Comment {
 /** An answered ask with two replies, unread for alice on CORE-1, rendered with time and the
  *  screen in the test's hands: the replies follow the first answer, or precede `answer` when one
  *  is given. */
-function renderUnreadAsk(props: {
+async function renderUnreadAsk(props: {
   markRead: boolean;
   thread: "inline" | "collapsed";
   answer?: AskAnswer;
 }) {
+  // A reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -406,7 +412,7 @@ function renderUnreadAsk(props: {
 
 for (const shape of ["inline", "collapsed"] as const) {
   test(`with markRead, the ${shape} thread is marked read once its newest reply is on screen`, async () => {
-    const card = renderUnreadAsk({ markRead: true, thread: shape });
+    const card = await renderUnreadAsk({ markRead: true, thread: shape });
     try {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
@@ -421,7 +427,7 @@ for (const shape of ["inline", "collapsed"] as const) {
   });
 
   test(`without markRead, the ${shape} thread watches nothing`, async () => {
-    const card = renderUnreadAsk({ markRead: false, thread: shape });
+    const card = await renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
       expect(card.screen.observed()).toEqual([]);
@@ -441,7 +447,7 @@ test("an answer given after every reply is what the mark watches and reads throu
     text: "Wait for the fix.",
     user: "bob@example.com",
   };
-  const card = renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
+  const card = await renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
   try {
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");
@@ -501,6 +507,9 @@ function mockVersions(versions: Record<number, string>) {
 // unmounts stays in the shared document; these tests read their own card alone (`within`).
 for (const variant of ["full", "compact"] as const) {
   test(`a ${variant} approval card names the earlier approval and diffs the two versions only when asked`, async () => {
+    // The question is read in the commit that mounts the card, which only a loaded engine draws
+    // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+    await warmMarkdownRenderer();
     const user = userEvent.setup();
     const ask = approvalAsk(earlierApproval);
     const getArtifactVersion = mockVersions({ 11: "Before\n", 12: "After\n" });

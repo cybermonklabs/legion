@@ -2,8 +2,11 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
+/** The Dispatch token the hook is handed, in its environment or in envoy.json. */
+const DISPATCH_TOKEN = fixtureSecret("dsp")
 
 /** Runs the hook as Claude Code does, with `env` as its whole environment. The session's cwd is
  * the test's scratch HOME unless the input names one: the hook reads `<cwd>/.envoy/envoy.json`, so a
@@ -72,7 +75,7 @@ test("summarises the session's open asks into context and records the session id
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "hook-token",
+      DISPATCH_TOKEN,
     })
 
     expect(result.exitCode).toBe(0)
@@ -80,7 +83,7 @@ test("summarises the session's open asks into context and records the session id
       "Dispatch authored-ask summary:\n1 unanswered ask you authored",
     )
     expect(result.stdout).toContain("Ship the bundle?")
-    expect(requests).toEqual(["Bearer hook-token /api/v1/asks/open?author_session=s-1"])
+    expect(requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/asks/open?author_session=s-1`])
     expect(
       await readFile(
         join(scratch, "plugin-data", "sessions", String(process.pid), "session-id"),
@@ -103,7 +106,7 @@ test("reports an unreachable Dispatch as unavailable, still exits 0, and still r
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
       DISPATCH_URL: `http://127.0.0.1:${port}`,
-      DISPATCH_TOKEN: "hook-token",
+      DISPATCH_TOKEN,
     })
 
     expect(result.exitCode).toBe(0)
@@ -118,6 +121,32 @@ test("reports an unreachable Dispatch as unavailable, still exits 0, and still r
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+// A password holding an unencoded '@' names no host, and the URL parser reads the password's tail
+// as one, which the runtime's resolver error repeats. The line reaches the model's context, so the
+// Dispatch client names the failure by its class and the URL by its fixed phrase (#4140, B1).
+test("names an unreachable Dispatch whose password holds an '@' by no part of the password", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-at-"))
+  const tail = `Tail${crypto.randomUUID().slice(0, 8)}`
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `https://user-7f2a:p@ssword${tail}.invalid`,
+      DISPATCH_TOKEN,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toStartWith(
+      "Dispatch authored-ask summary unavailable: Dispatch at the configured Dispatch URL (not printed: it carries a credential or is not a plain http(s) URL) is unreachable: ",
+    )
+    for (const text of [result.stdout, result.stderr]) {
+      expect(text.toLowerCase()).not.toContain(tail.toLowerCase())
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 30_000)
 
 test("a SessionStart carrying a session title records it, and one carrying none removes it", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-title-"))
@@ -206,7 +235,7 @@ test("a DISPATCH_TOKEN_FILE with no DISPATCH_URL names the lost URL and still wh
   await mkdir(configDirectory)
   await mkdir(join(scratch, ".config", "opencode"), { recursive: true })
   await writeFile(old, JSON.stringify({ dispatch: { serverUrl: "https://old.dispatch.example" } }))
-  await writeFile(tokenFile, "pointer-token\n")
+  await writeFile(tokenFile, `${fixtureSecret("pointer")}\n`)
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
@@ -266,6 +295,8 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-old-checkout-"))
   const checkout = join(scratch, "checkout")
   const old = join(checkout, ".opencode", "envoy.json")
+  /** The token in the checkout's old file, which the hook names and never reads. */
+  const checkoutToken = fixtureSecret("dsp")
   const requests: string[] = []
   const server = Bun.serve({
     port: 0,
@@ -289,7 +320,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
       dispatch: {
         enabled: true,
         serverUrl: `http://127.0.0.1:${server.port}`,
-        token: "user-token",
+        token: DISPATCH_TOKEN,
       },
     }),
   )
@@ -297,7 +328,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
   await writeFile(
     old,
     JSON.stringify({
-      dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: "checkout-token" },
+      dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: checkoutToken },
     }),
   )
   const rename = `envoy: ${old} is not read: mkdir -p ${join(checkout, ".envoy")} && mv ${old} ${join(checkout, ".envoy", "envoy.json")}\n`
@@ -310,7 +341,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toStartWith(`${rename}Dispatch authored-ask summary:\n`)
     expect(result.stdout.split(rename)).toHaveLength(2)
-    expect(requests).toEqual(["Bearer user-token /api/v1/asks/open"])
+    expect(requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/asks/open`])
 
     // With no user file the checkout's old file is all that ever configured Dispatch here: the
     // hook still names it, beside the missing file's quiet off.
@@ -417,7 +448,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
       dispatch: {
         enabled: true,
         serverUrl: `http://127.0.0.1:${server.port}`,
-        token: "claude-token",
+        token: DISPATCH_TOKEN,
       },
     }),
   )
@@ -437,7 +468,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
     })
 
     expect(result.exitCode).toBe(0)
-    expect(requests).toEqual(["Bearer claude-token /api/v1/asks/open?author_session=s-1"])
+    expect(requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/asks/open?author_session=s-1`])
     expect(await readFile(envFile, "utf8")).toContain(
       `export ENVOY_CONFIG_FILE='${join(configDirectory, "envoy.json")}'`,
     )
@@ -735,7 +766,7 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
       CLAUDE_ENV_FILE: envFile,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "hook-token",
+      DISPATCH_TOKEN,
     })
 
     expect(result.exitCode).toBe(0)
@@ -848,7 +879,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
       LEGION_STATE_DIR: stateDir,
       LEGION_ISSUE_TRAILER: "ACME-7",
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "hook-token",
+      DISPATCH_TOKEN,
     })
 
     expect(result.exitCode).toBe(0)

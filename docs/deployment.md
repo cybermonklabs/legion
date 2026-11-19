@@ -251,7 +251,14 @@ on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the r
 path git asks about — of the owner a configured rename moved that repository to where a pair
 names it — and nothing else.
 
-Oh My Pi itself holds that `PATH` when `omp_invocation` runs it through mise. `mise x` rewrites the
+In a pod, the sweep that knives runs after each write to a fork's shared ledger (`knives ledger
+sweep`) pushes this machine's own ref, `refs/knives/<machine>`, to the fork's ledger repository
+with plain git, from a directory that is no clone. The git configuration entries every role is
+given (`gitConfigPairs`, [Anatomy of a Sandbox pod](kubernetes.md#anatomy-of-a-sandbox-pod)) name
+`!legion git-credential` there too, so it answers that push as it answers the shared clone's, and
+no person's token is used.
+
+Oh My Pi holds a pane's `PATH` when `omp_invocation` runs it through mise. `mise x` rewrites the
 `PATH` of the program it starts: it puts the tool's own directories and each `_.path` entry of the
 mise config it reads ahead of the rest, and such an entry, a dotfiles `shims` directory for example,
 can hold a `gh`, `git` or `jj` of its own. So the daemon has `mise x` start `/bin/sh` in place of
