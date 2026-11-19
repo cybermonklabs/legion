@@ -1498,6 +1498,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
+  /** `GET /api/v1/issues/{key}/steps`: each run of each step Legion recorded of the issue, its
+   *  tasks in the order of their first step. An issue Legion never ran answers no task. */
+  listSteps(key: string) {
+    return this.read("/api/v1/issues/{key}/steps", { key });
+  }
+
   /** `GET /api/v1/handoffs/{id}`: one handoff with the body its session wrote. */
   getHandoff(id: string) {
     return this.read("/api/v1/handoffs/{id}", { id });

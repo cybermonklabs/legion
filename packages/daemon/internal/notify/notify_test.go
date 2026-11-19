@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The controller topic is the one the plugin's controller subscribes to
@@ -28,16 +30,11 @@ func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 			t.Fatalf("request = %s %s, want POST /v1/messages/publish", r.Method, r.URL.Path)
 		}
-		var body struct {
-			Topic     string  `json:"topic"`
-			Message   string  `json:"message"`
-			Payload   *string `json:"payload"` // the listener's messageBody (packages/envoy/cmd/listener/api.go:68-80)
-			DedupeKey string  `json:"dedupe_key"`
-			// The daemon keeps its own queue of notices, so it asks the listener to keep
-			// nothing and to answer a role nobody holds with its 404 (ErrNoHolder). A missing
-			// field would read as the listener's default, which is to keep.
-			Keep *bool `json:"keep"`
-		}
+		// The body is read as the listener's publish route reads it. The daemon keeps its own
+		// queue of notices, so it asks the listener to keep nothing and to answer a role nobody
+		// holds with its 404 (ErrNoHolder). A missing keep would read as the listener's default,
+		// which is to keep.
+		var body listenerwire.PublishRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest) // the listener answers "invalid json"
 			return
@@ -234,8 +231,8 @@ func TestHTTPPublisherTellsAnUnresponsiveHolderFromNoHolder(t *testing.T) {
 
 // A listener that confirms a role message before it answers says why it did not deliver one:
 // 504 with receipt_timeout or delivery_failed, naming the holder and the envelope it forwarded
-// (roleSendFailure, packages/envoy/cmd/listener/confirmed.go), 403 with capability when the
-// holder cannot take the payload's delivery mode (capabilityRefusal), or 403 with no reason when
+// (listenerwire.RoleSendFailure), 403 with capability when the holder cannot take the payload's
+// delivery mode (listenerwire.CapabilityRefusal), or 403 with no reason when
 // the NATS server denied the forward under the listener's own grant (writeBusUnavailable,
 // packages/envoy/cmd/listener/api.go). Each is told apart from every other failure, and a 504 or
 // 403 whose body is not that JSON — a proxy's gateway timeout, a reason this daemon does not

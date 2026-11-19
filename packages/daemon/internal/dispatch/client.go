@@ -216,6 +216,20 @@ func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []R
 	}, nil)
 }
 
+// PutStep writes one start or one end of a step onto Dispatch's record id of the issue key,
+// through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session, the one session the
+// route takes a record of the issue from. The write appends no event and notifies nobody. Dispatch
+// answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
+// ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a
+// record of another issue; a Dispatch older than the route answers its router's 404 under the
+// code NOT_FOUND, which the caller retries until the server release that has it.
+func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{
+		StepWrite: write,
+		Actor:     daemonActor(key),
+	}, nil)
+}
+
 // HandOver writes issue's status for its hand-over to Legion, on the issue's sequence as the client
 // read it (expected_sequence), so a person's move since that read is refused (ISSUE_CHANGED) rather
 // than overwritten. An issue that does not yet carry LegionLabel has it added in the same PATCH
@@ -716,4 +730,10 @@ type designGatesWrite struct {
 type roleHoldersWrite struct {
 	Holders []RoleHolder `json:"holders"`
 	Actor   actor        `json:"actor"`
+}
+
+// stepWrite is the body of a step record's write: the record's fields and the daemon's actor.
+type stepWrite struct {
+	StepWrite
+	Actor actor `json:"actor"`
 }

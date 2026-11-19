@@ -213,7 +213,7 @@ Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TO
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
-The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
@@ -378,7 +378,8 @@ a run against a NATS that requires a user needs `NATS_NKEY_SEED_FILE`.
 The Envoy listener records a check run and a check suite from the webhook GitHub sends it, and the Legion daemon reads the settlement those records produce.
 A webhook that reached no record leaves a head short of a check, and a head short of a check never settles:
 nothing announces it, and nobody is waiting on anything else.
-So every 5 minutes (`cireconcile.Interval`, Background loops, below) one Dispatch process reads each open pull request's head from GitHub and records every completed check run and completed check suite the listener's record of that head lacks.
+A commit status reaches no record through a webhook at all: GitHub's `status` event carries a commit and no pull request, and the listener drops it.
+So every 5 minutes (`cireconcile.Interval`, Background loops, below) one Dispatch process reads each open pull request's head from GitHub and records every completed check run and completed check suite the listener's record of that head lacks, and, where the App's token holds Commit statuses, the head's commit statuses.
 It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one process serves each period however many run (Running more than one process, below), and its first pass is one interval after the start.
 
 - It is on when NATS is configured and the App's private key (`DISPATCH_APP_PEM_B64`) is present.
@@ -408,7 +409,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   It orders the pull requests by creation, which is their number order, since a repository hands out numbers as pull requests are opened: that order is what the cursor is a place in.
   Reading the same heads over REST took 1,720 requests and 26 minutes 25 seconds for 833 heads of 16 repositories; the same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and about 178 seconds of GitHub's own processing time.
 
-- What a query cannot answer whole is read over REST exactly as every head was read before: the commit's check runs (`filter=all`) and its check suites, page by page and conditional on the ETags the pass kept.
+- What a query cannot answer whole is read over REST exactly as every head was read before: the commit's check runs (`filter=all`) and its check suites, page by page and conditional on the ETags the pass kept, and its commit statuses where the App's token holds Commit statuses (below).
   Four things fall back that way: a head with more than 30 check suites, a head one of whose suites has more than 60 check runs, a head whose Checks fields GitHub refuses or answers null, and every head of a page GitHub refuses, gives up on, or answers past the 1 MiB response limit.
   For a refused page the pass lists that repository's open pull requests over REST and reads every head from that page onwards: the cursor of the page after it comes only in the answer the pass did not get, so there is no next page to ask for.
   That listing is read in windows of twenty, the size of a query's page, and every page of it is named by a number: one past the last head of the page before it, which the pass has read, and nothing for a repository whose very first page GitHub refused, where the listing is read from its start.
@@ -421,6 +422,17 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   the CI store refuses to settle a head while any check its record holds is queued or running, and nothing takes a check out of a record, so one abandoned queued run would stop that head settling for good.
   A `tester` or `architect` check run counts only from the App `DISPATCH_REVIEWER_APP_ID` names, by the rule the listener's webhook handler calls;
   with that variable unset no verdict check is recorded, and the server says so once at start.
+
+- The pass reads the commit statuses of a repository's heads only where the App's token for that repository holds Commit statuses, at read or write (`githubapp.Client.RepositoryTokenWithStatuses`).
+  It reads that from the `permissions` GitHub answers with the token itself (`POST /app/installations/{id}/access_tokens`), not from the installation: the client keeps a token until 5 minutes before it expires, so a token minted before a person approved Commit statuses does not hold it while the installation already does.
+  For such a repository the query asks for the head commit's combined status too (`status { contexts { context state createdAt targetUrl description } }`, `headsQueryWithStatuses`), which adds no connection and no request, and every other repository is sent the query it was sent before the pass read statuses, byte for byte.
+  A head read over REST lists its statuses once its check runs and check suites are recorded: `GET /repos/{owner}/{repo}/commits/{sha}/status`, at `per_page=100`, page by page and conditional on the ETags the pass kept, as the other two listings are.
+  A status in `success`, `failure` or `error` is mapped into the REST shape (`context`, `state`, `created_at`, `target_url`, `description`) and recorded through `contracts.GithubStatusObservation`, and a `pending` or `expected` one is not recorded.
+  The record keeps the newest status of each context (`recordStatus`, `packages/envoy/internal/cistore/cistore.go`), and a query's statuses are part of the head's fingerprint, so a pass in which only a status changed records it.
+  A refused status read costs the head its statuses alone: a `FORBIDDEN` error at the head commit's `status` field of a query's answer, or a 403 or 404 to the REST status read, leaves the head's check runs and suites recorded and sends no further request for that head in that pass.
+  Either refusal is named at WARN, `ci reconcile read no commit status of a head`, with the repository, the pull request, the head's sha and what GitHub answered, and a rate limit stops the pass, as at any read.
+  Deploy the listener first, then each Legion daemon, then Dispatch.
+  A rollback of the listener below the release that records commit statuses goes with a rollback of Dispatch: an earlier listener drops the statuses of each record it writes, and nothing writes them back while GitHub's answer for that head stays the same.
 
 - Every REST page is conditional on the `ETag` of its own last answer, so an unchanged page costs none of the rate limit; a query carries no ETag and is always answered in full.
   A head's ETags are kept only when every page answered and every observation the rules name was recorded, and are dropped when a page failed, when a write a later pass might land did not, and when the record they stand for has gone (the bucket's seven-day TTL, or a delete), so nothing is hidden behind a `304`.
@@ -453,8 +465,8 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   `mappings_skipped` counts the repositories the pass skipped for a fault, each of them named at WARN, so a number above zero is something to mend;
   `repositories_without_app` counts the repositories only an issue names that the App is not installed on, which is no fault and stays above zero for as long as an issue names one.
   `records` counts the records the pass changed, one for each head whose record a write of the pass changed, never one for each observation it wrote:
-  a head's runs and its suites all write the one record of that head (`cistore.Key`), so a pass that records a head's run and its suite reports 1;
-  a write the CI store refuses for its bound counts for nothing, although it marks the record overflowed.
+  a head's runs, its suites and its statuses all write the one record of that head (`cistore.Key`), so a pass that records a head's run and its suite reports 1;
+  a check write the CI store refuses for its bound counts for nothing, although it marks the record overflowed, and a status write it refuses for its bound counts for nothing and leaves the record as it was.
   `heads` is the heads this pass read whole, either way, and `heads_known` the open heads the cycle's queries listed; `first_head` and `last_head` name the first and the last head the pass read, each `owner/repo#number`, so two lines side by side say how far round the order each pass got;
   `graphql_queries` and `graphql_points` are the queries the pass asked and what GitHub charged them, `rest_requests` the REST reads beside them, `rest_not_modified` how many of those GitHub answered `304`, and `heads_over_rest` the heads a query could not answer whole — a number that climbing says the queries are answering less and less;
   `pace` is the gap it left between REST requests, `deadline_reached` says its own bound ended it, and `cycle_complete` says it reached the end of the order and left the cursor at the start.
@@ -592,6 +604,36 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   such a build reads `"K1 K0"` as one key, which signs everyone out.
   Removing a key revokes no refresh token at the pool:
   whoever holds a backup and the old key can still redeem the tokens sealed under it until they expire, so after a key leak, sign each person out at the pool.
+
+- `iap` is for a Dispatch behind Google Cloud's Identity-Aware Proxy (IAP), which signs people in at the load balancer in front of it.
+  On each request it lets through IAP adds an assertion it signs, `X-Goog-IAP-JWT-Assertion`, and Dispatch names the person from that assertion alone, never from IAP's unsigned `X-Goog-Authenticated-User-Email` or `X-Goog-Authenticated-User-Id`, which any request that reached Dispatch around IAP can carry.
+  It verifies the assertion as Google documents ([Securing your app with signed headers](https://cloud.google.com/iap/docs/signed-headers-howto)) through `internal/oidc` (`oidc.IAPVerifier`):
+  an ES256 signature by a key of IAP's set at `https://www.gstatic.com/iap/verify/public_key-jwk`, a fixed address, since IAP publishes no discovery document (`oidc.NewKeysAt`), read on the first request and cached as a service-account issuer's set is;
+  the issuer `https://cloud.google.com/iap`;
+  the audience `DISPATCH_IAP_AUDIENCE` (`/projects/<project number>/global/backendServices/<backend service id>` behind a load balancer);
+  and `exp` and `iat` (and an `nbf`, which IAP does not write), each with the 30 seconds of clock skew Google documents; a time that is not a number of seconds from 1970 to 9999 is refused as malformed.
+  Who may use Dispatch is the domain sign-in's rule (`identity.DomainRule`), so `DISPATCH_SIGNIN_DOMAIN` is required:
+  a person is admitted when the assertion's `hd` is that domain and its `sub` names a Google account (`accounts.google.com:<id>`), and is named by the assertion's `email`, lowercased.
+  An assertion carries no `email_verified`; its `email` is the address of the Google account IAP signed in, which Google tells an app to take as the person.
+  `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET` and `DISPATCH_SIGNIN_GROUP` are refused beside it, and so are dev sign-in and `DISPATCH_IAP_AUDIENCE` under any other identity.
+
+- Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
+  Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  Each person admitted is recorded in `people`.
+  A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
+  a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
+  An expired assertion logs `msg="dispatch: IAP assertion expired"` at DEBUG alone (below).
+  Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
+  An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
+  A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
+  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
+
+- Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
+  Once that assertion has expired, and IAP's keys still verify it and its person is still admitted, the heartbeat rotates the socket rather than cutting it (`identity.ErrCredentialExpired`):
+  the live socket closes with `4001` (reason `credential expired`), on which the page reopens it at once and shows nothing, and the document socket with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects.
+  The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
+  Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
 
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
@@ -1248,6 +1290,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Every 15 seconds (the registry's live window) each process checks its open document sockets again and closes each writable one the fleet no longer admits with `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON` in `packages/contracts`);
   the close frame goes out once the message the server has in flight on that socket is out, which it waits at most a second for, so a peer too slow to take it in that second gets no close frame at all and reads the end as `1006`;
   the provider reconnects on either, the new socket is admitted again, and the reconnect's sync restores what was in flight, so the second is a bound on the close code a page reads and on nothing else.
+  The same close ends a document socket whose upgrade's IAP assertion has expired (Identity, above), with the same reconnect.
   A change of ygo's own update encoding is the one stored-document change no build can answer and no test here proves: a build that meets history written with an encoding it does not know cannot decode it, and the build that cannot is already serving when the new encoding arrives, so the reader-first rule above has nothing to act on.
   An upgrade of that dependency that changes the encoding is therefore a release deployed with no server of the earlier release running, like the migrations that took that exception, rather than a roll.
   What this build does answer is an element it does not know (`DOC_NEWER_CONTENT`, above) and the encodings two deployed builds already speak, which the two-build documents test drives; neither is the upgrade.
@@ -1336,7 +1379,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
   Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
   The others write no owner's row: `census` reads in one read-only transaction, `stored-order` reads, `backfill-files` writes only file versions' bytes, `redeliver-webhooks` writes the shared GitHub rate limits and asks GitHub to deliver again to the serving processes, and `settings`, `routes` and `openapi` open no database.
-  The production deployment runs two of them as Jobs from the image its server is moving to (theorem-labs/agent-infra, `dispatch/main.go`), and neither writes an owner's row.
+  The production deployment runs two of them as Jobs from the image its server is moving to (example-org/deployment, `dispatch/main.go`), and neither writes an owner's row.
   `census` runs before the server's Deployment moves to that image, and runs again only when the Job's template changes, a new image among them, or after a run that failed (`declareCensusJob`): so a roll forward runs the later build's census beside the earlier server, and a rollback the earlier build's census beside the later server.
   `backfill-files` runs once the server has rolled out, and only when a file move or restore is set (`declareFileJob`).
 
@@ -1404,7 +1447,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
 
 - The embedding queue (`embedqueue.Run`) scans when a write enqueues a row:
   the issue trigger's `embeddings_enqueue` (migration `0151`) and each indexer's `embeddings_enqueue_window` (migration `20261102233625`) notify `dispatch_embeddings` for a new row or a text whose hash changed, and a write that leaves the text as it was notifies nothing.
-  The rows the coverage pass writes wake it in process.
+  The `embeddings` rows the coverage pass writes wake it in process.
   Scans start at least 5 s apart.
   After each scan it reads when the earliest pending row falls due (a failed row's retry, or another process's claim lapsing after its two minutes) and arms one timer for it, never sooner than 5 s away.
   A throttled batch waits 5 s plus its backoff before the next.
@@ -1456,11 +1499,10 @@ A process that finds it held tries again
 **Boot passes** run once at start:
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
-  After it only its identity steps run again:
-  at once when this process's queue first embeds successfully after the pass skipped them for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) while a run still finds rows of another identity, so a vector an old-configuration process commits during a roll is dropped.
+  Its identity steps and the step that records each issue's inputs (`recordIssueSources`) run again after it:
+  at once when this process's queue first embeds successfully after the pass skipped the identity steps for a canary the embedder did not answer, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, so a vector an old-configuration process commits during a roll is dropped, and the inputs of an issue edited since the run before are recorded and the coverage report stops building its text.
   Only the process whose embedder has the active identity drops or re-admits anything;
   a process whose identity is not active sends no canary and looks again on the timer, since the identity it is configured with becomes active once no live process carries the one before it.
-  Once a run finds none, the loop holds no timer.
 
 - The task progress reconciliation (`docs.Service.RunTaskProgressReconciliation`) counts every issue whose stored task count is not its latest version's.
   Every version write records its count in its own transaction, so nothing makes new drift while the process runs but a row another writer held during the pass:
@@ -1477,7 +1519,7 @@ A process that finds it held tries again
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
 
-- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps or an issue names as its own, recording every completed check run and completed check suite Envoy's listener record of that head lacks.
+- The CI reconcile pass (`cireconcile.Interval`, lease `ci-reconcile`) runs every 5 minutes through `duty.RunLeased`, its first pass one interval after the start, and reads each open pull request's head of every repository `repo_projects` maps or an issue names as its own, recording every completed check run and completed check suite Envoy's listener record of that head lacks, and the head's commit statuses where the App's token holds Commit statuses (CI reconcile, above).
   A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
@@ -3180,15 +3222,15 @@ A window holds at most 1,200 characters of block text, a heading starts a new on
 The block-index tick (Background loops, above) writes the windows of every owner whose blocks a write recorded since it last windowed it, gives windows to every owner that holds blocks and no window of them, and, once an owner's window carries a vector of its current text, deletes that owner's whole-text embeddings row.
 An issue's text is its title and its spec, the latest version of its primary document (its title alone while that is blank), and a new version of the spec queues the issue again through `0140`'s trigger on `artifact_versions`, so meaning search, and the related-item check below, find an issue with a terse title by what its spec says.
 The server also runs a coverage pass (`embedqueue.Cover`) once when it starts, so a deployment runs nothing by hand to embed what it already holds:
-the pass adds a row for every searchable issue that has none (one written before the trigger existed, or with it off, as a restore or a replication writes), points a row whose issue's text changed with the trigger off at the current text, takes every vector another identity made out of the index and queues its item again, gives a row that died under another identity this identity's attempts once, and settles a dead row whose text has nothing to embed (empty or only white space) with no vector, as the queue settles a pending one.
+the pass adds a row for every searchable issue that has none (one written before the trigger existed, or with it off, as a restore or a replication writes), points a row whose issue's text changed with the trigger off at the current text, records, for every issue whose row then holds its current text, the inputs that text was built from (`recordIssueSources`), takes every vector another identity made out of the index and queues its item again, gives a row that died under another identity this identity's attempts once, and settles a dead row whose text has nothing to embed (empty or only white space) with no vector, as the queue settles a pending one.
 The window kinds take those last three steps alone:
 which windows exist is the block index's to say, so a row the pass invented would be embedded for ever at a text no reader can reach.
 The two steps that act on another identity's rows wait until the configured embedder has answered:
 an embedding this process's queue made has succeeded, or, when none has yet and such rows exist, the pass embeds a short fixed canary text and it succeeds.
 Until then the pass leaves those vectors and dead rows as they are and logs one WARN naming the identity, the canary's error and how many of each it left, so a misnamed Azure deployment (which answers `404 DeploymentNotFound`) or a refused credential drops nothing, and a throttled canary waits too;
 a pass with no such rows calls the embedder not at all.
-After the boot pass only those two steps run again (Background loops, above):
-at once when this process's queue first embeds successfully after the pass skipped them, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) while a run still finds another identity's rows, a canary first when the queue has not proved the embedder, until a run finds none.
+After the boot pass those two steps run again, and so does the step that records issues' inputs (Background loops, above):
+at once when this process's queue first embeds successfully after the pass skipped the two, and every `identityRecheckInterval` (10 minutes, plus up to a tenth again) for as long as the process runs, a canary first when the queue has not proved the embedder.
 The rest of the pass runs again only at the next start:
 a live write enqueues its own text through its trigger or through the block-index tick that windows its blocks, and what is written with the trigger off waits for that start.
 Each step is a statement of at most 500 rows in its own short transaction, repeated until it changes nothing, and is safe beside a live write and beside another process's pass, so the pass takes no lease.
@@ -3196,6 +3238,31 @@ Each step is a statement of at most 500 rows in its own short transaction, repea
 the identity, its place and model (all three null with no embedder), and in total and per kind the searchable items, how many carry a current vector of that identity, how many lack one, how many failed for good, and how long the oldest lacking item has waited.
 The same report names, under `not_indexed`, every kind of node neither leg of search holds a row of — a component, a session, a document version, a result and a handoff — each with how many of it the database holds, read from the table that holds it.
 A kind nothing indexes is named rather than left out, so a reader cannot read it as a kind that is covered with nothing left to embed; it carries no current, lacking or failed count, and it is in no total.
+The report is one statement, so every count reads one snapshot, and it tests no window's text:
+a window kind's rows are read through two partial indexes, `embeddings_window_embedded` (a row embedded at its current text, current when its model is the identity) and `embeddings_window_unembedded` (every other row, never current), whose predicates hold the test that leaves out a text with nothing to embed, so Postgres runs that test at each write of a row rather than at each read.
+Both predicates test the kind by a regex that matches the window kinds alone (`kind ~ '^(document_block|comment_block|message_block|ask_part)$'`), not by `kind in (...)`:
+a list of kinds is a condition that other indexes of `embeddings` read (`embeddings_pkey`, `embeddings_kind_project`, `embeddings_window_owner`), and no btree index reads that regex.
+The statement reads both halves in one arm whose condition is the two predicates joined by OR, which no single window index answers, so Postgres reads the pair by one bitmap heap scan over a BitmapOr of both indexes:
+it reads each heap page that holds a window once, whatever the visibility map holds, and runs the blank test on no window.
+The arm groups its rows by the kind's position in the list of window kinds rather than by `kind`, so no index's order is of use to it either.
+Each index is keyed on `kind` alone and carries no other column, since that heap scan reads every column the statement needs from the row anyway.
+The report's transaction sets `enable_seqscan = off`, `enable_sort = off`, `max_parallel_workers_per_gather = 0`, `jit = off` and `work_mem = '128MB'` before the statement (`embedqueue`'s `planCoverage`), and reads no statistics to decide anything:
+with sequential scans off, that bitmap is the only way left to read the window rows, so the plan does not rest on the planner's estimates, which are wrong for this table (both predicates compare `embedded_hash` with `content_hash`, which the planner cannot estimate);
+its cost is every entry of both indexes and each heap page that holds a window once, whatever the visibility map holds, whatever the statistics record and whatever share of the windows is embedded, as after an embedder change drops every vector;
+the larger `work_mem` keeps the bitmap exact, so no page is checked against the predicates' regex again;
+and the other three settings take the planner's remaining choices by estimate, a sort, parallel workers and JIT, away from it.
+Index scans stay on, so the issues' lookups keep theirs.
+`packages/envoy/scripts/coverage-scale.sh` measures the statement at production's size and twice it in six states of `embeddings`: freshly vacuumed, a third of its pages written since and analyzed, every page written since and analyzed, every page written since while the statistics still record about half of them all-visible, and after an embedder change has dropped every vector, first with those statistics and then analyzed.
+An issue's vector is judged against the inputs the pass last recorded for it in `embedding_issue_sources` (the id and row version of the latest version of its primary document, its row's `content_hash` and its title):
+where they are still the issue's own, its text is the one its row's `content_hash` is the hash of, and only an issue whose inputs changed since they were recorded, or that has none recorded, has its text built and hashed, as the pass builds it (an issue whose title is empty, or starts with white space or with anything but printable ASCII, also builds its text, to test whether it has anything to embed).
+So an issue edited since the record step last ran costs the report time, not a wrong count (`embedqueue`'s `issueSource` names the one theoretical exception).
+The record step writes `embedding_issue_sources` alone, never a row of `embeddings`, and records an issue only where its row holds the hash of its current text, so an issue whose row is stale is hashed by the report until a boot pass repairs the row and, after the repair, records it.
+The statement runs in a read-only transaction under a `statement_timeout` of 10 s:
+past it the statement counts nothing and the route answers `503 SEARCH_COVERAGE_TIMEOUT`, to be asked again later.
+The bound is the database's own so that it ends the statement while its caller still waits (the coverage probe gives up at 30 s), which then gets that answer rather than a cut connection and a `500`;
+and it holds where the caller's own cancel cannot arrive: pgx answers a caller's context that ends mid-statement by sending Postgres a CancelRequest, which needs a connection of its own, and a saturated server may refuse one.
+The boot pass reads the same report, under the same bound, for its closing log line;
+a report that fails there while the process still runs is logged at WARN (`dispatch embedqueue: coverage pass report failed`, with what the pass changed) and the pass returns, since every step before it is done, rather than failing and running again whole every `identityRecheckInterval`.
 The `backfill-embeddings` subcommand, which did the pass's first job by hand, is gone, with its checkpoint table (0119).
 
 One embedder identity is active at a time, the one row of `embedder_active` (migration `20261101030538_embedder_active`, `internal/dispatch/embedqueue/active.go`).
@@ -3783,7 +3850,7 @@ Each item below names a path with its method and identity, then its purpose.
   A page that stops reading meets the socket's own bounds first (#2449):
   the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
   the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
-  A socket rotates with 4001 at a random age from 30 to 60 minutes;
+  A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
@@ -4061,10 +4128,13 @@ Each item below names a path with its method and identity, then its purpose.
   Each count is read from the table that holds the kind — `components`, the listener's stored session list (`route_roster`, which is Dispatch's whole record of which sessions exist, and counts 0 before the listener has answered), `artifact_versions`, `check_results` and `handoffs` — in the statement that counts the covered kinds, so every number of the report reads one snapshot.
   Such a kind is named rather than left out, because a reader of a report carrying the covered kinds alone cannot tell a kind that is covered with nothing left to embed from one nothing indexes.
   It carries no `current`, `lacking` or `failed`, none of which is defined for a kind that has no vector to be behind on, and it is in no total.
+  The statement reads a window kind through two partial indexes, and an issue's hash from its row wherever the inputs the coverage pass recorded for it are still its own, so it tests no window's text and builds only the text of an issue whose inputs changed ([Search](#search)).
+  It reads the two indexes by one bitmap heap scan over both at once, which visits each heap page holding a window once, and by no other index or plan, whatever the visibility map holds, the statistics record or the share of windows embedded; it reads no statistics to choose a plan.
+  It runs under a 10 s `statement_timeout`, and a statement past it counts nothing and answers `503 SEARCH_COVERAGE_TIMEOUT`, to be asked again later.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-six tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
   The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.

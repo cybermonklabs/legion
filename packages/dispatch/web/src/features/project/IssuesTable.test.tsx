@@ -4,6 +4,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -1179,33 +1180,13 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
 // and the block above it are observed instead. happy-dom has no `ResizeObserver`, so the stub
 // is the geometry — what the table observes, and what a notice appearing there fires.
 test("the box is measured through an observer over itself and the content above it", async () => {
-  const live: { elements: Element[]; fire: () => void }[] = [];
-  const original = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    readonly elements: Element[] = [];
-    constructor(callback: ResizeObserverCallback) {
-      live.push({
-        elements: this.elements,
-        fire: () => callback([], this as unknown as ResizeObserver),
-      });
-    }
-    observe(element: Element) {
-      this.elements.push(element);
-    }
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
-  restores.push(() => {
-    globalThis.ResizeObserver = original;
-  });
+  const sizes = installResizeObserver();
+  restores.push(() => sizes.restore());
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const box = screen.getByTestId("issues-table-scroll");
   const above = screen.getByRole("region", { name: "Project issues" }).firstElementChild;
   if (!above) throw new Error("The table has no content above it");
-  const watching = [...live].reverse().find((entry) => entry.elements.includes(box));
-  if (!watching) throw new Error("Nothing observes the table's box");
-  expect(watching.elements).toContain(above);
   const measured: string[] = [];
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
@@ -1216,9 +1197,11 @@ test("the box is measured through an observer over itself and the content above 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  act(() => {
-    watching.fire();
-  });
+  // A notice appearing above the box changes only that block's size.
+  sizes.resize(above);
+  expect(measured).toContain("issues-table-scroll");
+  measured.length = 0;
+  sizes.resize(box);
   expect(measured).toContain("issues-table-scroll");
 });
 

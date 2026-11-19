@@ -30,8 +30,13 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	// The listener settles every commit of the pull request, its head or not, and a settlement
 	// stands only for the commit it names: it is for the head only when it names the head. While a
 	// head run is open the settlement is recorded in it whether it stands or not
-	// (classify.ApplyCheckSettlement).
-	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot, Failing: fact.Failing, Cancelled: fact.Cancelled}
+	// (classify.ApplyCheckSettlement). A list of commit statuses the decoder could not read costs
+	// the settlement nothing else: the fact names no status, and the pull request keeps the
+	// statuses it holds for the head, since a settlement's statuses are merged into those per
+	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
+	// intake.PullRequestChecks.StatusesUnread).
+	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
@@ -189,6 +194,12 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // prompt, so each name is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote
 // or a newline inside it is escaped rather than closing the one around it. A name of ordinary
 // characters reads as itself inside the quotes.
+//
+// After the check runs it names each commit status the record keeps for the checked head, with
+// its state, in context order (namedStatuses), and nothing where it keeps none, so the line of a
+// head that carries no status reads as it did before the daemon kept any. A status is an entry of
+// its own kind, apart from the check runs: a context that shares a check run's name is named in
+// both places.
 func settledChecks(pr record.PullRequest) string {
 	if pr.CheckedHead == "" {
 		return ""
@@ -203,10 +214,11 @@ func settledChecks(pr record.PullRequest) string {
 	for _, name := range pr.Failing {
 		conclusions[name] = record.RunFailed
 	}
+	statuses := namedStatuses(keptStatuses(pr, pr.CheckedHead))
 	if len(conclusions) == 0 {
-		return "CI settled at " + pr.CheckedHead + " reporting no check"
+		return "CI settled at " + pr.CheckedHead + " reporting no check" + statuses
 	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(conclusions)
+	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(conclusions) + statuses
 }
 
 // headChecks is every check run GitHub reported on the pull request's current head with what that
@@ -222,6 +234,11 @@ func settledChecks(pr record.PullRequest) string {
 // of a run's head the daemon's readers share: a check run on this head that a newer run of the
 // same name on another head has replaced in the fence is not named, and nor is a run stored before
 // the fence carried its head.
+//
+// After the runs it names each commit status the record keeps for the current head, with its
+// state (namedStatuses), when the checked head is the current head (classify.Settled), and none
+// otherwise: a status the record keeps is stamped with the head whose settlement named it, and one
+// of another head says nothing of this one.
 func headChecks(pr record.PullRequest) string {
 	runs := classify.HeadRuns(pr)
 	conclusions := make(map[string]record.RunConclusion, len(runs))
@@ -231,7 +248,11 @@ func headChecks(pr record.PullRequest) string {
 	if len(conclusions) == 0 {
 		return ""
 	}
-	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(conclusions)
+	var statuses []record.CommitStatus
+	if classify.Settled(pr) {
+		statuses = keptStatuses(pr, pr.HeadSHA)
+	}
+	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(conclusions) + namedStatuses(statuses)
 }
 
 // namedConclusions is each check name with what it came to, in name order, as both lines above
@@ -246,6 +267,35 @@ func namedConclusions(conclusions map[string]record.RunConclusion) string {
 		names[i] = strconv.Quote(name) + " " + string(conclusions[name])
 	}
 	return strings.Join(names, ", ")
+}
+
+// keptStatuses is every commit status pr keeps for head (record.PullRequest.Statuses), in context
+// order; none when what pr keeps is another head's. The stamp is what keeps a list out of a text
+// about another head (record.CommitStatus.StampedWith): a daemon of an earlier release moves
+// checked_head after a rollback and leaves the list as this one left it (record.CommitStatus.Head).
+func keptStatuses(pr record.PullRequest, head string) []record.CommitStatus {
+	var kept []record.CommitStatus
+	for _, status := range pr.Statuses {
+		if status.StampedWith(head) {
+			kept = append(kept, status)
+		}
+	}
+	slices.SortFunc(kept, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	return kept
+}
+
+// namedStatuses is what settledChecks and headChecks add after the check runs for statuses: each
+// context, quoted as a check name is (namedConclusions), with its state as GitHub spells it, in
+// the order given; "" for none.
+func namedStatuses(statuses []record.CommitStatus) string {
+	if len(statuses) == 0 {
+		return ""
+	}
+	named := make([]string, len(statuses))
+	for i, status := range statuses {
+		named[i] = strconv.Quote(status.Context) + " " + string(status.State)
+	}
+	return "; commit statuses: " + strings.Join(named, ", ")
 }
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
@@ -791,13 +841,14 @@ func (r round) stuckAs(other round) bool {
 
 // stuckMergeStateReason is what the architect and the reviewer are told of an approval standing
 // on a head GitHub answers for with a merge state it would not merge from: the head, the pull
-// request, the state in GitHub's own spelling, and every check run GitHub reported on that head
-// with the conclusion it came to (headChecks), which is the whole of what the daemon knows of
-// the head's own CI. There is always one to name: the only caller builds this reason for a round
-// it has already reported a head for, which it does only once GitHub has reported a check run on
-// that head itself and every one of them has concluded (reviewRound,
-// classify.ChecksConcludedOnHead), and that gate and headChecks read the same runs of the fence
-// (classify.HeadRuns), so headChecks names at least the run the gate found.
+// request, the state in GitHub's own spelling, every check run GitHub reported on that head
+// with the conclusion it came to, and every commit status the record keeps for that head with
+// its state (headChecks), which is the whole of what the daemon knows of the head's own CI. There
+// is always a run to name: the only caller builds this reason for a round it has already reported
+// a head for, which it does only once GitHub has reported a check run on that head itself and
+// every one of them has concluded (reviewRound, classify.ChecksConcludedOnHead), and that gate
+// and headChecks read the same runs of the fence (classify.HeadRuns), so headChecks names at least
+// the run the gate found.
 //
 // It names the head's own check runs rather than everything the settlement standing for the head
 // reports, which can be the code head's below it: GitHub weighs the current head for the merge,

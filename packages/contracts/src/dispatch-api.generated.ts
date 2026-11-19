@@ -1245,7 +1245,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-six tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1767,6 +1767,40 @@ export interface paths {
     get: operations["getApiV1IssuesByKeyRoleHolders"];
     /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
     put: operations["putApiV1IssuesByKeyRoleHolders"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/steps": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report}, its attempt its place among the issue's runs of the same task, step and kind from 1. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
+    get: operations["getApiV1IssuesByKeySteps"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/steps/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyStepsById"];
     post?: never;
     delete?: never;
     options?: never;
@@ -2830,7 +2864,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. */
+    /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. Every number is counted in one statement under a 10 s statement_timeout, and a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later. */
     get: operations["getApiV1SearchCoverage"];
     put?: never;
     post?: never;
@@ -5359,6 +5393,10 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       holders: null | components["schemas"]["IssueRoleHolder"][];
     };
+    IssueSteps: {
+      issue: string;
+      tasks: components["schemas"]["StepTask"][] | null;
+    };
     IssueSummary: {
       advances: components["schemas"]["IssueAdvance"][] | null;
       /** Format: int64 */
@@ -6321,6 +6359,55 @@ export interface components {
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
+    };
+    StepRecord: {
+      agent: string;
+      attempt: number;
+      /** Format: date-time */
+      ended_at: null | string;
+      /** Format: int64 */
+      generation: number;
+      id: string;
+      issue: string;
+      /** @enum {string} */
+      kind: "step" | "retro" | "merge";
+      model: string;
+      report: null | string;
+      /** @enum {string} */
+      result: "" | "passed" | "failed" | "stopped";
+      returned_to: null | number;
+      role: string;
+      session: string;
+      /** Format: date-time */
+      started_at: null | string;
+      step: number;
+      task: string;
+      type: string;
+    };
+    StepRecordInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      agent?: null | string;
+      /** Format: date-time */
+      ended_at?: null | string;
+      generation?: null | number;
+      /** @enum {null|string} */
+      kind?: "step" | "retro" | "merge" | null;
+      model?: null | string;
+      report?: null | string;
+      /** @enum {null|string} */
+      result?: "passed" | "failed" | "stopped" | null;
+      returned_to?: null | number;
+      role?: null | string;
+      session?: null | string;
+      /** Format: date-time */
+      started_at?: null | string;
+      step?: null | number;
+      task?: null | string;
+      type?: null | string;
+    };
+    StepTask: {
+      steps: components["schemas"]["StepRecord"][] | null;
+      task: string;
     };
     Subscriber: {
       /** Format: int64 */
@@ -11163,6 +11250,79 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeySteps: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueSteps"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyStepsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StepRecordInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StepRecord"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -14591,6 +14751,7 @@ export type IssueRoleHolder = components["schemas"]["IssueRoleHolder"];
 export type IssueRoleHolderRecord = components["schemas"]["IssueRoleHolderRecord"];
 export type IssueRoleHolders = components["schemas"]["IssueRoleHolders"];
 export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput"];
+export type IssueSteps = components["schemas"]["IssueSteps"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
 export type ItemBlock = components["schemas"]["ItemBlock"];
@@ -14705,6 +14866,9 @@ export type SessionAnswersResponse = components["schemas"]["SessionAnswersRespon
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StepRecord = components["schemas"]["StepRecord"];
+export type StepRecordInput = components["schemas"]["StepRecordInput"];
+export type StepTask = components["schemas"]["StepTask"];
 export type Subscriber = components["schemas"]["Subscriber"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];

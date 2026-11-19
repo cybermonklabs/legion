@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { scrollFadeTrailingPx } from "../web/src/theme/classes";
 
 import {
   createAsk,
@@ -373,8 +374,9 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
   await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of five
-// tabs with each tab's box measured, at 390 px and back.
+// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of ten
+// tabs with each tab's box and the tablist's fade measured, at 390 px and back, then the comment
+// margin hidden and shown again.
 test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
   page,
 }, testInfo) => {
@@ -394,7 +396,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   const tablist = page.getByRole("tablist", { name: "Issue detail" });
   const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(9);
+  await expect(tabs).toHaveCount(10);
   const insideTablist = async (tab: Locator) => {
     const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
     expect(listBox).not.toBeNull();
@@ -405,16 +407,40 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
       (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
     );
   };
-  // Nine tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
+  // Ten tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
   // sideways there (as it already did at 360 px). No label is shortened to buy the room, every
   // tab is reachable from the keyboard, each is scrolled fully into view as it takes focus, and
-  // each keeps its 44 px touch target.
+  // each keeps its 44 px touch target. While tabs lie past its trailing edge the tablist wears
+  // the trailing fade, which says the cut is a scroll, and a tab taking focus stops clear of it;
+  // at the end of the scroll the fade is off, since it would hide the last tab. A tablist that
+  // narrows with no change of tab - a narrower window, the comment margin opening - brings the
+  // selected tab back whole and clear of the fade too.
+  const masked = () => tablist.evaluate((node) => getComputedStyle(node).maskImage !== "none");
+  // Polled: the reveal that answers a narrower tablist runs on the browser's next resize
+  // observation, after the change that narrowed it.
+  const wholeAndClearOfFade = (tab: Locator) =>
+    expect
+      .poll(async () => {
+        const [faded, listBox, box] = await Promise.all([
+          masked(),
+          tablist.boundingBox(),
+          tab.boundingBox(),
+        ]);
+        const listLeft = listBox?.x ?? 0;
+        const listRight = listLeft + (listBox?.width ?? 0);
+        const left = box?.x ?? Number.NEGATIVE_INFINITY;
+        const right = left + (box?.width ?? 0);
+        const visibleRight = faded ? listRight - scrollFadeTrailingPx + 1 : listRight + 0.5;
+        return left >= listLeft - 0.5 && right <= visibleRight;
+      })
+      .toBe(true);
   const viewport = page.viewportSize();
   await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
   await expect(tabs).toHaveText([
     "Spec",
     "Verification",
     "Plan",
+    "Steps",
     "Conversation",
     "Children",
     "Artifacts 2",
@@ -423,10 +449,16 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     "Collaborators",
   ]);
   expect(await tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)).toBe(true);
+  // The row opened on Conversation, which the narrower window left cut off at the edge.
+  const conversationTab = page.getByRole("tab", { exact: true, name: "Conversation" });
+  await expect(conversationTab).toHaveAttribute("aria-selected", "true");
+  await wholeAndClearOfFade(conversationTab);
   await page.getByRole("tab", { name: "Spec" }).focus();
+  await expect.poll(masked).toBe(true);
   for (const label of [
     "Verification",
     "Plan",
+    "Steps",
     "Conversation",
     "Children",
     "Artifacts 2",
@@ -438,6 +470,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
     const tab = page.getByRole("tab", { exact: true, name: label });
     await expect(tab).toBeFocused();
     await insideTablist(tab);
+    await wholeAndClearOfFade(tab);
     expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
   await page.keyboard.press("Home");
@@ -445,9 +478,24 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await expect(specTab).toBeFocused();
   await insideTablist(specTab);
   expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  await expect.poll(masked).toBe(true);
+  await page.keyboard.press("End");
+  await expect(page.getByRole("tab", { exact: true, name: "Collaborators" })).toBeFocused();
+  await expect.poll(masked).toBe(false);
   await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
+  // At 1280 px every tab fits beside the hidden margin, and Activity, chosen there, is whole. The
+  // margin coming back narrows the tablist with no change of tab, and Activity, which it left past
+  // the trailing edge, is brought back whole and clear of the fade.
+  await page.getByRole("button", { name: "Hide margin" }).click();
+  await expect(page.getByTestId("margin-rail")).toBeVisible();
+  const activityTab = page.getByRole("tab", { name: "Activity" });
+  await activityTab.click();
+  await expect(activityTab).toHaveAttribute("aria-selected", "true");
+  await expect.poll(masked).toBe(false);
+  await page.getByRole("button", { name: "Show margin" }).click();
+  await expect.poll(masked).toBe(true);
+  await wholeAndClearOfFade(activityTab);
 
-  await page.getByRole("tab", { name: "Activity" }).click();
   const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
   const added = rows.filter({ hasText: `added ${name}` });
   await expect(added).toHaveCount(1);

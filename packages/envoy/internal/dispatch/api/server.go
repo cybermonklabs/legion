@@ -926,17 +926,27 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // confirms, a revoked token) it cancels the connection's context, on which the document server and
 // the live socket close the socket. stillResolves is the mount's own admission asked again, never
 // a wider one: the live socket's is callerStillResolves, which resolves whichever credential
-// admitted it, and the document socket's is signInStillResolves, the sign-in cookie alone, since
-// that is all the document service admits it by. A check that resolved anything the request
-// carries would let a credential that admitted nothing keep the socket open once the one that did
-// had ended. The check runs beside the handler, which holds pooled connections of its own while it
-// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
-// it resolves on a context detached from the access-log line, which names the caller the socket
-// was admitted as (accesslog.Detached).
+// admitted it, and the document socket's is signInStillResolves, the browser credential alone
+// (a sign-in cookie, or an Identity-Aware Proxy assertion), since that is all the document service
+// admits it by. A check that resolved anything the request carries would let a credential that
+// admitted nothing keep the socket open once the one that did had ended. The check runs beside
+// the handler, which holds pooled connections of its own while it admits the socket, so it marks a
+// context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
+// from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
+//
+// A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
+// assertion, which lives about ten minutes while IAP signs a fresh one for every request it
+// passes, that IAP's key set still verifies and whose person is still admitted) cancels the
+// context with errCredentialExpired instead, which each socket closes with a code on which the
+// page reopens it at once: the live socket with contracts.LiveSocketMaxAgeClose (liveSocket.write),
+// and the document socket with the close frame ygo sends for that cause. The reopened socket's
+// upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
+// its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
+// any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, closeConnection := context.WithCancel(r.Context())
-		defer closeConnection()
+		ctx, closeConnection := context.WithCancelCause(r.Context())
+		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
@@ -951,7 +961,11 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 					// broker's answer alone rather than the proof the upgrade already spent
 					// (callerStillResolves).
 					if err := stillResolves(check); err != nil {
-						closeConnection()
+						if errors.Is(err, identity.ErrCredentialExpired) {
+							closeConnection(errCredentialExpired)
+						} else {
+							closeConnection(nil)
+						}
 						return
 					}
 				}
@@ -961,15 +975,36 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 	}
 }
 
-// signInStillResolves answers whether the sign-in cookie a document socket was admitted with
-// still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
-// document service admits a socket by that cookie and nothing else (docs.Service.requestActor,
-// Identity.Login), and this asks the API's Identity the same question; cmd/dispatch hands the API
-// and the document service one Identity, so the two read one cookie the same way. It reads no
-// Authorization header. A bearer or a broker-issued token sent beside the cookie admitted nothing,
-// so it keeps nothing open either: resolved here, it would hold the socket open for the token's
-// whole life after the cookie ended, a read-only token's included, which the read list lets read
-// no document at all (readScopeRoutes).
+// errCredentialExpired is the cause whileCallerResolves cancels a socket's context with once the
+// credential its upgrade carried has expired (identity.ErrCredentialExpired). ygo reads CloseCode
+// off the cause and sends the document socket's peer that close frame, and the live socket reads
+// the cause itself (liveSocket.write).
+var errCredentialExpired error = credentialExpired{}
+
+// credentialExpired is that cause's type: an error whose CloseCode ygo sends.
+type credentialExpired struct{}
+
+func (credentialExpired) Error() string {
+	return "the credential this socket was opened with has expired; the page opens it again with a fresh one"
+}
+
+// CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
+// for a socket whose admission no longer stands, on which the provider reconnects and the
+// reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
+func (credentialExpired) CloseCode() (int, string) {
+	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// signInStillResolves answers whether the browser credential a document socket was admitted with
+// still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
+// is what whileCallerResolves asks on that socket's every heartbeat. The document service admits a
+// socket by that credential and nothing else (docs.Service.requestActor, Identity.Login), and this
+// asks the API's Identity the same question; cmd/dispatch hands the API and the document service
+// one Identity, so the two read one credential the same way. It reads no Authorization header. A
+// bearer or a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open
+// either: resolved here, it would hold the socket open for the token's whole life after the cookie
+// ended, a read-only token's included, which the read list lets read no document at all
+// (readScopeRoutes).
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")

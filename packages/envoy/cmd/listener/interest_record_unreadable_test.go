@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // An interest record the bucket holds and this build cannot decode is not a bus that did not
@@ -110,7 +111,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	} {
 		t.Run(route.path, func(t *testing.T) {
 			recorder := get(route.handler, route.path)
-			var refusal apiError
+			var refusal listenerwire.APIError
 			_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
 			if recorder.Code == http.StatusServiceUnavailable || strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
 				t.Fatalf("GET %s with an unreadable interest record: status %d, body %s; want anything but the bus-unavailable 503 - the bus answered, and the record it answered with cannot be read on any retry",

@@ -310,6 +310,13 @@ agents using it stop working at once.
   retracted with its reason, and counts as no evidence.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
+- **Steps** lists each step Legion ran on the issue, one table per task: each run of a step with
+  its role, type, agent, model, attempt, start, end and result. A step that ran twice, after a
+  review sent its task back, has a row for each run, and the second reads attempt 2; a run that
+  failed or stopped and sent its task back says which step it returned to. A run that has not
+  ended reads **running**, and a field Legion did not record reads `—`. Legion's daemon writes
+  these records, and the tab only reads them. An issue Legion never ran reads **No step of this
+  issue has run in Legion.**
 - **Conversation** is the issue's conversations, one card each: every ask with its replies and
   its answer, every comment thread with its replies, every message thread with its replies. The
   conversation with the newest reply is at the top, so a thread rises when someone answers it,
@@ -338,8 +345,9 @@ agents using it stop working at once.
   instead of listing nothing. An issue nobody has worked reads **No one has worked this issue
   yet.**
 
-Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec, Verification,
-Plan, Conversation, Children, Artifacts, Activity, Decisions, or Collaborators.
+Press `t` and then `s`, `k`, `p`, `e`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec,
+Verification, Plan, Steps, Conversation, Children, Artifacts, Activity, Decisions, or
+Collaborators.
 
 An issue with no Verification document, or no plan document, shows on that tab the
 `dispatch artifact` command that makes one.

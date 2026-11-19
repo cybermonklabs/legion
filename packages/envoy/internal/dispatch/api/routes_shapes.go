@@ -745,9 +745,13 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
-	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/steps/{id}": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
+	},
+	"GET /api/v1/issues/{key}/steps":   {Status: http.StatusOK, Response: model.IssueSteps{}},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},

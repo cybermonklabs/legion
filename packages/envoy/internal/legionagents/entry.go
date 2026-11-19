@@ -20,42 +20,19 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// Entry is one Legion session as the registry stores it. Readers ignore fields they do not know,
-// so a later writer may add some.
-type Entry struct {
-	// SessionID is the Oh My Pi or Claude Code session id.
-	SessionID string `json:"session_id"`
-	// LegionProject is the Legion project token the daemon's role tokens carry (claim.ProjectToken,
-	// legionProjectToken in packages/contracts): legion.yaml's project lowercased with every
-	// non-alphanumeric dropped. It is not the Dispatch project.
-	LegionProject string `json:"legion_project"`
-	// Issue is the Dispatch issue key the session works, upper case.
-	Issue string `json:"issue"`
-	// Role is one of Roles.
-	Role string `json:"role"`
-	// RoleToken is legion-<legion_project>-<issue lower-cased>-<role>, byte for byte what
-	// claim.NewToken and roleToken build.
-	RoleToken string `json:"role_token"`
-	// Title is the session's title as stamped (`Legion tester · INFRA-71`).
-	Title string `json:"title"`
-	// Harness is omp or claude.
-	Harness string `json:"harness"`
-	// StartedAt is when the session started, RFC 3339 UTC.
-	StartedAt string `json:"started_at"`
-	// RecordedAt is when the listener first recorded the session, RFC 3339 UTC. The listener sets
-	// it; a writer's value is ignored.
-	RecordedAt string `json:"recorded_at"`
-}
+// Entry is one Legion session as the registry stores it, which the listener's wire package
+// declares (listenerwire.LegionAgentEntry). Readers ignore fields they do not know, so a later
+// writer may add some.
+type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
 // started_at: the session that replaced it and when, both nil for the newest. Neither is stored.
-type Agent struct {
-	Entry
-	ReplacedBy *string `json:"replaced_by"`
-	ReplacedAt *string `json:"replaced_at"`
-}
+// It is the listener's wire type (listenerwire.LegionAgent).
+type Agent = listenerwire.LegionAgent
 
 // Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
 // LEGION_ROLES in packages/contracts). An issue's agents are listed in this order.
@@ -226,7 +203,7 @@ func sameSession(stored, next Entry) bool {
 
 // startedAt is the entry's start, the order a role token's sessions replace each other in. A stored
 // entry was validated, so it parses; one that does not sorts first.
-func (e Entry) startedAt() time.Time {
+func startedAt(e Entry) time.Time {
 	at, _ := time.Parse(time.RFC3339, e.StartedAt)
 	return at
 }
@@ -234,7 +211,7 @@ func (e Entry) startedAt() time.Time {
 // oldestFirst orders one role token's sessions by when they started, then by when they were
 // recorded, then by id, so two reads order the same sessions the same way.
 func oldestFirst(a, b Entry) int {
-	return cmp.Or(a.startedAt().Compare(b.startedAt()), cmp.Compare(a.RecordedAt, b.RecordedAt), cmp.Compare(a.SessionID, b.SessionID))
+	return cmp.Or(startedAt(a).Compare(startedAt(b)), cmp.Compare(a.RecordedAt, b.RecordedAt), cmp.Compare(a.SessionID, b.SessionID))
 }
 
 // succession derives each session's replacement among entries, every one of one role token: the
@@ -244,7 +221,7 @@ func succession(entries []Entry) []Agent {
 	slices.SortFunc(entries, oldestFirst)
 	agents := make([]Agent, len(entries))
 	for i, entry := range entries {
-		agents[i] = Agent{Entry: entry}
+		agents[i] = Agent{LegionAgentEntry: entry}
 		if i+1 < len(entries) {
 			next := entries[i+1]
 			agents[i].ReplacedBy, agents[i].ReplacedAt = &next.SessionID, &next.StartedAt
@@ -269,7 +246,7 @@ func issueOrder(entries []Entry) []Agent {
 		return cmp.Or(
 			cmp.Compare(slices.Index(Roles, a.Role), slices.Index(Roles, b.Role)),
 			cmp.Compare(a.RoleToken, b.RoleToken),
-			-oldestFirst(a.Entry, b.Entry),
+			-oldestFirst(a.LegionAgentEntry, b.LegionAgentEntry),
 		)
 	})
 	return agents

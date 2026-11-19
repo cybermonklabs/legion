@@ -60,10 +60,15 @@ func helpKeepEnv(t *testing.T) map[string]string {
 }
 
 // readHelps reads gh's own help and gh api's through a keep made the way one `legion gh` call
-// makes it for the gh at the path gh, and answers what the two reads printed.
+// makes it for the gh at the path gh, with env as the caller's environment, and answers what the
+// two reads printed.
 func readHelps(t *testing.T, gh string, env map[string]string) []string {
 	t.Helper()
-	keep := newGhHelpKeep(context.Background(), gh, env)
+	caller := os.Environ()
+	for name, value := range env {
+		caller = append(caller, name+"="+value)
+	}
+	keep := newGhHelpKeep(context.Background(), gh, env, ghChildEnviron(caller, map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"]}))
 	var helps []string
 	for _, path := range [][]string{nil, {"api"}} {
 		help, err := keep.read(path)
@@ -92,7 +97,7 @@ func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help fun
 	keepEnv := map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}
 	refused := map[string]bool{}
 	for _, call := range []string{"the call that keeps gh's help", "the call that reads the kept copies"} {
-		keep := newGhHelpKeep(context.Background(), gh, keepEnv)
+		keep := newGhHelpKeep(context.Background(), gh, keepEnv, nil)
 		if keep.dir == "" {
 			t.Fatalf("a keep for %s keeps nothing", gh)
 		}
@@ -300,8 +305,9 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"GH_FORCE_TTY set", func(_ *testing.T, _ string, env map[string]string) { env["GH_FORCE_TTY"] = "1" }},
-		{"CLICOLOR_FORCE set", func(_ *testing.T, _ string, env map[string]string) { env["CLICOLOR_FORCE"] = "1" }},
+		{"NO_COLOR set", func(_ *testing.T, _ string, env map[string]string) { env["NO_COLOR"] = "legion-help-keep" }},
+		{"CLICOLOR_FORCE set", func(_ *testing.T, _ string, env map[string]string) { env["CLICOLOR_FORCE"] = "legion-help-keep" }},
+		{"GH_REPO set", func(_ *testing.T, _ string, env map[string]string) { env["GH_REPO"] = "acme/legion-help-keep" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub, log := loggingGh(t)
@@ -337,6 +343,30 @@ func TestGhHelpKeepReadsAgainAfterItsInputsChange(t *testing.T) {
 			readHelps(t, link, env)
 			if got := processes(t, log); len(got) != 0 {
 				t.Errorf("after %s the second call ran gh as %q, want no gh process", tc.name, got)
+			}
+		})
+	}
+}
+
+// A variable of the caller's that gh is never handed (ghChildEnviron) changes no help gh prints,
+// so the copies kept without it still answer: the call after it is set runs no gh.
+func TestGhHelpKeepKeysOnlyWhatGhIsHanded(t *testing.T) {
+	for _, name := range []string{"GH_FORCE_TTY", "GH_PAGER", "GH_DEBUG", "GH_EDITOR", "GH_TELEMETRY"} {
+		t.Run(name, func(t *testing.T) {
+			stub, log := loggingGh(t)
+			link := filepath.Join(t.TempDir(), "gh")
+			if err := os.Symlink(stub, link); err != nil {
+				t.Fatal(err)
+			}
+			env := helpKeepEnv(t)
+			readHelps(t, link, env)
+			if got := processes(t, log); !slices.Equal(got, []string{"--help", "api --help"}) {
+				t.Fatalf("the first call ran gh as %q, want both helps read", got)
+			}
+			env[name] = "1"
+			readHelps(t, link, env)
+			if got := processes(t, log); len(got) != 0 {
+				t.Errorf("after %s was set the next call ran gh as %q, want the kept copies read", name, got)
 			}
 		})
 	}
@@ -437,13 +467,13 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stub, log := loggingGh(t)
 			env := helpKeepEnv(t)
-			want, err := newGhHelpKeep(context.Background(), stub, env).read(nil)
+			want, err := newGhHelpKeep(context.Background(), stub, env, os.Environ()).read(nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			processes(t, log)
 			dir := filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help")
-			keep := newGhHelpKeep(context.Background(), stub, env)
+			keep := newGhHelpKeep(context.Background(), stub, env, os.Environ())
 			tc.tamper(t, dir, keep)
 			got, err := keep.read(nil)
 			if err != nil || got != want {

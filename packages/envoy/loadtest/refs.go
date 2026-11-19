@@ -211,7 +211,9 @@ func runSeedRefs(args []string) error {
 	fs := flag.NewFlagSet("seed-refs", flag.ExitOnError)
 	var f refsFlags
 	f.register(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
@@ -373,7 +375,9 @@ func runRefsShape(args []string) error {
 	fs := flag.NewFlagSet("refs-shape", flag.ExitOnError)
 	var f refsFlags
 	f.register(fs)
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
@@ -453,7 +457,9 @@ func runRefsFetch(args []string) error {
 	var f refsFlags
 	f.register(fs)
 	out := fs.String("out", "", "output TSV: key, status, ETag, body sha256, bytes")
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
