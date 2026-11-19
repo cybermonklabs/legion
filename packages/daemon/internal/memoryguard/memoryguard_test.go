@@ -4056,6 +4056,190 @@ func replayLatepool(t *testing.T, run latepoolRun) {
 	}
 }
 
+// guardRead is one read of the guard's loop: the pid it read, the guard's clock as the read began,
+// how many kills the guard had sent before it, and whether it had written an ended line before it.
+type guardRead struct {
+	pid      int
+	at       time.Time
+	kills    int
+	reported bool
+}
+
+// lateGrowersAtTheMark runs to its first reading at the mark, of hundredths of a percent of the
+// limit, a pod of the shape of `4g-t4latepool-r3` (the replay in
+// TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram): the agent holds a
+// quarter of the limit; the probe's parent, pid 700, fills its 2.4 GB block between the band's
+// first two readings and holds it; its three sleeping forks, pids 701 to 703, which report the
+// block as their own, start before the band's second reading, so neither they nor the parent are
+// new to the stay; and six growers, pids 800 to 805, children of the parent that run a program of
+// their own, start after the band's last reading, at 64 to 69 MiB. The reading at the mark spends
+// stall before the guard reads anything, and each smaps read at it takes 22 ms, those after its
+// first kill too; a killed process exits and frees nothing. It answers the time of the reading at
+// the mark and of the reading after it, by the guard's clock, and the smaps and identity reads of
+// the guard's loop, in order, from the band's first reading on.
+func lateGrowersAtTheMark(t *testing.T, hundredths uint64, stall time.Duration) (h *harness, markAt, nextAt time.Time, smaps, identities []guardRead) {
+	t.Helper()
+	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock - 40*mib}
+	pod.add(agent(podLimit/4), parent)
+	pod.setAnon(at(7600))
+	h = newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	var mu sync.Mutex
+	record := func(to *[]guardRead) func(pid int) {
+		return func(pid int) {
+			r := guardRead{pid: pid, at: h.clock.Now(), kills: int(h.signal.sent.Load()), reported: len(h.log.with("ended ")) > 0}
+			mu.Lock()
+			defer mu.Unlock()
+			*to = append(*to, r)
+		}
+	}
+	h.g.smapsRead, h.g.identityRead = record(&smaps), record(&identities)
+	atMark, perRead := slowMark(h)
+	h.run()
+	for i, r := range []uint64{8000, 8400, 8440} {
+		if i == 0 {
+			for j := range 3 {
+				pod.add(fakeProcess{pid: 701 + j, ppid: 700, start: uint64(5100 + 100*j), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+			}
+			pod.resize(&parent, latepoolBlock)
+		}
+		pod.setAnon(at(r))
+		h.tick()
+	}
+	h.requireKilled()
+	for i := range 6 {
+		pod.add(fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs, anon: uint64(64+i) * mib})
+	}
+	pod.setAnon(at(hundredths))
+	atMark.Store(int64(stall))
+	perRead.Store(int64(22 * time.Millisecond))
+	markAt = h.clock.Now().Add(h.pending.d)
+	h.tick()
+	atMark.Store(0)
+	perRead.Store(0)
+	nextAt = h.clock.Now().Add(h.pending.d)
+	mu.Lock()
+	defer mu.Unlock()
+	return h, markAt, nextAt, slices.Clone(smaps), slices.Clone(identities)
+}
+
+// At an urgent reading at the mark in a stay with history, once the first kill is sent, the guard
+// reads on through the processes new to the stay that the reads before it did not reach, and ends
+// each that holds memory of its own by the urgent rule as it reads it (INFRA-3531 R1 of spec
+// version 43). It reads no process once one interval has passed since the reading at the mark,
+// and ends the one whose read is in hand. The pod is lateGrowersAtTheMark's at 92.53%, each smaps
+// read at the mark taking 22 ms, those of the read-on too, so the read-on is bounded by the
+// interval and not by the growers left. With r3's stall of 50 ms the reads before the kill read
+// pid 700 again and pid 805, the first kill goes 94 ms after the reading at the mark, and the
+// read-on reads pid 804 from 94 to 116 ms: the guard ends those two at the mark. With no stall the
+// reads before the kill read pids 700, 805 and 804 within half an interval, pid 805's kill and pid
+// 804's urgent kill go at 66 ms, and the read-on reads pid 803 from 66 ms and pid 802 from 88 ms.
+// Each read at the mark begins before one interval from it; each grower it reads ends, and no other;
+// each read-on kill goes right after its read, before the guard's next read and before the next
+// reading; and every line carries the decision's new_read, the read-on's reads among them.
+func TestMemoryGuardReadsOnForOneIntervalAfterTheFirstKillOfAnUrgentReadingAndEndsEachGrowerAsItReadsIt(t *testing.T) {
+	const perRead = 22 * time.Millisecond
+	for _, tc := range []struct {
+		name    string
+		stall   time.Duration
+		want    []endedChoice
+		newRead string
+	}{
+		{"r3's stall of 50 ms", 50 * time.Millisecond, []endedChoice{{805, "new", "search", 0}, {804, "urgent", "search", 0}}, "2:2"},
+		{"no stall", 0, []endedChoice{
+			{805, "new", "search", 0}, {804, "urgent", "search", 0}, {803, "urgent", "search", 0}, {802, "urgent", "search", 0},
+		}, "4:4"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, markAt, nextAt, smaps, identities := lateGrowersAtTheMark(t, 9253, tc.stall)
+			whole := markAt.Add(Defaults().Interval)
+			got := endedChoices(h)
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, tc.want, strings.Join(h.log.all(), "\n"))
+			}
+			for _, c := range tc.want {
+				requireNewRead(h, c.pid, tc.newRead)
+			}
+			kills := h.killed()
+			// The reads of the reading at the mark are those at or after it and before its lines.
+			var grown []int
+			readOn := 0
+			for i, r := range smaps {
+				if r.at.Before(markAt) || r.reported {
+					continue
+				}
+				if !r.at.Before(whole) {
+					t.Fatalf("the guard began to read pid %d's smaps %s after the reading at the mark, one interval or more; the log:\n%s", r.pid, r.at.Sub(markAt), strings.Join(h.log.all(), "\n"))
+				}
+				if r.pid >= 800 {
+					grown = append(grown, r.pid)
+				}
+				if r.kills == 0 {
+					continue
+				}
+				readOn++
+				k := slices.IndexFunc(kills, func(k Kill) bool { return k.PID == r.pid })
+				if k < 0 {
+					t.Fatalf("the read-on read pid %d and the guard did not end it", r.pid)
+				}
+				if want := r.at.Add(perRead); !kills[k].At.Equal(want) {
+					t.Fatalf("pid %d's kill went %s after the reading at the mark, want %s, right after its read", r.pid, kills[k].At.Sub(markAt), want.Sub(markAt))
+				}
+				if i+1 == len(smaps) || smaps[i+1].kills <= k {
+					t.Fatalf("the guard read on before it sent pid %d's kill, as kill %d", r.pid, k+1)
+				}
+				if !kills[k].At.Before(nextAt) {
+					t.Fatalf("pid %d's kill went at %s, not before the next reading at %s", r.pid, kills[k].At, nextAt)
+				}
+			}
+			if readOn == 0 {
+				t.Fatalf("the guard read on through nothing after the first kill; its reads: %+v", smaps)
+			}
+			var ended []int
+			for _, c := range got {
+				ended = append(ended, c.pid)
+			}
+			if !slices.Equal(ended, grown) {
+				t.Fatalf("at the reading at the mark the guard ended %v, want %v, the growers it read there, in the order it read them", ended, grown)
+			}
+			for _, r := range identities {
+				if !r.at.Before(markAt) && !r.reported && !r.at.Before(whole) {
+					t.Fatalf("the guard began to read pid %d's identity %s after the reading at the mark, one interval or more", r.pid, r.at.Sub(markAt))
+				}
+			}
+			if stopped := h.log.with("stopped"); len(stopped) != 0 {
+				t.Fatalf("the guard gave the rise up: %q", stopped)
+			}
+		})
+	}
+}
+
+// Below the urgent share the reading at the mark ends one process, and the guard reads nothing on
+// after its kill: the read-on is the urgent rule's (INFRA-3531 R1 of spec versions 41 and 43). In
+// lateGrowersAtTheMark's pod at 92.00%, with no stall and each smaps read taking 22 ms, the reads
+// before the kill read pid 700 again and pids 805 and 804 within half an interval, and the guard
+// ends pid 805 alone, by the new tier, 66 ms after the reading at the mark; it reads no smaps and no
+// identity between that kill and its line, though pids 800 to 803 are unread and one interval has
+// not passed, where at 92.53% it reads pids 803 and 802 and ends them.
+func TestMemoryGuardReadsNothingOnAfterTheFirstKillAtTheMarkBelowTheUrgentShare(t *testing.T) {
+	h, markAt, _, smaps, identities := lateGrowersAtTheMark(t, 9200, 0)
+	want := []endedChoice{{805, "new", "search", 0}}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("below the urgent share the guard ended %+v at the reading at the mark, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+	}
+	requireNewRead(h, 805, "2:2")
+	if got, want := h.killed()[0].At.Sub(markAt), 66*time.Millisecond; got != want {
+		t.Fatalf("pid 805's kill went %s after the reading at the mark, want %s", got, want)
+	}
+	for _, r := range append(smaps, identities...) {
+		if !r.at.Before(markAt) && !r.reported && r.kills > 0 {
+			t.Fatalf("below the urgent share the guard read pid %d after the first kill at the mark, %s after the reading", r.pid, r.at.Sub(markAt))
+		}
+	}
+}
+
 // The tester's run `4g-latepool-r5` at bd8bb44c under gVisor at 4 GiB (infra-3531-live-4g-latepool-r5.log
 // in dispatch://INFRA-3531/artifact/tester-evidence-bd8bb44c-2026-11-18-tar-gz), replayed with the
 // readings its trace recorded and their times. The probe's parent holds its 2.4 GB block from the

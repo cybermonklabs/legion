@@ -35,15 +35,16 @@ import (
 // line: they decide the order of the next kill (rank), whose endedLine names the process it ended,
 // with the size it read of it at the reading it decided on: for a first kill of a rise that the
 // band's held reads decided at the reading at the mark (endHeld), the band's last reading, unless
-// the reading at the mark read that process's smaps (rereadHeld, startedSince), and for every
-// other kill the reading it is sent at. The line's reading is always the one the kill is sent at.
-// Its rule and sizes, which come before the executable so that the name stays last, say why that
-// process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends that
-// put it first, or the urgent rule for a process ended beside the first at a reading at or above
-// the urgent share, one that grew over the window or, where the decision holds a process that is
-// not new to the stay, one new to it with memory of its own (ruleUrgent, spec versions 39, 41 and
-// 42), and sizes where the sizes the guard chose it by came
-// from. Its less_parent, after sizes, is how much of its size its rank did not count
+// the reading at the mark read that process's smaps (rereadHeld, startedSince, readOn), and for
+// every other kill the reading it is sent at. The line's reading is always the one the kill is sent
+// at. Its rule and sizes, which come before the executable so that the name stays last, say why
+// that process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends
+// that put it first, or the urgent rule for a process ended beside the first at a reading at or
+// above the urgent share, one that grew over the window or, where the decision holds a process that
+// is not new to the stay, one new to it with memory of its own, which at the reading at the mark
+// the read-on after the first kill can read (ruleUrgent, spec versions 39, 41, 42 and 43), and
+// sizes where the sizes the guard chose it by came from: the decision's for each kill of the
+// reading. Its less_parent, after sizes, is how much of its size its rank did not count
 // (INFRA-3531 R1 of spec version 33): for a fork that runs its parent's executable with its
 // parent's arguments, its parent being one the guard has read in this stay, its parent's size at
 // the guard's latest read of the parent, or its own size where that is less, so that size less
@@ -62,9 +63,13 @@ import (
 // urgent reading carries the first's. A first kill sent before the search at an urgent reading,
 // where a held process grew (endHeld, spec version 43), carries what every read at the mark read,
 // the search's among them, since its line comes after every kill of the reading and the decision
-// is one. So `new_read=3:0` reads that the mark read three processes new to the stay, each a fork
-// whose parent's size covers its own, and the tiers below the new decided, and `new_read=0:0` that
-// it read none. It is `-` where the kill was decided on no read at the mark: a first kill on the
+// is one. At an urgent reading in a stay with history every kill of the reading at the mark
+// carries the read-on's reads too, the reads after the first kill through the processes new to the
+// stay that the reads before it did not reach, up to one interval from the reading (readOn, spec
+// version 43): in the replay of `4g-t4latepool-r3` each of its six kills says `new_read=6:6`. So
+// `new_read=3:0` reads that the mark read three processes new to the stay, each a fork whose
+// parent's size covers its own, and the tiers below the new decided, and `new_read=0:0` that it
+// read none. It is `-` where the kill was decided on no read at the mark: a first kill on the
 // band's held reads alone, one of them having grown by them, below the urgent share, every kill on
 // a reading's own assessment (act), every kill after a kill of the rise among them, and a process
 // the guest kernel killed.
@@ -113,9 +118,11 @@ const (
 // stay, every process new to it that holds memory of its own, a fork whose parent's size covers
 // its own not among them, each with its line, the first naming its own tier and each other this
 // rule, whichever of the two groups it is of (endUrgent, INFRA-3531 R1 of spec versions 39, 41 and
-// 42; `4g-latepool-4tpqx`). Where every process is new to the stay, it ends the window's growers
-// alone beside the first. ruleKernel is a process the guest kernel killed (Guest), which the
-// kernel chose by rules of its own.
+// 42; `4g-latepool-4tpqx`), and, at the reading at the mark, those the read-on after the first
+// kill reads up to one interval from the reading (readOn, spec version 43; `4g-t4latepool-r3`).
+// Where every process is new to the stay, it ends the window's growers alone beside the first.
+// ruleKernel is a process the guest kernel killed (Guest), which the kernel chose by rules of its
+// own.
 const (
 	ruleGrew          = "grew"
 	ruleNew           = "new"
