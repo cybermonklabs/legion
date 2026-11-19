@@ -333,11 +333,14 @@ are registered for one pod, so this is what keeps one role from trading for anot
 session; the Legion daemon names each role's key. A later write by the same registrar that names
 no key keeps the one the registration names, unless that registrar released the registration
 (below), and a registration that names none, as a session pod's is, admits any key of that pod.
-Set no `exchange_audience` until your daemon and its pods carry two more changes: each role
-trading with a key of its own, since until then a role's own trade is refused; and the daemon
-choosing each role's session id rather than taking its agent's report. The daemon already holds
-each session id to the claim of its project that first recorded it and registers no session
-another of its claims holds.
+Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes:
+each role trading with a key of its own, since until then a role's own trade is refused; each
+session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that
+registered it, not only each registrar to the pods of its own daemon, since until then any
+`BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
+claim's session; and the daemon choosing each role's session id rather than taking its agent's
+report. The daemon already holds each session id to the claim of its project that first recorded
+it and registers no session another of its claims holds.
 
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
