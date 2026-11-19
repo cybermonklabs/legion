@@ -662,7 +662,8 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
 
   try {
     await screen.findByRole("heading", { name: "Needs you" });
-    await user.click(screen.getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await screen.findByRole("radio", { name: "Ship" }));
     await user.click(screen.getByRole("button", { name: "Answer" }));
     const field = await screen.findByRole("textbox", { name: "Reply" });
     await user.click(field);

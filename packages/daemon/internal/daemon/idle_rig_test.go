@@ -439,7 +439,8 @@ func (r *idleWakeRig) boot() {
 	transport := &http.Transport{}
 	r.t.Cleanup(transport.CloseIdleConnections)
 	r.api = &daemon{t: r.t, cfg: r.cfg, transport: transport, client: &http.Client{Transport: transport, Timeout: 150 * time.Second},
-		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port), stopped: true}
+		base: "http://127.0.0.1:" + strconv.Itoa(r.cfg.Port)}
+	r.api.stopped.Store(true)
 }
 
 // logFile keeps a copy of the daemon's log beside the test, under the test's own temporary

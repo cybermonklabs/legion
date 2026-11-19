@@ -417,6 +417,14 @@ runtime:
     #                                  # launcher's start, turns off at its first acknowledgement and ends nothing
     #                                  # from then on, and a command that fills the limit then ends every role of
     #                                  # the pod with the container.
+    # volume_trim:                     # the cache trimmer in each issue pod's launcher, which deletes the oldest
+    #   enabled: true                  # entries of the four cache roots on the issue volume: it reads the volume
+    #   high_percent: 85               # every interval_seconds, sweeps once the used fraction reaches
+    #   low_percent: 70                # high_percent, deletes only an entry in which nothing was modified for
+    #   min_age_minutes: 15            # min_age_minutes, and stops at the first reading at or below low_percent
+    #   interval_seconds: 60           # unless something stops it sooner. These are the defaults. enabled: false
+    #                                  # stops each pod's sweeping, and its trimmer then reads and deletes
+    #                                  # nothing until a daemon hands it settings again (docs/kubernetes.md).
     kubeconfig: ./kubeconfig           # the daemon's own identity
     context: legion-daemon
     # plugins:                         # the exact pi-legion/pi-envoy pair a stale-plugin relaunch installs

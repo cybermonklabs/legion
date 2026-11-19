@@ -610,6 +610,8 @@ test("an approval draws the request's own question above the document, inside th
 });
 
 test("an approval that falls back to the card draws the question once, as the card's own", async () => {
+  // The question is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
   const { view } = renderPane({ ask: approvalAsk() });
 
   try {
@@ -848,7 +850,9 @@ function versionTextWithoutTree(number: number, markdown: string): ArtifactVersi
 /** An approval request whose version read is held, so a row decides when the column can be
  *  written: the question is drawn from the first frame, and the document settles and its own
  *  reads land before the version does. */
-function openingApproval(landing: Promise<void>) {
+async function openingApproval(landing: Promise<void>) {
+  // The version's reading (`treeOf`) throws until the lazy Markdown engine loads.
+  await warmMarkdownRenderer();
   const getArtifactVersion = spyOn(api, "getArtifactVersion").mockImplementation(async () => {
     await landing;
     return versionText(4, "# Plan\n\nThe plan ships behind a canary today.\n");
@@ -866,7 +870,7 @@ function openingApproval(landing: Promise<void>) {
 
 test("an approval request the reader scrolls while it opens keeps the place they moved to", async () => {
   const landing = Promise.withResolvers<void>();
-  const { getArtifactVersion, view } = openingApproval(landing.promise);
+  const { getArtifactVersion, view } = await openingApproval(landing.promise);
 
   try {
     // The request's own question stands while the version is read, so there is text to scroll.
@@ -888,7 +892,7 @@ test("an approval request the reader scrolls while it opens keeps the place they
 
 test("an approval request nobody has scrolled opens at the start of the column", async () => {
   const landing = Promise.withResolvers<void>();
-  const { getArtifactVersion, view } = openingApproval(landing.promise);
+  const { getArtifactVersion, view } = await openingApproval(landing.promise);
 
   try {
     expect(await screen.findByTestId("pane-approval-question")).toBeDefined();

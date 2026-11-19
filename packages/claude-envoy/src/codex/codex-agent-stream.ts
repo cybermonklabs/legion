@@ -40,6 +40,15 @@ export interface CodexAgentStreamOptions {
   readonly sessionId: string
   readonly now?: () => number
   readonly warn?: (text: string) => void
+  /**
+   * Settles once the session's NATS connection is admitted as `session`, where the connection is
+   * admitted as one session at a time: under its broker token a `/new`'s new id is the
+   * connection's only once the move lands (`followSession`), and a subscribe before then is
+   * refused and closed by the server. Where this is absent the connection may take every id's
+   * subjects, and the new control subject is taken at once (`AgentStreamOptions.admitted`, the
+   * Claude Code live view's).
+   */
+  readonly admitted?: (session: string) => Promise<void>
 }
 
 const encoder = new TextEncoder()
@@ -230,7 +239,16 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
       expected.length = 0
       toolNames.clear()
       publishSettings()
-      subscribe()
+      // The old id's control subject goes at once, and the new id's is taken once the connection
+      // may take it (`CodexAgentStreamOptions.admitted`): a later `/new` before then takes its own.
+      subscription?.unsubscribe()
+      subscription = undefined
+      const admitted = options.admitted?.(next)
+      if (admitted === undefined) subscribe()
+      else
+        void admitted.then(() => {
+          if (!stopped && session === next) subscribe()
+        })
     },
     stop() {
       stopped = true

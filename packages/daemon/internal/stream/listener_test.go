@@ -564,6 +564,36 @@ func TestMemoryGuardTheListenerWritesTheResolversAcknowledgement(t *testing.T) {
 	}
 }
 
+// What an accepted launcher's cache trimmer runs by travels on the ack the listener writes, and is
+// read here from that line as a launcher reads it: an acceptor that hands settings has them reach
+// the launcher whole, and one that hands none writes an ack with no member at all, the one absence
+// that means "run no trimmer" (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
+func TestTheLauncherHelloAckCarriesWhatItsAcceptorHanded(t *testing.T) {
+	for name, handed := range map[string]*shimwire.LauncherVolumeTrim{
+		"a daemon with trimmer settings": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a daemon with none":             nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := startListener(t, harnessOptions{})
+			served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+			h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
+				return served, shimwire.LauncherHelloAck{VolumeTrim: handed}, ""
+			})
+			p := dial(t, h.listener.Addr())
+			p.send(shimwire.LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "l-1"})
+			ack := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+			switch {
+			case handed == nil && ack.VolumeTrim != nil:
+				t.Fatalf("the ack carries %+v, want no member at all", *ack.VolumeTrim)
+			case handed != nil && ack.VolumeTrim == nil:
+				t.Fatal("the ack carries no settings, want the ones its acceptor handed")
+			case handed != nil && *ack.VolumeTrim != *handed:
+				t.Fatalf("the ack carries %+v, want %+v", *ack.VolumeTrim, *handed)
+			}
+		})
+	}
+}
+
 // A launcher the acceptor refuses is closed with nothing sent and its reason logged. The hello
 // that arrives before any acceptor is installed is no longer one of these: it waits for the
 // acceptor instead of being refused by name, which is what the two tests below measure.
@@ -586,7 +616,8 @@ func TestARefusedLauncherHelloIsClosedAndLogged(t *testing.T) {
 // synced. A launcher that dials in between used to be refused by name and to dial again a second
 // later, 904 times in one incident; it now waits, and the acceptor serves its hello on the
 // connection it was already sent on — no reconnect, and the window is one log line instead of one
-// per refusal.
+// per refusal. The ack it is served with carries the settings that acceptor handed, as an ack
+// written without a wait does.
 func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())
@@ -601,11 +632,15 @@ func TestALauncherHelloBeforeTheAcceptorIsServedAfterIt(t *testing.T) {
 	}
 
 	served := &launcherServe{frames: make(chan shimwire.Frame, 4)}
+	handed := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
 	h.listener.SetLauncherResolver(func(shimwire.LauncherHello) (LauncherHandler, shimwire.LauncherHelloAck, string) {
-		return served, shimwire.LauncherHelloAck{}, ""
+		return served, shimwire.LauncherHelloAck{VolumeTrim: &handed}, ""
 	})
 
-	p.expect(shimwire.TypeLauncherHelloAck)
+	ack := p.expect(shimwire.TypeLauncherHelloAck).(shimwire.LauncherHelloAck)
+	if ack.VolumeTrim == nil || *ack.VolumeTrim != handed {
+		t.Fatalf("the ack served after the wait carries %v, want %+v", ack.VolumeTrim, handed)
+	}
 	// The same connection, and now the handler's: what the launcher sends next reaches it.
 	p.send(shimwire.LauncherState{})
 	select {

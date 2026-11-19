@@ -16,18 +16,44 @@ import (
 // before the successor enrols.
 var carryKinds = []string{"session", "pod"}
 
+// carryDaemonAccount is the account the daemon of these tests logs in as, and carryPodAccount the
+// account the pods it launches run as, which daemonLogin binds to that daemon's service.
+const (
+	carryDaemonAccount = "system:serviceaccount:legion:legion-daemon"
+	carryPodAccount    = "system:serviceaccount:legion:worker"
+)
+
+// daemonLogin is the token login a Legion daemon enrols its pods under: carryDaemonAccount logged
+// in, whose pods (carryPodAccount) BROKER_SERVICES binds to its service. It logs in again at each
+// call, as a daemon does at a restart, and the broker keeps one live
+// credential per account bound to no pod, so each call moves that one row and answers the same
+// credential (IssueTokenLoginTx's upsert). A pod's grants follow the pair of its account and this
+// login's (carryPrincipal), so the carry of a pod is measured under it.
+func daemonLogin(t *testing.T, svc *Service) Credential {
+	t.Helper()
+	if svc.ServiceLogins == nil {
+		svc.ServiceLogins = map[string]string{}
+	}
+	if svc.ServicesByAccount == nil {
+		svc.ServicesByAccount = map[string]string{}
+	}
+	svc.ServiceLogins[carryDaemonAccount] = "legion-daemon"
+	svc.ServicesByAccount[carryPodAccount] = "legion-daemon"
+	return podRig{svc: svc}.login(t, carryDaemonAccount, "")
+}
+
 // carryEnrollment enrols one named session of kind, under the credential that kind's launcher
-// holds: a person's own machine login for a session, a Kubernetes service's login for a pod. name
-// is the runtime id, the session id and the thumbprint's suffix at once, so every row of one
-// subtest is that subtest's.
+// holds: a person's own machine login for a session, the daemon's token login for a pod. name is
+// the runtime id, the session id and the thumbprint's suffix at once, so every row of one subtest
+// is that subtest's.
 func carryEnrollment(t *testing.T, svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, kind, name string) (Credential, Enrollment) {
 	t.Helper()
 	ctx := context.Background()
 	in := Enrollment{Kind: kind, RuntimeID: name, Thumbprint: "tp-" + name, SessionID: str(name)}
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
 	if kind == "pod" {
-		cred = mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
-		in.PodToken = mintPodToken(t, issuer, key, "system:serviceaccount:legion:worker", name)
+		cred = daemonLogin(t, svc)
+		in.PodToken = mintPodToken(t, issuer, key, carryPodAccount, name)
 	}
 	enr, err := svc.Create(ctx, cred, in)
 	if err != nil {
@@ -187,6 +213,7 @@ func TestAnEndOfTheBoxLeavesANamedSessionsGrantAndPendingRequestStanding(t *test
 // sweep finds it no longer dormant and changes nothing.
 func TestTheCarrySweepRevokesWhatADormantEnrollmentHeldOnceItsWindowPasses(t *testing.T) {
 	svc := newService(t)
+	svc.Carry = time.Hour
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
 	for _, kind := range carryKinds {
@@ -202,7 +229,7 @@ func TestTheCarrySweepRevokesWhatADormantEnrollmentHeldOnceItsWindowPasses(t *te
 				t.Fatalf("the %s enrollment is %+v after its launcher ended it, want it dormant", kind, dormant)
 			}
 
-			ended, err := svc.EndCarried(ctx, time.Hour)
+			ended, err := svc.EndCarried(ctx)
 			if err != nil || len(ended) != 0 {
 				t.Fatalf("EndCarried inside the window ended %+v (%v), want nothing: the session has the whole window to come up on another box", ended, err)
 			}
@@ -211,7 +238,7 @@ func TestTheCarrySweepRevokesWhatADormantEnrollmentHeldOnceItsWindowPasses(t *te
 			}
 
 			backdateDormancy(t, svc, enr.ID, 2*time.Hour)
-			ended, err = svc.EndCarried(ctx, time.Hour)
+			ended, err = svc.EndCarried(ctx)
 			if err != nil {
 				t.Fatalf("EndCarried: %v", err)
 			}
@@ -236,7 +263,7 @@ func TestTheCarrySweepRevokesWhatADormantEnrollmentHeldOnceItsWindowPasses(t *te
 					kind, state, by, audits, event)
 			}
 
-			again, err := svc.EndCarried(ctx, time.Hour)
+			again, err := svc.EndCarried(ctx)
 			if err != nil || len(again) != 0 {
 				t.Fatalf("a second EndCarried ended %+v (%v), want nothing: a row that holds nothing is dormant no longer", again, err)
 			}
@@ -255,9 +282,9 @@ func TestTheCarrySweepTurnedOffEndsADormantEnrollmentAtOnce(t *testing.T) {
 	if err := svc.Revoke(ctx, cred, enr.ID.String(), "launcher:test"); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	ended, err := svc.EndCarried(ctx, 0)
+	ended, err := svc.EndCarried(ctx)
 	if err != nil || len(ended) != 1 || ended[0].GrantsRevoked != 1 {
-		t.Fatalf("EndCarried(0) = %+v, %v, want the dormant enrollment ended with its one grant revoked", ended, err)
+		t.Fatalf("EndCarried with a Carry of 0 = %+v, %v, want the dormant enrollment ended with its one grant revoked", ended, err)
 	}
 	if got := readCarryState(t, svc, enr.ID); got.Dormant || got.LiveGrants != 0 {
 		t.Fatalf("with the carry off the enrollment is %+v, want it holding nothing", got)

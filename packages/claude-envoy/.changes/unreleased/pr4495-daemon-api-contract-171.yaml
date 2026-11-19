@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The plugin declares daemon API contract 171, which tells a pod's `legion launcher` an optional
+  `--session-writer-audience <audience>`, the audience of the token its session proxy signs in
+  with, and gives each Oh My Pi start the agent's executable (`agentExecutable`).

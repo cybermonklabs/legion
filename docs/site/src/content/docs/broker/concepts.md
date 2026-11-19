@@ -58,7 +58,8 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
+service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
 `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No
@@ -733,10 +734,16 @@ proving that enrollment's key.
 The session name, with the principal beside it, is what decides which enrollment that is.
 The principal is what the enrolling box proved, never anything its launcher states: the person, for
 a box of theirs and for their sign-in on a machine; the fleet's Google account, for a machine's own
-session; the service account its projected token proved, for a pod
+session; for a pod, the service account its projected token proved, paired with the account the
+token login that enrolled it proved
 (`packages/envoy/internal/broker/enroll/enroll.go`, `carryPrincipal`).
+A pod's grants follow that pair because the pods of several daemons can run as one account, and each
+daemon logs in as an account of its own: a pod one daemon enrolled under another daemon's session
+name takes none of that session's grants. A pod enrolled under a login that proved no account
+carries nothing.
 The broker records which principal holds a name, on the row the token exchange binds every token's
-name in, so the name is one principal's whichever of the two claimed it first.
+name in, so the name is one principal's whichever of the two claimed it first; a pod's name is held
+under its service account alone, the principal its own token exchange claims it under.
 An enrollment that names no session belongs to no principal at all.
 
 Enrolling the same session name again under the same principal takes what every earlier enrollment
@@ -760,6 +767,9 @@ A session name another principal holds is refused outright: the enrollment is re
 A token exchange under that name is refused the same way, on the same row, so the name stays its
 principal's for 90 days past the last lease or token under it
 (`packages/envoy/internal/broker/oauthstore/exchange.go`, `ErrSessionHeld` and `SessionRetention`).
+A pod's name is held under its service account alone, though, so a pod another daemon enrolled
+under the name, running as the same account, is not refused it: its grants follow another pair,
+so it is admitted under the name and takes none of what the session holds (`enroll.go`, `adopt`).
 A box whose key a person revoked trades nothing, so it enrols nothing: a launcher proof signed with a
 revoked credential does not authenticate, and an enrollment already under way finds the credential
 revoked and is refused `LAUNCHER_INVALID`.
@@ -842,7 +852,8 @@ session was approved for, with no approval of its own.
 Within one principal what stands between a caller and a secret is the sign-in on a box, or the
 account, and never the session name.
 Three things bound it.
-Another principal is refused the name outright.
+Another principal is refused the name outright, and a pod of another daemon, which shares the
+account the name is held under, is admitted under it and takes none of what the session holds.
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
 
@@ -893,14 +904,36 @@ fingerprint, so writing or changing it ends no grant ([The model judge](#the-mod
 entry with no `hosts` binds the value nowhere: it says only who decides the key, and its value is
 released to the command as a key with no entry is. Those hosts carry no port, so an entry binds a
 name on port 443 alone, and another port of that name is another service the proxy tunnels unread.
-A host is a host name, never an IP address: a TLS client sends no server name for an address, so
-the proxy refuses every request to an address in its canonical form `sni mismatch`, and it
-compares no other spelling of one at all (`2001:db8:7:0::1`, `[2001:db8:7::1]`,
-`::ffff:192.0.2.10`, `192.0.2.10.`). A host name is written without a trailing dot too
-(`api.github.com`, not `api.github.com.`), because a client writes it that way. The broker
-refuses to start with a file that gives a host as an address in any spelling, that writes a
-name with a trailing dot, that gives any host a port, that has an empty host, or whose host ends
-in a number, and `airlock-check` refuses that file too.
+A host is written in one form, the one every request for it is compared in: a DNS host name of
+letters, digits and hyphens between single dots, with no label longer than 63 characters,
+starting or ending with a hyphen, or holding `--` as its third and fourth characters other than
+the `xn--` of an internationalized name, no name longer than 253 characters, no leading,
+trailing or doubled dot, at most one leading `*.` as the wildcard, an internationalized name as
+its punycode (`xn--bcher-kva.example`, not `bücher.example`), and a last label that is not a
+number (`foo.123` and `foo.0x` are refused, `123.foo` is read). Case does not matter: the proxy
+compares hosts without regard to it, so `API.GitHub.com` is the same host as `api.github.com`
+and is served. The broker refuses to start with a file that writes a host any other way, and
+`airlock-check` refuses that file too, naming the form to write where there is one:
+`api.github.com` for `api.github.com.`, and the punycode for a Unicode name. Every host the
+airlock's own validation refuses is among these, so that validation refuses no host after them.
+What a host in another spelling would do if it were served depends on the spelling:
+
+- An IP address in its canonical form, or an IPv6 address in upper case, and a name with a
+  trailing dot are decrypted, and every request on them is refused `sni mismatch`, because a
+  client sends no TLS server name (SNI) for an address and drops the dot from the one it sends
+  for a name: the entry would carry nothing. A name the grammar refuses for another reason, such
+  as `a_b.example.com.` or `foo.123.`, is decrypted the same way with its dot, and the refusal
+  says both. An address in any other spelling — with a port, in brackets, with a zone,
+  IPv4-mapped or not canonical — binds nothing, because the proxy reads the address a `CONNECT`
+  names in its canonical form, so a `CONNECT` to it is tunnelled unread; and an address with a
+  trailing dot is a name of numbers alone, which the resolver refuses, so a `CONNECT` to it is
+  refused before anything is bound.
+- A name with an underscore, a `--` label other than an internationalized one, or an `xn--` label
+  the IDNA lookup profile refuses binds when DNS answers for it, but it is outside the LDH grammar
+  public host names are written in.
+- The rest — white space, a scheme, a port, brackets, an empty or overlong label, a number for a
+  last label — is no name a client sends, or one clients read differently.
+
 A secret an entry binds to at least one host is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
@@ -918,7 +951,12 @@ the system roots where it named none, plus the proxy's own certificate) and a wg
 and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback and the private
 ranges stay direct. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
-the entry names, inside the connection it carries to the bound host.
+the entry names, inside the connection it carries to the bound host, and an answer of the proxy's
+own that quotes what a service sent — the `502` for a status line it could not read, a failed
+Azure exchange's refusal — writes each run the transport quotes as
+`"[service bytes not shown]"`, and the same answers for a certificate that names other hosts write
+a fixed phrase in place of the names, so a service that sent the value back there does not hand it
+on.
 
 The proxy reads the grant behind the password on every connection, and the entry decides each
 request (`packages/envoy/internal/broker/airlockproxy`). A host no entry of that grant binds is
@@ -948,7 +986,8 @@ the address the broker dialled. A dial the proxy refused or could not make write
 resolved to, the class of the failure and the reason. The host and the port are the command's
 own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
 path and correlation id are too; none of that is redaction, so every line the proxy writes has
-each placeholder written whole, in any case, replaced by `[placeholder]`. A path that
+each placeholder — `agent-secrets-placeholder-`, in any case, and at most the 32 letters and
+digits after it, up to where another placeholder starts — replaced by `[placeholder]`. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does

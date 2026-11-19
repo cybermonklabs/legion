@@ -8,7 +8,6 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import { messageFor } from "@legion/envoy-client/errors"
-import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import {
   sessionConfigFile,
   sessionDispatchSettings,
@@ -28,10 +27,12 @@ import {
   type ChannelSession,
   type ChannelToolRuntime,
   channelToolDefinitions,
+  dialChannelNats,
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
   postDispatchReply,
+  sessionAdmission,
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"
@@ -328,6 +329,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
   let session: ChannelSession | undefined
   let connection: ChannelConnection | undefined
   let stream: CodexAgentStream | undefined
+  /** Stops the keeper of the connection's broker token, once one is dialled. */
+  let stopNatsKeeper: () => void = () => undefined
   let follower: TranscriptFollower | undefined
   let delivery: ReturnType<typeof createCodexDelivery> | undefined
 
@@ -341,6 +344,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     clearInterval(recheck)
     follower?.stop()
     stream?.stop()
+    stopNatsKeeper()
     // The entry goes once the delivery's waiting lines are withdrawn, so a server that takes over
     // never discards a line this one still answers for.
     const withdrawn = (delivery?.stop() ?? Promise.resolve()).finally(() =>
@@ -527,13 +531,31 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if ("off" in inbound) {
       session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
     } else {
-      connection = await connect(
-        natsConnectionOptions({
-          name: `codex-envoy-channel-${id.id}`,
-          seed: inbound.natsSeed,
-          servers: inbound.natsUrls,
-        }),
+      // Dialled as the Claude Code session's connection is (`dialChannelNats`): with a seed, no
+      // credential, or the session's broker token, which is then kept renewed and, at a `/new`,
+      // moved to the new session's (`followSession`) before that session's subjects are taken.
+      const dialled = await dialChannelNats(
+        inbound,
+        `codex-envoy-channel-${id.id}`,
+        warn,
+        connect,
+        stopping.signal,
       )
+      connection = dialled.connection
+      stopNatsKeeper = dialled.stop
+      // Which id the connection is admitted as, where its broker token admits one session at a
+      // time: the dial's, then each `/new`'s once its move lands. The live view takes a new id's
+      // control subject only then (`CodexAgentStreamOptions.admitted`).
+      const admission = dialled.followSession === undefined ? undefined : sessionAdmission(id.id)
+      const follow = dialled.followSession
+      const followSession =
+        follow === undefined || admission === undefined
+          ? undefined
+          : async (): Promise<void> => {
+              const forSession = id.id
+              await follow()
+              admission.admit(forSession)
+            }
       session = await startChannelSession({
         capabilities: () => CODEX_CAPABILITIES,
         client,
@@ -543,6 +565,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
         handoffPid: codexPid,
         heartbeatMs: envoy.heartbeatMs,
         identity: id,
+        ...(followSession === undefined ? {} : { followSession }),
         notifier: {
           notification: ({ content, eventId }) =>
             codexDelivery.deliver({ content, ...(eventId === undefined ? {} : { eventId }) }),
@@ -573,7 +596,14 @@ export async function runCodexEnvoyServer(): Promise<void> {
         title,
         ...(dispatch.enabled ? { stampTitle } : {}),
       })
-      stream = startCodexAgentStream({ connection, sessionId: id.id, warn })
+      stream = startCodexAgentStream({
+        connection,
+        sessionId: id.id,
+        warn,
+        ...(admission === undefined
+          ? {}
+          : { admitted: (next: string) => admission.admitted(next) }),
+      })
     }
     runtime = { client, clientInstanceID, identity: id, session }
     follow(bound.transcript_path)
@@ -585,6 +615,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     await stopped.promise
   } finally {
     follower?.stop()
+    stopNatsKeeper()
     if (session === undefined && connection !== undefined) {
       await connection.drain().catch(() => undefined)
       await connection.close().catch(() => undefined)

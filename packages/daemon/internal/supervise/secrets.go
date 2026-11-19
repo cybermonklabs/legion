@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -38,10 +39,33 @@ type AgentSecretsIdentity struct {
 
 // Enroller is the secrets broker's enrollment routes as the machine uses them. Nil in Deps means
 // this deployment enrolls no process: no identity is kept, nothing is enrolled or revoked.
+//
+// Carried is the broker's answer to a release (Machine.ReleaseNames): every enrollment this
+// daemon's login launched, of one of sessionIDs, that is live or still carries a grant or a
+// request the next enrollment of its session id would take (envoy's POST /v1/enrollments/carried);
+// none is an empty answer.
 type Enroller interface {
 	Enroll(ctx context.Context, e PodEnrollment) (string, error)
 	Revoke(ctx context.Context, id string) error
+	Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error)
 }
+
+// CarriedEnrollment is one enrollment the secrets broker still carries something for (Enroller.
+// Carried): its session id and its own id, whether it is CarriedLive or CarriedDormant, and when
+// its lease ends (a live one, unless its process renews it) or its carry ends (a dormant one).
+type CarriedEnrollment struct {
+	SessionID, EnrollmentID, State string
+	EndsAt                         time.Time
+}
+
+const (
+	// CarriedLive is an enrollment no end has reached yet: its process may still run, and it can be
+	// granted something until it ends.
+	CarriedLive = "live"
+	// CarriedDormant is an ended enrollment whose end left its grants or requests for the next
+	// enrollment of its session id, until its carry ends.
+	CarriedDormant = "dormant"
+)
 
 // PermanentError is a broker refusal a retry cannot change (a broker 4xx other than an expired
 // token): an Enroll refusal drops the identity and waits for the shim's next hello; a Revoke
@@ -93,6 +117,10 @@ type podRegistration struct {
 	stop                 func()
 }
 
+// registrationKey is an incarnation and a session ensureRegistered was refused for
+// (Machine.registrationRefused).
+type registrationKey struct{ incarnation, session string }
+
 // helloKey is the thumbprint the first hello of one incarnation named.
 type helloKey struct {
 	incarnation, thumbprint string
@@ -135,15 +163,20 @@ type heldIdentity struct {
 
 // ensureEnrolled enrolls the claim's current process once the machine holds both halves of its
 // identity: the hello's thumbprint and token for this incarnation, and the agent's session id,
-// the broker's wake address. It never fails a transition: a refusal is logged with its code, a
-// transient one retried on the next Alive observation, a permanent one on the shim's next hello.
-// An expired token is dropped and the key kept, and the next attempt reads a fresh one
-// (freshToken). Once enrolled, the id is handed to the shim over the claim's connection, once per
-// connection. The pod's session registration comes first (ensureRegistered): every path that may
-// enroll may register, and the registration's first write presents the hello's token before the
-// enrollment drops it.
+// the broker's wake address. It enrolls only a session every name of which the claim holds
+// (holdRecorded): a registration holds its names before it records them, so this asks nothing
+// more then, and the names a resumed claim enrolls under on its hello were held by an earlier
+// registration, or recorded before the daemon held sessions, when the migration that made the
+// hold gave each to the claim recording it, or to no claim where two did. It never fails a
+// transition: a refusal is logged with its code, a transient one retried on the next Alive
+// observation, a permanent one on the shim's next hello. An expired token is dropped and the key
+// kept, and the next attempt reads a fresh one (freshToken). Once enrolled, the id is handed to
+// the shim over the claim's connection, once per connection. The pod's session registration
+// comes first (ensureRegistered), and holds its session the same way before its first write:
+// every path that may enroll may register, and the registration's first write presents the
+// hello's token before the enrollment drops it.
 func (m *Machine) ensureEnrolled(ctx context.Context) error {
-	m.ensureRegistered()
+	m.ensureRegistered(ctx)
 	if m.deps.Secrets == nil || m.claim.Locator == nil {
 		return nil
 	}
@@ -155,6 +188,19 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	}
 	if m.claim.Enrollment == nil || m.claim.Enrollment.Incarnation != incarnation {
 		if m.identity == nil || m.identity.incarnation != incarnation || m.claim.Session == "" {
+			return nil
+		}
+		if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+			var refusal claim.Refusal
+			if errors.As(err, &refusal) {
+				// The refusal says why: another claim holds a name of the session, it is held for no
+				// claim, or no row can hold it (holdRecorded). The line names none of them, so an
+				// operator reads the error rather than a cause the line would guess (review of #4355).
+				m.log.Error("supervise: agent-secrets: not enrolling a session this claim may not take; waiting for the shim's next hello", "incarnation", incarnation, "error", err)
+				m.identity = nil
+			} else {
+				m.log.Warn("supervise: agent-secrets: the store did not hold the session; retrying on the next observation", "incarnation", incarnation, "error", err)
+			}
 			return nil
 		}
 		if !m.freshToken(ctx, incarnation) {
@@ -189,6 +235,22 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 			return err
 		}
 	}
+	// An enrollment this claim already holds is kept only while the claim holds its session: one a
+	// daemon from before the hold enrolled under a name another claim holds, or no claim does, is
+	// revoked at the broker, since its process, which the boot could not suspend, keeps that
+	// enrollment's file and renewer across connections and would go on reading what it adopted
+	// (review rounds 12 to 14 of #4220, revokeUnheld). The hold is asked once per session when held
+	// (Machine.heldNames), so a claim holding its session pays nothing here. A store that does not
+	// answer revokes nothing and hands nothing over, and the next observation asks again.
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		var refusal claim.Refusal
+		if !errors.As(err, &refusal) {
+			m.log.Warn("supervise: agent-secrets: the store did not hold the session; handing the enrollment over at the next observation",
+				"enrollment", m.claim.Enrollment.ID, "error", err)
+			return nil
+		}
+		return m.revokeUnheld(ctx, err)
+	}
 	if m.enrollmentSent {
 		return nil
 	}
@@ -205,6 +267,42 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	}
 	m.enrollmentSent = true
 	return nil
+}
+
+// revokeUnheld revokes at the broker, while its process lives, the enrollment of a claim that does
+// not hold its session (ensureEnrolled; refused is the hold's refusal), and records the claim
+// enrolled no longer only once the broker has answered. revoke's retries end after revokeAttempts
+// and leave the rest to the lease, which a stopped pod no longer renews; this pod's shim renews it
+// (its startRenewer), so a revocation that fails here keeps the enrollment recorded and handed to
+// no connection, and the next observation tries it again (review round 14 of #4220). The claim
+// then has no enrollment, so the next decision asks the hold again before any new one. Once the
+// claim holds its session, its next hello or observation enrolls the same process again and
+// hands it the new enrollment, but its shim runs one renewer, which ended at the broker's refusal
+// of the revoked enrollment, so the new one lapses at its lease; the claim's next launch enrolls
+// with a renewer (review rounds 15 and 16 of #4220). A broker that refuses the revocation for good
+// is not asked again, since it would refuse again: the enrollment is recorded no longer, the
+// refusal is logged at Error naming it, and the process renews it until it stops.
+func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
+	e := *m.claim.Enrollment
+	revoking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
+	err := m.deps.Secrets.Revoke(revoking, e.ID)
+	cancel()
+	var permanent PermanentError
+	switch {
+	case err == nil:
+		m.log.Warn("supervise: agent-secrets: revoked the enrollment of a claim that does not hold its session; once the claim holds it, its next hello or observation enrolls the process again, and its next launch enrolls it with a renewer",
+			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused)
+	case errors.As(err, &permanent) && permanent.Permanent():
+		m.log.Error("supervise: agent-secrets: the broker refused to revoke the enrollment of a claim that does not hold its session; it is recorded no longer, and the process renews it until it stops",
+			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", refused, "revocation", err)
+	default:
+		m.log.Warn("supervise: agent-secrets: the revocation of the enrollment of a claim that does not hold its session failed; trying again at the next observation",
+			"enrollment", e.ID, "incarnation", e.Incarnation, "session", m.claim.Session, "error", err)
+		return nil
+	}
+	ClearEnrollment(&m.claim)
+	m.enrollmentSent = false
+	return m.persist(ctx)
 }
 
 // ensureRegistered registers the claim's current pod to trade under the claim's session at the
@@ -225,7 +323,18 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 // is let go (letGo, stopRegistration) or the claim moves to another session or key. Each pod,
 // session and key is registered once per incarnation: a later hello or observation of the same one
 // starts nothing.
-func (m *Machine) ensureRegistered() {
+//
+// The session is held to the claim before the first write, as an enrollment's is (holdRecorded,
+// plan E's t-e-54): every name the claim's record gives it, or, for the id
+// the runtime chose for this launch, that id. The broker answers an exchange naming the pod and
+// the session with the role's own token, so a registration of another claim's session is that
+// session's trade. A hold refused — another claim holds a name, no claim does, or the claim is at
+// MaxHeldNamesPerClaim — registers nothing and is logged at Error; a store that does not answer
+// registers nothing and is logged at Warn, and the next decision that reaches here asks again. Any
+// registration the machine kept for another session is stopped first either way, since the claim
+// has moved off that session. A name of the claim's own session it holds already asks nothing
+// (Machine.heldNames), so a registration after the agent's own registration costs no store call.
+func (m *Machine) ensureRegistered(ctx context.Context) {
 	loc := m.claim.Locator
 	if m.deps.Registrar == nil || loc == nil || loc.Runtime != runtime.RuntimeSandbox || loc.Sandbox == nil {
 		return
@@ -250,6 +359,27 @@ func (m *Machine) ensureRegistered() {
 		return
 	}
 	m.stopRegistration()
+	file := ""
+	if session == m.claim.Session {
+		file = m.claim.SessionFile
+	}
+	if err := m.holdRecorded(ctx, session, file); err != nil {
+		var refusal claim.Refusal
+		switch {
+		case !errors.As(err, &refusal):
+			m.log.Warn("supervise: agent-secrets: the store did not hold the session; registering it at the next decision",
+				"incarnation", loc.Incarnation, "session", session, "error", err)
+		case m.registrationRefused != registrationKey{loc.Incarnation, session}:
+			// Once per incarnation and session (review round 14 of #4220, note 42): a contained
+			// claim keeps its hello identity, so every observation reaches here and is refused
+			// again, and each such line says nothing the first did not.
+			m.registrationRefused = registrationKey{loc.Incarnation, session}
+			m.log.Error("supervise: agent-secrets: not registering a session this claim may not take for its pod to trade",
+				"incarnation", loc.Incarnation, "session", session, "error", err)
+		}
+		return
+	}
+	m.registrationRefused = registrationKey{}
 	// The renewal's context is the machine's own, not the decision's: the request that brought
 	// the session in ending does not end it, the process's let-go (its stop) or the machine's end
 	// does. The first write's outcome is the registrar's to log; nothing here decides on it.

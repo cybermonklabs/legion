@@ -165,10 +165,13 @@ function draw(tree: ReactNode, boxWidth?: number) {
     },
   });
   if (boxWidth !== undefined) {
-    const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: HTMLElement
+    // Stubbed on Element, the prototype that owns the method: patching HTMLElement would leave an
+    // own property behind that shadows every later spy on Element.
+    const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
     ) {
-      return new DOMRect(0, 0, this.dataset.testid?.endsWith("-scroll") ? boxWidth : 100, 40);
+      const box = this.getAttribute("data-testid")?.endsWith("-scroll") === true;
+      return new DOMRect(0, 0, box ? boxWidth : 100, 40);
     });
     restores.push(() => rect.mockRestore());
   }

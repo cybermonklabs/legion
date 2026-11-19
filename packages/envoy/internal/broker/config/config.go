@@ -26,7 +26,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -34,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -50,7 +50,8 @@ type Config struct {
 	// BROKER_LISTEN_ADDR: the host:port the broker listens on.
 	ListenAddr string
 	// BROKER_METRICS_LISTEN_ADDR: the address the broker's metrics port binds, default
-	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and nothing else.
+	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and the NATS auth
+	// service's liveness at GET /livez (natscallout.Livez), and nothing else.
 	// It is a port of its own rather than a route of the API's, so that who may scrape a pod is
 	// the deployment's to decide apart from who may call the broker: the API's address is the one
 	// the load balancer sends every caller to. It is a third port of the same process, bound and
@@ -563,12 +564,40 @@ type Config struct {
 	// present. Unset, no workflow exchanges.
 	ExchangeWorkflows []exchange.WorkflowEntry
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
-	// pending request expires undecided. Unset, the broker sends nothing.
+	// pending request expires undecided. Unset, the broker sends nothing. Needs
+	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
 	EnvoyURL string
-	// BROKER_ENVOY_TOKEN, BROKER_ENVOY_TOKEN_FILE: the bearer token for BROKER_ENVOY_URL, given
-	// directly or as a file whose trimmed contents win over the variable; read only when
-	// BROKER_ENVOY_URL is set.
-	EnvoyToken string
+	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE: the broker's own projected Kubernetes ServiceAccount
+	// token, read afresh at each call (brokertoken.AccountToken), which the broker presents to
+	// BROKER_ENVOY_URL as its bearer: the listener admits it as the account it names, as it
+	// admits every caller's platform token, so no bearer is shared. Required with
+	// BROKER_ENVOY_URL, and read only then.
+	EnvoyAccountTokenFile string
+	// BROKER_NATS_URLS, BROKER_NATS_SEED_FILE, BROKER_NATS_ISSUER_SEED_FILE,
+	// BROKER_NATS_XKEY_SEED_FILE, BROKER_NATS_SERVICES, BROKER_NATS_K8S_AUDIENCE,
+	// BROKER_NATS_GOOGLE_AUDIENCE: the NATS auth service the broker runs
+	// (internal/broker/natscallout), which the Envoy hub sends the authorization of every
+	// connection its configuration lists no static user for, and which answers each with a NATS
+	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated, each
+	// refused at start, by its place in the list and never its text, when it carries user info or
+	// is no URL: the service connects as its seed's user, and the URLs are written to its log;
+	// BROKER_NATS_SEED_FILE the service's own NATS user seed, a user the hub lists as an auth
+	// user; BROKER_NATS_ISSUER_SEED_FILE the account seed the hub names as its auth_callout
+	// issuer, which signs every user the service admits; BROKER_NATS_XKEY_SEED_FILE the curve
+	// seed the hub seals each request to. Each file is read at start and refused unless it holds
+	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
+	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
+	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
+	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
+	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
+	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
+	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
+	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
+	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
+	// no audience is refused at start naming it. A session presents its broker access token and
+	// needs neither. All unset, the broker runs no auth service; any set needs the URLs and the
+	// three seed files.
+	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
 	// serving is not counted against it: a lease that ran out then stays live until a broker serves
@@ -743,7 +772,24 @@ var removedVars = []struct{ name, reason string }{
 	{"BROKER_MAX_GRANT_SECONDS", noGrantCap},
 	{"BROKER_MINT_TARGETS", noMintTargets},
 	{"BROKER_SIGNIN_CLIENT_SECRET", "the broker reads its sign-in client's secret only from the file BROKER_SIGNIN_CLIENT_SECRET_FILE names, so the secret is never in its environment"},
+	{"BROKER_ENVOY_TOKEN", noSharedEnvoyBearer},
+	{"BROKER_ENVOY_TOKEN_FILE", noSharedEnvoyBearer},
 }
+
+// NATSCallout is the NATS auth service's settings: Config.NATS documents each.
+type NATSCallout struct {
+	URLs                                   []string
+	SeedFile, IssuerSeedFile, XKeySeedFile string
+	// Services is BROKER_NATS_SERVICES as given, which natscallout.ParseServices reads at start.
+	Services                    string
+	K8sAudience, GoogleAudience string
+}
+
+// Enabled reports whether the broker runs the auth service.
+func (n NATSCallout) Enabled() bool { return len(n.URLs) > 0 }
+
+// noSharedEnvoyBearer is why BROKER_ENVOY_TOKEN and BROKER_ENVOY_TOKEN_FILE are gone.
+const noSharedEnvoyBearer = "set BROKER_ENVOY_ACCOUNT_TOKEN_FILE to the broker's own projected ServiceAccount token instead: the listener admits the account it names, and a bearer the broker shared with every other caller of the listener is no longer read"
 
 // serviceAccountPattern is a Kubernetes service account's subject, the one a pod's projected token
 // carries: system:serviceaccount:<namespace>:<name>, the namespace a DNS label and the name a DNS
@@ -949,18 +995,14 @@ func parseAPIAccounts(setting, value string) ([]apiAccountEntry, error) {
 		if !ok || !record.ValidService(caller) {
 			return nil, apiAccountForm(setting, text)
 		}
-		entry := apiAccountEntry{caller: caller, account: account, text: text}
-		switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
-		case tagged:
-			if err := vmAccountRefusal(setting, text, address); err != nil {
-				return nil, err
-			}
-			entry.account, entry.google = address, true
-		case !serviceAccountPattern.MatchString(account):
+		parsed, err := ParseAccount(setting, text, account)
+		if errors.Is(err, ErrAccountForm) {
 			return nil, apiAccountForm(setting, text)
-		case isDefaultServiceAccount(account):
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
 		}
+		if err != nil {
+			return nil, err
+		}
+		entry := apiAccountEntry{caller: caller, account: parsed.Address, google: parsed.Google, text: text}
 		if other, twice := seen[entry.account]; twice {
 			if other == caller {
 				return nil, fmt.Errorf("%s names the account %s twice for %q; each account calls as one caller, so name it once", setting, entry.account, caller)
@@ -971,6 +1013,45 @@ func parseAPIAccounts(setting, value string) ([]apiAccountEntry, error) {
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// Account is a platform account as BROKER_API_ACCOUNTS writes one: a Kubernetes service account's
+// subject, or a Google service account's address.
+type Account struct {
+	// Address is the account as the broker looks it up: the subject a projected token carries,
+	// system:serviceaccount:<namespace>:<name>, or the email a Google identity token carries,
+	// without its google: tag.
+	Address string
+	// Google is whether the account is a Google service account.
+	Google bool
+}
+
+// ErrAccountForm is ParseAccount's answer for an account written in neither form, which each
+// setting refuses naming its own entry form.
+var ErrAccountForm = errors.New("config: an account is system:serviceaccount:<namespace>:<name> or google:<service account email>")
+
+// ParseAccount reads account, written as a BROKER_API_ACCOUNTS entry writes one: google:<address>
+// for a Google service account, looked up by the email its identity token carries, and any other
+// a Kubernetes service account, looked up by the subject its projected token carries. It refuses,
+// naming setting and text, the entry it came from: a namespace's default account, as
+// parseServiceAccounts does, and a Google account vmAccountRefusal refuses, which is the rule
+// BROKER_VM_SERVICES holds every Google account to. An account of neither form is ErrAccountForm.
+// Every setting that names a caller's account reads it here (BROKER_API_ACCOUNTS, and
+// BROKER_NATS_SERVICES through internal/broker/natscallout), so no setting admits an account
+// another refuses.
+func ParseAccount(setting, text, account string) (Account, error) {
+	switch address, tagged := strings.CutPrefix(account, googleAPIAccountTag); {
+	case tagged:
+		if err := vmAccountRefusal(setting, text, address); err != nil {
+			return Account{}, err
+		}
+		return Account{Address: address, Google: true}, nil
+	case !serviceAccountPattern.MatchString(account):
+		return Account{}, ErrAccountForm
+	case isDefaultServiceAccount(account):
+		return Account{}, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+	}
+	return Account{Address: account}, nil
 }
 
 // apiAccountForm is the refusal of a BROKER_API_ACCOUNTS entry of neither form, which names both.
@@ -1299,20 +1380,22 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 
 // parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
 // holds every exchange to and compares the ASCII lower-cased host of a token request's
-// connection with, exactly. It refuses, naming the value, a host no rules entry can bind
-// (airlock.HostShapeOK: a scheme, a port, a path, an empty label, a label opening or closing
-// with "-", a last label of digits alone, which an address has), since a token request reaches
-// the proxy only at a host an entry binds; a "*." suffix, which is no one host; and a capital
-// letter, since the proxy compares the value as it is written with a lower-cased host. A value
-// of any of those would refuse every exchange.
+// connection with, exactly. It refuses, naming the value and the reason, a host rulehost.Refusal
+// refuses, since a token request reaches the proxy only at a host an entry binds. On top of that
+// grammar it refuses two hosts a rules entry may hold: a "*." suffix, which is no one host, and a
+// capital letter, since the proxy compares the value as it is written with a lower-cased host. A
+// value of any of those would refuse every exchange.
 func parseAirlockTestAzureAuthority(value string) (string, error) {
 	const setting = "BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"
 	host := strings.TrimSpace(value)
 	if host == "" {
 		return "", nil
 	}
-	if !airlock.HostShapeOK(host) || strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
-		return "", fmt.Errorf("%s must be a host name in lower case that an airlock rules entry can bind, with no scheme, port, path, address or \"*.\", got %q", setting, host)
+	if why := rulehost.Refusal(host); why != "" {
+		return "", fmt.Errorf("%s must be a host name that an airlock rules entry can bind, got %q, which %s", setting, host, why)
+	}
+	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return "", fmt.Errorf("%s must be a host name in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)
 	}
 	return host, nil
 }
@@ -1883,9 +1966,12 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
 	if cfg.EnvoyURL != "" {
-		if cfg.EnvoyToken, err = secretValue(getenv, "BROKER_ENVOY_TOKEN"); err != nil {
-			return Config{}, err
+		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
+			return Config{}, errors.New("BROKER_ENVOY_URL needs BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the broker's own projected ServiceAccount token, which it presents to the listener")
 		}
+	}
+	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
+		return Config{}, err
 	}
 	var sessionSeconds int
 	ints := []struct {

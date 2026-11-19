@@ -133,6 +133,14 @@ var brokerModules = []string{
 	"github.com/jackc/pgservicefile",
 	"github.com/jackc/pgx/v5",
 	"github.com/jackc/puddle/v2",
+	// The NATS client and the auth callout's keys and claims: the broker runs the hub's NATS
+	// auth service (internal/broker/natscallout), which connects to the hub as a NATS client and
+	// signs each answer. klauspost/compress and nuid come in under nats.go.
+	"github.com/klauspost/compress",
+	"github.com/nats-io/jwt/v2",
+	"github.com/nats-io/nats.go",
+	"github.com/nats-io/nkeys",
+	"github.com/nats-io/nuid",
 	"github.com/openai/openai-go/v3",
 	"github.com/pb33f/go-yaml",
 	"github.com/pb33f/ordered-map/v2",
