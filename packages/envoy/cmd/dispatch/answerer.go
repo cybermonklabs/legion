@@ -88,11 +88,16 @@ func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, e
 
 // chatEndpoint is the base URL /chat/completions is appended to, as the row name names it: it is
 // required, and an absolute https URL with a host and no query or fragment, since the client
-// builds the route and the query itself.
+// builds the route and the query itself. One whose user part net/url reads apart is refused by its
+// length and the cause (redact.Misread), as ENVOY_URL is: net/url would read a piece of it as the
+// host, which the client asks for and the boot's line of the answerer names in its identity.
 func chatEndpoint(env settingValues, name, place string) (string, error) {
 	endpoint := strings.TrimSpace(env.get(name))
 	if endpoint == "" {
 		return "", fmt.Errorf("%s is required when DISPATCH_ANSWERER is %s", name, place)
+	}
+	if why := redact.Misread(endpoint); why != "" {
+		return "", redact.Refusal(name, endpoint, why)
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {

@@ -157,12 +157,18 @@ func (s azureSignIn) refusePartial() error {
 	return fmt.Errorf("the keyless Azure sign-in needs %s: %s set, %s missing", azureKeylessNames, strings.Join(s.set, ", "), strings.Join(s.missing, ", "))
 }
 
-// resolveAzureEmbedder is resolveEmbedder for DISPATCH_EMBEDDER=azure.
+// resolveAzureEmbedder is resolveEmbedder for DISPATCH_EMBEDDER=azure. An endpoint whose user
+// part net/url reads apart is refused by its length and the cause (redact.Misread), as ENVOY_URL
+// is: net/url would read a piece of it as the host, which the client asks for and the boot's line
+// of the embedder names in its identity.
 func resolveAzureEmbedder(env settingValues) (embedderConfig, error) {
 	cfg := embedderConfig{Place: embed.PlaceAzure}
 	endpoint := strings.TrimSpace(env.get("DISPATCH_AZURE_EMBED_ENDPOINT"))
 	if endpoint == "" {
 		return embedderConfig{}, errors.New("DISPATCH_AZURE_EMBED_ENDPOINT is required when DISPATCH_EMBEDDER is azure")
+	}
+	if why := redact.Misread(endpoint); why != "" {
+		return embedderConfig{}, redact.Refusal("DISPATCH_AZURE_EMBED_ENDPOINT", endpoint, why)
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
