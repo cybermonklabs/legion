@@ -3,39 +3,79 @@ language's counters, the following of a count to its counter, and the verdict on
 file."""
 from __future__ import annotations
 
+import bisect
 import re
 from dataclasses import dataclass
 
-from character_counts_lexer import HAS_WORD, PLURAL, SLOT, WORD, Message, blanked, close_paren, code_of, language, lex, messages, split_args
+from character_counts_lexer import (HAS_WORD, PLURAL, SLOT, WORD, Message, blanked, close_paren, code_of, decoded, language,
+                                    lex, messages, split_args)
 
 VERB = r"%(?:\[\d+\])?[-+ #0]*\d*(?:\.\d+)?[dvs]"
-NUMBER = r"(?<![\w.+\-])\d[\d,]*(?<!,)"
+# A number: digits ("2,000", "32k"), in code or bold (`2000`, **2,000**), or words ("two",
+# "forty-two", "two hundred"); a range of two ("1-40", "1 to 40", "between 1 and 40"); and a
+# number a word before it holds with hyphens ("over-40-character").
+DIGITS = r"\d[\d,]*(?<!,)(?:\.\d+)?(?:[kK]\b)?"
+NUMBER_WORD = (r"\b(?i:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen"
+               r"|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b")
+WORDS = rf"{NUMBER_WORD}(?:[\s-]+(?:(?i:and)\s+)?{NUMBER_WORD})*"
+WRAPPED = rf"(?:(?<![\w.+\-*`])(?:\*\*|`)(?=\d)|(?<![\w.+\-*`])){DIGITS}(?:\*\*|`)?"
+HYPHENED = r"(?:(?<=over-)|(?<=under-)|(?<=than-)|(?<=most-)|(?<=least-)|(?<=to-)|(?<=at-))\d[\d,]*(?<!,)(?=-)"
+NUMBER = rf"(?:{WRAPPED}|{WORDS})(?:\s*(?:-|–|—|\b(?i:to|and|or)\b)\s*(?:{DIGITS}|{WORDS}))?|{HYPHENED}"
 # A constant's name written in the text as the count ("at most SEARCH_QUERY_MAX characters"): its
 # value is a bound the text does not show, so it is judged as one.
 NAMED = r"`?(?<![\w.$])[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+`?(?![\w(])"
-CODE_COUNT = rf"\x00\d+\x00|{VERB}|{NUMBER}|{NAMED}"
-PROSE_COUNT = rf"\$\{{[^{{}}\n]*\}}|\$\([^()\n]*\)|\{{[^{{}}\n]*\}}|\$#?\w+|{VERB}|{NUMBER}|{NAMED}"
+TEMPLATE = r"\{\{[^{}\n]*\}\}"
+CODE_COUNT = rf"\x00\d+\x00|{VERB}|{NUMBER}|{NAMED}|{TEMPLATE}"
+PROSE_COUNT = rf"\$\{{[^{{}}\n]*\}}|\$\([^()\n]*\)|{TEMPLATE}|\{{[^{{}}\n]*\}}|\$#?\w+|{VERB}|{NUMBER}|{NAMED}"
+# The words that may stand between a count and the word: "200 Unicode characters", "55 more
+# base32 characters", "five or more characters".
+QUALIFIER = (r"(?:[A-Z][\w+/.-]*|(?i:or\s+(?:more|fewer|less|so)|and\s+(?:more|fewer)|more|fewer|less|extra|whole|astral"
+             r"|printable|visible|hex|hexadecimal|base32|base64(?:url)?|lower-?case|upper-?case|alphanumeric|alphabetic"
+             r"|decimal|digit|numeric|control|multi-?byte|wide|single|total|unique|distinct|raw|plain|random|such|same|new"
+             r"|remaining|other|valid|invalid|non-[\w-]+|whitespace|blank|leading|trailing|first|last|consecutive|legal"
+             r"|allowed|special|emoji|combining|unicode|latin|chinese|japanese|korean|cyrillic|greek|arabic|hebrew|letter"
+             r"|safe|unsafe|reserved|significant|real|actual|literal|escaped|encoded|url-safe)\b)")
+# The nouns a count follows after the word: "character limit of 200", "characters used: %d".
+NOUN = (r"(?i:limits?|caps?|count|length|budgets?|maximum|minimum|max|min|bounds?|size|width|used|left|remaining|written|read"
+        r"|sent|kept|cut|total)")
+CAP = r"(?i:cap|limit|bound|budget|maximum|minimum|max|min)s?"
 
 
+# A count beside the word, wherever it stands in the sentence: before it, with up to three words
+# between ("%d Unicode characters"); after it ("at character %d", "chars=%d", "the character limit
+# of 200", "its length in characters is %d"); and a cap named in the word with no count ("the
+# character cap", "the characters left for it"). The examples are in this comment, which the
+# check does not read, so its own code holds no count beside the word.
 def hit_pattern(count: str) -> re.Pattern:
     return re.compile(
-        rf"(?P<c1>{count})(?:-|\s+)(?P<w1>{WORD})(?!\s*=)"
-        rf"|\b(?:at|after|before|from|past)\s+(?P<w2>{WORD})\s+(?P<c2>{count})"
+        rf"(?P<c1>{count})(?:[\s-]+{QUALIFIER}){{0,3}}(?:-|\s+)(?P<w1>{WORD})(?!\s*=)"
+        rf"|\b(?i:at|after|before|from|past)\s+(?P<w2>{WORD})\s+(?P<c2>{count})"
         rf"|\b(?P<w3>{WORD})\s*[=:]\s*(?P<c3>{count})"
+        rf"|\b(?P<w4>{WORD})\s+{NOUN}\b\s*(?i:of\b|is\b|was\b|are\b|at\b|to\b|:|=|\()?\s*(?P<c4>{count})"
+        rf"|\b(?i:in)\s+(?P<w5>{WORD})\s*,?\s*(?i:is\b|was\b|are\b|of\b|:|=)\s*(?P<c5>{count})"
+        rf"|\b(?i:the|that|this|its|their|a|an|each|every|one)\s+(?P<w6>{WORD})\s+{CAP}\b"
+        rf"(?!\s*(?i:of\b|is\b|was\b|are\b|at\b|to\b|:|=|\()?\s*(?:{count}))"
+        rf"|\b(?P<w7>{WORD})\s+(?i:left|remaining)\s+(?i:for|in|to)\b"
     )
 
 
 CODE_HIT = hit_pattern(CODE_COUNT)
 PROSE_HIT = hit_pattern(PROSE_COUNT)
-NAMES_UNIT = re.compile(r"UTF-16|code units?\b|code points?\b", re.I)
+# A unit named after the word ("32,000 characters (UTF-16 units)") or before it ("200 Unicode
+# characters"), and the unit it names.
+NAMES_UNIT = re.compile(r"UTF-16|code units?\b|code points?\b|\bUnicode\b", re.I)
 ASCII_GRAMMAR = re.compile(
-    r"\bhex\b|\ba-z\b|\[0-9a-z\]|\bbase64\b|\buuids?\b|\bSHA\b|\bsha(?:256)?\b|\bDNS\b|\bASCII\b"
+    r"\bhex(?:adecimal)?\b|\ba-z\b|\[0-9a-z\]|\bbase(?:32|64(?:url)?)\b|\buuids?\b|\bSHA\b|\bsha(?:256)?\b|\bDNS\b|\bASCII\b"
     r"|lowercase letters(?: and|,) digits|\d-character (?:lower-?case )?(?:hex )?commit\b"
     r"|\[(?=[^\]]*[A-Za-z0-9]-[A-Za-z0-9])(?:[A-Za-z0-9]-[A-Za-z0-9]|[_.+=@/-])+\]"
 )
-EXEMPT = re.compile(r"(?://|#|<!--|--|/\*|\*)\s*characters:\s*(code points|ASCII alone)\b[,:;]?\s*(\S.{9,})?")
+EXEMPT = re.compile(r"(?://|#|<!--|--|/\*|\*)\s*characters:\s*(code points|ASCII alone|UTF-16 code units)\b[,:;]?\s*(\S.{9,})?")
 PROSE_SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n\s*\n|\n\s*(?:[-*+]|\d+\.)\s|\|")
 CODE_SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n|\|")
+CLAUSE_END = re.compile(r"[,;:()]|\s[-–—]\s")
+# A file whose text may spell the word with an escape of its first letter (\u0063haracters,
+# \x43HARS), so it is read though the word itself is not in it.
+ESCAPED = re.compile(r"\\(?:u\{?0*|U0*|x)[46]3|\\1[04]3")
 
 # The counters, by language: the code-point counters, then each other counter with what it
 # counts. A value holding a code-point counter and one of the others is an instance, and
@@ -43,7 +83,8 @@ CODE_SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n|\|")
 # taking an entry off it fails that entry's case.
 CODE_POINTS = {
     "go": re.compile(r"\butf8\.RuneCount(?:InString)?\(|\blen\(\[\]rune\(|\[\]rune\("),
-    "ts": re.compile(r"\[\.\.\.[^\]]*\]\.length\b|\bArray\.from\("),
+    # A spread of an encoder's bytes ([...encoder.encode(s)].length) counts bytes.
+    "ts": re.compile(r"\[\.\.\.(?![^\]]*\bencode\()[^\]]*\]\.length\b|\bArray\.from\("),
     "py": None,
     "sh": re.compile(r"\$\{#\w+\}|\bwc\s+-m\b"),
 }
@@ -51,7 +92,8 @@ OTHER_COUNTERS = {
     "go": [("len()", r"\blen\(", "bytes"),
            ("Units16", r"\bUnits16\(", "UTF-16 code units"),
            ("utf16.", r"\butf16\.", "UTF-16 code units")],
-    "ts": [(".length", r"\.length\b", "UTF-16 code units"),
+    "ts": [("TextEncoder", r"\bTextEncoder\b", "bytes"),
+           (".length", r"\.length\b", "UTF-16 code units"),
            ("byteLength", r"\bbyteLength\b", "bytes")],
     "py": [],
     "sh": [("wc -c", r"\bwc\s+-c\b", "bytes")],
@@ -136,10 +178,10 @@ def judge(expr: str, code: str, pos: int, lang: str, depth: int = 0, seen: froze
                 return "unknown", f"the value comes from {name}(), which the check does not follow"
         if depth >= 4 or name in seen:
             return "unknown", f"{name} is not followed past four assignments"
-        found = definition(code, name, pos, lang)
-        if found is None:
+        found = reaching(code, name, pos, lang)
+        if not found:
             return "unknown", f"{name} is not assigned in this file"
-        results.append(judge(found[0], code, found[1], lang, depth + 1, seen | {name}))
+        results += [judge(value, code, offset, lang, depth + 1, seen | {name}) for value, offset in found]
     for kind, why in results:
         if kind == "other":
             return kind, why
@@ -166,7 +208,9 @@ def runes_only(rest: str, code: str, pos: int) -> bool:
 
 
 def sets_utf8_locale(code: str, pos: int) -> bool:
-    return bool(re.search(r"(?m)^\s*(?:export\s+)?LC_ALL=['\"]?[A-Za-z_]+\.UTF-8\b", code[:pos]))
+    """Whether the script sets a UTF-8 LC_ALL for itself before pos: `export LC_ALL=C.UTF-8`, or
+    `LC_ALL=C.UTF-8` alone on its line. `LC_ALL=C.UTF-8 sort` sets it for sort alone."""
+    return bool(re.search(r"(?m)^\s*(?:export\s+)?LC_ALL=['\"]?[A-Za-z_]+\.UTF-8\b['\"]?[ \t]*(?:$|;|&&)", code[:pos]))
 
 
 def names(expr: str, lang: str):
@@ -200,29 +244,23 @@ def visible(code: str, d: int, pos: int) -> bool:
     return True
 
 
-def definition(code: str, name: str, pos: int, lang: str) -> tuple[str, int] | None:
-    """The expression last assigned to name before pos in a block that holds pos, else its
-    assignment at the top of the file, and that expression's offset. In `a, b := x, y` the name
-    takes its own value; where the values are not one per name, the value is "" (not read)."""
+def assignments(name: str, lang: str) -> re.Pattern:
+    """The assignments of name, in lang."""
     esc = re.escape(name)
     names_before = r"(?P<before>(?:[\w$]+[ \t]*,[ \t]*)*)"
     names_after = r"(?P<after>(?:[ \t]*,[ \t]*[\w$]+)*)"
     if lang == "sh":
-        rx = re.compile(rf"(?:^|(?<=[\s;(&|]))(?:local\s+|export\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?{esc}=")
-    elif lang == "py":
-        rx = re.compile(rf"(?<![\w.]){names_before}{esc}{names_after}[ \t]*=(?!=)")
-    else:
-        typed = r"(?:[ \t]+[\w.\[\]*]+)?" if lang == "go" else r"(?:[ \t]*:[ \t]*[\w$<>\[\]|.]+(?:[ \t]*[|&][ \t]*[\w$<>\[\]|.]+)*)?"
-        rx = re.compile(rf"(?<![\w$.]){names_before}{esc}{names_after}{typed}[ \t]*(?::=|(?<![=!<>+\-*/%&|^:])=(?![=>]))")
-    found = list(rx.finditer(code))
-    before = [m for m in found if m.end() <= pos and (lang == "py" or visible(code, m.end(), pos))]
-    if before:
-        m = before[-1]
-    else:
-        top = [m for m in found if lang == "py" or visible(code, 0, m.start()) and code[: m.start()].count("{") == code[: m.start()].count("}")]
-        if not top:
-            return None
-        m = top[0]
+        return re.compile(rf"(?:^|(?<=[\s;(&|]))(?:local\s+|export\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?{esc}=")
+    if lang == "py":
+        return re.compile(rf"(?<![\w.]){names_before}{esc}{names_after}[ \t]*=(?!=)")
+    typed = r"(?:[ \t]+[\w.\[\]*]+)?" if lang == "go" else r"(?:[ \t]*:[ \t]*[\w$<>\[\]|.]+(?:[ \t]*[|&][ \t]*[\w$<>\[\]|.]+)*)?"
+    return re.compile(rf"(?<![\w$.]){names_before}{esc}{names_after}{typed}[ \t]*(?::=|(?<![=!<>+\-*/%&|^:])=(?![=>]))")
+
+
+def value_at(code: str, m: re.Match, lang: str) -> tuple[str, int]:
+    """The expression an assignment match gives its name, and that expression's offset. In `a, b
+    := x, y` the name takes its own value; where the values are not one per name, the value is ""
+    (not read)."""
     groups = m.groupdict()
     index = (groups.get("before") or "").count(",")
     total = index + 1 + (groups.get("after") or "").count(",")
@@ -234,6 +272,36 @@ def definition(code: str, name: str, pos: int, lang: str) -> tuple[str, int] | N
         return "", m.end()
     a, b = parts[index]
     return value[a:b], m.end() + a
+
+
+def definition(code: str, name: str, pos: int, lang: str) -> tuple[str, int] | None:
+    """The expression last assigned to name before pos in a block that holds pos, else its
+    assignment at the top of the file, and that expression's offset."""
+    found = list(assignments(name, lang).finditer(code))
+    before = [m for m in found if m.end() <= pos and (lang == "py" or visible(code, m.end(), pos))]
+    if before:
+        m = before[-1]
+    else:
+        top = [m for m in found if lang == "py" or visible(code, 0, m.start()) and code[: m.start()].count("{") == code[: m.start()].count("}")]
+        if not top:
+            return None
+        m = top[0]
+    return value_at(code, m, lang)
+
+
+def reaching(code: str, name: str, pos: int, lang: str) -> list[tuple[str, int]]:
+    """Each value of name that can reach pos: definition()'s, and each later assignment in a block
+    that closed before pos, an `if` or a loop that may have run (`n := utf8.RuneCount(s); if raw {
+    n = len(s) }`)."""
+    found = definition(code, name, pos, lang)
+    if found is None:
+        return []
+    out = [found]
+    if lang in ("go", "ts"):
+        for m in assignments(name, lang).finditer(code, found[1], pos):
+            if m.end() <= pos and not visible(code, m.end(), pos):
+                out.append(value_at(code, m, lang))
+    return out
 
 
 def rhs(code: str, k: int, lang: str, commas: bool = False) -> str:
@@ -354,10 +422,30 @@ def judge_condition(condition: str, code: str, pos: int, lang: str) -> tuple[str
     return "unknown", next((why for kind, why in kinds if kind == "unknown"), "a bound with no counter beside it")
 
 
-def judge_count(message: Message, count: str, at: int, code: str, lang: str) -> tuple[str, str]:
-    """The verdict on one count of a code message: ("code points" | "instance", why)."""
-    slot = re.fullmatch(r"\x00(\d+)\x00", count)
-    if slot:
+def compared(code: str, name: str, lang: str) -> tuple[str, str]:
+    """A constant's counter: each comparison in this file that holds the constant, judged as a
+    condition (`if t.length > MAX`)."""
+    kinds = []
+    for m in re.finditer(rf"(?<![\w$.]){re.escape(name)}(?![\w$])", code):
+        line_start = code.rfind("\n", 0, m.start()) + 1
+        line_end = code.find("\n", m.end())
+        line = code[line_start : len(code) if line_end < 0 else line_end]
+        if re.search(r"(?<![<>=!-])[<>]=?(?![<>=])|\s-(?:gt|ge|lt|le)\s", line):
+            kinds.append(judge_condition(line, code, m.start(), lang))
+    for kind, why in kinds:
+        if kind == "other":
+            return kind, why
+    if any(kind == "code points" for kind, _ in kinds):
+        return "code points", ""
+    return "unknown", next((why for kind, why in kinds if kind == "unknown"), f"{name} is compared with no counter in this file")
+
+
+def judge_count(message: Message, count: str | None, at: int, code: str, lang: str) -> tuple[str, str]:
+    """The judgement of one count of a code message by its counter: ("code points" | "other" |
+    "unknown", why). count is None for a cap named in the word with no number."""
+    if count is None:
+        kind, why = "bound", "a cap with no counter beside it"
+    elif (slot := re.fullmatch(r"\x00(\d+)\x00", count)):
         expr, offset = message.exprs[int(slot.group(1))]
         kind, why = judge(expr, code, offset, lang)
     elif re.fullmatch(VERB, count):
@@ -367,24 +455,29 @@ def judge_count(message: Message, count: str, at: int, code: str, lang: str) -> 
         explicit = re.match(r"%\[(\d+)\]", count)
         index = int(explicit.group(1)) - 1 if explicit else len(verbs)
         if message.args is None or index >= len(message.args):
-            return "instance", "cannot judge: its format verb takes no argument in this call"
+            return "unknown", "its format verb takes no argument in this call"
         expr, offset = message.args[index]
         kind, why = judge(expr, code, offset, lang)
+    elif re.fullmatch(TEMPLATE, count):
+        kind, why = "unknown", "a template's value, which the check does not follow"
     else:
         kind, why = "bound", "a bound with no counter beside it"
     if kind == "bound":
         # A number or a constant is a bound: its counter is the one the `if` or `case` the
-        # message answers compares with it.
+        # message answers compares with it, or, for a constant, each comparison of it.
         condition = header(code, message.start, lang)
+        constant = re.fullmatch(NAMED, count or "") or (count is None and re.search(NAMED, message.text))
         if condition:
             kind, why = judge_condition(condition, code, message.start, lang)
             if kind == "unknown":
                 why = "a bound, and " + why
-    if kind == "code points":
-        return "code points", ""
-    if kind == "other":
-        return "instance", why
-    return "instance", "cannot judge: " + why
+        elif constant:
+            kind, why = compared(code, constant.group().strip("`"), lang)
+            if kind == "unknown":
+                why = "a bound, and " + why
+        else:
+            kind = "unknown"
+    return kind, why
 
 
 # ---------------------------------------------------------------- the verdicts
@@ -399,22 +492,113 @@ def sentence(text: str, a: int, b: int, prose: bool) -> tuple[int, int]:
     return start, m.start() if m else len(text)
 
 
-def passes(text: str, match: re.Match, prose: bool) -> str:
+# The unit a hit names: "UTF-16 code units" or "code points", named between its count and the
+# word ("200 Unicode characters") or in the 40 characters after the word inside its sentence
+# ("32,000 characters (UTF-16 units)"); "" when it names none.
+def named_unit(text: str, match: re.Match, prose: bool) -> str:
+    word = next(g for g in ("w1", "w2", "w3", "w4", "w5", "w6", "w7") if match.group(g) is not None)
+    _, e = sentence(text, match.start(), match.end(), prose)
+    found = NAMES_UNIT.search(text, match.end(), min(e, match.end() + 40))
+    if found is None and word == "w1":
+        found = NAMES_UNIT.search(text, match.end("c1"), match.start("w1"))
+    if found is None:
+        return ""
+    return "code points" if re.match(r"(?i)code points?|unicode", found.group()) else "UTF-16 code units"
+
+
+# "ASCII grammar" when the clause that holds the count names a grammar that admits ASCII alone.
+# The clause runs between the commas, colons, semicolons, parentheses and dashes of the count's
+# sentence, and takes a parenthesis right after the word. A count inside a parenthesis explains
+# what stands before it, so its clause is the whole parenthesis and the clause before it ("a
+# DNS-1035 label (a letter first, at most 63 characters)"). A grammar word in another clause
+# ("issue %s, a uuid, has a body of %d characters") describes something else.
+def ascii_grammar(text: str, match: re.Match, prose: bool) -> str:
     s, e = sentence(text, match.start(), match.end(), prose)
-    if NAMES_UNIT.search(text, match.end(), min(e, match.end() + 40)):
-        return "names its unit"
-    if ASCII_GRAMMAR.search(text, s, e):
-        return "ASCII grammar"
+    depth, opened = 0, -1
+    for k in range(match.start() - 1, s - 1, -1):
+        if text[k] == ")":
+            depth += 1
+        elif text[k] == "(":
+            if depth == 0:
+                opened = k
+                break
+            depth -= 1
+    start, before = s, (opened if opened >= 0 else match.start())
+    for m in CLAUSE_END.finditer(text, s, before):
+        start = m.end()
+    if opened >= 0:
+        close = text.find(")", match.end(), e)
+        end = e if close < 0 else close + 1
+    else:
+        end = match.end()
+        paren = re.match(r"\s*\(", text[end:e])
+        if paren:
+            close = text.find(")", end + paren.end(), e)
+            end = e if close < 0 else close + 1
+        m = CLAUSE_END.search(text, end, e)
+        end = m.start() if m else e
+    for grammar in ASCII_GRAMMAR.finditer(text, s, e):
+        if grammar.start() < end and grammar.end() > start:
+            return "ASCII grammar"
     return ""
 
 
-def exempt(lines: list[str], first: int, last: int) -> str:
-    for line in lines[max(0, first - 2) : last + 1]:
-        marker = EXEMPT.search(line)
+def not_empty(text: str, count: str | None, at: int) -> str:
+    """"not empty" for "at least one character" and "one or more characters": a count that says
+    only that the text is not empty, which every unit agrees on."""
+    if count is None or not re.fullmatch(r"(?i)one|1", count):
+        return ""
+    if re.search(r"(?i)\bat\s+least\s+$", text[max(0, at - 12) : at]) or re.match(r"(?i)[\s-]+or\s+more\b", text[at + len(count) :]):
+        return "not empty"
+    return ""
+
+
+def exempt(lines: list[str], first: int, last: int, message_lines: list[int] = (), named: str = "", ascii_only: bool = False) -> str:
+    """The exemption a comment on the message's lines or the two lines above gives it, when no
+    other message starts between that comment and this one. Its unit must be the one the message
+    names, or ASCII alone; a message that names none is exempt as code points or ASCII alone.
+    ascii_only takes ASCII alone only: a text of ASCII alone is one length in every unit, so it
+    passes even a counter the check followed."""
+    for k in range(max(0, first - 2), last + 1):
+        marker = EXEMPT.search(lines[k])
         reason = ((marker.group(2) or "") if marker else "").strip().removesuffix("-->").strip()
-        if marker and reason:
-            return f"exempt, {marker.group(1)}: {reason}"
+        if not (marker and reason):
+            continue
+        if k < first and bisect.bisect_left(message_lines, first) > bisect.bisect_right(message_lines, k):
+            continue
+        if marker.group(1) not in ("ASCII alone",) + (() if ascii_only else (named or "code points",)):
+            continue
+        return f"exempt, {marker.group(1)}: {reason}"
     return ""
+
+
+def verdict(message: Message, match: re.Match, count: str | None, at: int, code: str, lang: str, lines: list[str],
+            first: int, line: int, message_lines: list[int]) -> tuple[str, str]:
+    """The verdict on a hit of a code message and its reason. The count is judged by its counter
+    wherever it stands; a unit the message names passes only where its counter counts that unit,
+    and an exemption only where the check cannot follow the counter."""
+    if ascii_grammar(message.text, match, False):
+        return "ASCII grammar", ""
+    if not_empty(message.text, count, at):
+        return "not empty", ""
+    kind, why = judge_count(message, count, at, code, lang)
+    named = named_unit(message.text, match, False)
+    if kind == "code points":
+        if not named or named == "code points":
+            return ("names its unit" if named else "code points"), ""
+        return "instance", f"it names {named}, and its counter counts code points"
+    if kind == "other":
+        counted = why.split(" counts ", 1)[1] if " counts " in why else ""
+        if named and counted.startswith(named):
+            return "names its unit", ""
+        marker = exempt(lines, first, line, message_lines, named, ascii_only=True)
+        if marker:
+            return marker, ""
+        return "instance", (f"it names {named}, and {why}" if named else why)
+    marker = exempt(lines, first, line, message_lines, named)
+    if marker:
+        return marker, ""
+    return "instance", "cannot judge: " + why + (", so the unit it names is not followed" if named else "")
 
 
 def line_of(starts: list[int], offset: int) -> int:
@@ -437,8 +621,16 @@ PROSE_COMMENTS = [
 ]
 
 
+def counts(text: str, rx: re.Pattern):
+    """Each hit of rx in text: the match, its count (None for a cap with no number) and where the
+    count starts."""
+    for match in rx.finditer(text):
+        group = next((g for g in ("c1", "c2", "c3", "c4", "c5") if match.group(g) is not None), None)
+        yield match, (match.group(group) if group else None), (match.start(group) if group else match.start())
+
+
 def scan(path: str, content: str) -> list[Hit]:
-    if not HAS_WORD.search(content):
+    if not HAS_WORD.search(content) and not ESCAPED.search(content):
         return []
     lang = language(path, content[:200])
     lines = content.split("\n")
@@ -448,65 +640,33 @@ def scan(path: str, content: str) -> list[Hit]:
     hits: list[Hit] = []
     if lang == "prose":
         comment = next((rx for name, rx in PROSE_COMMENTS if name.search(path)), None)
-        text = blanked(content, [m.span() for m in comment.finditer(content)]) if comment else content
-        for match in PROSE_HIT.finditer(text):
-            line = line_of(starts, match.start())
-            verdict = passes(text, match, True) or exempt(lines, line, line)
-            why = "" if verdict else "cannot judge: a count in prose names no counter"
+        text, offsets = decoded(blanked(content, [m.span() for m in comment.finditer(content)]) if comment else content, 0, "prose")
+        for match, count, at in counts(text, PROSE_HIT):
+            line = line_of(starts, offsets[match.start()])
+            passed = (named_unit(text, match, True) and "names its unit") or ascii_grammar(text, match, True) \
+                or not_empty(text, count, at) or exempt(lines, line, line)
+            why = "" if passed else f"cannot judge: a {'count' if count else 'cap'} in prose names no counter"
             shown = " ".join(text[max(0, match.start() - 80) : match.end() + 60].split())
-            hits.append(Hit(path, line + 1, shown, verdict or "instance", why))
+            hits.append(Hit(path, line + 1, shown, passed or "instance", why))
         return hits
     lits, comments = lex(content, lang)
     code = code_of(content, lits, comments)
+
+    def resolve(name: str, pos: int):
+        found = definition(code, name, pos, lang)
+        return None if found is None else (content[found[1] : found[1] + len(found[0])], found[1])
+
     found = []
-    for message in messages(content, code, lits, lang):
-        for match in CODE_HIT.finditer(message.text):
-            group = next(g for g in ("c1", "c2", "c3") if match.group(g) is not None)
-            found.append((message, match, match.group(group), match.start(group)))
-    found += code_text_hits(path, content, code, lang)
+    # A name is followed to the word only in a file that writes the word as a literal of its own.
+    file_messages = messages(content, code, lits, lang, lang == "ts" and path.endswith((".tsx", ".jsx")),
+                             resolve if PLURAL.search(content) else None)
+    message_lines = sorted({line_of(starts, message.start) for message in file_messages})
+    for message in file_messages:
+        found += [(message, match, count, at) for match, count, at in counts(message.text, CODE_HIT)]
     found.sort(key=lambda f: f[0].offsets[min(f[1].start(), len(f[0].offsets) - 1)])
     for message, match, count, at in found:
         line = line_of(starts, message.offsets[min(match.start(), len(message.offsets) - 1)])
-        verdict = passes(message.text, match, False) or exempt(lines, line_of(starts, message.start), line)
-        why = ""
-        if not verdict:
-            verdict, why = judge_count(message, count, at, code, lang)
+        judged, why = verdict(message, match, count, at, code, lang, lines, line_of(starts, message.start), line, message_lines)
         shown = re.sub(r"\x00(\d+)\x00", lambda m: "${" + message.exprs[int(m.group(1))][0].strip() + "}", message.text)
-        hits.append(Hit(path, line + 1, " ".join(shown.split())[:160], verdict, why))
+        hits.append(Hit(path, line + 1, " ".join(shown.split())[:160], judged, why))
     return hits
-
-
-def code_text_hits(path: str, content: str, code: str, lang: str):
-    """Counts written in code rather than in a literal: JSX text in .tsx and .jsx, and unquoted
-    shell words. Each is read as a message of its own line."""
-    if lang == "ts" and path.endswith((".tsx", ".jsx")):
-        def word(m: re.Match) -> str:
-            return "characters".ljust(len(m.group())) if PLURAL.search(content, m.start(), m.end()) else m.group()
-        text = re.sub(r"\{[^{}\n]*\}", word, code)
-        count_rx = rf"\{{[^{{}}\n]*\}}|{NUMBER}"
-    elif lang == "sh":
-        text = code
-        count_rx = rf"\$\{{[^{{}}\n]*\}}|\$\w+|{NUMBER}"
-    else:
-        return []
-    out = []
-    for match in re.finditer(rf"(?P<c1>{count_rx})(?:-|\s+)(?P<w1>{WORD})", text):
-        count = match.group("c1")
-        exprs = []
-        if count.startswith("{"):
-            exprs.append((content[match.start() + 1 : match.end("c1") - 1], match.start() + 1))
-        elif count.startswith("$"):
-            exprs.append((count, match.start()))
-        slot = f"{SLOT}0{SLOT}" if exprs else count
-        line_start = text.rfind("\n", 0, match.start()) + 1
-        line_end = text.find("\n", match.end())
-        line_end = len(text) if line_end < 0 else line_end
-        rel = match.start() - line_start
-        msg_text = text[line_start : match.start()] + slot + text[match.end("c1") : line_end]
-        offsets = list(range(line_start, match.start())) + [match.start()] * len(slot) + list(range(match.end("c1"), line_end))
-        message = Message(msg_text, offsets, exprs, match.start(), match.end(), None)
-        again = CODE_HIT.search(msg_text, rel)
-        if again:
-            group = next(g for g in ("c1", "c2", "c3") if again.group(g) is not None)
-            out.append((message, again, again.group(group), again.start(group)))
-    return out
