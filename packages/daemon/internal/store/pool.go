@@ -6,12 +6,15 @@ import (
 	"log/slog"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // ErrNestedAcquire is the daemon's pool refusing a second connection to a caller that already
@@ -175,9 +178,38 @@ type Pool struct {
 }
 
 // NewPool wraps an open pgx pool. The daemon's own pool is opened by Open; a test that builds a
-// pool of its own wraps it here, so what it exercises is the pool the daemon runs on.
+// pool of its own wraps it here, so what it exercises is the pool the daemon runs on. The argument
+// rule (storableArgs) runs on any pool it wraps, but the codec rule, which is what makes a string
+// storable, runs only on a pool built from PoolConfig (testpg.ClonePool's is): a pool built
+// without it sends a NUL, an invalid byte or a \u0000 escape to the server as pgx's own codecs
+// write it, and the server refuses the write.
 func NewPool(pool *pgxpool.Pool) *Pool {
 	return &Pool{pool: pool}
+}
+
+// storableArgs is the argument rule: args, with each string argument that the store's text rule
+// changes (storetext.Changes) given as a *string to the same text, in a copy of args. pgx sends a
+// plain string in text format as it is, without asking the codec of its parameter's type, and a
+// *string reaches that codec (the codec rule, registerStorableCodecs), which knows whether the
+// parameter is text or jsonb and applies that type's rule. Every other argument stays as it is,
+// and so does a leading pgx option such as pgx.QueryExecModeSimpleProtocol. A call whose strings
+// the rule keeps gets args itself back, with no allocation.
+func storableArgs(args []any) []any {
+	var storable []any
+	for i, arg := range args {
+		s, ok := arg.(string)
+		if !ok || !storetext.Changes(s) {
+			continue
+		}
+		if storable == nil {
+			storable = slices.Clone(args)
+		}
+		storable[i] = new(s)
+	}
+	if storable == nil {
+		return args
+	}
+	return storable
 }
 
 // guard refuses a connection to a caller that already holds one, and logs the stack that asked
@@ -199,7 +231,7 @@ func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, er
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := p.pool.Query(ctx, sql, args...)
+	rows, err := p.pool.Query(ctx, sql, storableArgs(args)...)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +286,7 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	return p.pool.QueryRow(ctx, sql, storableArgs(args)...)
 }
 
 // Exec runs a statement on a pooled connection.
@@ -262,7 +294,7 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return p.pool.Exec(ctx, sql, args...)
+	return p.pool.Exec(ctx, sql, storableArgs(args)...)
 }
 
 // acquire hands out one of the pool's connections to a caller that must run its own work on the
@@ -309,36 +341,74 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 	return p.begin(ctx, options)
 }
 
-// begin is the body both transaction entry points share once their guard has passed. A
-// transaction on a context the pool cannot see has no mark to clear and is handed on as pgx
-// opened it: a trackedTx around it would only forward its Commit and Rollback.
+// begin is the body both transaction entry points share once their guard has passed. The
+// transaction it gives is always the store's own (storeTx), so every statement of it passes the
+// argument rule. It carries the release of the caller's hold mark, and none for a context the pool
+// cannot see, which has no mark to clear.
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	release := hold(ctx)
-	if release == nil {
-		return tx, nil
-	}
-	return &trackedTx{Tx: tx, release: release}, nil
+	return &storeTx{Tx: tx, release: hold(ctx)}, nil
 }
 
-// trackedTx clears the caller's mark however the transaction ends. Callers commit and then run a
-// deferred rollback; the release absorbs that second call (hold).
-type trackedTx struct {
+// storeTx is every transaction the pool hands out, and every savepoint opened inside one. Its
+// Exec, Query and QueryRow, and each query a SendBatch sends, pass their arguments through the
+// argument rule (storableArgs). A savepoint its Begin opens is a storeTx too. CopyFrom needs no
+// rule of its own: COPY sends every value in binary format, through the codec rule
+// (registerStorableCodecs). Prepare takes no arguments. Conn gives pgx's own connection: a
+// statement run on it reaches the codecs but not the argument rule, and no code of the daemon
+// calls it.
+//
+// release clears the caller's hold mark however the transaction ends, and is nil for a
+// transaction on a context the pool cannot see and for a savepoint, which ends inside the
+// transaction that holds the connection. Callers commit and then run a deferred rollback; the
+// release absorbs that second call (hold).
+type storeTx struct {
 	pgx.Tx
 	release func()
 }
 
-func (t *trackedTx) Commit(ctx context.Context) error {
-	defer t.release()
+func (t *storeTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	savepoint, err := t.Tx.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &storeTx{Tx: savepoint}, nil
+}
+
+func (t *storeTx) Commit(ctx context.Context) error {
+	if t.release != nil {
+		defer t.release()
+	}
 	return t.Tx.Commit(ctx)
 }
 
-func (t *trackedTx) Rollback(ctx context.Context) error {
-	defer t.release()
+func (t *storeTx) Rollback(ctx context.Context) error {
+	if t.release != nil {
+		defer t.release()
+	}
 	return t.Tx.Rollback(ctx)
+}
+
+func (t *storeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return t.Tx.Exec(ctx, sql, storableArgs(args)...)
+}
+
+func (t *storeTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return t.Tx.Query(ctx, sql, storableArgs(args)...)
+}
+
+func (t *storeTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return t.Tx.QueryRow(ctx, sql, storableArgs(args)...)
+}
+
+func (t *storeTx) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	for _, query := range b.QueuedQueries {
+		query.Arguments = storableArgs(query.Arguments)
+	}
+	return t.Tx.SendBatch(ctx, b)
 }
 
 // errRow carries a refusal through the single-row surface, which has no error return of its own:
