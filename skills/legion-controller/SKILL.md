@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, project-paused, project-resumed, unslotted, awaiting-person, tree-stalled, architect-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, architect-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -19,8 +19,7 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Before any side effect, read `read_state` and the Dispatch issue, because a wake can be stale or sent twice.
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
-- Reach the daemon only through the `legion` tool: `read_state`, `set_status` to `todo`, `backlog` or `icebox`, and `pause` and `resume`, which pause the whole project and end its pause. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
-- `pause` takes a `reason`, and `resume` ends a pause whoever made it. While the project is paused the daemon admits no issue, and it starts no session and gives none a task, except you. Every other session stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and its pod stays. Each task, notice and wake for a stopped session waits, and a resume starts each session that something waited for once, at the daemon's wake pacing; every other stopped session stays stopped until its next wake. So a paused project that starts nothing is no stall to act on: `read_state`'s `paused:` line says who paused it, since when and why. This skill does not say when to pause or to resume: your deployment's instructions or a person's request say that, and a notice alone is never a reason for either. What each operation answers and refuses: `skill://legion-controller/references/session.md`.
+- Reach the daemon only through the `legion` tool: `read_state`, and `set_status` to `todo`, `backlog` or `icebox`. Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
 - Never edit a repository, push a commit or call `handoff_complete`, and never forward a raw event to an architect, because the daemon runs the phases and raw events only fill the architect's context.
 - Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
@@ -55,8 +54,7 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    Name in your summary each root at `phase: done` whose `status` is `in_progress`, `testing`,
    `needs_review` or `retro`: Legion runs it no longer, as the `unslotted` wake reports: someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
-   lost its label or its Dispatch claim, which leaves the `in_progress` it ran with. Name a
-   `paused:` line too: the project is paused, and the line says by whom, since when and why.
+   lost its label or its Dispatch claim, which leaves the `in_progress` it ran with.
 2. Triage the roots handed to Legion while you were away, as
    `skill://legion-controller/references/triage.md` "At every start" says.
 3. Catch up on the report issue
@@ -73,7 +71,6 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `triage on <KEY>` | `skill://legion-controller/references/triage.md` |
 | `slot-free on <KEY>`, `todo on <KEY>` | Name the free slots; take nothing |
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
-| `project-paused on <PROJECT>`, `project-resumed on <PROJECT>` | Read `read_state` and say in your summary what it shows; pause or resume nothing for the notice (`skill://legion-controller/references/wakes.md`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |

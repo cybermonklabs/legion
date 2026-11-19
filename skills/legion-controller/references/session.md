@@ -1,9 +1,9 @@
 # How the controller session runs
 
-Read this when you need to know who launched you, what `read_state` returns, what `pause` and
-`resume` do, how to read a pull request, when `gh` or `curl` fails, when `set_status` answers 403,
-or when a person takes the controller over by hand. The `How this controller runs` part of your
-system prompt says who launched you.
+Read this when you need to know who launched you, what `read_state` returns, how to read a pull
+request, when `gh` or `curl` fails, when `set_status` answers 403, or when a person takes the
+controller over by hand. The `How this controller runs` part of your system prompt says who
+launched you.
 
 ## Launched by the operator (`controller: operator`, the default)
 
@@ -43,31 +43,6 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because
   that issue holds no work. You cannot set `done`: only an issue's architect or the daemon closes
   an issue.
-- `op: "pause"` with `reason` pauses the whole project, and `op: "resume"` ends its pause, whoever
-  made it, an operator's included. Neither takes an issue, because the daemon acts on its own
-  project, and each mints its grant as `set_status` does. While the project is paused the daemon
-  admits no issue, and it starts no session and gives none a task, except you. Every other session
-  stops with its conversation kept: an idle one at once, and one in a turn when that turn ends. Its
-  pod stays, and each task, notice and wake for it waits. `pause` answers the pause it began (`id`,
-  `since`, `by`, `reason`). The daemon's record keeps the reason and `legion state` shows it to an
-  operator, so say plainly why. `pause` is refused without a `reason`, refused
-  `PROJECT_ALREADY_PAUSED` while a pause stands, in a sentence that names that pause, and refused
-  `PAUSE_UNAVAILABLE` by a daemon whose `legion.yaml` cannot hold a pause, in a sentence that names
-  the setting. `resume` answers the pause with its `endedAt` and `endedBy`, and `released`, how
-  many held rows it let out. Each session the pause held work for then starts once, at the daemon's
-  wake pacing, and every other session it stopped stays stopped until its next wake, so start none
-  yourself. `resume` is refused `PROJECT_NOT_PAUSED` while the project runs, in a sentence that
-  names its last pause where it has one.
-- While the project is paused, `compact` and `fresh_session` answer `PROJECT_PAUSED`, because each
-  would start a turn of another session, and `set_status` still works. A message you publish to a
-  stopped session's role topic starts no turn then: it makes that session launch at the resume,
-  and Envoy keeps the message itself for at most one hour.
-- `read_state` with no field prints one line on the pause. While the project is paused it is
-  `paused: pause <id> since <time> by <who>: <reason>; waits on <n> roles — <ISSUE> <role>, …;
-  holds <n> rows`: the roles are those whose stop the pause still waits on, and the rows are the
-  tasks, notices and starts it holds. Once a pause has ended it is `last pause: pause <id> since
-  <time> by <who>: <reason>; ended <time> by <who>`. `<who>` is `the controller (session <id>)` or
-  `the operator`. No filter of `read_state` returns more of the pause than that line.
 
 ## `gh`
 

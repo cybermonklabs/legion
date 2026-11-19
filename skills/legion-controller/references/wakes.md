@@ -104,40 +104,6 @@ while the cause stays. When the claim of the architect that owns the issue does 
 and the Envoy registry shows its session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
-## `project-paused on <PROJECT>` (`{kind: "project-paused", pause: {id, by, at, reason}}`)
-
-An operator paused your project with `legion project pause`. `pause.id` is the pause, `pause.by`
-is `{kind: "operator"}`, `pause.at` is when, and `pause.reason` is the reason the operator gave.
-The daemon sends one such notice for each pause a person makes. Your own `pause` sends you none,
-because you already know of it.
-
-Read `read_state`. Its `paused:` line gives the same pause, the roles whose stop the pause still
-waits on, and how many rows it holds (`skill://legion-controller/references/session.md`). While
-that line stands, the daemon admits no issue, and it starts no session and gives none a task,
-except you. That is the pause at work, and no stall to act on: restart nothing and re-admit
-nothing for it. `compact` and `fresh_session` answer `PROJECT_PAUSED` until the resume.
-
-Say in your summary that the project is paused, by whom, since when and why, and name the pause in
-the day's report while it stands. Tell nobody who already knows: the person who paused does, so
-send them nothing about it. This notice alone is never a reason to resume the project, or to
-pause it again.
-
-## `project-resumed on <PROJECT>` (`{kind: "project-resumed", pause: {id, by, at}}`)
-
-An operator resumed your project with `legion project resume`. `pause.id` is the pause that
-ended, which may be one you made, `pause.by` is `{kind: "operator"}`, and `pause.at` is when. The
-notice carries no reason. The daemon sends one such notice for each resume a person makes, and
-your own `resume` sends you none.
-
-Read `read_state`. It has no `paused:` line now, its `last pause:` line gives that pause with who
-ended it and when, and its `wakes waiting <n>` line counts the launches that the daemon's wake
-pacing still holds, with the moment the next one is due after `next`. Each session the pause held
-work for starts once, at that pacing, and every other session the pause stopped stays stopped
-until its next wake. Start none of them yourself.
-
-Say in your summary that the project runs again, who resumed it and when. Tell nobody who already
-knows. This notice alone is never a reason to pause the project again.
-
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
 
 Either a root that waited for a slot was moved from `todo` to the status `reason` names, by a
@@ -210,15 +176,10 @@ each tree: the next movement of that tree is what lets it tell you again.
 A root whose own architect is not taking the work the daemon states it is owed.
 `reason` begins with the arm that raised it, and one root raises each arm once per run, so two wakes of one root are two different facts:
 
-- "the architect took nothing": the task of the entry the architect's `phases` row names has stood queued to its claim for more than ten minutes, and no turn of that claim confirmed it.
-  Those ten minutes count from the later of two moments: when that entry's task was first queued, and when the claim's agent last said it was ready.
-  The claim keeps one first queueing, for the entry it was last queued a task of, so a task the daemon sent again for that entry is counted from that first queueing and not from the send.
-  The task counts only while the claim is ready, working or idle.
-  While the claim is queued, launching or registered, its agent is not up, and the task counts nothing.
-  A launch waits as `launching` while the wake pacing holds it back, so an architect far back in a long wave of launches raises no wake for that wait.
+- "the architect took nothing": the task of the entry the architect's `phases` row names was first queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
+  The claim keeps one such moment, for the entry it was last queued a task of: when that entry's task was first queued, so a task the daemon sent again for that entry is counted from that first queueing and not from the send.
   A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
-  The relaunched agent's ready counts it again, so the relaunch of an architect that was working its task raises no wake.
-  While the claim is suspended, failed or retired, such a task counts nothing, and any other task counts from its first queueing.
+  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than that first queueing, so the relaunch of an architect that was working its task raises no wake.
   The daemon writes no second start of that entry while its task stands, so this wake is the one thing left.
   A task the root's own record has superseded — one that carries an entry, of a run before its generation or of an entry the row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.
   A task that carries no entry, such as the one a wake of the architect's released pod gives, raises it not at all either, and no start takes its place: the daemon sends it first, and sends the entry's task once a turn has taken it.
@@ -232,9 +193,6 @@ A root whose own architect is not taking the work the daemon states it is owed.
   For a root with no claim, the reason also says whether the daemon wrote the start of its architect again in the same transaction as the wake.
 
 - "the root is slow before its gate": the root stands at `admitted` with no design-gate step registered, 90 minutes after it was admitted or after its architect's entry was last raised, whichever is later.
-  After a pause, the 90 minutes count from no earlier than the moment the wake pacing let out a launch of the architect that the pause held.
-  Once a turn of the architect has confirmed a task of that entry, they count from no earlier than that first confirmation.
-  A root whose architect has confirmed no task of its entry in 90 minutes raises this arm too: most likely something other than the pacing holds it back, such as a start that never ran.
   An architect that is writing a spec raises this one, and that is healthy work: the wake reports it and decides nothing.
 
 The daemon tells you of an arm only while a controller is registered for the project.
@@ -520,9 +478,8 @@ the process has not started, either its write was refused and the daemon retries
 interval, or the daemon's own shutdown cut the launch short and the daemon's next start takes it up;
 and where every try at that
 launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
-second notice follows it: where it names a parked launch, the `wakes waiting <n>` line of
-`read_state`'s summary counts the launches still waiting their turn, that one among them until it
-runs.
+second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
+is what says whether that launch is still waiting its turn.
 
 The notice says what became of the stalled process itself, for every end: that the daemon made no
 stop of it and the claim records it still, which is the parked end; that it was stopped; or that

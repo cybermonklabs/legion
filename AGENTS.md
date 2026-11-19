@@ -279,7 +279,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion config check [--config <legion.yaml>]`
 
   Check that file (./legion.yaml by default) as boot reads it, starting nothing and running none of its key commands, and print its `Config OK` line (exit 0) or the first refusal (exit 1);
-  it never reads `LEGION_LISTEN_FD`, and also prints the configuration's open capability gaps after its OK line (exit 0), the line `pause unavailable: <setting>` where the file sets what turns the project's pause off (docs/kubernetes.md "Pausing a project"), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
+  it never reads `LEGION_LISTEN_FD`, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
 
 - `legion status <team>`
 
@@ -314,18 +314,6 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   for a claim the daemon records as working it reads that claim's process at the runtime, at the moment of the request, rather than its own memory of an older report, which a restart forgets, and that read records what it finds as the sweep's report of the process would: where it finds the process running and clears a death charge, it writes the claim as the daemon holds it, as that report's write does, and it stops, suspends, forgets, takes back and starts nothing: a process that read finds running is refused `CLAIM_IN_A_TURN`, as is a claim whose session is being compacted, a claim whose process the runtime would not answer for, a claim that records no process to read and a claim that moved out of working while the request was made are refused `CLAIM_UNSETTLED`, each left exactly as the request found it, and a claim stored working that no process stands behind is refused `CLAIM_NOT_RUNNING` naming `--fresh-session`, which reaches it, or, for the project's own controller claim, which `--fresh-session` refuses and its keeper leaves alone while it is stored working, naming `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`;
   each refusal says what the claim is doing and which operation reaches each state `legion claims list` shows, and names no moment to come back at;
   a compaction Oh My Pi refused or skipped is printed with its reason rather than failing the command, because the claim is back and whatever task it owed has gone again all the same
-
-- `legion project pause --reason <text> --operator-token-file <file>` and `legion project resume --operator-token-file <file>`
-
-  The operator's: pause the daemon's own project as a whole, and end that pause;
-  neither names a project, because each acts on the project of the daemon that `--config` and `--port` reach, and `--json` prints the daemon's answer as it served it;
-  while the project is paused the daemon admits no issue, and it launches no session and hands none a task, except the controller's;
-  every other session stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the pause deletes no pod;
-  each task, notice, start and wake for a stopped session waits, and after the resume each session that something waited for starts once, through the wake pacing (`worker_wakes_per_minute`, `worker_wake_burst`), while every other stopped session stays stopped until its next wake;
-  the daemon's store keeps who paused and why and who ended the pause, the controller pauses and resumes through its `legion` tool's `pause` and `resume`, either of the two may end a pause the other made, and the operator's act tells a registered controller (`project-paused`, `project-resumed`);
-  `pause` refuses a blank reason (400 `PAUSE_REASON_REQUIRED`), a second pause (409 `PROJECT_ALREADY_PAUSED`, naming the pause that stands) and a daemon that cannot hold a pause (409 `PAUSE_UNAVAILABLE`, naming the setting: `runtime: tmux`, `runtime.kubernetes.idle_release.idle_minutes: 0` or `worker_wakes_per_minute: 0`), and `resume` refuses a project that is not paused (409 `PROJECT_NOT_PAUSED`, naming its last pause);
-  while the project is paused `legion claims resume`, `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED` for every claim but the controller's and change nothing, and `legion claims suspend`, `legion claims stop` and `legion issue status` still work;
-  `legion state` prints a `paused:` line while the project is paused and a `last pause:` line once a pause has ended (docs/kubernetes.md "Pausing a project")
 
 - `legion restart <team>`
 
@@ -719,7 +707,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - Legion OMP plugin — `packages/pi-legion/`
 
-  `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`, `set_status`, `compact`, `fresh_session`, `pause` and `resume`), the task agents and the Legion skills;
+  `@sjawhar/pi-legion`: the Legion entry, the Legion tool (`handoff_complete`, `read_record`, the controller's `read_state`, `set_status`, `compact` and `fresh_session`), the task agents and the Legion skills;
   its daemon client, claim boot and phase ops are `@legion/pi-shared`'s.
   See `packages/pi-legion/AGENTS.md`
 

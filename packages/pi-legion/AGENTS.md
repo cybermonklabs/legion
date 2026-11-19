@@ -95,28 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 178's project pause
-(dispatch://INFRA-3759: the controller's `legion` tool gains `pause (reason)` and `resume`, which
-post `POST /legion/v1/project/pause` and `POST /legion/v1/project/resume` with a controller grant
-and answer the pause the daemon began or ended; `GET /legion/v1/state` carries `paused` while the
-project is paused and `lastPause` once a pause has ended, which `read_state`'s summary prints as
-one line, and which the reader this plugin parses the state through takes as optional, because a
-caller from a pod whose claims record a contract under 178 is served the state with neither
-(`api.stateFor`, `withoutPause`); and a resume of the release records carries `pause`, the pause
-that held its wake, which `read_release_records` counts as `heldByPause` and leaves out of its
-wake-to-first-turn seconds), after contract 168's plan rating (the `handoff_complete` that ends
-a retro carries `planRating` and `planReason`, which `@legion/pi-shared`'s phase ops send), after
-contract 160's cache trimmer in an issue pod's launcher
-(dispatch://INFRA-2009: two shapes of the launcher wire and the state's
-`runtime.kubernetes.volume_trim` setting, which this plugin parses loosely), after contract 152's
-repositories by App installation
-(dispatch://INFRA-2543: the GitHub App installation, and no longer the project's Dispatch
-repository mapping, decides which repositories a project works in, and each repository of the
-state's `repositories` block gains `apps`, which the reader this plugin parses the state through
-takes as optional), after contract 151's microVM issue pods (dispatch://INFRA-3729: four shapes
-of the launcher wire and the state's `runtime.kubernetes.sandbox` setting, which this plugin
-parses loosely), after contract 146
-(dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -509,11 +488,8 @@ keeps that pod and installs the current pair under its generation directory the 
 (docs/kubernetes.md "Contract discipline"), never a replaced pod. That session goes
 through the controller session (`src/controller-session.ts`), not the claim session, and gets the
 `legion` tool's controller operations once its claim registers: `read_state`, the whole
-`GET /legion/v1/state` (unauthenticated, as the route is), `set_status`, which mints a
-controller grant and posts `POST /legion/v1/issues/status` with it, and `pause` and `resume`,
-which each mint one the same way and post `POST /legion/v1/project/pause`, with the `reason`, and
-`POST /legion/v1/project/resume`: the daemon pauses its own project, or ends that pause, so
-neither names a project or an issue (docs/kubernetes.md "Pausing a project"). The claim: `GET
+`GET /legion/v1/state` (unauthenticated, as the route is), and `set_status`, which mints a
+controller grant and posts `POST /legion/v1/issues/status` with it. The claim: `GET
 /legion/v1/state` first, since a registration replaces the running controller: an unset
 `LEGION_PROJECT`, or one whose controller role is not that of the project the state names
 (`legionProjectToken` in `@legion/contracts`, the daemon's own rule), stops the claim there; then
