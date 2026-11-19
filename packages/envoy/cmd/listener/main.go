@@ -1119,6 +1119,7 @@ func main() {
 	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role copies a walk dropped at the end of their hour, whether or not a session held the role, by who kept them (kept_by: listener or dispatch_outbox) and whether the hour had ended more than an hour before the drop with no walk's claim on the copy (stale)")
 	roleDeadLetters := met.NewCounter("envoy_role_dead_letters_total", "Dead letters sent to the sender session of a kept role copy a walk dropped, by result: stored, or refused for good and not sent again")
 	roleKeptUndecodable := met.NewCounter("envoy_role_kept_undecodable_total", "Kept role copies a walk ended because no read can decode them")
+	roleTakeoverUnrecorded := met.NewCounter("envoy_role_takeover_unrecorded_total", "Role claims that took a role from another session with no takeover record because the stream was full, so the previous holder's unread role messages were not copied")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
 	// The CI summary loop runs only beside the GitHub webhook route (Phase 6b2), so only a listener
 	// that mounts it carries the gauge the loop sets.
@@ -1491,7 +1492,10 @@ func main() {
 		// under the message id every listener gives it (endKeptCopyWithDeadLetter).
 		roleDeadLetters:     roleDeadLetters,
 		roleKeptUndecodable: roleKeptUndecodable,
-		publishDeadLetter:   client.PublishStoredAs,
+		// A takeover claim that went on with no record because the stream was full
+		// (takeoverBeforeTry).
+		roleTakeoverUnrecorded: roleTakeoverUnrecorded,
+		publishDeadLetter:      client.PublishStoredAs,
 
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 
