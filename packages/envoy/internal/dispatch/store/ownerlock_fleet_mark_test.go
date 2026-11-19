@@ -95,7 +95,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 			writerPID := writer.Conn().PgConn().PID()
 			wrote := make(chan error, 1)
 			go func() {
-				_, err := raceWriter(ctx, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
+				_, err := raceWriter(ctx, t, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
 				wrote <- err
 			}()
 			ended := false

@@ -717,6 +717,33 @@ func TestCheckTestPostgresStopsTheServerAStopThatOutlivesItsCallersDeadlineLeft(
 	}
 }
 
+// The stop the probe runs once its own deadline has passed, because a step ran that deadline out,
+// is given testPGLateStopGrace and no more: one that never answers is stopped with its process
+// group at the grace and named after the step, so the probe returns within the grace of its
+// caller's deadline rather than when the stop ends.
+func TestCheckTestPostgresGivesALateStopItsGraceAndNoMore(t *testing.T) {
+	stand := probeStandIn(t, "300")
+	if err := os.WriteFile(filepath.Join(stand, "stop-hangs"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	err := CheckTestPostgres(ctx, filepath.Join(stand, "cluster"))
+	late := time.Since(deadline)
+	for _, want := range []string{
+		"the pod's own test database: " + testPGProgram + " ensure did not finish before the probe's context ended (context deadline exceeded), so its process group was stopped",
+		"; and the stop after it: the pod's own test database: " + testPGProgram + " stop did not finish before the probe's context ended (context deadline exceeded), so its process group was stopped",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckTestPostgres = %v, want %q in it", err, want)
+		}
+	}
+	if late < testPGLateStopGrace || late > testPGLateStopGrace+15*time.Second {
+		t.Errorf("CheckTestPostgres returned %s after its caller's deadline, want the late stop's grace, %s, and not much more", late, testPGLateStopGrace)
+	}
+}
+
 // The server is found by its arguments as well as by its working directory: a postmaster that
 // pg_ctl has started and that has not yet changed into its data directory is named by the data
 // directory among its arguments, a backend by its working directory, and a process that holds

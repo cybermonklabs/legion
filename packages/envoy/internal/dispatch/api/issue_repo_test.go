@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // lastIssueEventPayload reads the payload of the issue's newest event.
@@ -244,13 +245,17 @@ func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
 }
 
 // The repository walk stops at the depth cap, so a list costs at most parentDepthCap+1 steps per
-// issue however deep a chain is. A chain past the cap fails its issues' reads by name, never giving
-// the project's default, and fails them fast. An earlier release's API could build one; migration
-// 0113 refuses to apply while one exists, so after it only a direct database write, or an earlier
-// release left serving against the rollout rule, makes one. This test writes one directly.
+// issue however deep a chain is: the walk's own rows climb no more than parentDepthCap links. A
+// chain past the cap fails its issues' reads by name, never giving the project's default. An
+// earlier release's API could build one; migration 0113 refuses to apply while one exists, so
+// after it only a direct database write, or an earlier release left serving against the rollout
+// rule, makes one. This test writes one directly. Its reads are given what the test's deadline
+// leaves (testwait.Answered): the walk's time is logged, not tested, since a walk that climbs every
+// link of this chain still answers in seconds.
 func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	ctx := context.Background()
+	ctx, cancel := testwait.Answered(t, context.Background())
+	defer cancel()
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DEEP", "name": "Deep"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "DEEP", "default": true}, "alice")
 	const length = 2000 // DEEP-1 is the root; DEEP-n is n-1 links below it
@@ -263,22 +268,15 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	`, length); err != nil {
 		t.Fatalf("insert a %d-issue chain: %v", length, err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local statement_timeout = '10s'`); err != nil {
-		t.Fatalf("set statement_timeout: %v", err)
-	}
 	started := time.Now()
-	rows, err := tx.Query(ctx, `
+	rows, err := database.Pool.Query(ctx, `
 		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
 		`+refs.IssueRepoTerms+`
 		select i.key, `+refs.IssueRepoColumns+` from issues i `+refs.IssueRepoJoin+` where i.project_key = 'DEEP'`)
 	if err != nil {
 		t.Fatalf("walk %d issues: %v", length, err)
 	}
+	defer rows.Close()
 	resolved, refused := 0, 0
 	for rows.Next() {
 		var key string
@@ -298,11 +296,21 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("walk %d issues in a %d-link chain within 10s: %v", length, length-1, err)
+		t.Fatalf("walk %d issues in a %d-link chain: %v", length, length-1, err)
 	}
 	t.Logf("walked %d issues of a %d-link chain in %s", length, length-1, time.Since(started))
 	if resolved != parentDepthCap+1 || refused != length-parentDepthCap-1 {
 		t.Fatalf("resolved %d and refused %d, want the %d issues within 32 links of the root resolved and the other %d refused", resolved, refused, parentDepthCap+1, length-parentDepthCap-1)
+	}
+	var deepest, steps int
+	if err := database.Pool.QueryRow(ctx, `
+		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
+		`+refs.IssueRepoTerms+`
+		select max(depth), count(*) from repo_chain`).Scan(&deepest, &steps); err != nil {
+		t.Fatalf("count the walk's steps: %v", err)
+	}
+	if deepest != parentDepthCap || steps > length*(parentDepthCap+1) {
+		t.Fatalf("the walk of %d issues climbed %d links in %d steps, want it to stop %d links up, in at most %d steps", length, deepest, steps, parentDepthCap, length*(parentDepthCap+1))
 	}
 	started = time.Now()
 	if listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=DEEP", nil, "alice"); listed.Code != http.StatusInternalServerError {

@@ -56,7 +56,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			defer conn.Release()
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
-			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 			select {
 			case err := <-arrived:
@@ -100,7 +100,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 				t.Errorf("the writer after %s holds the gate as %q, want no gate in the mode beside an earlier build", arrival.name, gate)
 			}
 			again := make(chan error, 1)
-			go func() { again <- arrive(ctx, s, arrival, uuid.NewString()) }()
+			go func() { again <- arrive(ctx, t, s, arrival, uuid.NewString()) }()
 			select {
 			case err := <-again:
 				if err != nil {
@@ -317,7 +317,7 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 			}
 			if c.arrival != nil {
 				arrived := make(chan error, 1)
-				go func() { arrived <- arrive(ctx, s, *c.arrival, uuid.NewString()) }()
+				go func() { arrived <- arrive(ctx, t, s, *c.arrival, uuid.NewString()) }()
 				select {
 				case err := <-arrived:
 					if err != nil {
@@ -393,7 +393,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 			defer conn.Release()
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
-			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 
 			writers := []struct {

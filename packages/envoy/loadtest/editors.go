@@ -646,6 +646,10 @@ type pendingMarker struct {
 // newDurableProbe connects over url, the direct Postgres URL, and reads each document's highest
 // version, before any editor sends.
 func newDurableProbe(ctx context.Context, url string, docs []string) (*durableProbe, error) {
+	// A read of the live stack's Postgres while the step's window is already open, and no test
+	// runs it, so there is no test deadline to take: a Postgres that does not answer within 10 s
+	// leaves durable latency unmeasured (startEditors logs why) rather than holding the editors
+	// out of the window.
 	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	conn, err := connectAs(connectCtx, url, "loadgen-durable-probe")

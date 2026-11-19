@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The pool refuses a second connection to a caller that already holds one of its transactions:
@@ -312,7 +313,7 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	}
 
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		waitCtx, cancel := testwait.Answered(t, ctx)
 		listener, err := database.Pool.Listener(waitCtx)
 		if err != nil {
 			cancel()
@@ -495,7 +496,7 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		t.Fatalf("open the horizon pool: %v", err)
 	}
 	for round := range 2 {
-		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		waitCtx, cancel := testwait.Answered(t, ctx)
 		batch := &pgx.Batch{}
 		batch.Queue(`begin`)
 		batch.Queue(`select pg_snapshot_xmin(pg_current_snapshot())::text, pg_current_xact_id()::text`)

@@ -35,6 +35,10 @@ type pgClockReading struct {
 // pgClockReads reads of select clock_timestamp(), each one round trip (the simple protocol). The
 // whole reading has 10 s.
 func readPGClock(ctx context.Context, url string) pgClockReading {
+	// A read of the live server at the step's start and after its window, with no test deadline
+	// to take: a server that does not answer within 10 s gives a reading with Error, as a refused
+	// connect does, rather than holding the step. The tests that run this read an address that
+	// refuses at once or a host that does not resolve, so the bound decides nothing there.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	conn, err := pgx.Connect(ctx, url)
