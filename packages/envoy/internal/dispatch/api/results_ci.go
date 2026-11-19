@@ -122,7 +122,7 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		}
 		return nil
 	}
-	words, err := readLineWords(ctx, s.deps.Store.Pool)
+	words, err := s.readLineWords(ctx, s.deps.Store.Pool)
 	if err != nil {
 		return err
 	}

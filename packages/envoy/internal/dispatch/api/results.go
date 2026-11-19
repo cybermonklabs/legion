@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -273,7 +274,7 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// The project keys the line drops issue keys by are read before the transaction too, so a
 	// read that fails refuses the record with nothing written: read after the commit, it would
 	// lose the answer to a write that landed.
-	words, err := readLineWords(r.Context(), pool)
+	words, err := s.readLineWords(r.Context(), pool)
 	if err != nil {
 		return refused(err)
 	}
@@ -1020,17 +1021,32 @@ func holdsLink(word string) bool {
 // lineWords is the rule a pull-request body line keeps the words of a text by: the reading a
 // recorded result's line carries (checkResultLine) and the check's words a CI result's line
 // carries (ciVerdictLine). The line is written into a pull request unchanged, and a pull request
-// can be public, so it drops every word that holds a link (holdsLink) and every word that holds an
-// issue key of a project this Dispatch holds. No line is stored: each is written when the record,
-// its dry run or the results read answers it, by the projects Dispatch holds then.
+// can be public, so it drops every word that holds a link (holdsLink), a private host
+// (privateHost, tailnetHost), this Dispatch's own host, or an issue key of a project this
+// Dispatch holds. No line is stored: each is written when the record, its dry run or the results
+// read answers it, by the projects Dispatch holds then.
 type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
+	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
+	// without its scheme is dropped too; "" for a Dispatch configured with no URL.
+	host string
 }
 
-// readLineWords is lineWords for every project q reads.
-func readLineWords(ctx context.Context, q queryer) (lineWords, error) {
+// privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
+// as that script spells them (private_host_rule, tailnet_host_rule) and read in any case as it
+// reads them: a host below `.internal.`, and a Tailscale MagicDNS host, a DNS label then `.ts.net`
+// with no letter or digit after it. That script refuses either in a pull request's text only once
+// the text is public; the line drops every word holding one, written without a scheme too, and
+// the script's reserved example hosts with them, since no line needs a host.
+var (
+	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal[.][[:alnum:].-]+`)
+	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
+)
+
+// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
+func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
 	rows, err := q.Query(ctx, `select key from projects`)
 	if err != nil {
 		return lineWords{}, err
@@ -1039,39 +1055,50 @@ func readLineWords(ctx context.Context, q queryer) (lineWords, error) {
 	if err != nil {
 		return lineWords{}, err
 	}
-	return lineWordsFor(keys), nil
+	return lineWordsFor(keys, s.deps.ServerURL), nil
 }
 
-// lineWordsFor is lineWords for the projects keys names. A word holds an issue key where one of
-// those keys stands in it, in any case, at the word's start or after a character that is neither
-// a letter nor a digit, followed by `-` and a number that ends there: at the word's end, or before
-// a character that is neither a letter, a digit, nor a `.` that a digit follows. So `ACME-12's`,
-// `(ACME-12)`, `fix/acme-12-lines` and `legion-acme-acme-12-tester` hold ACME-12, and the lower
-// case is caught because branch names and role tokens spell a key so. `UTF-8`, `SHA-256`,
-// `x86-64` and `TEST-1` hold no key while no project bears that name, and `kernel-6.8` holds none
-// even where a project KERNEL exists, since a number running on into a decimal part is a version.
-// A shape alone, such as [A-Z]+-[0-9]+, would drop UTF-8 and SHA-256 too, which is why the keys
-// are the projects Dispatch holds.
-func lineWordsFor(keys []string) lineWords {
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// holds an issue key where one of those keys stands in it, in any case, at the word's start or
+// after a character that is neither a letter nor a digit, followed by `-` and a number that ends
+// there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
+// that a digit follows. So `ACME-12's`, `(ACME-12)`, `fix/acme-12-lines` and
+// `legion-acme-acme-12-tester` hold ACME-12, and the lower case is caught because branch names and
+// role tokens spell a key so. `UTF-8`, `SHA-256`, `x86-64` and `TEST-1` hold no key while no
+// project bears that name, and `kernel-6.8` holds none even where a project KERNEL exists, since a
+// number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
+// drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
+func lineWordsFor(keys []string, serverURL string) lineWords {
+	var words lineWords
+	if parsed, err := url.Parse(serverURL); err == nil {
+		words.host = strings.ToLower(parsed.Hostname())
+	}
 	if len(keys) == 0 {
-		return lineWords{}
+		return words
 	}
 	quoted := make([]string, len(keys))
 	for index, key := range keys {
 		quoted[index] = regexp.QuoteMeta(key)
 	}
-	return lineWords{issueKey: regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + strings.Join(quoted, "|") +
-		`)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)}
+	words.issueKey = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + strings.Join(quoted, "|") +
+		`)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
+	return words
+}
+
+// drops reports whether the line leaves word out.
+func (w lineWords) drops(word string) bool {
+	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
+		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
+		(w.issueKey != nil && w.issueKey.MatchString(word))
 }
 
 // keep is text's words joined by single blanks, less every word the line drops.
 func (w lineWords) keep(text string) string {
 	var kept []string
 	for _, word := range strings.Fields(text) {
-		if holdsLink(word) || (w.issueKey != nil && w.issueKey.MatchString(word)) {
-			continue
+		if !w.drops(word) {
+			kept = append(kept, word)
 		}
-		kept = append(kept, word)
 	}
 	return strings.Join(kept, " ")
 }
@@ -1119,7 +1146,7 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 	}
 	reading := words.keep(result.Observed)
 	if reading == "" {
-		return line + " The reading holds only links and issue keys, which this line leaves out."
+		return line + " The reading holds only links, hosts and issue keys, which this line leaves out."
 	}
 	return line + " " + cutWords(reading)
 }

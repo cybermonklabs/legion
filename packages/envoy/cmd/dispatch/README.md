@@ -4624,10 +4624,10 @@ Each item below names a path with its method and identity, then its purpose.
   The answer is `{result, line}`, `line` the pull-request body line the result implies:
 
   - The line is `- Check <id> (<when>): <verdict> at <commit>, recorded by <role>.` and the reading.
-    It goes into a pull request, which can be public, so the reading leaves out every word that holds a link (`://`) or an issue key of a project this Dispatch holds.
+    It goes into a pull request, which can be public, so the reading leaves out every word that holds a link (`://`), a host the public text check refuses (one below `.internal.` or a Tailscale MagicDNS host, written with or without a scheme), this Dispatch's own host, or an issue key of a project this Dispatch holds.
     A key counts in any case, at the start of a word or after a character that is neither a letter nor a digit, and up to the end of its number: `ACME-12's`, `(ACME-12)` and `fix/acme-12-lines` each hold one.
     `UTF-8`, `SHA-256` and `TEST-1` hold none while no project is called UTF, SHA or TEST, and `kernel-6.8` holds none even where KERNEL is a project, since a number that runs on into a decimal part is a version.
-    What is left is cut at a word to at most 80 runes, with `…` where it was cut; a reading left with nothing says `The reading holds only links and issue keys, which this line leaves out.`, and a result with no reading says `The role recorded no reading.`
+    What is left is cut at a word to at most 80 runes, with `…` where it was cut; a reading left with nothing says `The reading holds only links, hosts and issue keys, which this line leaves out.`, and a result with no reading says `The role recorded no reading.`
     No line is stored: each is written when it is answered, from the projects Dispatch holds then.
 
 - `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)

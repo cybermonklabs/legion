@@ -12,13 +12,18 @@ import (
 // carries a private reference into a pull request.
 var lineIssueKeys = []string{"resk-", "acme-", "rescq-"}
 
-// requireNoPrivateReference fails when line carries an issue key of lineIssueKeys or a link.
+// linePrivateHosts are the hosts the tests below write into a reading or a check's words: a
+// Tailscale MagicDNS host, a host below `.internal.`, and the test server's own host.
+var linePrivateHosts = []string{".ts.net", ".internal.", "dispatch.example"}
+
+// requireNoPrivateReference fails when line carries an issue key of lineIssueKeys, a host of
+// linePrivateHosts or a link.
 func requireNoPrivateReference(t *testing.T, line string) {
 	t.Helper()
 	lowered := strings.ToLower(line)
-	for _, key := range lineIssueKeys {
-		if strings.Contains(lowered, key) {
-			t.Fatalf("the pull-request line carries an issue key (%s): %q", key, line)
+	for _, reference := range append(slices.Clone(lineIssueKeys), linePrivateHosts...) {
+		if strings.Contains(lowered, reference) {
+			t.Fatalf("the pull-request line carries a private reference (%s): %q", reference, line)
 		}
 	}
 	if strings.Contains(line, "://") {
@@ -78,7 +83,28 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 		{
 			name:     "a reading of nothing but issue keys and links",
 			observed: "RESK-1 dispatch://RESK-1/spec ACME-2",
-			want:     "The reading holds only links and issue keys, which this line leaves out.",
+			want:     "The reading holds only links, hosts and issue keys, which this line leaves out.",
+		},
+		{
+			name:     "a Tailscale MagicDNS host written without a scheme",
+			observed: "Read dispatch.example-tailnet.ts.net/issues and it rendered.",
+			want:     "Read and it rendered.",
+		},
+		{
+			name:     "a host below .internal. written without a scheme",
+			observed: "curl dispatch.internal.example/api/v1 answered 200.",
+			want:     "curl answered 200.",
+		},
+		{
+			name:     "this Dispatch's own host written without a scheme",
+			observed: "Opened dispatch.example/projects/RESK/documents/notes again.",
+			want:     "Opened again.",
+		},
+		{
+			name:     "a public host written without a scheme stays",
+			observed: "github.com/acme/widgets/pull/7 merged cleanly.",
+			want:     "github.com/acme/widgets/pull/7 merged cleanly.",
+			control:  true,
 		},
 		{
 			name:     "hyphenated words whose first part names no project stay",
@@ -198,14 +224,14 @@ func TestAResultsDryRunAnswersTheLineAndRecordsNothing(t *testing.T) {
 }
 
 // The line Dispatch writes for a check CI proves carries the check's words in place of a reading,
-// and drops an issue key from them as a recorded line drops one from its reading. The check's own
-// text, which the results read answers beside it, keeps the key: only the line goes into a pull
-// request. The line is written at the read, so a check whose words were written before this rule
-// answers it the same way.
+// and drops an issue key and a private host from them as a recorded line drops them from its
+// reading. The check's own text, which the results read answers beside it, keeps both: only the
+// line goes into a pull request. The line is written at the read, so a check whose words were
+// written before this rule answers it the same way.
 func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCQ", "acme/widgets", "CI line")
-	words := issue.Key + "'s build passes at the head."
+	words := "logs.example-tailnet.ts.net/runs shows " + issue.Key + "'s build passing at the head."
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		":::check{#c1 "+ciCheckKept+"}\n"+words+"\n:::\n")
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
@@ -218,7 +244,7 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 	if check.CI == nil {
 		t.Fatalf("c1 carries no ci")
 	}
-	want := "- Check c1 (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + ". build passes at the head."
+	want := "- Check c1 (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + ". shows build passing at the head."
 	if check.CI.Line != want {
 		t.Fatalf("c1's pull-request line = %q, want %q", check.CI.Line, want)
 	}
