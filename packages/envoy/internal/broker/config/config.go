@@ -1444,10 +1444,14 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // names, since a mapped account acts for its person and for nothing else. The settings it checks
 // are BROKER_SERVICE_LOGINS, BROKER_SERVICES, BROKER_VM_SERVICES, BROKER_EXCHANGE_ACCOUNTS,
 // BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES
-// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting added later fails
-// TestEveryBrokerSettingLoadReadsIsMarked until its author marks it, as giving a Kubernetes account
-// a role, beside its refusal here and its row in
-// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none.
+// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting that Load reads through
+// getenv on the two configurations of TestEveryBrokerSettingLoadReadsIsMarked (the person sign-in
+// on and off, each with every condition in front of a read set) fails that test until its author
+// marks it, as giving a Kubernetes account a role, beside its refusal here and its row in
+// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none. A setting read
+// under a condition those configurations do not set, or read other than through getenv, is outside
+// the test: cmd/broker's BROKER_FAKE_SECRETS_FILE and the PG* variables pgconn.ParseConfig reads in
+// databaseIAM are two today. For such a setting the class is a convention rather than a rule.
 //
 // It refuses a mapped account that BROKER_SERVICE_LOGINS does not name, because a mapped account
 // logs in with its own token. It refuses a mapped account whose login service a BROKER_SERVICES

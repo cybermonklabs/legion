@@ -224,10 +224,10 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 // human-tier secret in anyone's stead, so the grant names anyone as its approver and no person at
 // all, and it sits on a service's pod, which acts for no person either. Without this nobody could
 // see what the judge had handed a pod, which is the reason every signed-in person already sees a
-// grant a pod took without asking. Each of them lists both pods' grants, and either of them ends
-// one; the sentinel is no signed-in person and lists nothing. Neither revoke is the session's
-// operator's — a service's pod has none — so neither withholds anything from the pod it ended a
-// grant on.
+// grant a service's pod took without asking. Each of them lists both pods' grants, and either of
+// them ends one; the sentinel is no signed-in person and lists nothing. Neither revoke is the
+// session's operator's — a service's pod has none — so neither withholds anything from the pod it
+// ended a grant on.
 func TestAJudgedGrantOfASharedSecretIsEverySignedInPersonsToSeeAndEnd(t *testing.T) {
 	m, _, _ := newJudgeFixture(t)
 	first, firstKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-one-"+t.Name())

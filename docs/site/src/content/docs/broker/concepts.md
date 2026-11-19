@@ -469,8 +469,9 @@ Who gets it then follows from those two tags alone:
 
 A session is its owner's own when its operator is the owner and one of two things holds: the owner
 approved the machine login it enrolled under, or it is a pod whose account `BROKER_POD_OPERATORS`
-maps to the owner ([a person's pod](#a-persons-pod)). Any other pod acts for no person, so a pod
-asking for a person's agent-tier secret sends it to that person for approval.
+maps to the owner ([a person's pod](#a-persons-pod)). Any other pod is not the owner's own, whether
+it acts for no person or for the person its account is mapped to, so its request for the owner's
+agent-tier secret goes to the owner for approval.
 
 Every row that sends a secret for approval needs the request to carry a reason: a request with
 none is denied instead of being put to a person
