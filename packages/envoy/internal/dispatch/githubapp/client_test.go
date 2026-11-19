@@ -90,6 +90,11 @@ type fakeGitHub struct {
 	// DeliveryPermissions' tests; a repo absent from one of these maps gets "" (no permission).
 	actionsPermissions      map[string]string
 	pullRequestsPermissions map[string]string
+	// installationStatuses is the Commit statuses permission every installation lookup answers,
+	// and tokenPermissions the permissions every token mint answers: GitHub answers both, and the
+	// two can differ while a token minted before a grant changed lives.
+	installationStatuses string
+	tokenPermissions     map[string]string
 	// appInstallations, when non-nil, backs GET /app/installations, paginated at 100 per page; a
 	// nil value answers an empty list. appInstallationsCalls counts every call made, and
 	// appInstallationsRateLimitOnCall (1-indexed, 0 means never) makes that numbered call answer a
@@ -119,6 +124,9 @@ func (f *fakeGitHub) handler() http.Handler {
 		if pullRequests := f.pullRequestsPermissions[name]; pullRequests != "" {
 			permissions["pull_requests"] = pullRequests
 		}
+		if f.installationStatuses != "" {
+			permissions["statuses"] = f.installationStatuses
+		}
 		response := map[string]any{
 			"id":          f.installationID,
 			"app_slug":    "dispatch-test",
@@ -133,8 +141,9 @@ func (f *fakeGitHub) handler() http.Handler {
 		f.tokenMints++
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"token":      fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
-			"expires_at": f.tokenExpiresAt.Format(time.RFC3339),
+			"token":       fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
+			"expires_at":  f.tokenExpiresAt.Format(time.RFC3339),
+			"permissions": f.tokenPermissions,
 		}); err != nil {
 			f.t.Errorf("encode token: %v", err)
 		}
@@ -635,6 +644,9 @@ func TestNilClientAnswersErrNoAppKey(t *testing.T) {
 	}
 	if _, err := client.CheckSource(context.Background(), "legion", "arch"); !errors.Is(err, ErrNoAppKey) {
 		t.Fatalf("nil client check: got %v, want ErrNoAppKey", err)
+	}
+	if token, statuses, err := client.RepositoryTokenWithStatuses(context.Background(), "legion", "arch"); token != "" || statuses || !errors.Is(err, ErrNoAppKey) {
+		t.Fatalf("nil client RepositoryTokenWithStatuses: got (%q, %v, %v), want no token, no statuses and ErrNoAppKey", token, statuses, err)
 	}
 }
 

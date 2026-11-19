@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
@@ -122,8 +123,32 @@ func approveURL() string {
 // enrollment session_id of its own, so an unset result here is what the broker's requests.
 // Session answers for both Request and Enrollment, and the credential request names no session
 // at all.
+//
+// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs. A shell that
+// carries it beside another session's id, because a Codex session was started from a Claude Code
+// or Oh My Pi shell or the other way round, names whichever of `codex`, `claude` and `omp` is
+// this process's nearest ancestor; where the walk finds none of them, the order above, with
+// CODEX_THREAD_ID after CLAUDE_CODE_SESSION_ID, as before Codex was a host.
 func requestSessionID() string {
-	return cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	codex := os.Getenv("CODEX_THREAD_ID")
+	others := cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	if codex != "" && (others == "" || nearestHarness("codex", "claude", "omp") == "codex") {
+		return codex
+	}
+	return others
+}
+
+// harnessName is the name nearestHarness compares for a process's comm: the command name, with a
+// trailing ".exe" taken off.
+//
+// A name is the base name of the binary the process executed, cut to 15 characters, with a
+// trailing ".exe" taken off: Claude Code's npm package runs its binary as bin/claude.exe. A host
+// started through an interpreter (an npm install that runs as node) has the interpreter's name,
+// so the walk passes it and may stop at a host further out, and a Claude Code run that way inside
+// a Codex shell names the Codex thread. dispatch's walk (nearestAncestorNamed,
+// packages/envoy-client/src/process-ancestry.ts) reads names by the same rule.
+func harnessName(comm string) string {
+	return strings.TrimSuffix(strings.TrimSpace(comm), ".exe")
 }
 
 func exists(path string) bool {

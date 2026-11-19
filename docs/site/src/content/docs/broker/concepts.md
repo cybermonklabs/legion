@@ -706,7 +706,9 @@ The broker evaluates every name
   its names, the broker ends it, cancelled by the broker with a detail that says the broker moved,
   whatever its age. That end holds for an ask that waits for a person, for an ask the broker
   decides at once and for one a live grant answers, and for an ask that waits for a person the
-  rule then applies to what is left. An ask refused before the broker writes anything (an unknown
+  rule then applies to what is left. A request whose deadline has passed is expired rather than
+  pending, whichever broker address it is signed for: the ask neither joins it nor is refused for
+  it, and the broker's sweep ends it. An ask refused before the broker writes anything (an unknown
   name, a lifetime over the secret's maximum, two approvers) ends nothing, and a request signed for
   another broker address that no such ask reaches waits for its expiry.
   The broker's answer names the approver the record names and the request's page on the broker
@@ -893,7 +895,16 @@ could not carry, writes
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
 method, the path, the reason and the answer id
-([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A path that
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A tunnel is
+read by nobody, and a plain-HTTP request is forwarded with nothing decided, so each socket the
+proxy opens for one writes a line of its own instead: `airlock proxy: a tunnel`, with the
+grant, its enrollment, the session and the runtime behind it, the host and port asked for and
+the address the broker dialled. A dial the proxy refused or could not make writes
+`airlock proxy: a dial that did not happen`, with those fields, how many addresses the host
+resolved to, the class of the failure and the reason. The host and the port are the command's
+own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
+path and correlation id are too; none of that is redaction, so every line the proxy writes has
+each placeholder written whole, in any case, replaced by `[placeholder]`. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
@@ -941,8 +952,9 @@ What the airlock does not stop is as much of the design as what it does:
 
 A person approves a secret request on the broker's own approval page, never in Dispatch. The
 broker writes nothing in Dispatch: Dispatch's server reads the broker's pending list
-for the person signed in, and its Inbox lists each secret request as a link to that request's page
-on the broker, `<broker>/approve/<record>`, which the broker's answers name as `approve_url`. The
+for the person signed in, and its Inbox lists each pending secret request as a link to that
+request's page on the broker, `<broker>/approve/<record>`, which the broker's answers name as
+`approve_url` (an expired one is listed with no link, below). The
 page signs the person in to the broker itself, with OpenID Connect and the broker's own client (the
 deployment's Google Workspace, `BROKER_SIGNIN_*` in
 [Operate](/legion/broker/operate/#approval-sign-in)), only when they hold no live sign-in there,
@@ -1006,6 +1018,16 @@ A record is decided once. A second click, a concurrent one, or one after the rec
 nothing (`RECORD_TERMINAL`), and the page says what became of the record. A pending request nobody
 decides expires after 12 hours, a fixed time rather than
 a setting (`agentSecretPendingTTL` in `packages/envoy/cmd/broker/main.go`).
+
+A request or a machine login whose deadline passes before anybody decides it stays in its
+approver's Dispatch Inbox, marked **Expired** with its deadline, with no link to a page that
+decides it, until someone dismisses it with **Dismiss**. It is no longer counted as waiting on the
+person. The broker reads it as expired from the moment its deadline passes, before the sweep ends
+it and after, which is exactly what every decision of it refuses. A dismissal is the record's
+once, for every Inbox: the first person whose Inbox holds a shared request and who dismisses it
+takes it out of everyone's, and no route brings it back. The broker stores each dismissal
+(`credential_request_dismissals`); a request the sweep had already ended before it kept them was
+recorded as dismissed by `broker` and does not come back.
 
 A machine login is still decided in Dispatch, with its typed code
 ([Machine login](#machine-login)), and a person's revoke of a grant or a machine login is still made

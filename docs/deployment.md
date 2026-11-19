@@ -72,8 +72,11 @@ the App is installed on a repository from that owner's installation's repository
 A read-only token holds what the command's read-only release gives: the broker's holds
 `contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
 alone where the App's installation has not been granted Actions.
-A configured key asks for that set and `issues: read` besides, so a role reads an issue through a
-key-minted read-only token and not through the broker's.
+A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
+`pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
+(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue, a check
+run, a commit status or an attestation through a key-minted read-only token and not through the
+broker's.
 A configured key reads what the installation is granted before each mint and asks for its set
 cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,

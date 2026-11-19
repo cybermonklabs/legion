@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // parseIssueParent decodes the tri-state `parent` field of an issue PATCH. Absent →
@@ -69,10 +70,19 @@ const legionLabel = "legion"
 // runs - but a write's advice does (computeWriteAdvice, write_advice.go), and there it means the
 // issue is treated as one Legion does not run: the "still in triage" line prints. A chain that
 // deep needs a reparent that refuseParentTooDeep would have refused.
-var legionManagedStatusSQL = `
+var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
+
+// legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
+// than read - $1 its parent_key, $2 its labels - for a write that reads its advice before it
+// writes that row (writeAdviceBefore). The walk above it, and the depth cap, are the same.
+var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, 0 as depth`)
+
+// legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
+// parent_key, its labels and depth 0.
+func legionWalkSQL(start string) string {
+	return `
 	with recursive chain as (
-		select i.parent_key, i.labels, 0 as depth
-		from issues i where i.key = $1
+		` + start + `
 		union
 		select p.parent_key, p.labels, c.depth + 1
 		from issues p join chain c on p.key = c.parent_key
@@ -81,6 +91,7 @@ var legionManagedStatusSQL = `
 	select exists (
 		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
 	)`
+}
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
@@ -96,6 +107,16 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 	return managed, nil
 }
 
+// legionManagedStatusOfRow is legionManagedStatus for key's row as a write leaves it, parent and
+// labels, which the write has not written yet (legionManagedStatusOfRowSQL).
+func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
+	var managed bool
+	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels).Scan(&managed); err != nil {
+		return false, fmt.Errorf("resolve whether Legion manages the status of %s: %w", key, err)
+	}
+	return managed, nil
+}
+
 func normalizeIssueBlockers(targets []string) ([]string, error) {
 	if len(targets) > contracts.MaxIssueBlockers {
 		return nil, countExceededError("BLOCKED_BY_INPUT", "blocked_by", len(targets), contracts.MaxIssueBlockers)
@@ -104,7 +125,7 @@ func normalizeIssueBlockers(targets []string) ([]string, error) {
 	return slices.Compact(targets), nil
 }
 
-// lockProjectIssueDependencies serializes blocker and parent changes before any row or rank
+// lockProjectIssueDependencies serializes blocker and parent changes before any owner, row or rank
 // lock. The two-key namespace is separate from Dispatch's one-key rank, document and event locks.
 // It is the one statement of a project's dependency lock: lockIssueDependencyWrite takes each
 // project's lock through it, and its id is hashtext of the project key, so a caller holding
@@ -119,12 +140,12 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 }
 
 // lockDeploymentIssueDependencies is the one dependency lock that is not a project's, and the
-// last lock every dependency write takes. Every writer of this build takes it exclusively, so no
-// two dependency walks of this build ever run at once and no ring can be closed by two writes of
-// this build that each walk a graph the other is changing — whatever projects their components
-// touch, and with nothing read before a lock deciding it. What it costs is that dependency
-// writes — a blocked_by write and a reparent — serialize across the deployment rather than per
-// project; every other write takes neither this lock nor a project's.
+// last dependency lock every dependency write takes. Every writer of this build takes it
+// exclusively, so no two dependency walks of this build ever run at once and no ring can be
+// closed by two writes of this build that each walk a graph the other is changing — whatever
+// projects their components touch, and with nothing read before a lock deciding it. What it
+// costs is that dependency writes — a blocked_by write and a reparent — serialize across the
+// deployment rather than per project; every other write takes neither this lock nor a project's.
 //
 // It serializes every dependency write only while one build serves: a server of the build
 // before this one takes only its own project's dependency lock and never this one. The
@@ -156,14 +177,16 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// lockIssueDependencyWrite takes every lock a blocker or parent write needs, in the one order
-// every such write takes them: the project lock of the issue's own project and of each project a
-// target of this write belongs to, each through lockProjectIssueDependencies in
+// lockIssueDependencyWrite takes the dependency locks a blocker or parent write needs, in the one
+// order every such write takes them: the project lock of the issue's own project and of each
+// project a target of this write belongs to, each through lockProjectIssueDependencies in
 // docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
-// dependency lock (lockDeploymentIssueDependencies). The number, rank and row locks follow, as
-// they did before. project is the issue's own project, targets are its blocked_by targets, and
-// caller is the one project the request's credential may write, empty for a credential that
-// names none.
+// dependency lock (lockDeploymentIssueDependencies). Every other lock of the write follows: its
+// owner locks and its rank-allocation lock, and its row locks in its write phase. Its reads are
+// plain and its locks are advisory transaction locks, so none of it assigns the transaction an id
+// (INFRA-636): it is the first step of the write's read phase. project is the issue's own project,
+// targets are its blocked_by targets, and caller is the one project the request's credential may
+// write, empty for a credential that names none.
 //
 // The project locks are taken in lock id order, not key order, because the lock id is what
 // Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
@@ -243,33 +266,26 @@ func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) e
 		caller, target, targetProject)
 }
 
-// lockIssueRows locks key and the rows in others `for no key update` in one key order, the order
-// LockOwners takes event owners, and answers key's parent as that lock read it. A PATCH locks
-// every row it names through one call, so two writes naming the same rows queue one behind the
-// other instead of each holding one row while waiting for the other. A key with no row is
-// skipped; the caller's own read of that key refuses it.
-func lockIssueRows(ctx context.Context, q queryer, key string, others ...string) (*string, error) {
-	keys := append(make([]string, 0, len(others)+1), key)
-	keys = append(keys, others...)
-	slices.Sort(keys)
-	var keyParent *string
-	for index, row := range keys {
-		if index > 0 && row == keys[index-1] {
-			continue
-		}
-		var parent *string
-		err := q.QueryRow(ctx, `select parent_key from issues where key = $1 for no key update`, row).Scan(&parent)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if row == key {
-			keyParent = parent
-		}
+// lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
+// lock-key order LockOwners takes event owners in (store.LockOwners), and then answers key's parent
+// as it stands under them. A PATCH locks every issue it names through one call, so two writes
+// naming the same issues queue one behind the other instead of each holding one while waiting for
+// the other. A key with no row costs a lock nobody else takes; the caller's own read of that key
+// refuses it. The parent is read in the statement after the locks, never in the same one, so it
+// is the parent the lock's previous holder committed (store.LockOwnersAndRead): every writer of
+// parent_key holds the issue's lock.
+func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...string) (*string, error) {
+	owners := make([]store.Owner, 0, len(others)+1)
+	owners = append(owners, store.IssueOwner(key))
+	for _, other := range others {
+		owners = append(owners, store.IssueOwner(other))
 	}
-	return keyParent, nil
+	var parent *string
+	err := store.LockOwnersAndRead(ctx, tx, owners, `select parent_key from issues where key = $1`, []any{key}, &parent)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	return parent, nil
 }
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
@@ -278,29 +294,30 @@ func lockIssueRows(ctx context.Context, q queryer, key string, others ...string)
 // the two spellings change together: no mechanism shares a value between the two Go modules.
 const parentContended = "PARENT_CONTENDED"
 
-// parentLockAttempts bounds how many times lockPatchRowsAndParent reads the issue's parent and
+// parentLockAttempts bounds how many times lockPatchOwnersAndParent reads the issue's parent and
 // locks it: the first, and one redo for a parent a concurrent reparent changed in between.
 const parentLockAttempts = 2
 
-// lockPatchRows locks the issue and the rows in named (a proposed parent, rank neighbours) in one
-// key order, for a PATCH that appends no event to the issue's current parent.
-func lockPatchRows(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
-	_, err := lockIssueRows(ctx, tx, key, named...)
+// lockPatchOwners takes the owner locks of the issue and of the issues in named (a proposed parent,
+// rank neighbours) in one lock order, for a PATCH that appends no event to the issue's current
+// parent.
+func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
+	_, err := lockIssueOwners(ctx, tx, key, named...)
 	return err
 }
 
-// lockPatchRowsAndParent is lockPatchRows for a PATCH that appends an event to the issue's
-// current parent (a status change, a reparent), which it locks in the same key order. The parent
+// lockPatchOwnersAndParent is lockPatchOwners for a PATCH that appends an event to the issue's
+// current parent (a status change, a reparent), which it locks in the same lock order. The parent
 // can only be read before the lock, and a concurrent reparent of the issue, which holds the
-// issue's row, can change it in between, so the lock reads it again. A parent that moved releases
-// every lock the attempt took (a savepoint) and the attempt starts over with the parent that
-// stands, so no row is ever locked out of key order. A parent that moves at every attempt is
-// 409 PARENT_CONTENDED, with nothing applied.
+// issue's lock, can change it in between, so the lock reads it again. A parent that moved releases
+// every lock the attempt took (a savepoint, whose rollback gives back the advisory locks taken
+// under it) and the attempt starts over with the parent that stands, so no lock is ever taken out
+// of order. A parent that moves at every attempt is 409 PARENT_CONTENDED, with nothing applied.
 //
 // It does not use resolveThenLock, whose resolve half runs with nothing held and whose write half
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
-func lockPatchRowsAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
+func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
 	rows := make([]string, 0, len(named)+1)
 	for range parentLockAttempts {
 		var parent *string
@@ -315,7 +332,7 @@ func lockPatchRowsAndParent(ctx context.Context, tx pgx.Tx, key string, named ..
 		if err != nil {
 			return err
 		}
-		locked, err := lockIssueRows(ctx, attempt, key, rows...)
+		locked, err := lockIssueOwners(ctx, attempt, key, rows...)
 		if err != nil {
 			_ = attempt.Rollback(ctx)
 			return err

@@ -21,6 +21,7 @@ import {
   cutFirstAnswerBody,
   dropFirstAnswer,
   keptWrites,
+  pendingWrites,
   recordUploadAttempts,
   replayed,
   runClockUntil,
@@ -29,7 +30,7 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -45,12 +46,6 @@ const agent = {
   actor: { kind: "session" as const, id: "e2e-keyed-writes" },
   as: "agent" as const,
 };
-
-/** The shell's one account of the writes Dispatch has not confirmed yet that no composer shows
- *  (`PendingWritesIndicator`); gone while none is pending. */
-function pendingWrites(page: Page): Locator {
-  return page.getByRole("region", { name: "Pending changes" });
-}
 
 /** How much of an upload's body the shell says has gone up (`Uploading… N%`,
  *  `PendingWritesIndicator`), 0 while it names no upload: the page's own account of the progress

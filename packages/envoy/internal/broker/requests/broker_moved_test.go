@@ -150,7 +150,7 @@ func TestAskingAgainWithTheSameNamesEndsARequestSignedForAnotherBroker(t *testin
 	}
 	requireEndedAsBrokerMoved(t, m, stale)
 	requireJudgedAlone(t, watched, again.ID)
-	listed, err := m.PendingForApprover(ctx, approver)
+	listed, err := m.PendingForApprover(ctx, approver, PendingStates{})
 	if err != nil || len(listed) != 1 || listed[0].RecordID != *again.RecordID {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want the new request's record %s alone", approver, listed, err, *again.RecordID)
 	}
