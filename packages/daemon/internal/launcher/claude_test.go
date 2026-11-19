@@ -714,12 +714,14 @@ func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t 
 
 // A Claude Code session's files are the role's, and the keeper that restores and saves them runs
 // in the launcher, its container's PID 1, so it never waits on what a role put at their paths and
-// never reads more of them than it needs. A fifo where a resume restores the transcript, or where a
-// save opens it, is refused at once in words naming it and left a fifo, where a plain open would
-// wait for a writer for as long as none comes. A file longer than its row, here the row, one more
-// line and a 64 MiB hole, is taken as an extension of the row and left as it is, with no more of it
-// read than one byte past the row: the restore allocates a small fraction of what a read of the
-// whole file would hold in memory.
+// never reads more of them than it needs. A fifo where a resume restores the transcript, where a
+// save opens it, or at the transcript's .legion-saved marker (SavedMarkerSuffix), which a fresh
+// transcript's first save writes, is refused at once in words naming it and left a fifo, where a
+// plain open would wait for a writer (a reader, for the marker's write-only open) for as long as
+// none comes. A file longer than its row, here the row, one more line and a 64 MiB hole, is taken
+// as an extension of the row and left as it is, with no more of it read than one byte past the
+// row: the restore allocates a small fraction of what a read of the whole file would hold in
+// memory.
 func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T) {
 	ctx := context.Background()
 	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
@@ -756,6 +758,11 @@ func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T
 		// No row: the save meets the file before it asks the table anything.
 		f := transcript(t, false)
 		refusesFifo(t, f.path, "the save", func() error { return k.saveChanges(ctx, f) })
+	})
+
+	t.Run("a fifo at the transcript's .legion-saved marker", func(t *testing.T) {
+		f := transcript(t, false)
+		refusesFifo(t, f.path+SavedMarkerSuffix, "the marker's write", func() error { return writeMarker(f.path) })
 	})
 
 	t.Run("a file longer than the row", func(t *testing.T) {
@@ -806,9 +813,10 @@ func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T
 
 // refusesFifo makes a fifo at path and fails the test unless call, the keeper's step that opens
 // path (what names it in the failures), refuses it at once in words naming it and leaves it a
-// fifo. A call that has not answered in ten seconds, as a plain open of a fifo waits for a writer,
-// fails the test rather than hold its binary: the fifo is then opened read-write, which releases
-// such an open, and the call is let end before the test's directory is removed.
+// fifo. A call that has not answered in ten seconds, as a plain open of a fifo waits for a writer
+// (a write-only one for a reader), fails the test rather than hold its binary: the fifo is then
+// opened read-write, which releases either open, and the call is let end before the test's
+// directory is removed.
 func refusesFifo(t *testing.T, path, what string, call func() error) {
 	t.Helper()
 	if err := syscall.Mkfifo(path, 0o600); err != nil {

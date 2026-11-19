@@ -37,8 +37,10 @@ func Read(path string, limit int) ([]byte, error) {
 // file; path is name as the errors print it. It never follows a link at name (O_NOFOLLOW, which
 // answers ELOOP), never waits on a fifo or a device (O_NONBLOCK, which a regular file ignores),
 // never takes a terminal (O_NOCTTY), and refuses each in words naming the file — a symlink, a
-// socket (which open answers with ENXIO), a directory (EISDIR, for a flag that writes), or
-// whatever else the descriptor is (Kind). Any other failure is open's own error, as os.OpenFile
+// directory (EISDIR, for a flag that writes), or whatever else the descriptor is (Kind). An open
+// answered with ENXIO, which is a socket's answer, and a fifo's for a write-only open while no
+// reader holds it, is refused by what is at name, read without following a link there (Kind),
+// or as a socket when that cannot be read. Any other failure is open's own error, as os.OpenFile
 // words it.
 func OpenRegular(dirfd int, name, path string, flag int, perm uint32) (*os.File, error) {
 	fd, err := Openat(dirfd, name, flag|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, perm)
@@ -46,7 +48,7 @@ func OpenRegular(dirfd int, name, path string, flag int, perm uint32) (*os.File,
 	case errors.Is(err, unix.ELOOP):
 		return nil, fmt.Errorf("%s is a symlink", path)
 	case errors.Is(err, unix.ENXIO):
-		return nil, fmt.Errorf("%s is a socket", path)
+		return nil, fmt.Errorf("%s is a %s", path, kindAt(dirfd, name))
 	case errors.Is(err, unix.EISDIR):
 		return nil, fmt.Errorf("%s is a directory", path)
 	case err != nil:
@@ -365,4 +367,35 @@ func Kind(mode fs.FileMode) string {
 		return "device"
 	}
 	return "special file"
+}
+
+// kindAt names what is at name under the directory dirfd as Kind names it, read without following
+// a link at name, for OpenRegular's refusal of an open answered with ENXIO: a socket, a fifo
+// opened write-only while no reader holds it, or a device with nothing behind it. A name it
+// cannot read is called a socket, what open's ENXIO most often means.
+func kindAt(dirfd int, name string) string {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(dirfd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return "socket"
+	}
+	var mode fs.FileMode
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFREG:
+		// A regular file's mode has no type bits.
+	case unix.S_IFDIR:
+		mode = fs.ModeDir
+	case unix.S_IFLNK:
+		mode = fs.ModeSymlink
+	case unix.S_IFIFO:
+		mode = fs.ModeNamedPipe
+	case unix.S_IFSOCK:
+		mode = fs.ModeSocket
+	case unix.S_IFCHR:
+		mode = fs.ModeDevice | fs.ModeCharDevice
+	case unix.S_IFBLK:
+		mode = fs.ModeDevice
+	default:
+		mode = fs.ModeIrregular
+	}
+	return Kind(mode)
 }

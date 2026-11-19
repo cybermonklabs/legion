@@ -589,10 +589,14 @@ func (k *claudeKeeper) logf(format string, args ...any) {
 	}
 }
 
-// writeMarker writes SavedMarkerSuffix beside transcript, an empty owner-only file, never through
-// a link already at that path.
+// writeMarker writes SavedMarkerSuffix beside transcript, an empty owner-only file. The path is
+// the role's and the launcher is its container's PID 1, so the marker is opened only as a regular
+// file (rolefile.OpenRegular): a fifo, whose plain write-only open waits for a reader for as long
+// as none comes, a link, a socket, a device or a directory at its path is refused at once in
+// words naming it, never followed or waited on, and left as it is.
 func writeMarker(transcript string) error {
-	marker, err := os.OpenFile(transcript+SavedMarkerSuffix, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	path := transcript + SavedMarkerSuffix
+	marker, err := rolefile.OpenRegular(unix.AT_FDCWD, path, path, unix.O_WRONLY|unix.O_CREAT, 0o600)
 	if err != nil {
 		return err
 	}

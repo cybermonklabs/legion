@@ -109,6 +109,52 @@ func TestReadRefusesAnythingButARegularFileWithinItsBound(t *testing.T) {
 	})
 }
 
+// OpenRegular refuses a fifo it would write as a fifo, at once: a write-only open of a fifo no
+// reader holds answers ENXIO under O_NONBLOCK, as an open of a socket does, and the refusal names
+// what is at the path rather than call every ENXIO a socket. The launcher writes a fresh
+// transcript's saved marker with such an open, creating the file when it is missing; a plain one
+// would wait for a reader for as long as none comes.
+func TestOpenRegularRefusesAFifoItWouldWriteAsAFifo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		flag int
+	}{
+		{"write-only", unix.O_WRONLY},
+		{"write-only, creating what is missing", unix.O_WRONLY | unix.O_CREAT},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() {
+				file, err := OpenRegular(unix.AT_FDCWD, path, path, tc.flag, 0o600)
+				if err == nil {
+					_ = file.Close()
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if want := path + " is a fifo"; err == nil || err.Error() != want {
+					t.Fatalf("OpenRegular(%s) = %v, want the refusal %q", path, err, want)
+				}
+			case <-time.After(5 * time.Second):
+				// Open the fifo for reading so the blocked open returns and the goroutine ends.
+				if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+					<-done
+					_ = reader.Close()
+				}
+				t.Fatalf("OpenRegular(%s) was still opening after 5s: it waits for a reader", path)
+			}
+			if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+				t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", path, info, err)
+			}
+		})
+	}
+}
+
 // RemoveTree answers a path whose parent is a fifo rather than waiting on it: os.RemoveAll opens
 // the parent of a path it cannot unlink outright with a plain open, which a fifo nobody writes
 // holds for ever, and the workspace's and the leak-check install's calls of RemoveTree remove
