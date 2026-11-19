@@ -275,7 +275,8 @@ projects:
   $project: {}
 gates:
   design: root-issues
-# Four: an issue holds one of the cap's slots as root AGENTS.md's "Admission" says. The four
+# Four: an issue holds one of the cap's slots as "Admission and the `legion` label" in
+# docs/site/src/content/docs/legion/concepts.md says. The four
 # roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row each
 # at once, since a root in awaiting_person keeps its slot, and that is this lane's peak. It is
 # the peak again later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running

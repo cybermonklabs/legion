@@ -7430,13 +7430,17 @@
                           "exec": {
                             "command": [
                               "curl",
-                              "-fsS",
-                              "http://127.0.0.1:9020/healthz"
+                              "-sS",
+                              "-o",
+                              "/dev/null",
+                              "--max-time",
+                              "8",
+                              "http://127.0.0.1:9020/livez"
                             ]
                           },
-                          "failureThreshold": 2,
-                          "periodSeconds": 5,
-                          "timeoutSeconds": 6
+                          "failureThreshold": 3,
+                          "periodSeconds": 10,
+                          "timeoutSeconds": 9
                         },
                         "resources": {
                           "limits": {
@@ -7459,18 +7463,14 @@
                         "startupProbe": {
                           "exec": {
                             "command": [
-                              "curl",
-                              "-sS",
-                              "-o",
-                              "/dev/null",
-                              "--max-time",
-                              "8",
-                              "http://127.0.0.1:9020/livez"
+                              "/bin/sh",
+                              "-c",
+                              "curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '"
                             ]
                           },
-                          "failureThreshold": 24,
-                          "periodSeconds": 5,
-                          "timeoutSeconds": 9
+                          "failureThreshold": 60,
+                          "periodSeconds": 10,
+                          "timeoutSeconds": 6
                         },
                         "volumeMounts": [
                           {

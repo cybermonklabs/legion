@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // SignInScopes are the only scopes a person's sign-in asks for: who they are and their address.
@@ -42,7 +44,8 @@ type DeviceFlow struct {
 	// secret of the person's, and the broker checks the audience of the token it mints rather
 	// than trusting this client.
 	ClientID, ClientSecret string
-	// HTTP is the client every call goes through; nil is http.DefaultClient.
+	// HTTP is the client every call goes through; nil is the client the context carries
+	// (oauth2.HTTPClient), else http.DefaultClient.
 	HTTP *http.Client
 
 	mu     sync.Mutex
@@ -65,23 +68,49 @@ type SignIn struct {
 // discover reads the issuer's discovery document once per DeviceFlow and builds the x/oauth2
 // client from it. An issuer that names no device authorization endpoint serves no device grant,
 // which is a refusal of its own: a person cannot sign in there with no browser.
+//
+// go-oidc's own error quotes the issuer, the issuer the document names and the body of an answer
+// that is not a success, so none of its text prints. An answer whose body the client could not
+// read whole - a connection cut, a deadline passing in the middle of it - prints as that read
+// failure's class (redact.Class), whatever its status; go-oidc quotes that failure without
+// wrapping it, so it is joined to go-oidc's error and both stay in the chain. A document the
+// issuer did not serve prints as the status of the last request (redact.Answered, through
+// redact.Masked, so the error still unwraps to go-oidc's), a 2xx answer read whole that does not
+// read as this issuer's document as fixed text, and a request that failed as its class. A
+// redirect whose target fails is that failure.
 func (d *DeviceFlow) discover(ctx context.Context) (*oauth2.Config, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.config != nil {
 		return d.config, nil
 	}
-	provider, err := gooidc.NewProvider(d.context(ctx), d.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("read the sign-in issuer %s: %w", d.Issuer, err)
+	answered := &statusOf{}
+	provider, err := gooidc.NewProvider(withStatusOf(d.context(ctx), answered), d.Issuer)
+	readErr := answered.readErr()
+	switch {
+	case err != nil && readErr != nil:
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(errors.Join(err, readErr), redact.Class(readErr).Error()))
+	case err != nil && answered.status/100 > 2:
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Masked(err, redact.Answered(answered.status, nil)))
+	case err != nil && answered.status != 0:
+		return nil, fmt.Errorf("read %s: its discovery document names another issuer or is not one", d.issuer())
+	case err != nil:
+		return nil, fmt.Errorf("read %s: %w", d.issuer(), redact.Class(err))
 	}
 	endpoint := provider.Endpoint()
 	if endpoint.DeviceAuthURL == "" || endpoint.TokenURL == "" {
-		return nil, fmt.Errorf("the sign-in issuer %s names no device_authorization_endpoint or token_endpoint, so it serves no device sign-in", d.Issuer)
+		return nil, fmt.Errorf("%s names no device_authorization_endpoint or token_endpoint, so it serves no device sign-in", d.issuer())
 	}
 	endpoint.AuthStyle = oauth2.AuthStyleInParams
 	d.config = &oauth2.Config{ClientID: d.ClientID, ClientSecret: d.ClientSecret, Endpoint: endpoint, Scopes: SignInScopes}
 	return d.config, nil
+}
+
+// issuer is the issuer as a message names it: by its variable, and by its URL only as
+// internal/redact's allow-list prints it, whole when it is a plain URL and not at all when it
+// carries a user name, a password, a query or anything else a credential can sit in.
+func (d *DeviceFlow) issuer() string {
+	return "the sign-in issuer (" + SignInIssuerVar + " names " + redact.URL(d.Issuer) + ")"
 }
 
 // context is ctx carrying the HTTP client x/oauth2 and go-oidc send their requests with.
@@ -92,6 +121,67 @@ func (d *DeviceFlow) context(ctx context.Context) context.Context {
 	return context.WithValue(ctx, oauth2.HTTPClient, d.HTTP)
 }
 
+// withStatusOf is ctx carrying a copy of the client x/oauth2 and go-oidc send their requests
+// with - the one ctx carries (oauth2.HTTPClient), else http.DefaultClient, as every other call
+// of a DeviceFlow resolves it - timeout and all, with its transport wrapped so answered records
+// the status of each answer it carries and how a read of its body failed. A library whose error
+// quotes an answer's body is printed by that status (redact.Answered), or by that read failure's
+// class, instead.
+func withStatusOf(ctx context.Context, answered *statusOf) context.Context {
+	wrapped := *oauth2.NewClient(ctx, nil)
+	answered.base = wrapped.Transport
+	if answered.base == nil {
+		answered.base = http.DefaultTransport
+	}
+	wrapped.Transport = answered
+	return context.WithValue(ctx, oauth2.HTTPClient, &wrapped)
+}
+
+// statusOf is a transport that records what became of the last request it carried, which is all a
+// refusal may say of an answer whose library error quotes its body: the answer's status, or 0
+// where the request got no answer, so a redirect whose target fails is not read as the redirect;
+// and its body, which records how a read of it failed (readErr), so an answer the client could
+// not read whole is not read as a document it read and refused. One call at a time uses it.
+type statusOf struct {
+	base   http.RoundTripper
+	status int
+	body   *readOf
+}
+
+func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := s.base.RoundTrip(request)
+	s.status, s.body = 0, nil
+	if err == nil {
+		s.status = response.StatusCode
+		s.body = &readOf{ReadCloser: response.Body}
+		response.Body = s.body
+	}
+	return response, err
+}
+
+// readErr is the first error other than io.EOF a read of the last answer's body ended in, and nil
+// where that body read whole, or so far, or there was no answer.
+func (s *statusOf) readErr() error {
+	if s.body == nil {
+		return nil
+	}
+	return s.body.err
+}
+
+// readOf is an answer's body that keeps the first error other than io.EOF a read of it ends in.
+type readOf struct {
+	io.ReadCloser
+	err error
+}
+
+func (r *readOf) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if err != nil && err != io.EOF && r.err == nil {
+		r.err = err
+	}
+	return n, err
+}
+
 // Start asks the issuer for a device code and a user code: what the person types in, and where.
 func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, error) {
 	config, err := d.discover(ctx)
@@ -100,10 +190,10 @@ func (d *DeviceFlow) Start(ctx context.Context) (*oauth2.DeviceAuthResponse, err
 	}
 	answer, err := config.DeviceAuth(d.context(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("ask %s for a sign-in code: %w", d.Issuer, err)
+		return nil, fmt.Errorf("ask %s for a sign-in code: %w", d.issuer(), redact.Class(err))
 	}
 	if answer.DeviceCode == "" || answer.UserCode == "" {
-		return nil, fmt.Errorf("%s answered no device code to poll or no code for the person to type", d.Issuer)
+		return nil, fmt.Errorf("%s answered no device code to poll or no code for the person to type", d.issuer())
 	}
 	return answer, nil
 }
@@ -117,7 +207,7 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 	}
 	token, err := config.DeviceAccessToken(d.context(ctx), authorization)
 	if err != nil {
-		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.Issuer, err)
+		return nil, fmt.Errorf("wait for the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
 	return d.signIn(token, true)
 }
@@ -126,7 +216,9 @@ func (d *DeviceFlow) Wait(ctx context.Context, authorization *oauth2.DeviceAuthR
 // grant at Google, or it expired. It is a sentinel because it is as final as a revoke the
 // broker records — no retry and no other caller cures it — so every reader of a sign-in falls
 // back to this machine's own authority on it rather than asking the issuer again at every
-// enrolment (SignInAuthority.Current).
+// enrolment (SignInAuthority.Current). Refresh returns it, with the command to sign in again
+// (FailureSignInRefused), for a refresh the issuer refuses invalid_grant, and no other text of
+// that answer prints.
 var ErrSignInEnded = errors.New("the issuer no longer honours this sign-in")
 
 // Refresh mints a fresh ID token from a kept refresh token, with no step by the person. A
@@ -141,9 +233,9 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	if err != nil {
 		var refused *oauth2.RetrieveError
 		if errors.As(err, &refused) && refused.ErrorCode == "invalid_grant" {
-			return nil, WithHint(fmt.Errorf("%s %w", d.Issuer, ErrSignInEnded), FailureSignInRefused)
+			return nil, WithHint(fmt.Errorf("%s: %w", d.issuer(), ErrSignInEnded), FailureSignInRefused)
 		}
-		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.Issuer, err)
+		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.issuer(), redact.Class(err))
 	}
 	// A refresh answers no new refresh token, so the kept one stays the one to keep.
 	return d.signIn(token, false)
@@ -154,10 +246,10 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 func (d *DeviceFlow) signIn(token *oauth2.Token, needRefresh bool) (*SignIn, error) {
 	idToken, _ := token.Extra("id_token").(string)
 	if idToken == "" {
-		return nil, fmt.Errorf("%s answered no id_token: the sign-in asked for the %q scope and must be answered one", d.Issuer, "openid")
+		return nil, fmt.Errorf("%s answered no id_token: the sign-in asked for the %q scope and must be answered one", d.issuer(), "openid")
 	}
 	if needRefresh && token.RefreshToken == "" {
-		return nil, fmt.Errorf("%s answered no refresh token, so this machine could not renew the sign-in without the person again", d.Issuer)
+		return nil, fmt.Errorf("%s answered no refresh token, so this machine could not renew the sign-in without the person again", d.issuer())
 	}
 	person, err := PersonOf(idToken)
 	if err != nil {
@@ -169,17 +261,18 @@ func (d *DeviceFlow) signIn(token *oauth2.Token, needRefresh bool) (*SignIn, err
 // PersonOf is the `email` claim of an ID token: whose sign-in a record is. It verifies nothing —
 // the broker checks the signature, the audience, the domain and email_verified, and refuses a
 // token that fails any of them — so what it reads is a label on a local record and never a
-// decision.
+// decision. The token is a credential, and go-jose's and encoding/json's errors quote the parts
+// of it they could not read, so a token that does not parse is refused in fixed text.
 func PersonOf(idToken string) (string, error) {
 	parsed, err := jose.ParseSigned(idToken, idTokenAlgorithms)
 	if err != nil {
-		return "", fmt.Errorf("read the identity token the sign-in answered: %w", err)
+		return "", errors.New("the identity token the sign-in answered is not a signed JWT this client reads")
 	}
 	var claims struct {
 		Email string `json:"email"`
 	}
 	if err := json.Unmarshal(parsed.UnsafePayloadWithoutVerification(), &claims); err != nil {
-		return "", fmt.Errorf("read the identity token's claims: %w", err)
+		return "", errors.New("the identity token the sign-in answered carries claims that are not a JSON object of strings")
 	}
 	if !strings.Contains(claims.Email, "@") {
 		return "", errors.New("the identity token carries no email claim of an address's shape, so it names no person")

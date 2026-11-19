@@ -217,13 +217,13 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 // pinned session is briefly unreachable, so the retry's recheck of the pin fails without ever
 // consulting the role. recordCommentDeliveryResolution must keep the original recipient - the same
 // rule the message path already gets from recordPendingMessageDelivery's coalesce
-// (comment_delivery.go, and the pin rule in packages/envoy/AGENTS.md: "A resumed attempt keeps the
-// recipient it was opened for ... only whether the original recipient can still receive the mode
-// is re-derived") - rather than treat a failed recheck as grounds to re-resolve the role and hand
-// the attempt to whoever holds it now: the original recipient is who the listener's key names. The
-// role's new holder, live, may answer an attempt sent for the role (lookUpRoleHolderReply), and
-// since the original recipient answered first, its reply is the attempt's reply and the new
-// holder's is answered with it.
+// (comment_delivery.go, and messageDeliveryRoute in message_delivery.go: a resumed attempt keeps
+// its recipient, and only whether that recipient can still receive the mode is re-derived) -
+// rather than treat a failed recheck as grounds to re-resolve the role and hand the attempt to
+// whoever holds it now: the original recipient is who the listener's key names. The role's new
+// holder, live, may answer an attempt sent for the role (lookUpRoleHolderReply), and since the
+// original recipient answered first, its reply is the attempt's reply and the new holder's is
+// answered with it.
 func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndTheFirstReply(t *testing.T) {
 	registry := &roleMentionRegistry{holder: "s1", s1Live: true}
 	listener := roleMentionListener(t, registry)
