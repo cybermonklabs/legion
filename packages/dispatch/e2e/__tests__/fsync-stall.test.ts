@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
@@ -161,3 +169,25 @@ for (const conv of ["fsync", "fdatasync"] as const) {
     rowLimit("short", "short", "short")
   );
 }
+
+// The build makes its directory readable by every user and a container mounts all of it, so a
+// directory holding a developer's own files is refused before anything changes in it: its mode
+// and its contents are what they were. The refusal comes before `cc`, so the row needs none.
+test(
+  "a stall directory that holds files of its own is refused and keeps its mode",
+  async () => {
+    const own = mkdtempSync(join(tmpdir(), "fsync-stall-own-"));
+    try {
+      writeFileSync(join(own, "notes.txt"), "");
+      const mode = statSync(own).mode & 0o777;
+      await expect(buildStallLibrary(own)).rejects.toThrow(`=${own} holds notes.txt.`);
+      expect({ entries: readdirSync(own), mode: statSync(own).mode & 0o777 }).toEqual({
+        entries: ["notes.txt"],
+        mode,
+      });
+    } finally {
+      rmSync(own, { force: true, recursive: true });
+    }
+  },
+  rowLimit()
+);

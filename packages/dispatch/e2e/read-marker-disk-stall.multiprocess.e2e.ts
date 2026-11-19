@@ -5,14 +5,13 @@ import {
   diskStallDir,
   diskStallVariable,
   endStall,
-  stallDisk,
   stallEnvironment,
-  stallLoaded,
+  stallServer,
 } from "./disk-stall";
-import { connectedDot, documentEditor } from "./editor";
+import { connectedDot, documentEditor, holdFirstRequest } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
-import { expect, type Route, test } from "./test";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -28,16 +27,19 @@ import { asUser } from "./users";
  * This row stalls the disk as the page sends that write, and keeps it stalled until the row ends:
  * only the cleanup lets it go, so a reset that waits for the disk to answer waits out the row's
  * own timeout and fails. Before the page closes, the write has reached the database: either its
- * answer came, or a backend is committing it and waits on the disk. The reset must then empty the
- * table with the disk still silent, true only of a database whose commits do not wait for the
- * disk, as the harness's own Postgres does not (e2e/harness-postgres.ts). It needs a Postgres
- * that can be stalled, which `DISPATCH_E2E_PG_STALL_DIR` names (e2e/disk-stall.ts), and is
- * skipped without one.
+ * answer came, or a backend is committing it and waits on the disk. An answer counts only from a
+ * server the stall holds, which the row reads on that server as it stalls the disk, before it
+ * lets the write go (`stallServer`). The reset must then empty the table with the disk still
+ * silent, true only of a database whose commits do not wait for the disk, as the harness's own
+ * Postgres does not (e2e/harness-postgres.ts). It needs a Postgres that can be stalled, which
+ * `DISPATCH_E2E_PG_STALL_DIR` names (e2e/disk-stall.ts), and is skipped without one, except
+ * where `CI` is set: CI's multiprocess job names one, and a run of it that lost the variable
+ * would skip the one row that holds it to the reset, and pass, so there the row fails instead.
  */
 
 const stallDir = diskStallDir();
 
-const readMarkPath = /^\/api\/v1\/me\/documents\/[^/]+\/read$/;
+const readMarkPath = /\/api\/v1\/me\/documents\/[^/]+\/read$/u;
 
 /** How many of the run's sessions other than this one are in a statement or a transaction. */
 async function statementsInFlight(): Promise<number> {
@@ -74,18 +76,18 @@ test.afterEach(() => {
 test("a read marker whose page closed while the database's disk did not answer holds nothing the next reset empties", async ({
   browser,
 }) => {
+  if (stallDir === undefined && process.env.CI) {
+    throw new Error(
+      `${diskStallVariable} is unset, and CI is set: CI runs this row against a Postgres it can ` +
+        "stall (e2e/disk-stall.ts), so a CI run without one fails rather than skips it"
+    );
+  }
   test.skip(
     stallDir === undefined,
     `${diskStallVariable} is unset, so this run's Postgres cannot be made to stop answering (e2e/disk-stall.ts)`
   );
   if (stallDir === undefined) return;
   test.setTimeout(120_000);
-  // The control: a run that names a stall directory its Postgres never loaded would stall
-  // nothing and pass whatever the database does.
-  expect(
-    await stallLoaded(),
-    `${diskStallVariable}=${stallDir} is set, but this run's Postgres did not load its fsync-stall.so`
-  ).toBe(true);
 
   await createProject({ key: "STALL", name: "Disk stall" });
   const issue = await createIssue({
@@ -110,16 +112,12 @@ test("a read marker whose page closed while the database's disk did not answer h
     // The open after it marks it again, and that mark is held at the page until the document has
     // opened, its room is connected and every statement of the stack has finished, so it is the
     // one write in flight when the disk stops answering. It moves the row the first one wrote,
-    // which is the write that run's reset found holding `user_document_reads`.
-    const held = Promise.withResolvers<Route>();
-    let holding = false;
-    await page.route("**/api/v1/me/documents/*/read", async (route) => {
-      if (!isReadMark(route.request().method(), route.request().url()) || holding) {
-        await route.continue();
-        return;
-      }
-      holding = true;
-      held.resolve(route);
+    // which is the write that run's reset found holding `user_document_reads`. The page's GET of
+    // the same path, its read of the mark, is not held.
+    const mark = await holdFirstRequest(page, readMarkPath, { method: "PUT" });
+    let arrived = false;
+    void mark.held.then(() => {
+      arrived = true;
     });
     let answer: number | undefined;
     void page
@@ -131,7 +129,9 @@ test("a read marker whose page closed while the database's disk did not answer h
     await page.reload();
     await expect(documentEditor(page)).toContainText("Read while the disk is silent.");
     await expect(connectedDot(page)).toHaveText("connected");
-    await expect.poll(() => holding, { message: "the page sent its second read mark" }).toBe(true);
+    await expect.poll(() => arrived, { message: "the page sent its second read mark" }).toBe(true);
+    const held = await mark.held;
+    expect(held.request().method(), "the request held is the read mark").toBe("PUT");
     let quiet = 0;
     await expect
       .poll(
@@ -142,8 +142,15 @@ test("a read marker whose page closed while the database's disk did not answer h
         { intervals: [100], message: "the stack's statements in flight all finished" }
       )
       .toBeGreaterThanOrEqual(3);
-    stallDisk(stallDir);
-    await (await held.promise).continue();
+    // The stall, and its control: an answer to the mark below is evidence only from a server the
+    // stall holds. A run that names a stall its Postgres does not wait on, whether that server
+    // never loaded the library or watches another file, would stall nothing and pass whatever
+    // the database does.
+    expect(
+      await stallServer(stallDir),
+      `${diskStallVariable}=${stallDir} is set, and the stall it names does not hold this run's Postgres`
+    ).toEqual([]);
+    await held.continue();
 
     // The write has reached the database before its page goes: it was answered, which a
     // database whose commits wait for the disk cannot do now, or a backend is committing it and

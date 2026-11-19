@@ -209,14 +209,18 @@ DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin \
   bun run e2e -- --workers 4
 ```
 
-`DISPATCH_E2E_PG_STALL_DIR`, an absolute directory, makes either provider
-build `e2e/fsync-stall.c` into it with `cc` and start the server with that
-library preloaded: while `stalled` exists in the directory, every `fsync` and
-`fdatasync` of the server waits, as on a disk that has stopped answering.
-`e2e/read-marker-disk-stall.multiprocess.e2e.ts` stalls it so, and is skipped
-without the variable (`e2e/disk-stall.ts`). A server you start yourself, one
-a run reaches through `DATABASE_URL`, takes part once you build the library
-for it, since the harness builds it only for a server it starts:
+`DISPATCH_E2E_PG_STALL_DIR`, an absolute directory that is empty or does not
+exist yet, makes either provider build `e2e/fsync-stall.c` into it with `cc`
+and start the server with that library preloaded: while `stalled` exists in the
+directory, every `fsync` and `fdatasync` of the server waits, as on a disk that
+has stopped answering. The harness makes the directory readable by every user
+and mounts all of it into a container, so it refuses one that holds anything
+but an earlier build's files.
+`e2e/read-marker-disk-stall.multiprocess.e2e.ts` stalls it so. Without the
+variable it is skipped, except where `CI` is set, where it fails naming the
+variable (`e2e/disk-stall.ts`). A server you start yourself, one a run reaches
+through `DATABASE_URL`, takes part once you build the library for it, since
+the harness builds it only for a server it starts:
 
 ```bash
 cd packages/dispatch
@@ -227,9 +231,14 @@ Start that server with `LD_PRELOAD=<dir>/fsync-stall.so` and
 `PG_STALL_FILE=<dir>/stalled` in its environment, where it sees `<dir>` at the
 same path, and make the directory and the library readable by the user the
 server runs as (a container's `postgres`, for instance), or its loader skips
-the library with a warning and the row's check that it loaded fails. The run
-then sets `DISPATCH_E2E_PG_STALL_DIR=<dir>` beside `DATABASE_URL`, so the row
-stalls the disk through the same file.
+the library with a warning. The run then sets `DISPATCH_E2E_PG_STALL_DIR=<dir>`
+beside `DATABASE_URL`, so the row stalls the disk through the same file. As it
+stalls the disk, the row reads on the server, as the superuser the suite
+connects as, that the stall holds it: `<dir>`'s library in its memory map, a
+`wal_sync_method` of `fsync` or `fdatasync`, and an `fsync` the server runs
+(`COPY ... TO PROGRAM` of `timeout 1 dd conv=fsync`, so `timeout` and `dd`
+must be on the server's `PATH`) that goes through before the stall and waits
+during it. A server short of any of them fails the row, naming what it lacks.
 
 A run of more than one worker is one stack per worker, each with a Postgres, a
 file-store bucket and ports of its own, so five variables that name one of

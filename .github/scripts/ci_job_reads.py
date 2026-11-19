@@ -1912,9 +1912,10 @@ mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
-# shard and alone jobs, whose containers have no Go, and the visual job's own, outside its browser
-# step's budget. One script; two names, since the check finds a step by name across the workflow.
-# Pinned whole, since `go run` is not a form the simple form reduces.
+# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
+# two-build jobs' own, outside their browser steps' budgets. One script; a name per job, since the
+# check finds a step by name across the workflow. Pinned whole, since `go run` is not a form the
+# simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
 BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
 BROWSER_MP_CONNECTIONS_STEP = "Read the connections the multiprocess stack's Postgres must allow"
