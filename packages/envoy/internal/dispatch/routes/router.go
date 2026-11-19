@@ -590,8 +590,8 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 }
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App, of a repository
-// that person may see (repositoryHidden): a repository of a project the person does not see
-// answers as one the App is not installed on (githubapi.ProxyREST).
+// that person may see (repositoryHidden): any other repository answers as one the App is not
+// installed on (githubapi.ProxyREST).
 func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 	login, ok := r.login(w, req)
 	if !ok {
@@ -603,10 +603,11 @@ func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 }
 
 // repositoryHidden reports whether the person login may not see repository: the cookie's viewer
-// (access.Resolve of model.BrowserActor) fails access.RepositoryClause, so a repository mapped to
-// no project the person sees, or mapped to none while the person is a restricted member, is
-// hidden. A router with no Store, a test's, has no viewer to resolve, so it reads the person as the
-// closed viewer, which sees no repository: every repository is hidden there.
+// (access.Resolve of model.BrowserActor) fails refs.RepositoryClause, so a repository is hidden
+// unless an issue the person sees resolves to it, or the person is an open viewer and no issue of
+// a project the person does not see resolves to it. A router with no Store, a test's, has no
+// viewer to resolve, so it reads the person as the closed viewer, which sees no repository: every
+// repository is hidden there.
 func (r *router) repositoryHidden(ctx context.Context, login, repository string) (bool, error) {
 	if r.ctx.Store == nil {
 		return true, nil
@@ -616,7 +617,7 @@ func (r *router) repositoryHidden(ctx context.Context, login, repository string)
 		return false, err
 	}
 	var visible bool
-	if err := r.ctx.Store.Pool.QueryRow(ctx, `select `+access.RepositoryClause("$2", "$1"),
+	if err := r.ctx.Store.Pool.QueryRow(ctx, `select `+refs.RepositoryClause("$2", "$1"),
 		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&visible); err != nil {
 		return false, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
 	}

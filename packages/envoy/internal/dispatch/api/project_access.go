@@ -132,9 +132,7 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 // and a body naming none is refused. A switch to private is refused before anything is read where the
 // deployment names no private project, with the bytes it always answered; once the owner is
 // known and before anything is written, for a project the deployment does not name (a private one
-// whose key left the list included), and for one whose rows or sessions the store has not filled;
-// and, once the project reads private in the write and before any bus call, while one of its
-// repositories shares a GitHub subject lane with another project's (refuseSharedLane).
+// whose key left the list included), and for one whose rows or sessions the store has not filled.
 // Otherwise its private-projects record is written through the transaction as its last step, so a
 // refused record leaves the project as it was. A switch to public is refused by none of them. The
 // route makes no other bus call: deleting the key of a project made public, or of one whose commit
@@ -173,7 +171,7 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
 		if visibility == model.ProjectPrivate {
@@ -215,9 +213,6 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			answer, appended = written, append(appended, event)
 		}
 		if visibility == model.ProjectPrivate {
-			if err := refuseSharedLane(ctx, tx, viewer, func(mapping repoProjectRow) bool { return mapping.project == key }); err != nil {
-				return model.ProjectAccess{}, nil, err
-			}
 			if err := ensurePrivate(ctx, tx, s.deps.BusProjects, key); err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
@@ -271,7 +266,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 	if kind == access.PrincipalGroup {
 		group = strings.TrimSpace(principal)
 	}
-	s.ownerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
 		answer, event, err := write(ctx, tx, s.deps.Events, key, kind, principal, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -285,9 +280,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // locks access.LockForAccessWrite takes in the one order every access write takes them (group,
 // the group the write names, or "" for none), so an owner change committed meanwhile is read
 // rather than raced and a delete of the group is ordered against the write. It publishes what the
-// write appended once it commits, and answers the project's access as the write left it. The
-// write is handed the owner's viewer, which a refusal it makes reads to name only what the owner
-// sees.
+// write appended once it commits, and answers the project's access as the write left it.
 //
 // The caller's viewer is read first: a project the caller does not see answers 404
 // PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
@@ -295,7 +288,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
 // to anyone who guessed its key.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
-	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
+	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
@@ -325,7 +318,7 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 			"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
 		return
 	}
-	answer, appended, err := write(r.Context(), tx, key, actor, who.Viewer)
+	answer, appended, err := write(r.Context(), tx, key, actor)
 	if err != nil {
 		s.writeAccessError(w, err)
 		return
@@ -336,6 +329,11 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 	}
 	s.publish(r.Context(), appended...)
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// viewerSees reports whether viewer sees project; no viewer is the server's own read.
+func viewerSees(viewer *model.Viewer, project string) bool {
+	return viewer == nil || viewer.All || slices.Contains(viewer.Sees, project)
 }
 
 func ownerName(owner *string) string {
