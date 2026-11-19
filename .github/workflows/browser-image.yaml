@@ -464,9 +464,8 @@ jobs:
   # written and withdrawn, dispatch://INFRA-1443). So this is a known limit of the row's gates,
   # written down rather than papered over with prose.
   #
-  # The rule of docs/kubernetes.md, "Pin by digest, never by tag", that an image is accepted only
-  # at a revision main contains is about the worker and Envoy images a deployment runs, which no
-  # pull request's run may publish.
+  # AGENTS.md's rule that an image is accepted only at a revision main contains is about
+  # the worker and Envoy images a deployment runs, which no pull request's run may publish.
   #
   # Any repository can call this public reusable workflow, but such an attestation names the
   # caller's repository as its source and is stored there, so `--repo cybermonklabs/legion`
