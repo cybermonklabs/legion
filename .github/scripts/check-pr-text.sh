@@ -315,9 +315,11 @@ elif [ -n "$cutoff" ]; then
 # scan <line> <collect>: in collect mode, counts each key-shaped word and link of the line as one
 # the diff removes; else the line with each one a removed occurrence carries blanked, and the
 # count of those none carries in `uncarried`. A key-shaped word is an upper-case run, a "-" and
-# digits, with no letter or digit on either side (the sixth rule's shape for any project, ASCII
-# letters and digits only, so it finds every word that rule can); a link is the scheme, in any
-# case, and what follows it up to a blank, a quote or a bracket.
+# digits, with an ASCII character that is no letter or digit (or the line's edge) on either side.
+# Every other character, a non-ASCII letter or mark among them, counts as a letter, so this finds
+# a word only where the sixth rule's locale-aware [^[:alnum:]] boundary finds a key too: a removed
+# word that rule would not read as a key never carries an added one it would. A link is the
+# scheme, in ASCII letters of any case, and what follows it up to a blank, a quote or a bracket.
 function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
   out = ""; n = length(line); i = 1; sl = length(scheme)
   while (i <= n) {
@@ -331,13 +333,13 @@ function scan(line, collect,    out, i, n, c, prev, j, k, tok, sl) {
       continue
     }
     prev = (i == 1) ? "" : substr(line, i - 1, 1)
-    if (index(upper, c) > 0 && (prev == "" || index(alnum, prev) == 0)) {
+    if (index(upper, c) > 0 && (prev == "" || index(apart, prev) > 0)) {
       j = i
       while (j <= n && index(upper digits, substr(line, j, 1)) > 0) j++
       if (j <= n && substr(line, j, 1) == "-") {
         k = j + 1
         while (k <= n && index(digits, substr(line, k, 1)) > 0) k++
-        if (k > j + 1 && (k > n || index(alnum, substr(line, k, 1)) == 0)) {
+        if (k > j + 1 && (k > n || index(apart, substr(line, k, 1)) > 0)) {
           tok = substr(line, i, k - i)
           if (take(tok, collect)) out = out "<carried>"; else out = out tok
           i = k
@@ -359,7 +361,12 @@ function take(tok, collect) {
 BEGIN {
   stops = " \t\r\"<>()[]`" sprintf("%c", 39)
   upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"; digits = "0123456789"
-  alnum = upper tolower(upper) digits
+  # apart: the ASCII characters that are no letter or digit, the one set that bounds a word.
+  apart = ""
+  for (code = 1; code < 128; code++) {
+    ch = sprintf("%c", code)
+    if (index(upper tolower(upper) digits, ch) == 0) apart = apart ch
+  }
   # mode=path: whether a renamed or copied path's words are all carried by its old path's.
   if (mode == "path") {
     scan(ENVIRON["OLD_PATH"], 1)
@@ -439,13 +446,20 @@ AWK
       git -C "$history" fetch -q --filter=blob:none --no-tags origin "$1" 2> "$work/git-error"
   }
   # stage_git <from> <to> <stage>: stages the diff between two commits as git reads it, renames
-  # found as GitHub finds them (-M); a first whole diff fetches every blob at once.
+  # found as GitHub finds them (-M): one whole diff, which fetches every blob at once, split at its
+  # `diff --git` headers into one patch for each entry --name-status lists, in the same order. A
+  # count that differs is refused rather than paired wrong.
   stage_git() {
-    local from=$1 to=$2 stage=$3 i=0 code old name file_status
+    local from=$1 to=$2 stage=$3 i=0 code old name file_status sections
     rm -rf "$stage" && mkdir "$stage"
-    git -C "$history" diff -M -U0 "$from" "$to" > /dev/null 2> "$work/git-error" || return 1
+    git -C "$history" diff --no-color --no-ext-diff -M -U0 "$from" "$to" > "$work/whole.patch" \
+      2> "$work/git-error" || return 1
     git -C "$history" diff -M -z --name-status "$from" "$to" > "$work/name-status" 2> "$work/git-error" ||
       return 1
+    # Inside a hunk every line starts with " ", "+", "-" or "\", so a line that starts with
+    # "diff --git " is a header.
+    sections=$(awk -v stage="$stage" '/^diff --git / { if (out != "") close(out); i++; out = stage "/" i ".patch" }
+      i { print > out } END { print i + 0 }' "$work/whole.patch")
     while IFS= read -r -d '' code; do
       old=''
       case $code in R* | C*) IFS= read -r -d '' old ;; esac
@@ -461,9 +475,12 @@ AWK
       printf '%s' "$file_status" > "$stage/$i.status"
       printf '%s' "$name" > "$stage/$i.path"
       printf '%s' "$old" > "$stage/$i.old"
-      git -C "$history" diff -M -U0 "$from" "$to" -- ":(literal)$name" ${old:+":(literal)$old"} \
-        > "$stage/$i.patch" 2> "$work/git-error" || return 1
+      [ -e "$stage/$i.patch" ] || : > "$stage/$i.patch"
     done < "$work/name-status"
+    if [ "$sections" -ne "$i" ]; then
+      echo "git's diff holds $sections file sections and its name list $i entries" > "$work/git-error"
+      return 1
+    fi
     echo "$i" > "$stage/count"
   }
   # unread <reason>: neither GitHub nor git holds the whole diff, so the lines it adds cannot all

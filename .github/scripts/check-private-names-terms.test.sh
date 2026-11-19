@@ -793,6 +793,36 @@ unpatched_head "$(printf 'line one\nline two')"
 key_run
 check "the same file, clean, passes" "$(is "$status" 0)"
 check "and nothing is UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
+# A file that becomes a directory: git's diff of that commit lists the rename of the file and the
+# file added under the directory of its old name, and each gets its own patch, so the key the
+# commit moves into the new file is carried once, not counted twice.
+write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+key_rule_on
+opened_at 2026-11-21T00:00:00Z
+src="$work/history-src"
+git_fixture "$src" checkout -q -B pr main
+mkdir -p "$src/docs"
+printf 'neutral line %s\n' 1 2 3 4 5 6 7 8 9 10 > "$src/docs/old"
+printf 'Tracked as %s.\n' "$planted_key" >> "$src/docs/old"
+git_fixture "$src" add docs/old
+git_fixture "$src" commit -q -m "docs: a file"
+git_fixture "$src" rm -q docs/old
+mkdir -p "$src/docs/old"
+printf 'neutral line %s\n' 1 2 3 4 5 6 7 8 9 10 > "$src/docs/moved"
+printf 'Tracked as %s.\n' "$planted_key" > "$src/docs/old/notes.md"
+git_fixture "$src" add docs/moved docs/old/notes.md
+git_fixture "$src" commit -q -m "docs: the file becomes a directory"
+pr_sha=$(git_fixture "$src" rev-parse HEAD)
+git_fixture "$src" push -q --force "$work/remote/example/repo" HEAD:refs/pull/7/head
+git_fixture "$src" checkout -q main
+commits "$pr_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+commit_file "$pr_sha" added docs/old/notes.md -
+jq -c '.files[0].additions = 1 | .files[0].changes = 1 | .stats.total = 1' "$work/commit.$pr_sha" \
+  > "$work/commit.next"
+mv "$work/commit.next" "$work/commit.$pr_sha"
+key_run
+check "a key moved from a file into the directory that replaces it, read from git, passes" "$(is "$status" 0)"
+check "and git read the commit" "$(contains "$out" 'so git reads that commit instead')"
 
 echo "case: a key or a link the same diff also removes is carried over, not new"
 # carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is
@@ -839,6 +869,13 @@ mv "$work/commit.next" "$work/commit.new-sha"
 key_run
 check "a renamed file whose new path adds a key fails" "$(is "$status" 1)"
 check "names the path, masked" "$(contains "$out" "^::error::commit:new-sha:docs/<name>: $key_refused .* in its path\$")"
+carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as \xc3\xa9%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
+key_run
+check "a removed word beside a non-ASCII letter, which is no key, carries no key: fails" "$(is "$status" 1)"
+check "names the added key's line" "$(contains "$out" "commit:new-sha:docs/notes.md:2: $key_refused")"
+carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as fix_%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
+key_run
+check "a removed key beside a \"_\", which is a key, carries it: passes" "$(is "$status" 0)"
 
 echo "case: a merge commit's own diff is not read, and the pull request's net diff is, once"
 # A forward merge's diff against its first parent is everything the base branch changed since the
