@@ -497,27 +497,29 @@ test("useOutOfTabOrder with keepScrollers keeps only a scroller whose content ru
 // Decision 317: a scroller counts as one that scrolls whenever its content runs past its box,
 // judged again on every change of its width, so a block that starts to overflow when the window
 // narrows gains its tab stop, and one that stops overflowing when it widens loses it, with its own
-// name and role again. A width changes no child of the box, so only a size observer sees it, and
-// the observer stops with the box.
+// name and role again. A width changes no child of the box, so only a size observer sees it: of
+// the box, which narrows with the window, and of the scroller itself. The observer stops with the
+// box.
 test("useOutOfTabOrder with keepScrollers judges a scroller again on every change of its width", () => {
   const sizes = installResizeObserver();
   let restore = () => {};
   try {
     const view = draw(<KeptScrollers keepScrollers />);
     try {
+      const box = view.container.firstElementChild;
       const code = view.container.querySelector("[data-code]");
-      if (code === null) throw new Error("the box draws no code block");
+      if (box === null || code === null) throw new Error("the box draws no code block");
       expect(keptState(view.container, ["[data-code]"])).toEqual([
         { label: null, role: null, tabIndex: "-1" },
       ]);
-      // The window narrows, and the code block's line runs past its box.
+      // The window narrows the box, and the code block's line runs past its own box.
       restore = overflowing("[data-code]");
-      sizes.resize(code);
+      sizes.resize(box);
       expect(
         keptState(view.container, ["[data-code]"]),
-        "a code block that came to overflow as its width changed has no tab stop"
+        "a code block that came to overflow as the box narrowed has no tab stop"
       ).toEqual([{ label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" }]);
-      // The window widens again, and the line fits.
+      // The code block widens again, and its line fits.
       restore();
       restore = () => {};
       sizes.resize(code);
