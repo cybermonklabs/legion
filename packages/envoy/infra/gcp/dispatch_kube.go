@@ -321,14 +321,23 @@ func envVars(env []string) corev1.EnvVarArray {
 	return values
 }
 
+// newDispatchKubernetes registers the component's Kubernetes provider, built from the cluster
+// half's kubeconfig, whichever cluster that is, and every Kubernetes object on it, each a child of
+// the component that depends on the cluster half's waitFor: the component's own Cluster, or nothing
+// for a cluster existingCluster names.
 func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) error {
 	dispatch := dispatchType + " " + name
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
 	// replaces a ConfigMap whose data changes otherwise, deleting it first, and a front-door pod
 	// scheduled in that window fails to mount its serve config, ConfigMap <hostname>-serve. The
-	// update in place rolls no pod, and needs none (newDispatchFrontDoor says why).
+	// update in place rolls no pod, and needs none (newDispatchFrontDoor says why). Only a cluster
+	// existingCluster names gives a clusterIdentifier, its issuer, so pulumi-kubernetes replaces
+	// that provider, and every child on it, only when the cluster itself changes, never when its CA
+	// or endpoint rotates or its kubeconfig is unknown in a preview; the component's own cluster
+	// gives none, so its provider keeps exactly the inputs it always had.
 	provider, err := kubernetes.NewProvider(ctx, s.hostname+"-kubernetes", &kubernetes.ProviderArgs{
 		Kubeconfig:             cloud.kubeconfig,
+		ClusterIdentifier:      cloud.clusterIdentifier,
 		EnableServerSideApply:  pulumi.Bool(true),
 		EnableConfigMapMutable: pulumi.Bool(true),
 	}, pulumi.Parent(comp))

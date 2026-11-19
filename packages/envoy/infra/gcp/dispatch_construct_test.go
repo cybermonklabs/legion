@@ -704,6 +704,68 @@ func TestConstructRefusesADispatchInputWithClusterOnly(t *testing.T) {
 	require.Empty(t, m.Types())
 }
 
+// existingCluster reaches the plugin as the object a consumer's SDK sends, in an update and in a
+// preview. The component looks the cluster up, registers no Cluster, and answers with all eight
+// outputs: the three the cluster decides name the existing cluster, and are known in the preview
+// too, since they wait on the lookup's plain values, the project and the component's Network's
+// name alone; the five Dispatch decides are there as on the component's own cluster.
+func TestConstructTakesAnExistingCluster(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		preview bool
+	}{{"an update", false}, {"a preview", true}} {
+		t.Run(row.name, func(t *testing.T) {
+			inputs := dispatchConstructBaseInputs()
+			inputs["existingCluster"] = existingClusterConstructInput()
+			m := newMocks()
+			m.Preview = row.preview
+			response, err := constructDispatchOnMocks(t, m, inputs)
+			require.NoError(t, err)
+			require.Zero(t, countRegistrations(m, "gcp:container/cluster:Cluster"), "no Cluster registers while one is named")
+			for output, want := range map[string]string{
+				"clusterName":          "example-existing",
+				"kubeconfig":           existingClusterKubeconfig(),
+				"serviceAccountIssuer": existingClusterIssuer,
+			} {
+				value, ok := response.State.GetOk(output)
+				require.True(t, ok, "%s is in the state", output)
+				require.True(t, value.IsString(), "%s is a known string, not %s", output, value)
+				require.Equal(t, want, value.AsString(), output)
+			}
+			for _, output := range []string{"url", "databaseInstance", "principal", "agentToken", "serviceAccountSubject"} {
+				_, ok := response.State.GetOk(output)
+				require.True(t, ok, "%s is in the state", output)
+			}
+		})
+	}
+}
+
+// existingCluster is a plain object, since the component looks the cluster up before it registers
+// anything and builds its kubeconfig from the lookup, and the schema cannot say so
+// (pulumi-go-provider v1.7.0 serves a struct reference with no plain flag): Construct refuses it as
+// another resource's output, whole or only its name, naming existingCluster before anything
+// registers, as it refuses every plain input.
+func TestConstructRefusesAnExistingClusterFromAnotherResource(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		value property.Value
+	}{
+		{"the whole object", existingClusterConstructInput().WithDependencies([]resource.URN{upstream})},
+		{"only its name", property.New(property.NewMap(map[string]property.Value{
+			"name":     property.New("example-existing").WithDependencies([]resource.URN{upstream}),
+			"location": property.New("us-central1"),
+		}))},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			inputs := dispatchConstructBaseInputs()
+			inputs["existingCluster"] = row.value
+			m, _, err := constructDispatch(t, inputs, false)
+			require.ErrorContains(t, err, "existingCluster")
+			require.Empty(t, m.Types())
+		})
+	}
+}
+
 // A sandbox reaches the plugin over the same wire a consumer's pulumi up uses: the eight inputs of
 // the two groups are absent from the call, as an SDK leaves out what the program never set, and
 // not sent as empty values. tailnetAuthKey and signInClientSecret arrive as nothing at all there,

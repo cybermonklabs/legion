@@ -55,8 +55,12 @@ const (
 
 // newMocks is the mock engine with the outputs the hub reads, as the gcp provider computes them:
 // an account's email and member, a network's and a health check's self link, a template's unique
-// self link and a group's name; and those Dispatch reads, a Kubernetes Secret's resourceVersion
-// among them.
+// self link and a group's name; and those Dispatch reads, a network's name and a Kubernetes
+// Secret's resourceVersion among them. Its invokes answer the project's id and number, and
+// getCluster for the example existing cluster existingCluster names, whatever name and location
+// it is asked for: a cluster on Dispatch's own network, example-dispatch-network, with Workload
+// Identity on the project's pool, the Secret Manager add-on and Dataplane V2, which enforces
+// NetworkPolicy. Every other invoke is answered with its own arguments.
 func newMocks() *pulumitest.Mocks {
 	return &pulumitest.Mocks{
 		Computed: func(args pulumi.MockResourceArgs) (string, resource.PropertyMap) {
@@ -66,7 +70,10 @@ func newMocks() *pulumitest.Mocks {
 				email := args.Inputs["accountId"].StringValue() + "@example-project.iam.gserviceaccount.com"
 				out["email"] = resource.NewProperty(email)
 				out["member"] = resource.NewProperty("serviceAccount:" + email)
-			case networkType, healthCheckType:
+			case networkType:
+				out["selfLink"] = resource.NewProperty(args.Name + "-self-link")
+				out["name"] = resource.NewProperty(args.Name)
+			case healthCheckType:
 				out["selfLink"] = resource.NewProperty(args.Name + "-self-link")
 			case templateType:
 				out["selfLinkUnique"] = resource.NewProperty(args.Name + "-self-link-unique")
@@ -97,16 +104,38 @@ func newMocks() *pulumitest.Mocks {
 			return "", out
 		},
 		CallResult: func(args pulumi.MockCallArgs) (resource.PropertyMap, error) {
-			if args.Token == "gcp:organizations/getProject:getProject" {
+			switch args.Token {
+			case "gcp:organizations/getProject:getProject":
 				return resource.PropertyMap{
 					"projectId": resource.NewProperty("example-project"),
 					"number":    resource.NewProperty("123456789012"),
+				}, nil
+			case getClusterToken:
+				// getCluster answers each block a cluster has as a list of one.
+				one := func(block resource.PropertyMap) resource.PropertyValue {
+					return resource.NewArrayProperty([]resource.PropertyValue{resource.NewProperty(block)})
+				}
+				return resource.PropertyMap{
+					"name":                    args.Args["name"],
+					"location":                args.Args["location"],
+					"endpoint":                resource.NewProperty("example-existing-endpoint"),
+					"masterAuths":             one(resource.PropertyMap{"clusterCaCertificate": resource.NewProperty("ZXhhbXBsZS1leGlzdGluZy1jYQ==")}),
+					"workloadIdentityConfigs": one(resource.PropertyMap{"workloadPool": resource.NewProperty("example-project.svc.id.goog")}),
+					"secretManagerConfigs":    one(resource.PropertyMap{"enabled": resource.NewProperty(true)}),
+					"datapathProvider":        resource.NewProperty("ADVANCED_DATAPATH"),
+					"networkPolicies":         resource.NewArrayProperty([]resource.PropertyValue{}),
+					"network":                 resource.NewProperty("projects/example-project/global/networks/example-dispatch-network"),
+					"project":                 resource.NewProperty("example-project"),
 				}, nil
 			}
 			return args.Args, nil
 		},
 	}
 }
+
+// getClusterToken is the gcp provider's getCluster invoke, which gcp:Dispatch looks the cluster
+// existingCluster names up with.
+const getClusterToken = "gcp:container/getCluster:getCluster"
 
 // children returns every registration but the hub and the test's provider.
 func children(m *pulumitest.Mocks) []pulumitest.Registration {

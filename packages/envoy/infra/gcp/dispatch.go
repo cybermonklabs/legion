@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
@@ -132,6 +133,11 @@ var (
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
+	// clusterNameRule is a GKE cluster's name: a lowercase letter, then lowercase letters, digits
+	// and hyphens, ending in a letter or digit, at most 40 characters. clusterLocationRule is a
+	// Google Cloud region (us-central1) or zone (us-central1-a), where a cluster runs.
+	clusterNameRule     = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,38}[a-z0-9])?$`)
+	clusterLocationRule = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+(?:-[a-z])?$`)
 )
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
@@ -248,6 +254,17 @@ type DispatchArgs struct {
 	// ExistingNamespace: use the namespace as it exists in the cluster rather than creating it
 	// (another program owns the namespace).
 	ExistingNamespace *bool `pulumi:"existingNamespace,optional"`
+	// ExistingCluster names a GKE cluster the component does not make: the component runs
+	// Dispatch in that cluster and registers no Cluster of its own. The cluster must run on the
+	// component's own network, Network <hostname>-network, which the component registers whether
+	// or not it makes a cluster: the Cloud SQL proxy reaches the instance's private address on that
+	// network. It is a plain object, not a Pulumi Input, because the component looks the cluster up
+	// through the gcp provider before it registers anything and builds its Kubernetes provider's
+	// kubeconfig from what the lookup reports: an Input would make the kubeconfig unknown whenever
+	// the cluster's name is, and pulumi-kubernetes replaces its provider, and so every Kubernetes
+	// child, whenever the kubeconfig is unknown. The lookup refuses a cluster Dispatch cannot run
+	// in (lookupDispatchCluster). Unset, the component makes the Autopilot cluster <hostname>.
+	ExistingCluster *DispatchClusterArgs `pulumi:"existingCluster,optional"`
 
 	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and the
 	// Autopilot cluster, and nothing else. No Cloud SQL instance, database or user, no generated
@@ -413,6 +430,20 @@ type DispatchArgs struct {
 	AzureFederationAudience *string            `pulumi:"azureFederationAudience,optional"`
 }
 
+// DispatchClusterArgs name the GKE cluster existingCluster runs Dispatch in, as the gcp provider's
+// getCluster takes it: the cluster's name and its location.
+type DispatchClusterArgs struct {
+	// Name is the cluster's name: a lowercase letter, then lowercase letters, digits and hyphens,
+	// ending in a letter or digit, at most 40 characters.
+	Name string `pulumi:"name"`
+	// Location is the region (us-central1) or the zone (us-central1-a) the cluster runs in.
+	Location string `pulumi:"location"`
+}
+
+// Annotate names the type gcp:DispatchCluster in the schema, for the reason NATSUserArgs's
+// gives.
+func (c *DispatchClusterArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "DispatchCluster") }
+
 // dispatchSeededInput names the first plain string input that holds an nkey seed. No component
 // input takes an nkey seed here: each value reaches a cloud resource, a Kubernetes object, or the
 // pod configuration, so a seed would be disclosed or used as the wrong credential. An int input,
@@ -500,6 +531,14 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 	if args.ChatModel != nil && bus.HoldsSeed(*args.ChatModel) {
 		return "chatModel", true
 	}
+	if args.ExistingCluster != nil {
+		if bus.HoldsSeed(args.ExistingCluster.Name) {
+			return "existingCluster.name", true
+		}
+		if bus.HoldsSeed(args.ExistingCluster.Location) {
+			return "existingCluster.location", true
+		}
+	}
 	return "", false
 }
 
@@ -537,7 +576,9 @@ type Dispatch struct {
 // renders no second origin.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
-// field here.
+// field here. existingCluster is the cluster existingCluster names, which NewDispatch looks up and
+// runs Dispatch in, and the zero dispatchClusterRef without that input, where the component makes
+// a cluster of its own.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -565,7 +606,12 @@ type dispatchSettings struct {
 	disruption                                  dispatchDisruption
 	azure                                       dispatchAzure
 	answerer                                    dispatchAnswerer
+	existingCluster                             dispatchClusterRef
 }
+
+// dispatchClusterRef is a GKE cluster by its name and location, as existingCluster names it and the
+// gcp provider's getCluster takes it.
+type dispatchClusterRef struct{ name, location string }
 
 // socks5Proxy is the address of the front door's SOCKS5 proxy, the one the app and the listener
 // dial the NATS hub through, and "" with natsInCluster, where no proxy runs and the two dial
@@ -848,9 +894,11 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 // dispatchClusterOnlyRefusals is every pulumi-tagged input of DispatchArgs that configures
 // Dispatch rather than the cluster, which clusterOnly refuses by name. Only the four inputs both
 // modes use are absent: clusterOnly itself, region and hostname, which name every cloud resource,
-// and deletionProtection, which guards the cluster as well as the database. The eight inputs of
-// the two groups come from the groups' own definitions, so an input either group gains is refused
-// here without being written down a second time.
+// and deletionProtection, which guards the cluster as well as the database. existingCluster is
+// among the refused: it names the cluster Dispatch runs in, and clusterOnly runs no Dispatch and
+// always makes its own cluster. The eight inputs of the two groups come from the groups' own
+// definitions, so an input either group gains is refused here without being written down a
+// second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
@@ -873,6 +921,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"databaseWaitsFor", args.DatabaseWaitsFor != nil},
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
+		{"existingCluster", args.ExistingCluster != nil},
 		{"replicas", args.Replicas != nil},
 		{"frontDoorReplicas", args.FrontDoorReplicas != nil},
 		{"listenerReplicas", args.ListenerReplicas != nil},
@@ -1100,6 +1149,27 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
+// newDispatchClusterRef resolves existingCluster: the zero dispatchClusterRef when it is unset,
+// where the component makes a cluster of its own, and otherwise the cluster's name and location,
+// each refused as a core.InputError naming its path when it does not have the shape GKE gives it,
+// so the lookup never asks for a cluster no GKE cluster can be. dispatchSeededInput has refused a
+// seed in either already, so each refusal may quote its value.
+func newDispatchClusterRef(args *DispatchArgs) (dispatchClusterRef, error) {
+	if args.ExistingCluster == nil {
+		return dispatchClusterRef{}, nil
+	}
+	name, location := args.ExistingCluster.Name, args.ExistingCluster.Location
+	if !clusterNameRule.MatchString(name) {
+		return dispatchClusterRef{}, core.InputErrorf("existingCluster.name",
+			"existingCluster.name %q must be a GKE cluster name: a lowercase letter, then lowercase letters, digits and hyphens, ending in a letter or digit, at most 40 characters", name)
+	}
+	if !clusterLocationRule.MatchString(location) {
+		return dispatchClusterRef{}, core.InputErrorf("existingCluster.location",
+			"existingCluster.location %q must be a region or a zone, such as us-central1 or us-central1-a", location)
+	}
+	return dispatchClusterRef{name: name, location: location}, nil
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
 // guards the cluster as well as the database, so both resolvers default it the same way.
 func dispatchDeletionProtection(value *bool) bool {
@@ -1177,6 +1247,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	if err := refuseDispatchRegion(args.Region); err != nil {
+		return dispatchSettings{}, err
+	}
+	existingCluster, err := newDispatchClusterRef(args)
+	if err != nil {
 		return dispatchSettings{}, err
 	}
 	if args.NatsUrl == nil {
@@ -1262,6 +1336,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		databaseVersion: defaultDispatchDatabaseVersion,
 		databaseTier:    defaultDispatchDatabaseTier,
 		namespace:       defaultDispatchNamespace,
+		existingCluster: existingCluster,
 	}
 	s.images.envoy = args.EnvoyImage
 	s.images.tailscale = args.TailscaleImage
@@ -1707,8 +1782,10 @@ func mebibytes(bytes *big.Rat) string {
 	return new(big.Rat).Quo(bytes, new(big.Rat).SetInt64(1<<20)).FloatString(0) + "Mi"
 }
 
-// NewDispatch registers a Dispatch component after resolving all plain inputs and requiring the
-// providers its network, cluster, database, generated secrets, and Kubernetes resources use.
+// NewDispatch registers a Dispatch component after resolving all plain inputs, requiring the
+// providers its network, cluster, database, generated secrets, and Kubernetes resources use, and
+// looking up the cluster existingCluster names, when it names one. The cluster is then that one,
+// which the component registers nothing for, or else the component's own.
 func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...pulumi.ResourceOption) (*Dispatch, error) {
 	// The name is quoted in every refusal below and the component registers under it, so a seed
 	// there is refused first, as NewNatsHub refuses one in its own name.
@@ -1736,6 +1813,15 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 			return nil, err
 		}
 	}
+	// The cluster existingCluster names is looked up after the providers checks, through the gcp
+	// provider they found, and before anything registers, so a cluster Dispatch cannot run in is
+	// refused with nothing registered, and the cluster half builds the kubeconfig from plain values.
+	var existing *dispatchLookedUpCluster
+	if s.existingCluster.name != "" {
+		if existing, err = lookupDispatchCluster(ctx, s.existingCluster, opts...); err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
+	}
 
 	comp := &Dispatch{}
 	if err := ctx.RegisterComponentResource(dispatchType, name, comp, opts...); err != nil {
@@ -1745,8 +1831,12 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	if err != nil {
 		return nil, err
 	}
-	cloud, err := newDispatchCluster(ctx, comp, name, s, vpc)
-	if err != nil {
+	// The cluster half: the cluster existingCluster names, for which the component registers
+	// nothing, or else the component's own.
+	var cloud *dispatchCluster
+	if existing != nil {
+		cloud = newDispatchExistingCluster(name, vpc, existing)
+	} else if cloud, err = newDispatchCluster(ctx, comp, name, s, vpc); err != nil {
 		return nil, err
 	}
 	// The three outputs the cluster alone decides, which both modes carry.

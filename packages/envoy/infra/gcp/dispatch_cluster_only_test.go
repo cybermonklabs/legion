@@ -141,6 +141,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"databaseWaitsFor", func(a *gcp.DispatchArgs) { a.DatabaseWaitsFor = pulumi.String("example-ordering-value") }},
 		{"namespace", func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef("example-namespace") }},
 		{"existingNamespace", func(a *gcp.DispatchArgs) { a.ExistingNamespace = pulumi.BoolRef(true) }},
+		{"existingCluster", func(a *gcp.DispatchArgs) { a.ExistingCluster = exampleExistingCluster() }},
 		{"replicas", func(a *gcp.DispatchArgs) { a.Replicas = pulumi.IntRef(2) }},
 		{"frontDoorReplicas", func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(2) }},
 		{"listenerReplicas", func(a *gcp.DispatchArgs) { a.ListenerReplicas = pulumi.IntRef(1) }},

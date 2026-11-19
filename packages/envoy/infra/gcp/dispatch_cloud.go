@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/compute"
 	"github.com/pulumi/pulumi-gcp/sdk/v10/go/gcp/container"
@@ -16,6 +17,8 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi/internals"
+
+	"github.com/sjawhar/envoy/infra/core"
 )
 
 // dispatchNetwork is what the network half gives the rest of the component: the VPC and its
@@ -36,9 +39,11 @@ type dispatchNetwork struct {
 }
 
 // dispatchCluster is what the cluster half gives the rest of the component: the cluster's name,
-// service-account token issuer, kubeconfig and Workload Identity pool, each as an output, and the
-// resources a child that reaches the cluster waits for. Both modes build the cluster half, so every
-// field here is set in either mode.
+// service-account token issuer, kubeconfig and Workload Identity pool, each as an output, the
+// resources a child that reaches the cluster waits for, and what the component's Kubernetes
+// provider identifies the cluster by. The cluster is the component's own (newDispatchCluster) or
+// the one existingCluster names (newDispatchExistingCluster). Both modes build the cluster half,
+// so every field here is set in either mode, clusterIdentifier aside.
 type dispatchCluster struct {
 	// name is the cluster's name, which the component exports as clusterName.
 	name pulumi.StringOutput
@@ -51,8 +56,16 @@ type dispatchCluster struct {
 	// (outputString).
 	pool pulumi.StringPtrOutput
 	// waitFor is the resources every Kubernetes child and every grant to the pool depends on: the
-	// component's own Cluster, so none of them is made before the cluster exists.
+	// component's own Cluster, so none of them is made before the cluster exists, and none for a
+	// cluster existingCluster names, which exists before the component runs.
 	waitFor []pulumi.Resource
+	// clusterIdentifier is the Kubernetes provider's clusterIdentifier: the issuer for a cluster
+	// existingCluster names, and nil for the component's own cluster, whose provider keeps the
+	// inputs it always had. pulumi-kubernetes replaces a provider that carries one only when the
+	// identifier changes, not when the cluster's endpoint or CA rotates or the kubeconfig is
+	// unknown in a preview, so a looked-up cluster's provider, and every Kubernetes child on it,
+	// stays as long as the cluster does.
+	clusterIdentifier pulumi.StringPtrInput
 }
 
 // dispatchDatabase is what the component's database resources give the rest of it: the Cloud SQL
@@ -174,9 +187,8 @@ func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s disp
 	if err != nil {
 		return nil, err
 	}
-	// GKE signs a cluster's service-account tokens as the issuer
-	// https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<name>,
-	// the URL Google's Workload Identity documentation names the cluster by (its kubernetes.cluster
+	// GKE signs a cluster's service-account tokens as the issuer gkeIssuer builds, the URL
+	// Google's Workload Identity documentation names the cluster by (its kubernetes.cluster
 	// principal set). It is built from the project, the location and the name rather than taken from
 	// the cluster's selfLink, which the provider documents only as "the server-defined URL for the
 	// resource", a form it does not promise.
@@ -185,12 +197,115 @@ func newDispatchCluster(ctx *pulumi.Context, comp *Dispatch, name string, s disp
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("https://container.googleapis.com/v1/projects/%s/locations/%s/clusters/%s", parts[0], parts[1], parts[2]), nil
+		return gkeIssuer(parts[0], parts[1], parts[2]), nil
 	}).(pulumi.StringOutput)
 	return &dispatchCluster{
 		name: cluster.Name, issuer: issuer, kubeconfig: dispatchKubeconfig(dispatch, cluster),
 		pool: cluster.WorkloadIdentityConfig.WorkloadPool(), waitFor: []pulumi.Resource{cluster},
 	}, nil
+}
+
+// gkeIssuer is the issuer GKE signs a cluster's service-account tokens as:
+// https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<name>.
+// Both cluster halves build it, so the component's own cluster and a looked-up one are named alike.
+func gkeIssuer(project, location, name string) string {
+	return fmt.Sprintf("https://container.googleapis.com/v1/projects/%s/locations/%s/clusters/%s", project, location, name)
+}
+
+// dispatchLookedUpCluster is what the component reads off the cluster existingCluster names, as
+// the gcp provider's getCluster reports it before the component registers anything. Every field is
+// a plain value, so the kubeconfig built from them is known whenever the component's network's
+// name is. name is the input's; location is the cluster's own as getCluster reports it, or the
+// input's where it reports none; pool is the cluster's Workload Identity pool; and network is the
+// name of the network the cluster runs on, the last element of the path getCluster reports.
+type dispatchLookedUpCluster struct {
+	name, location          string
+	endpoint, caCertificate string
+	pool, network           string
+}
+
+// advancedDatapath is the datapath provider of GKE Dataplane V2, which enforces NetworkPolicy
+// whether or not the cluster's network policy setting is on.
+const advancedDatapath = "ADVANCED_DATAPATH"
+
+// lookupDispatchCluster looks the cluster existingCluster names up with the plain getCluster invoke,
+// through the consumer's gcp provider, and refuses a cluster Dispatch cannot run in, each refusal a
+// core.InputError naming existingCluster whose message names the cluster and its location: one the
+// lookup fails for; one with no endpoint or no CA certificate, which the component's Kubernetes
+// provider reaches and trusts it by; one with no Workload Identity pool, where the pods' principal
+// and the NATS seed's grant to it live; one with the Secret Manager add-on off, through which every
+// pod mounts the NATS seed; and one that enforces no NetworkPolicy (neither Dataplane V2 nor
+// network policy on), since the component's NetworkPolicies are its only fence. NewDispatch calls
+// it after the providers checks and before it registers anything, so a refused cluster leaves
+// nothing registered. Whether the cluster runs on the component's network can be judged only once
+// that network's name resolves, so newDispatchExistingCluster judges it.
+func lookupDispatchCluster(ctx *pulumi.Context, ref dispatchClusterRef, opts ...pulumi.ResourceOption) (*dispatchLookedUpCluster, error) {
+	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
+	if err != nil {
+		return nil, err
+	}
+	cluster, err := container.LookupCluster(ctx, &container.LookupClusterArgs{Name: ref.name, Location: pulumi.StringRef(ref.location)}, pulumi.Provider(gcpProvider))
+	if err != nil {
+		return nil, core.InputErrorf("existingCluster", "existingCluster: look up cluster %s in %s: %w", ref.name, ref.location, err)
+	}
+	refuse := func(why string) error {
+		return core.InputErrorf("existingCluster", "existingCluster: cluster %s in %s %s", ref.name, ref.location, why)
+	}
+	switch {
+	case cluster.Endpoint == "":
+		return nil, refuse("has no endpoint, which the component's Kubernetes provider reaches it at")
+	case len(cluster.MasterAuths) == 0 || cluster.MasterAuths[0].ClusterCaCertificate == "":
+		return nil, refuse("has no CA certificate, which the component's Kubernetes provider trusts its endpoint by")
+	case len(cluster.WorkloadIdentityConfigs) == 0 || cluster.WorkloadIdentityConfigs[0].WorkloadPool == "":
+		return nil, refuse("has no Workload Identity pool: the pods' principal, and the NATS seed's grant to it, live in that pool")
+	case len(cluster.SecretManagerConfigs) == 0 || !cluster.SecretManagerConfigs[0].Enabled:
+		return nil, refuse("has the Secret Manager add-on off: every pod mounts the NATS seed through it")
+	case cluster.DatapathProvider != advancedDatapath && (len(cluster.NetworkPolicies) == 0 || !cluster.NetworkPolicies[0].Enabled):
+		return nil, refuse(fmt.Sprintf("enforces no NetworkPolicy: its datapathProvider is %q, not %s, and its network policy is off; the component's NetworkPolicies are its only fence",
+			cluster.DatapathProvider, advancedDatapath))
+	}
+	location := ref.location
+	if cluster.Location != nil && *cluster.Location != "" {
+		location = *cluster.Location
+	}
+	return &dispatchLookedUpCluster{
+		name: ref.name, location: location,
+		endpoint: cluster.Endpoint, caCertificate: cluster.MasterAuths[0].ClusterCaCertificate,
+		pool: cluster.WorkloadIdentityConfigs[0].WorkloadPool, network: cluster.Network[strings.LastIndex(cluster.Network, "/")+1:],
+	}, nil
+}
+
+// newDispatchExistingCluster is the cluster half for the cluster existingCluster names, which
+// NewDispatch looked up (lookupDispatchCluster) and the component does not make: it registers
+// nothing, and gives the rest of the component what newDispatchCluster gives for the component's
+// own cluster, from the lookup's plain values. The name is the input's. The kubeconfig waits on the
+// component's own Network's name alone, and refuses, as a core.InputError naming existingCluster,
+// a cluster on another network, since the Cloud SQL proxy reaches the instance's private address
+// on the component's network. The issuer is gkeIssuer's, from the project's id and the looked-up
+// location and name, and the Workload Identity pool is the cluster's. No child waits on anything
+// of this half, since the cluster exists before the component runs, and the issuer is the
+// Kubernetes provider's clusterIdentifier, which only this half sets.
+func newDispatchExistingCluster(name string, vpc *dispatchNetwork, cluster *dispatchLookedUpCluster) *dispatchCluster {
+	dispatch := dispatchType + " " + name
+	kubeconfig := vpc.network.Name.ApplyT(func(network string) (string, error) {
+		if cluster.network != network {
+			return "", fmt.Errorf("%s: %w", dispatch, core.InputErrorf("existingCluster",
+				"existingCluster: cluster %s in %s runs on network %s, not on the component's own network %s: the Cloud SQL proxy reaches the instance's private address on the component's network",
+				cluster.name, cluster.location, cluster.network, network))
+		}
+		return renderKubeconfig(cluster.endpoint, cluster.caCertificate, cluster.name), nil
+	}).(pulumi.StringOutput)
+	issuer := vpc.project.ProjectId().ApplyT(func(id *string) (string, error) {
+		parts, err := outputStrings(dispatch, []any{id}, "the project's id")
+		if err != nil {
+			return "", err
+		}
+		return gkeIssuer(parts[0], cluster.location, cluster.name), nil
+	}).(pulumi.StringOutput)
+	return &dispatchCluster{
+		name: pulumi.String(cluster.name).ToStringOutput(), issuer: issuer, kubeconfig: kubeconfig,
+		pool: pulumi.StringPtr(cluster.pool).ToStringPtrOutput(), clusterIdentifier: issuer.ToStringPtrOutput(),
+	}
 }
 
 // dispatchKubeconfig renders the cluster's exec-plugin kubeconfig, which the component exports and

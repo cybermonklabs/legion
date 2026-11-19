@@ -828,6 +828,12 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 			setChatEndpoint(a)
 			a.ChatModel = pulumi.StringRef(seed)
 		}},
+		{"a lowercase seed as the existing cluster's name", "existingCluster.name", func(a *gcp.DispatchArgs) {
+			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: lower, Location: "us-central1"}
+		}},
+		{"a seed inside the existing cluster's location", "existingCluster.location", func(a *gcp.DispatchArgs) {
+			a.ExistingCluster = &gcp.DispatchClusterArgs{Name: "example-existing", Location: "us-" + lower + "1"}
+		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
