@@ -121,13 +121,17 @@ func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 // what every agent of the issue can write. Each refusal has a cause outside the issue's volume
 // (workspace.ErrOutsideVolume). Then it removes the git locks an interrupted git or jj left and
 // provisions from the feed, an issue with no branch at defaultBranch. It makes no other
-// directory: the disk is the pod's own and starts empty, and the workspace this provisions is the
-// only thing on it a role reads. No lock guards the clone: it is the issue's own, on the pod's own
-// disk, and no other pod mounts it. For the same reason, and because the pod's launcher container
-// has not started, no process holds a git lock on the disk while this runs, so every one there is
-// stale and would fail each later write of what it locks (LEGION-731) — the kubelet restarts a
-// failed init container on the same pod, and so on the same disk, so a first attempt killed
-// mid-fetch leaves exactly those locks for the retry to clear.
+// directory. An ephemeral disk is the pod's own and starts empty, so the workspace this
+// provisions is the only thing on it a role reads. A kept volume (keep_volume) holds the clone and
+// the workspace that the issue's earlier pods left, and the provision reuses them: it keeps the
+// clone and brings the workspace it finds up to date (workspace.Provision). No lock guards
+// the clone: it is the issue's own, on the issue's own disk, and no other pod mounts that disk
+// while this one runs, since the issue's Sandbox runs one pod at a time. For the same reason, and
+// because the pod's launcher container has not started, no process holds a git lock on the disk
+// while this runs, so every one there is stale and would fail each later write of what it locks
+// (LEGION-731). The kubelet restarts a failed init container on the same pod, and so on the same
+// disk, so a first attempt killed mid-fetch leaves exactly those locks for the retry to clear. An
+// earlier pod that was stopped on a kept volume leaves its locks for the next pod in the same way.
 func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, credentialHelper, feed string, stdout io.Writer) error {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {

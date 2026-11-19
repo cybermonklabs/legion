@@ -57,8 +57,9 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // podUID, created at podCreated, whose launcher it is about to be sent to, and records in the
 // same statement what that ask did to the bundle. It answers runtime.WorkspaceBundleNone, having
 // recorded nothing, when the issue has no bundle — one never released, one whose restore the
-// launcher confirmed, one whose release a wake cancelled — when the row already carries an
-// attempt, and when the pod asking is the pod the work came off (source_pod_uid).
+// launcher confirmed, one whose release a wake cancelled, one that a pod's kept volume held
+// (DropHeldWorkspaceBundle) — when the row already carries an attempt, and when the pod asking is
+// the pod the work came off (source_pod_uid).
 //
 // One attempt per bundle is the rule, and this statement is where it is kept. The launcher's own
 // record of the restore it ran lives in the process that ran it: a roles container that restarts
@@ -179,10 +180,57 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 	return nil
 }
 
+// DropHeldWorkspaceBundle deletes the bundle issue's last release saved where the pod of podUID
+// holds that work already: the pod's Sandbox owns the issue's kept volume and was created at
+// keptSince, before the save, so the pod mounts the volume the work was taken off. It answers the
+// release and the time of the bundle it deleted, and true. It answers false, having deleted
+// nothing, when the issue has no bundle, when the bundle had its one attempt already, when the pod
+// is the pod the work came off (source_pod_uid), and when the Sandbox was not created before the
+// save's own second.
+//
+// It deletes the row a confirmed restore deletes (DeleteRestoredWorkspaceBundle), under the take's
+// own conditions (TakeWorkspaceBundleForRestore), and it reads none of the body: a bundle runs to
+// tens of megabytes, and the volume holds the work. The take's two rules stand. The pod the work
+// came off is a role relaunched in the pod being released, and the attempt stays for the pod that
+// replaces it. A row whose attempt is spent is the record of that attempt, and it stays.
+//
+// The comparison reads the save to its own second, as the take does, and drops the bundle only
+// when that second is after keptSince. A creationTimestamp has one-second resolution, so a Sandbox
+// created in the save's own second cannot be ordered against the save, and the bundle stays for
+// the take. That is the side to fail on: a drop deletes the only copy of the work, and a restore
+// the launcher refuses costs a notice and holds the issue's pod. keptSince is the API server's
+// clock and the save's time the clock of the released pod's node. A release comes at least the
+// idle period after the Sandbox's first pod, and a reset makes its Sandbox after a later pod's
+// init container failed, so a skew of seconds does not change the answer.
+//
+// A zero keptSince would read as older than every save, and an empty podUID would never be the
+// pod the work came off, so the drop refuses each.
+func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
+	if podUID == "" {
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("the drop of the workspace bundle of %s that a kept volume holds needs the pod that mounts it", issue)
+	}
+	if keptSince.IsZero() {
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("the drop of the workspace bundle of %s that a kept volume holds needs when the Sandbox of the pod %s was created", issue, podUID)
+	}
+	var held runtime.WorkspaceBundle
+	err := s.pool.QueryRow(ctx, `delete from workspace_bundles
+		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2 and date_trunc('second', at) > $3
+		returning release_id, at`,
+		issue, podUID, keptSince).Scan(&held.Release, &held.At)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return runtime.WorkspaceBundle{}, false, nil
+	}
+	if err != nil {
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("drop the workspace bundle of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)
+	}
+	return held, true, nil
+}
+
 // workspaceBundleUnrestored is whether issue has a stored bundle whose restore is not recorded,
 // which is the idle rule's reason to release no pod of the issue (store.readIdleView,
 // workflow.IdleHoldBundleUnrestored). The row's own presence is that record: a restore the pod's
-// launcher confirmed deletes it (DeleteRestoredWorkspaceBundle), and it does so before any role of
+// launcher confirmed deletes it (DeleteRestoredWorkspaceBundle), and so does the drop for a pod
+// whose kept volume holds the work (DropHeldWorkspaceBundle). Each does so before any role of
 // the pod starts, so a row still here when the idle rule reads it is work no pod has put back —
 // the release that would overwrite it is the release the hold stops. A bundle whose one attempt
 // failed is such a row, and so is one whose attempt was spent refusing a pod no newer than the

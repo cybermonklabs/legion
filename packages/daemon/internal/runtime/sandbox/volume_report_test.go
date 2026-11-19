@@ -54,11 +54,11 @@ func (v *volumeSeam) took(t *testing.T, what string) volumeReport {
 }
 
 // volumeLaunchers is a launchers whose volume seam is the test's, with the leak-check reader, the
-// saved-bundle pair and the memory guard's receiver, which no test of the launcher protocol here
-// drives, left nil. It is the one constructor these tests build a launchers with: testLaunchers
-// (rig_test.go) is this one with no seam behind it.
+// saved bundle's take, confirmation and drop, and the memory guard's receiver, which no test of
+// the launcher protocol here drives, left nil. It is the one constructor these tests build a
+// launchers with: testLaunchers (rig_test.go) is this one with no seam behind it.
 func volumeLaunchers(seam runtime.VolumeReported) *launchers {
-	return newLaunchers(nil, nil, nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(nil, nil, nil, nil, nil, seam, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // The frame the daemon had no case for closed the connection: ServeLauncher's switch ends in
@@ -73,7 +73,7 @@ func volumeLaunchers(seam runtime.VolumeReported) *launchers {
 func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 	seam := newVolumeSeam()
 	launchers := volumeLaunchers(seam.reported)
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -130,7 +130,7 @@ func TestTheLauncherServesAVolumeReportAndHandsItToTheSeam(t *testing.T) {
 func TestEverySweepsVolumeReportReachesTheSeamInOrder(t *testing.T) {
 	seam := newVolumeSeam()
 	launchers := volumeLaunchers(seam.reported)
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -158,7 +158,7 @@ func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
 	seam := newVolumeSeam()
 	seam.err = context.DeadlineExceeded
 	launchers := volumeLaunchers(seam.reported)
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -180,7 +180,7 @@ func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
 // connection stays open all the same.
 func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 	launchers := testLaunchers()
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -218,8 +218,8 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
 	logs := &bytes.Buffer{}
 	seam := newVolumeSeam()
-	launchers := newLaunchers(nil, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
-	session := launchers.accept(workerToken, testTree, rigNow, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
+	launchers := newLaunchers(nil, nil, nil, nil, nil, seam.reported, slog.New(slog.NewTextHandler(logs, nil)))
+	session := launchers.accept(workerToken, testTree, rigNow, time.Time{}, shimwire.LauncherHello{PodUID: "pod-uid", LauncherID: "launcher"})
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))

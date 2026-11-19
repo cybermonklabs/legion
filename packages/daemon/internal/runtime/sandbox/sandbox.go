@@ -441,8 +441,8 @@ func configureProber(opts Options) (*Runtime, error) {
 	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
 	// sweep reports, and log what they could not carry or record, so they are built once the
 	// runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
-		opts.VolumeReported, r.log)
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
+		opts.MemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.

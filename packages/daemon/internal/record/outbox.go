@@ -1132,7 +1132,8 @@ func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
 // task, and the next wake for one of the roles brings a new pod that restores the bundle before
-// any role starts.
+// any role starts. A new pod of a kept Sandbox mounts the volume the work was taken off, so it
+// restores nothing, and the daemon drops the bundle (runtime.HeldWorkspaceBundleDrop).
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`

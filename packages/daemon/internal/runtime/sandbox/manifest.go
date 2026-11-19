@@ -1444,9 +1444,11 @@ func fetchEnvironment(l launch) []corev1.EnvVar {
 // put there; it carries no tool-path variables, and it is never pointed at the provisioning token.
 // It carries no role's session path either: a missing transcript must not prevent sibling
 // launchers from starting, and no session lives on the disk at all (INFRA-80). It expects nothing
-// of the disk: a pod's disk is created with the pod and empty, so every provision is the first.
-// Nothing here sizes a wait on another pod: each issue pod provisions its own clone on its own
-// disk, so no two provisions share a repository.
+// of the disk. A pod's own ephemeral disk is created with the pod and empty, so its provision is
+// the first. A kept volume (keptVolume) holds the clone and the workspace that the issue's
+// earlier pods left, and its provision reuses what the volume holds (workspace.Provision). Nothing
+// here sizes a wait on another pod: each issue pod provisions its own clone on the issue's own
+// disk, which no other pod mounts at the same time, so no two provisions share a repository.
 func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 	return append([]corev1.EnvVar{{Name: "PATH", Value: imagePath}}, xdgEnvironment()...)
 }

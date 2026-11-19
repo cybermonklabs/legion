@@ -612,6 +612,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
+		// mounts the volume the work was taken off. The runtime asks this drop first for such a
+		// pod, and the store deletes the bundle the take would answer, without its body, so the
+		// pod is sent nothing and the bundle holds the issue's pod no longer.
+		opts.HeldWorkspaceBundle = st.DropHeldWorkspaceBundle
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the

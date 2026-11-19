@@ -253,10 +253,13 @@ type IssueVolumeReader interface {
 
 // WorkspaceBundler asks one live role's process to bundle the unpushed work of the issue
 // workspace every role of the issue shares, so a release can keep it while the pod, its disk and
-// the workspace on it go. The role named must be one whose process runs: the shim builds the
-// bundle with the jj and git of the workspace it already works in. A runtime whose processes
-// share no workspace implements nothing here, and the release of such a pod saves nothing because
-// there is no such pod.
+// the workspace on it go. A kept volume does not go: the release keeps the Sandbox that owns it
+// (IssueReleaser), and the pod after the release takes no saved work that volume holds
+// (HeldWorkspaceBundleDrop). The save is still made, because a reset replaces a kept volume, and
+// the save is then the one copy of the unpushed work. The role named must be one whose process
+// runs: the shim builds the bundle with the jj and git of the workspace it already works in. A
+// runtime whose processes share no workspace implements nothing here, and the release of such a
+// pod saves nothing because there is no such pod.
 type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, role claim.Role) (WorkspaceBundle, error)
 }
@@ -300,6 +303,20 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // its confirmation named a release the store no longer holds, stays in the daemon's database for
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
+
+// HeldWorkspaceBundleDrop drops the bundle an issue's last release saved where the pod of podUID
+// holds that work on its volume already: the pod's Sandbox owns the issue's kept volume and was
+// created at keptSince, before the save. That volume is the one the work was taken off, so the pod
+// is sent nothing. The launcher would refuse a bundle sent there, because its workspace is older
+// than the save. It would then log a notice that the work was lost, and the bundle would hold the
+// issue's pod (workflow.IdleHoldBundleUnrestored). The drop answers the release and the time of
+// the bundle it dropped, never its body, and true. False is nothing dropped, and the runtime then
+// takes the bundle as SavedWorkspaceBundle answers it. It deletes the row a confirmed restore
+// deletes (store.Store.DropHeldWorkspaceBundle), under the take's own rules: the pod the work came
+// off drops nothing, and neither does a bundle whose one attempt is spent. A Sandbox created after
+// the save holds a new volume, which a reset made, and its pod restores the bundle. So does a
+// Sandbox created in the save's own second, which the rule cannot order against the save.
+type HeldWorkspaceBundleDrop func(ctx context.Context, issue, podUID string, keptSince time.Time) (WorkspaceBundle, bool, error)
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
 // SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
