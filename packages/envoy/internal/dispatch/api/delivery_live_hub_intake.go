@@ -391,8 +391,10 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
 // table). The view's window is the one its last answer resolved, a preset's end the present; a
 // change whose rows carry no time at all (a pull request never merged, a job of a run not stored)
-// is taken as touching timeline and measures views. Pipeline lead times read only merged pull
-// requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
+// is taken as touching timeline, measures and Pipeline views. The Pipeline page's lead times read
+// only merged pull requests (ListPullRequestsInWindow), but a PR-checks run is shown by its pull
+// request's row, merged or not (prChecksShown), so a change to a pull request that never merged
+// can move a Pipeline view too: its issue decides whether the view shows that run.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	if view.spec.classes().reads != viewReadsDelivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
@@ -419,7 +421,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		case deliveryLiveMeasures:
 			return len(times) == 0 || some(func(t time.Time) bool { return !t.Before(from) && t.Before(to) })
 		default:
-			return some(atOrAfterFrom)
+			return len(times) == 0 || some(atOrAfterFrom)
 		}
 	case "run", "run_job":
 		switch change.RunKind {
