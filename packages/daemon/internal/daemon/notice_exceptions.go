@@ -31,8 +31,8 @@ import (
 // notification stream, so the report goes over core NATS and reaches only a subscriber connected
 // when it is sent. The role topic has two forms while every reader takes both
 // (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
-// name under the role lanes' prefix, which the daemon's grant names whole
-// (daemonpermissions.Grant), and exceptionNotice reads either form.
+// name under the role lanes' prefix, which the daemon's grant names whole (natsgrant.Daemon), and
+// exceptionNotice reads either form.
 const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
 
 // The listener's own liveness windows for a role holder (packages/envoy/internal/session), read

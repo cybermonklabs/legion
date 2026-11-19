@@ -495,6 +495,42 @@ test("an agent card sends a plain message in the mode the session takes", async 
   }
 });
 
+// A capability that is no delivery mode carries no message, so the card draws none as one: a
+// session listing only such capabilities takes no messages, as one listing none does.
+test("an agent card lists only the delivery modes the session takes", async () => {
+  const user = userEvent.setup();
+  const unknown = {
+    ...agents[1],
+    capabilities: ["future-capability"],
+    session_id: "unknown-session",
+    title: "Unknown",
+  };
+  const mixed = {
+    ...agents[1],
+    capabilities: ["future-capability", "aside"],
+    session_id: "mixed-session",
+    title: "Mixed",
+  };
+  const page = renderAgents({ listedAgents: [...agents, unknown, mixed] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const silent = card(region, "Unknown");
+    await expand(user, silent, "Unknown");
+    expect(within(silent).getByText("Takes no messages")).toBeTruthy();
+    expect(within(silent).queryByText("future-capability")).not.toBeInTheDocument();
+
+    const listening = card(region, "Mixed");
+    await expand(user, listening, "Mixed");
+    expect(within(listening).getByText("Aside")).toBeTruthy();
+    expect(within(listening).queryByText("Takes no messages")).not.toBeInTheDocument();
+    expect(within(listening).queryByText("future-capability")).not.toBeInTheDocument();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("Agents collapses every card by default and expands each one independently", async () => {
   const user = userEvent.setup();
   const page = renderAgents();

@@ -1,29 +1,107 @@
 package bus
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/natscred"
 )
 
-// The two variables a process names its NATS user's nkey seed with: a file holding the seed, or
-// the seed itself. NkeySeedEnvVar is exported for what writes a process's environment.
+// The variables a process names its NATS credential with: its user's nkey seed, as a file holding
+// the seed or as the seed itself, or a service's platform identity token for a hub whose
+// connections the auth service admits (internal/broker/natscallout), as a file holding the token
+// (a projected Kubernetes ServiceAccount token) or as the audience this VM's Google identity token
+// is minted for. NkeySeedEnvVar and the two service variables are exported for what writes a
+// process's environment.
 const (
-	nkeySeedFileVariable = "NATS_NKEY_SEED_FILE"
-	NkeySeedEnvVar       = "NATS_NKEY_SEED"
+	nkeySeedFileVariable        = "NATS_NKEY_SEED_FILE"
+	NkeySeedEnvVar              = "NATS_NKEY_SEED"
+	ServiceTokenFileEnvVar      = "NATS_SERVICE_TOKEN_FILE"
+	ServiceGoogleAudienceEnvVar = "NATS_SERVICE_GOOGLE_AUDIENCE"
 )
 
-// nkeyCredential is the NATS user this process connects as, from its environment: the trimmed
+// credential is the NATS credential this process connects as, from its environment, as the option
+// every connection of a bus client applies; nil is no credential. A service token
+// (ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar) is presented through natscred.Service, and
+// its keeper runs beside each connection (keepAlongside); a seed is presented as an nkey user
+// (nkeyCredential). A process connects as one identity, so a service variable set beside any
+// other credential variable is an error naming both, never a choice between them; the two seed
+// variables keep the rule they always had, the file winning. Neither set is no credential, as
+// every connection was before servers required one. No error carries a seed or a token.
+func credential(lookup func(string) (string, bool)) (nats.Option, error) {
+	set := func(names ...string) []string {
+		var named []string
+		for _, name := range names {
+			if _, ok := lookup(name); ok {
+				named = append(named, name)
+			}
+		}
+		return named
+	}
+	services, seeds := set(ServiceTokenFileEnvVar, ServiceGoogleAudienceEnvVar), set(nkeySeedFileVariable, NkeySeedEnvVar)
+	switch {
+	case len(services) == 2:
+		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], services[1])
+	case len(services) == 1 && len(seeds) > 0:
+		return nil, fmt.Errorf("%s and %s are both set; a process connects to NATS as one identity, so set one", services[0], seeds[0])
+	}
+	if file, ok := lookup(ServiceTokenFileEnvVar); ok {
+		if file == "" {
+			return nil, fmt.Errorf("%s is set but empty", ServiceTokenFileEnvVar)
+		}
+		reader := natscred.ServiceFile(file)
+		if _, err := reader.Read(); err != nil {
+			return nil, fmt.Errorf("%s names %s, which holds no token: %w", ServiceTokenFileEnvVar, file, err)
+		}
+		return keptService(reader), nil
+	}
+	if audience, ok := lookup(ServiceGoogleAudienceEnvVar); ok {
+		if strings.TrimSpace(audience) == "" {
+			return nil, fmt.Errorf("%s is set but empty", ServiceGoogleAudienceEnvVar)
+		}
+		return keptService(natscred.ServiceGoogle(strings.TrimSpace(audience))), nil
+	}
+	return nkeyCredential(lookup)
+}
+
+// keptService is a service's credential read through reader, with its keeper beside each
+// connection.
+func keptService(reader natscred.TokenReader) nats.Option {
+	option, keeper := natscred.Service(reader)
+	return allOf(option, keepAlongside(keeper))
+}
+
+// keepAlongside runs keeper beside the connection the options it applies to make, from that
+// connection's first connect until it closes: the service's keeper reconnects it with a later
+// token before the user its current one was admitted as expires, and ends when the connection
+// closes, by any path (natscred.Keeper), the discard of a replacement that clears the
+// connection's ClosedCB among them (ensureConnWithContext). The ConnectedCB the options already
+// hold runs as before.
+func keepAlongside(keeper natscred.Keeper) nats.Option {
+	return func(o *nats.Options) error {
+		connected := o.ConnectedCB
+		o.ConnectedCB = func(nc *nats.Conn) {
+			go keeper.Keep(context.Background(), nc)
+			if connected != nil {
+				connected(nc)
+			}
+		}
+		return nil
+	}
+}
+
+// nkeyCredential is the nkey user credential names when no service token is set: the trimmed
 // contents of the file NATS_NKEY_SEED_FILE names, else NATS_NKEY_SEED. A set variable is
 // authoritative, and the file pointer wins over the seed: an empty pointer, or a missing,
 // unreadable or blank file, is an error naming the variable and the path, never a fallback to
 // NATS_NKEY_SEED or to no credential (Legion's X_FILE rule, the Legion daemon's
 // config.ReadSecretPointer); so is a blank NATS_NKEY_SEED, and a seed that is not a user nkey
-// seed. Neither set is a nil option: the connection carries no credential, as every connection did
-// before servers required one. No error carries the seed.
+// seed. Neither set is a nil option. No error carries the seed.
 // Deploy order: a process gets a seed only after its server has nkey users (the SRE's stage 1, with
 // the no_auth_user fallback); a server with no users sends no nonce, and nats.go then refuses the
 // nkey ("nats: nkeys not supported by the server") rather than connecting without it.

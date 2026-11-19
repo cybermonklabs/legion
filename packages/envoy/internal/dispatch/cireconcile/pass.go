@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // cursor is one place in the order a pass walks: a covered repository, one page of its open pull
@@ -135,14 +136,24 @@ func (w *walk) stopped(at *stop) *ending {
 // that same interval, and the pass is bound at it: a pass too big for one interval ends on that
 // bound rather than holding its loop's lease past the pass that is due next, and the pass after
 // it takes the cycle up where this one left it (reconcile).
+//
+// Each pass is one attempt at reading GitHub (githubreads), recorded through GitHubReads when it
+// ends: the GitHub client notes on it each request and each failure no caller takes as data, and
+// the pass notes each part of its read it gives up on an answer the client takes as data -- a
+// repository it skips, a head it does not read, a head's commit statuses it does not read, and a
+// rate limit that ends the pass. A read the pass's own ending killed is none of those (cutShort),
+// and a pass its caller cancelled, which is this process shutting down, records nothing.
 func (r *Reconciler) Pass(ctx context.Context) {
 	started := time.Now()
 	var c counts
 	// The context the caller handed this pass, kept before the pass's own bound goes on it.
 	// Its cancellation is the process shutting down, which the row records apart from the
 	// bound: the two end a pass for different reasons, and neither is a pass that finished
-	// (passOutcome).
+	// (passOutcome). It is what the attempt is recorded on, so a pass cut by its own bound is
+	// recorded and one cut by the shutdown is not.
 	caller := ctx
+	ctx, attempt := githubreads.Begin(ctx)
+	defer githubreads.Finish(caller, githubreads.CIReconcile, attempt, r.GitHubReads, r.Logger)
 	if r.PassTimeout > 0 {
 		// Every read of the pass is made within this, and so is every gap it leaves between two
 		// of them, so the pass ends whatever it is waiting for. Zero is unbounded, which is what
@@ -163,6 +174,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	// A limit in force ends the pass before it binds anything or reads GitHub: the App's budget is
 	// shared, and a process that waits out a limit another met is why it is recorded at all.
 	if at = r.limited(ctx, githubapp.AppScope); at != nil {
+		githubreads.NoteFailure(ctx, at.ended("before it read any repository"))
 		r.report(&c, at, time.Since(started))
 		return
 	}
@@ -183,6 +195,12 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		return
 	}
 	at = r.reconcile(ctx, writer, &c)
+	if at != nil {
+		// The limit cut the pass's read short at the repository reconcile has just left the
+		// cursor at. A limit GitHub answered is noted already by the client, and stays the cause;
+		// a limit the pass read from the shared ledger is noted here alone.
+		githubreads.NoteFailure(ctx, at.ended("at "+r.resume.repository))
+	}
 	r.report(&c, at, time.Since(started))
 }
 
@@ -377,7 +395,14 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 	if at := r.limited(ctx, w.repository.queryScopes...); at != nil {
 		return queryPage{}, w.stopped(at), false
 	}
-	page, err := r.query(ctx, w.repository, w.here.after, c)
+	// The query's failures are held (githubreads.Hold) until the pass knows what came of the
+	// page: a query whose repository the REST listing then reads is a read the pass made the
+	// other way, and no failure of it, while every other outcome keeps them. Kept on the way out,
+	// after any note of the listing's own, unless that listing read the repository and dropped
+	// them first.
+	queried, held := githubreads.Hold(ctx)
+	defer held.Keep()
+	page, err := r.query(queried, w.repository, w.here.after, c)
 	if at := stopAt(err, githubapp.GraphQLScope); at != nil {
 		// A rate limit is the pass ending, never a page to read another way: reading this
 		// page's heads over REST would be exactly the requests GitHub has just asked this
@@ -396,7 +421,13 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 		r.Logger.Warn("ci reconcile read a repository over REST: GitHub did not answer the query",
 			"repository", w.repository.owner+"/"+w.repository.repo, "page", w.here.page, "error", err)
 		w.here.rest = true
-		return w.restPage(ctx)
+		listed, end, ok := w.restPage(ctx)
+		if ok {
+			held.Drop()
+		}
+		// Otherwise the listing did not read the repository either, which restPage has noted
+		// when it was GitHub's doing.
+		return listed, end, ok
 	}
 	return page, nil, true
 }
@@ -429,6 +460,7 @@ func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
 			c.mappingsSkipped++
 			r.Logger.Warn("ci reconcile read no open pull requests of a repository",
 				"repository", repository.owner+"/"+repository.repo, "error", err)
+			githubreads.NoteFailure(ctx, err)
 			return queryPage{}, nil, false
 		}
 		w.listing = pulls
@@ -482,7 +514,7 @@ func (w *walk) visitHead(ctx context.Context, head queryHead) *ending {
 		// GitHub refused is the only way an operator tells a Commit statuses grant taken away
 		// while a token lives, and a head read over REST for its checks asks for none of them
 		// again.
-		r.statusesUnread(pull, errors.New(errorText(head.statusesRefused)))
+		r.statusesUnread(ctx, pull, errors.New(errorText(head.statusesRefused)))
 		pull.statuses = false
 	}
 	if head.overflow != "" {
