@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -16,6 +17,21 @@ type Installations interface {
 }
 
 var _ Installations = (*Manager)(nil)
+
+// NotInstalledOn is the sentence naming missing, the role Apps GitHub answered are not installed
+// on repo, in the words the daemon refuses an admission with and legion state shows: "the review
+// App is not installed on acme/gadgets", or "the implement and review Apps are not installed on
+// acme/gadgets" for both. missing holds one role at least.
+func NotInstalledOn(missing []AppRole, repo string) string {
+	if len(missing) == 1 {
+		return "the " + string(missing[0]) + " App is not installed on " + repo
+	}
+	names := make([]string, 0, len(missing))
+	for _, role := range missing {
+		names = append(names, string(role))
+	}
+	return "the " + strings.Join(names, " and ") + " Apps are not installed on " + repo
+}
 
 // Logins answers each GitHub App's bot login under the App's own JWT, which needs no installation
 // on any repository: the review App's is the login the workflow judges a push's pusher and a

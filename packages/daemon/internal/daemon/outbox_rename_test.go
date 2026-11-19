@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -26,7 +24,7 @@ import (
 // transferredLegion is the pair a deployment configures over sjawhar/legion's transfer to
 // cybermonklabs: the records of a tree opened before it keep sjawhar/legion, while GitHub holds
 // the repository under cybermonklabs/legion, on cybermonklabs' installation.
-var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+var transferredLegion = ghrepo.MustRenames(ghrepo.MustRename(renameFrom, renameTo))
 
 // transferStates are the states a transferred repository's calls are driven in: the configured
 // pair with both role Apps answered installed on the name GitHub holds the repository under, that
@@ -70,24 +68,6 @@ func renameOutbox(t *testing.T, pool *store.Pool, records record.Store, api stri
 	t.Helper()
 	return &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, tokens: roleTokens{},
 		project: "legion", githubAPI: api, repositories: renamedRepositories(served, renames), now: time.Now}
-}
-
-// seedTransferredREADY records LEGION-208 on sjawhar/legion awaiting the merge of its READY head,
-// its pull request #42 open there: a tree whose records were written before the transfer.
-func seedTransferredREADY(t *testing.T, pool *store.Pool, records record.Store) {
-	t.Helper()
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "ready-head"}); err != nil {
-			return err
-		}
-		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "ready-head", Failing: []string{}})
-	}); err != nil {
-		t.Fatalf("seed LEGION-208's READY: %v", err)
-	}
 }
 
 // renameGitHub is GitHub as a transferred repository's calls reach it: every REST path and every
@@ -245,8 +225,7 @@ func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHub
 			})
 			// The create reads no record of its own: the issue it is given carries the
 			// repository, so this outbox needs no database.
-			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", records: record.NewStore(), tokens: roleTokens{},
-				project: "legion", githubAPI: github.url, repositories: renamedRepositories(tc.served, tc.renames), now: time.Now}
+			runner := renameOutbox(t, nil, record.NewStore(), github.url, tc.served, tc.renames)
 
 			if err := runner.createBranch(context.Background(), issue); err != nil {
 				t.Fatalf("create the branch of %s: %v", issue.Key, err)

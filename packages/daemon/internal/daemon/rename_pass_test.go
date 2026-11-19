@@ -20,18 +20,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // renameFrom and renameTo are INFRA's pair, the one every test of the rename pass configures.
 const renameFrom, renameTo = "sjawhar/legion", "cybermonklabs/legion"
-
-func renamePair() ghrepo.Renames {
-	return ghrepo.MustRenames(ghrepo.MustRename(renameFrom, renameTo))
-}
 
 // renameSeed is one issue a test of the rename pass records, a done root on repo, with a merged
 // pull request on branch (none where branch is ""), a closed production check and a repository
@@ -163,16 +157,17 @@ func renameTables(t *testing.T, logged string) map[string]renameTableTally {
 	return tables
 }
 
-// renameBoot boots the workflow daemon of cfg logging to logged, and returns once the boot's rename
-// pass has logged its table lines and the daemon answers /healthz.
+// renameBoot boots the workflow daemon of cfg logging to logged, and returns once it answers
+// /healthz, which it does only after the boot's rename pass has run (run's renameAtBoot), so its
+// table lines are logged by then.
 func renameBoot(t *testing.T, cfg config.Config, logged *syncBuffer) *daemon {
 	t.Helper()
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)))
-	testwait.Eventually(t, "the boot's rename pass logging each table", func() bool {
-		return len(renameTables(t, logged.String())) == len(record.RenameTables)
-	})
+	if got := renameTables(t, logged.String()); len(got) != len(record.RenameTables) {
+		t.Fatalf("the boot's rename pass logged the tables %+v by /healthz, want each of %v", got, record.RenameTables)
+	}
 	return d
 }
 
@@ -189,7 +184,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.RepositoryRenames = renamePair()
+	cfg.RepositoryRenames = transferredLegion
 	p := cfg.Project
 	seedRenameRecords(t, pool, p,
 		renameSeed{key: p + "-1", repo: renameFrom, branch: "legion/" + p + "-1", check: true, note: true},
@@ -205,12 +200,14 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 
 	var logged syncBuffer
 	d := renameBoot(t, cfg, &logged)
+	stored := map[string]map[string]string{}
 	for _, key := range []string{p + "-1", p + "-2", p + "-3", p + "-4", p + "-9"} {
-		if names := storedRepositoryNames(t, pool, key); !namedAll(names, renameTo) {
+		stored[key] = storedRepositoryNames(t, pool, key)
+		if names := stored[key]; !namedAll(names, renameTo) {
 			t.Errorf("%s's stored names after the boot = %v, want each on %s", key, names, renameTo)
 		}
 	}
-	if names := storedRepositoryNames(t, pool, p+"-2"); names["pull_requests.repo"] != "" {
+	if names := stored[p+"-2"]; names["pull_requests.repo"] != "" {
 		t.Errorf("%s's pull request = %v, want it deleted: %s-3's holds release/shared on %s", p+"-2", names, p, renameTo)
 	}
 	if names := storedRepositoryNames(t, pool, p+"-6"); len(names) != 5 || !namedAll(names, "acme/widgets") {
@@ -248,7 +245,7 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.RepositoryRenames = renamePair()
+	cfg.RepositoryRenames = transferredLegion
 	p := cfg.Project
 	refused, written := p+"-5", p+"-7"
 	seedRenameRecords(t, pool, p,
@@ -325,7 +322,7 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 	var logged syncBuffer
 	rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
-	rig.w.repositories = newRepositories("LEGION", renamePair())
+	rig.w.repositories = newRepositories("LEGION", transferredLegion)
 	rig.w.launched = map[string]ghbranch.Repository{strings.ToLower(rig.issue.Key): {Name: ghrepo.MustParse(renameFrom), DefaultBranch: "main"}}
 	rt := renamePodRuntime{rig.rt}
 	rig.runner.podEnded = rig.w.podEndsOn(rt)
@@ -355,18 +352,14 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 }
 
-// presenceRuntime answers, by issue, the Sandbox and the pod a Kubernetes runtime holds.
+// presenceRuntime answers, by issue, the pod a Kubernetes runtime holds, with no Sandbox of any.
 type presenceRuntime struct {
 	*fake.Runtime
-	sandboxes map[string]string
-	pods      map[string]string
-	unread    map[string]bool
+	pods   map[string]string
+	unread map[string]bool
 }
 
-func (r presenceRuntime) IssueSandbox(issue string) (string, bool) {
-	name, present := r.sandboxes[issue]
-	return name, present
-}
+func (r presenceRuntime) IssueSandbox(string) (string, bool) { return "", false }
 
 func (r presenceRuntime) IssuePod(issue string) (string, bool) {
 	if r.unread[issue] {
@@ -384,7 +377,7 @@ func TestAnIssueTheRuntimeCannotSayOfKeepsItsNames(t *testing.T) {
 	seedRenameRecords(t, pool, "LEGION",
 		renameSeed{key: "LEGION-1", repo: renameFrom}, renameSeed{key: "LEGION-2", repo: renameFrom}, renameSeed{key: "LEGION-3", repo: renameFrom})
 	var logged syncBuffer
-	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", renamePair()),
+	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", transferredLegion),
 		log: slog.New(slog.NewJSONHandler(&logged, nil))}
 	w.renameAtBoot(context.Background(), presenceRuntime{Runtime: fake.NewRuntime(), unread: map[string]bool{"LEGION-1": true},
 		pods: map[string]string{"LEGION-2": "pod-of-legion-2"}})
@@ -444,18 +437,10 @@ func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *test
 		t.Fatal(err)
 	}
 
-	rt := fake.NewRuntime()
-	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
-	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
-	}
-	t.Cleanup(sup.stop)
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup.deps.Store = st
 	var logged syncBuffer
-	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: stateDir, repositories: newRepositories("LEGION", renamePair()),
+	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: stateDir, repositories: newRepositories("LEGION", transferredLegion),
 		log: slog.New(slog.NewJSONHandler(&logged, nil))}
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st,
 		project: "legion", stateDir: stateDir}
@@ -541,7 +526,7 @@ func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
 			rt := &closingRuntime{Runtime: fake.NewRuntime()}
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.Runtime = rt
-			w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", renamePair()),
+			w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", transferredLegion),
 				log: quietLogger(), launched: map[string]ghbranch.Repository{strings.ToLower(key): {Name: ghrepo.MustParse(renameFrom), DefaultBranch: "main"}}}
 			runner := &outbox{pool: pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", supervisor: sup,
 				trees: closeAuthority{authorized: tc.authorized}, log: quietLogger()}
@@ -552,6 +537,9 @@ func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
 			}
 			if names := storedRepositoryNames(t, pool, key); len(names) != 5 || !namedAll(names, tc.want) {
 				t.Fatalf("%s's stored names after the close = %v, want all five on %s", key, names, tc.want)
+			}
+			if want := map[bool]int{true: 1, false: 0}[tc.authorized]; rt.stopped != want {
+				t.Fatalf("the close stopped the pod %d times, want %d: the runtime acts only on the store's authorization", rt.stopped, want)
 			}
 			if _, held := w.launched[strings.ToLower(key)]; held != !tc.authorized {
 				t.Fatalf("the repository kept for %s held = %t after the close, want %t", key, held, !tc.authorized)

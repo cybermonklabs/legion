@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -50,7 +49,7 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // and pick the directory a command names, not which App a role writes as; Stage 4b's daemon
 // hands each role its own.
 func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	return appauth.GitHubCredential(implementApp{t.apps}, t.serves, ghrepo.Renames{},
+	return appauth.GitHubCredential(implementApp{t.apps}, servesOneOf(t.repositories), ghrepo.Renames{},
 		t.installed, t.left, slog.Default())(ctx, claim.RoleImplementer, repo)
 }
 
@@ -59,7 +58,7 @@ func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghre
 // pod's refresh asks for the owner its Secret records. It mints as the implement App, the one App
 // the harness holds, where the daemon's own mints as the review App (implementApp).
 func (t implementTokens) ControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	return appauth.ControllerCredential(implementApp{t.apps}, t.serves, ghrepo.Renames{},
+	return appauth.ControllerCredential(implementApp{t.apps}, servesOneOf(t.repositories), ghrepo.Renames{},
 		t.installed, t.left, slog.Default())(ctx, defaultOwner)
 }
 
@@ -84,14 +83,13 @@ func (a implementApp) InstalledOwners(ctx context.Context, _ appauth.AppRole) ([
 // wrote, which is what Credential renders, so the two answers move together as the daemon's own
 // do.
 func (t implementTokens) ProjectDirs(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-	return appauth.GitHubDirs(t.serves, ghrepo.Renames{}, t.installed, t.left, roles, repo)
+	return appauth.GitHubDirs(servesOneOf(t.repositories), ghrepo.Renames{}, t.installed, t.left, roles, repo)
 }
 
-// serves is whether repo is one of the run's repositories, as the daemon serves a repository
-// GitHub answers both role Apps installed on (internal/daemon's servesRepository).
-func (t implementTokens) serves(repo ghrepo.Repository) bool {
-	return slices.ContainsFunc(t.repos, func(held ghrepo.Repository) bool { return sameRepository(held, repo) })
-}
+// repositories is the run's repositories, which the harness serves (servesOneOf) as the daemon
+// serves a repository GitHub answers both role Apps installed on (internal/daemon's
+// servesRepository).
+func (t implementTokens) repositories() []ghrepo.Repository { return t.repos }
 
 // resolveApp mints the implement App's tokens through the token command the script hands the
 // harness (LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND): lib/github-apps.sh's own app_token_command,

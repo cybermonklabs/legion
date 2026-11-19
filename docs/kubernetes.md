@@ -3311,7 +3311,7 @@ no servers available for connection" answer, from a different server nats.go tri
 
 While the readiness gate waits, callers outside the daemon see it as still booting, not as down:
 the API port is already bound by this point (the same as during the image probe, both before this gate), so it accepts a connection but serves nothing until the gate passes, and `legion status` reports the daemon's PID alive but not yet answering.
-The boot reads no repository, so no read of a repository's installation or default branch holds the boot or the port.
+The boot reads GitHub for a repository only to fill a record that lacks its repository columns, one read per such record, each bounded at 15 s, and a read that fails leaves the record for the refresher; no other read of a repository's installation or default branch holds the boot or the port.
 A pane's `legion` tool calls (`read_record` and `handoff_complete`, the latter minting its grant in-process first) and `controller start` all wait on that same API, so none of them succeeds until the daemon actually serves;
 a pane's plain `gh` and `git` do not, since they read the role's credential from its gh files and call the daemon for nothing.
 
@@ -6626,9 +6626,9 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **The project's repositories** come from Dispatch: each issue's repository is the one Dispatch resolves for it (its own, else its nearest ancestor's, else the project's default repository, which is set in Dispatch);
   `legion.yaml`'s `projects.<KEY>` names none and refuses `repo`.
-  The daemon boots for any project and reads no repository at boot:
+  The daemon boots for any project and at boot reads GitHub only to fill a record without its repository columns (one read each, bounded at 15 s; a failure leaves the record for the refresher);
   it proves each role App's key with GitHub's read of its installations, and a refusal of that read stops the boot naming the App, while an App installed on no account boots with one log line.
-  Once the API serves, the daemon prepares each repository its records name, and it prepares a repository again when the first issue on it is admitted, when a record first names it, and when a launch finds its cache missing:
+  Once the API serves, the daemon prepares each repository its records name, and it prepares a repository again when the first issue on it is admitted and when a launch works a repository the cache set does not hold (no live record names it):
   it checks that both GitHub Apps are installed on it (`GET /repos/{owner}/{repo}/installation` under each App's JWT), reads its name and default branch, and asks Dispatch about its webhook App;
   a repository either App is missing from changes no record, `legion state` prints a `repository <owner/name>: <why>` line for it, and `legion state --json` shows it under `repositories.live` with its `apps`;
   a repository whose installation read fails (any failure but GitHub's answer, an installation or a 404, a read longer than 15 s included;

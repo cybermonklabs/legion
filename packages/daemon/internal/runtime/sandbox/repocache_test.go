@@ -1085,7 +1085,7 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionLater(t *testing.T)
 		if g.sandbox(name) != nil {
 			t.Fatal("the cache one retention from the sweep that marked it again is kept, want it retired")
 		}
-		if logged := logs.String(); !strings.Contains(logged, "retired a repository cache no longer in the cache set") || !strings.Contains(logged, g.r.cacheConfig.Retain.String()) {
+		if logged := logs.String(); !strings.Contains(logged, "retired a repository cache no longer in the cache set") || !strings.Contains(logged, "kept="+g.r.cacheConfig.Retain.String()) {
 			t.Errorf("the retirement was not logged with how long the cache was kept, one retention:\n%s", logged)
 		}
 	})

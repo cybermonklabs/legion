@@ -715,7 +715,7 @@ func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*P
 // filters every row it reads, a cost that grows with the records of finished issues, which are
 // never deleted. 0004's unique pull_requests_repo_branch stays the table's uniqueness rule. The
 // one other read of the table that keys on the repository is this release's one-time rename pass
-// (rename.go: RenameCandidates, RenameIssueRepository, RenameLeft), which compares the name
+// (rename.go: RenameCandidates, RenameIssueRepository), which compares the name
 // without case in the same way.
 
 func (s *Postgres) PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error) {

@@ -345,11 +345,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
 	// The Apps' logins and the proof of each App's key wait out GitHub's transient failures within
-	// appMintRetry; nothing of the boot reads GitHub for a repository, which the refresher
-	// prepares once the API serves (prepareAtStart), and a record whose repository the backfill
-	// cannot fill is left for the refresher rather than refusing the boot. The boot budget bounds
-	// none of them, as it does not bound the plugin gate or the image probe: the work after them
-	// has a budget of its own.
+	// appMintRetry, and the boot budget bounds neither, as it does not bound the plugin gate or the
+	// image probe: the work after them has a budget of its own. The boot reads GitHub for a
+	// repository only to fill a record that lacks its repository columns (backfillRepositories):
+	// one read per such record, bounded by installReadAttempt, and a read that fails leaves the
+	// record for the refresher rather than refusing the boot. Every other read of a repository is
+	// the refresher's, which prepares the records' repositories once the API serves
+	// (prepareAtStart).
 	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
@@ -3012,7 +3014,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		if err != nil {
 			return api.State{}, nil, err
 		}
-		live, err := liveRecordRepositories(issues)
+		live, err := repositoriesOf(issues)
 		if err != nil {
 			return api.State{}, nil, err
 		}
@@ -3020,7 +3022,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 		if s.caches != nil {
 			caches = s.caches()
 		}
-		state.Repositories = s.repositories.view(slices.Collect(maps.Values(live)), caches)
+		state.Repositories = s.repositories.view(live, caches)
 	}
 	return state, claims, nil
 }

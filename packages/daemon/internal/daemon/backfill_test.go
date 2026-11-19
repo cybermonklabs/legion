@@ -65,7 +65,7 @@ func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
 			t.Fatalf("unfilled after the backfill = %v, want LEGION-12 and LEGION-7 left as they are", unfilled)
 		}
 		for _, key := range []string{"LEGION-7", "LEGION-12"} {
-			if !strings.Contains(logs.String(), "issue="+key+" repo=\"\" cause=\"Dispatch resolves no repository for it: set its repository in Dispatch\"") {
+			if !strings.Contains(logs.String(), leftAs(key, `""`, "Dispatch resolves no repository for it: set its repository in Dispatch")) {
 				t.Fatalf("backfill log = %s, want %s named as left with its cause", logs.String(), key)
 			}
 		}

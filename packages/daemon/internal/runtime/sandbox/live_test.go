@@ -165,9 +165,9 @@ func (r *liveRig) cacheRepositories() []ghrepo.Repository {
 	return slices.Clone(r.cached)
 }
 
-// recordRepository adds repo to the run's cache set, as the daemon's cache set gains a
+// cacheRepository adds repo to the run's cache set, as the daemon's cache set gains a
 // repository at the commit of the first record that names it, before any issue of it launches.
-func (r *liveRig) recordRepository(repo ghrepo.Repository) {
+func (r *liveRig) cacheRepository(repo ghrepo.Repository) {
 	r.cachedMu.Lock()
 	defer r.cachedMu.Unlock()
 	if !slices.Contains(r.cached, repo) {

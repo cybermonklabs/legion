@@ -208,29 +208,30 @@ type LiveRepositoryView struct {
 }
 
 // NotInstalled is the sentence naming each role App GitHub answered is not installed on the name r
-// is served under (ServedAs, else Repo), in the words the daemon refuses an admission with: "the
-// review App is not installed on acme/gadgets", or both Apps named in one sentence. It is "" while
-// GitHub has not answered both reads, and where it answered both installed.
+// is served under (servedName), in the words the daemon refuses an admission with
+// (appauth.NotInstalledOn): "the review App is not installed on acme/gadgets", or both Apps named
+// in one sentence. It is "" while GitHub has not answered both reads, and where it answered both
+// installed.
 func (r LiveRepositoryView) NotInstalled() string {
 	if r.Apps == nil {
 		return ""
 	}
-	var missing []string
+	var missing []appauth.AppRole
 	if !r.Apps.Implement {
-		missing = append(missing, string(appauth.Implement))
+		missing = append(missing, appauth.Implement)
 	}
 	if !r.Apps.Review {
-		missing = append(missing, string(appauth.Review))
+		missing = append(missing, appauth.Review)
 	}
-	served := cmp.Or(r.ServedAs, r.Repo)
-	switch len(missing) {
-	case 0:
+	if len(missing) == 0 {
 		return ""
-	case 1:
-		return "the " + missing[0] + " App is not installed on " + served
 	}
-	return "the " + strings.Join(missing, " and ") + " Apps are not installed on " + served
+	return appauth.NotInstalledOn(missing, r.servedName())
 }
+
+// servedName is the name r is served under: ServedAs where the rename rule serves it under the
+// other name of its configured pair, else Repo.
+func (r LiveRepositoryView) servedName() string { return cmp.Or(r.ServedAs, r.Repo) }
 
 // AppInstallationsView is each role App's installation on one repository, which is what decides
 // whether a project can work there at all (INFRA-2543 R6): the implement App a worker pushes and
@@ -339,7 +340,7 @@ func (r RepositoriesView) at152() repositoriesAt152 {
 			block.WithoutWebhookApp = append(block.WithoutWebhookApp, webhookAppGapAt152{Repo: repo.Repo, Reason: repo.WebhookApp})
 		}
 		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
-			served := cmp.Or(repo.ServedAs, repo.Repo)
+			served := repo.servedName()
 			owner, _, _ := strings.Cut(served, "/")
 			block.Owners = append(block.Owners, strings.ToLower(owner))
 			block.Mapped = append(block.Mapped, servedRepositoryAt152{Repo: served, Apps: *repo.Apps, Cache: repo.Cache})

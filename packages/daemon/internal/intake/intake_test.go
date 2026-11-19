@@ -662,7 +662,7 @@ func settingsSubject(project string) string {
 // The read-back of the filters is the control: with the settings subject put back among them, and
 // no decode of its event left (A8: no branch stays for it), the event is delivered and terminated
 // as poison, so the counts and the rows below read the same, and only the filters tell the two
-// apart (INFRA-4401 P4, check a-go item 2).
+// apart (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 2).
 func TestTheBootNarrowsTheDispatchConsumerToTheIssueEvents(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)

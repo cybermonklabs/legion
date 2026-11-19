@@ -65,8 +65,7 @@ type roleOwners struct{ implementer, reviewer, controller []string }
 // review App alone and answers alike under both runtimes. The owners an App was read installed on
 // come from the boot's proof of its key first (proveAppKeys, appauth.Installed.Record) and then
 // from its last bundle; until either has read every App the container's directories come from,
-// there is no read to report and the answer is none (INFRA-4401 #t-4: the fallback to the owners
-// of the served repositories is gone).
+// there is no read to report and the answer is none.
 func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *testing.T) {
 	moved := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	for _, tc := range []struct {

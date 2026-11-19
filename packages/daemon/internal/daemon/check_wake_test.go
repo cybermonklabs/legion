@@ -72,10 +72,9 @@ func (g *checkWakeGitHub) read() []string {
 	return append([]string(nil), g.paths...)
 }
 
-// checkWakeDispatch is a Dispatch of project that lists no issues; every other call is
-// unavailable, as a Dispatch whose dependencies are down answers, and is not what these tests are
-// about.
-func checkWakeDispatch(t *testing.T, project string) string {
+// checkWakeDispatch is a Dispatch that lists no issues; every other call is unavailable, as a
+// Dispatch whose dependencies are down answers, and is not what these tests are about.
+func checkWakeDispatch(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -114,7 +113,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	natsURL := workflowNATS(t)
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.DispatchURL = checkWakeDispatch(t, cfg.Project)
+	cfg.DispatchURL = checkWakeDispatch(t)
 	// The daemon refuses to boot without Envoy's notification stream; no test of this rig
 	// publishes to it.
 	workflowJetStream(t, natsURL)

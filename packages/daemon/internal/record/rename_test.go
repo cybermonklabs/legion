@@ -49,6 +49,25 @@ func storedNames(t *testing.T, ctx context.Context, tx pgx.Tx, key string) map[s
 	return names
 }
 
+// renameLeft is how many rows of each table of project's issues still name from, as the rename
+// pass counts them once it has run: the rows of the whole project's candidates
+// (RenameCandidates with no keys), summed by table, every table named.
+func renameLeft(t *testing.T, ctx context.Context, tx pgx.Tx, project, from string) map[RenameTable]int {
+	t.Helper()
+	candidates, err := RenameCandidates(ctx, tx, project, from, nil)
+	must(t, err)
+	left := make(map[RenameTable]int, len(RenameTables))
+	for _, table := range RenameTables {
+		left[table] = 0
+	}
+	for _, candidate := range candidates {
+		for table, rows := range candidate.Rows {
+			left[table] += rows
+		}
+	}
+	return left
+}
+
 // The writer writes a pair's new name, as the pair configures it, on every stored column of an
 // issue that holds the old name in any spelling — the record's repository and GitHub's spelling,
 // the pull request, the production check and the repository note — and on nothing else: an issue
@@ -73,9 +92,9 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		candidates, err := RenameCandidates(ctx, tx, "LEGION", from, nil)
 		must(t, err)
 		want := []RenameCandidate{
-			{Issue: "LEGION-1", Rows: map[string]int{"issues": 1, "pull_requests": 1, "production_checks": 1, "repo_notes": 1},
+			{Issue: "LEGION-1", Rows: map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 1},
 				Spellings: []string{"SJAWHAR/Legion", "Sjawhar/legion"}},
-			{Issue: "LEGION-9", Rows: map[string]int{"repo_notes": 1}, Spellings: []string{from}},
+			{Issue: "LEGION-9", Rows: map[RenameTable]int{RenameTableRepoNotes: 1}, Spellings: []string{from}},
 		}
 		if !reflect.DeepEqual(candidates, want) {
 			t.Fatalf("candidates = %+v, want %+v: the project's issues whose rows name %s, in any spelling", candidates, want, from)
@@ -83,9 +102,8 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		if only, err := RenameCandidates(ctx, tx, "LEGION", from, []string{"LEGION-9", "LEGION-2"}); err != nil || len(only) != 1 || only[0].Issue != "LEGION-9" {
 			t.Fatalf("candidates of LEGION-9 and LEGION-2 = %+v, %v; want LEGION-9 alone", only, err)
 		}
-		left, err := RenameLeft(ctx, tx, "LEGION", from)
-		must(t, err)
-		if want := map[string]int{"issues": 1, "pull_requests": 1, "production_checks": 1, "repo_notes": 2}; !reflect.DeepEqual(left, want) {
+		left := renameLeft(t, ctx, tx, "LEGION", from)
+		if want := map[RenameTable]int{RenameTableIssues: 1, RenameTablePullRequests: 1, RenameTableProductionChecks: 1, RenameTableRepoNotes: 2}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s before the write = %v, want %v", from, left, want)
 		}
 	})
@@ -117,14 +135,13 @@ func TestRenameIssueRepositoryWritesTheNewNameOnEveryColumnThatHoldsTheOld(t *te
 		if got := storedNames(t, ctx, tx, "OTHER-9"); got["repo_notes.resolved_repo"] != from {
 			t.Fatalf("OTHER-9's note = %v, want another project's note left on %s", got, from)
 		}
-		left, err := RenameLeft(ctx, tx, "LEGION", from)
-		must(t, err)
-		if want := map[string]int{"issues": 0, "pull_requests": 0, "production_checks": 0, "repo_notes": 0}; !reflect.DeepEqual(left, want) {
+		left := renameLeft(t, ctx, tx, "LEGION", from)
+		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0}; !reflect.DeepEqual(left, want) {
 			t.Fatalf("rows on %s after the write = %v, want none", from, left)
 		}
 		again, err := RenameIssueRepository(ctx, tx, "LEGION-1", from, to)
 		must(t, err)
-		if want := map[string]int{"issues": 0, "pull_requests": 0, "production_checks": 0, "repo_notes": 0}; !reflect.DeepEqual(again.Rows, want) || again.Deleted != nil {
+		if want := map[RenameTable]int{RenameTableIssues: 0, RenameTablePullRequests: 0, RenameTableProductionChecks: 0, RenameTableRepoNotes: 0}; !reflect.DeepEqual(again.Rows, want) || again.Deleted != nil {
 			t.Fatalf("a second write of LEGION-1 = %+v, want nothing written", again)
 		}
 	})
@@ -153,7 +170,7 @@ func TestRenameIssueRepositoryDeletesAPullRequestTheNewNameWouldHoldTwice(t *tes
 	if !reflect.DeepEqual(written.Deleted, want) {
 		t.Fatalf("deleted = %+v, want %+v", written.Deleted, want)
 	}
-	if rows := written.Rows; rows["issues"] != 1 || rows["pull_requests"] != 0 || rows["production_checks"] != 1 || rows["repo_notes"] != 1 {
+	if rows := written.Rows; rows[RenameTableIssues] != 1 || rows[RenameTablePullRequests] != 0 || rows[RenameTableProductionChecks] != 1 || rows[RenameTableRepoNotes] != 1 {
 		t.Fatalf("rows written = %v, want the record, the check and the note, and no pull request", rows)
 	}
 	inTx(t, st, func(tx pgx.Tx) {

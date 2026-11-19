@@ -6,17 +6,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The lines the rename pass logs. Each line of one issue or one read names the old name and the
@@ -120,16 +117,14 @@ func workspaceKeep(stateDir string) renameKeep {
 			if err != nil {
 				continue
 			}
-			location, err := workspace.Location(stateDir, repo, issue)
-			if err != nil {
-				continue
-			}
-			_, err = os.Stat(location.Dir)
+			dir, err := workspaceDir(stateDir, repo, issue)
 			switch {
+			case dir == "":
+				// workspace.Location names no directory for the name, so none keeps the issue.
 			case err == nil:
-				return "its workspace directory " + location.Dir + " is under the old name"
+				return "its workspace directory " + dir + " is under the old name"
 			case !errors.Is(err, fs.ErrNotExist):
-				return fmt.Sprintf("its workspace directory %s under the old name cannot be read: %v", location.Dir, err)
+				return fmt.Sprintf("its workspace directory %s under the old name cannot be read: %v", dir, err)
 			}
 		}
 		return ""
@@ -137,7 +132,8 @@ func workspaceKeep(stateDir string) renameKeep {
 }
 
 // renameTally is what the pass did on one table: the rows it wrote, the rows whose write failed,
-// and the rows still on each pair's `from` once it ran, by that `from`.
+// and the rows still on each pair's `from` once it ran, by that `from`, which every pair's
+// candidates read again over the whole project count (record.RenameCandidates).
 type renameTally struct {
 	written, failed int
 	left            map[string]int
@@ -152,7 +148,7 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 	if len(pairs) == 0 {
 		return false
 	}
-	tallies := make(map[string]*renameTally, len(record.RenameTables))
+	tallies := make(map[record.RenameTable]*renameTally, len(record.RenameTables))
 	for _, table := range record.RenameTables {
 		tallies[table] = &renameTally{left: map[string]int{}}
 	}
@@ -182,7 +178,7 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 	}
 	for _, pair := range pairs {
 		from := pair.From.String()
-		left, err := p.left(ctx, from)
+		left, err := p.candidates(ctx, from, nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return wrote
@@ -190,20 +186,25 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 			p.log.Warn(renameUnreadLine, "from", from, "to", pair.To.String(), "error", err)
 			continue
 		}
-		for table, rows := range left {
-			tallies[table].left[from] = rows
+		for _, table := range record.RenameTables {
+			tallies[table].left[from] = 0
+		}
+		for _, candidate := range left {
+			for table, rows := range candidate.Rows {
+				tallies[table].left[from] += rows
+			}
 		}
 	}
 	for _, table := range record.RenameTables {
 		tally := tallies[table]
-		p.log.Info(renameTableLine, "table", table, "written", tally.written, "failed", tally.failed, "left", tally.left)
+		p.log.Info(renameTableLine, "table", string(table), "written", tally.written, "failed", tally.failed, "left", tally.left)
 	}
 	return wrote
 }
 
 // rename writes to over from on candidate's rows unless keep keeps them, counting what it did on
 // tallies, and answers whether it wrote or deleted a row.
-func (p renamePass) rename(ctx context.Context, candidate record.RenameCandidate, from, to string, tallies map[string]*renameTally) bool {
+func (p renamePass) rename(ctx context.Context, candidate record.RenameCandidate, from, to string, tallies map[record.RenameTable]*renameTally) bool {
 	if p.keep != nil {
 		names := candidate.Spellings
 		if !slices.Contains(names, from) {
@@ -250,34 +251,17 @@ func (p renamePass) candidates(ctx context.Context, from string, keys []string) 
 }
 
 // write writes to over from on issue's rows (record.RenameIssueRepository) in one transaction
-// under the lock every fact applies under, bounded by bootTimeout.
+// under the lock every fact applies under (serializedTx), bounded by bootTimeout.
 func (p renamePass) write(ctx context.Context, issue, from, to string) (record.RenameWrite, error) {
 	attempt, cancel := context.WithTimeout(ctx, bootTimeout)
 	defer cancel()
 	var written record.RenameWrite
-	err := pgx.BeginFunc(attempt, p.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(attempt, tx); err != nil {
-			return fmt.Errorf("serialize the rename of %s with every fact: %w", issue, err)
-		}
+	err := serializedTx(attempt, p.pool, "serialize the rename of "+issue+" with every fact", func(tx pgx.Tx) error {
 		var err error
 		written, err = record.RenameIssueRepository(attempt, tx, issue, from, to)
 		return err
 	})
 	return written, err
-}
-
-// left is how many rows of each table of the project still name from (record.RenameLeft), read
-// in a transaction of its own bounded by bootTimeout.
-func (p renamePass) left(ctx context.Context, from string) (map[string]int, error) {
-	read, cancel := context.WithTimeout(ctx, bootTimeout)
-	defer cancel()
-	var left map[string]int
-	err := pgx.BeginFunc(read, p.pool, func(tx pgx.Tx) error {
-		var err error
-		left, err = record.RenameLeft(read, tx, p.project, from)
-		return err
-	})
-	return left, err
 }
 
 // renamePass is the rename pass over the project's stored records under keep, for the pairs the

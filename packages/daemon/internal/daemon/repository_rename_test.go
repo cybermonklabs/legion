@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -48,9 +46,9 @@ func TestARenameConfiguredBeforeTheTransferIsHeardWhileTheServedSetIsUnchanged(t
 			w, _, _, stream := repositoryRigWith(t, installs, func(w *workflowRuntime) {
 				w.repositories = newRepositories("LEGION", tc.renames)
 			})
-			if to := ghrepo.MustParse("cybermonklabs/widgets"); !served(w, "acme/widgets") || w.repositories.servesRepository(to) {
+			if to := ghrepo.MustParse("cybermonklabs/widgets"); !recordsOn(w, "acme/widgets") || w.repositories.servesRepository(to) {
 				t.Fatalf("recorded on acme/widgets %v, the rule serving cybermonklabs/widgets %v; want acme/widgets alone: a configured pair widens nothing",
-					served(w, "acme/widgets"), w.repositories.servesRepository(to))
+					recordsOn(w, "acme/widgets"), w.repositories.servesRepository(to))
 			}
 			if got := w.repositories.serving(ghrepo.MustParse("acme/widgets")); got.String() != "acme/widgets" {
 				t.Fatalf("a record on acme/widgets is served as %s, want its own name: GitHub still holds it", got)
@@ -131,12 +129,6 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 	}
 }
 
-// answerInstalled keeps in name's entry GitHub's answer that both role Apps are installed on it,
-// or that neither is, as one preparation's reads of it would (keepRead).
-func answerInstalled(repos *repositories, name string, installed bool) {
-	repos.keepRead(ghrepo.MustParse(name), nameRead{installed: slices.Repeat([]bool{installed}, len(appauth.Roles)), failed: make([]error, len(appauth.Roles))})
-}
-
 // The twelve cases of the rename rule (repositories.serving): the six states GitHub's answers of
 // both role Apps' installations can leave over one configured pair, read from the entries the
 // preparations keep, each in the two owner-set states, with what the rule answers for a record
@@ -159,10 +151,10 @@ func answerInstalled(repos *repositories, name string, installed bool) {
 //     second row, where it would address the repository the transfer has not yet moved the name
 //     away from.
 //   - An unanswered read counted as not served fails I0's first row, where the pair is served as
-//     configured until GitHub answers (D2).
+//     configured until GitHub answers (INFRA-4401 D2).
 func TestTheRenameRuleResolvesARecordedRepositoryOverTheSixInstallationStates(t *testing.T) {
-	const recordedOld, recordedNew = "sjawhar/legion", "cybermonklabs/legion"
-	pair := ghrepo.MustRenames(ghrepo.MustRename(recordedOld, recordedNew))
+	const recordedOld, recordedNew = renameFrom, renameTo
+	pair := transferredLegion
 	for _, tc := range []struct {
 		name string
 		// answers is GitHub's answer of both Apps' installations on each name it answered for:
@@ -239,16 +231,14 @@ func TestTheRenameRuleResolvesARecordedRepositoryOverTheSixInstallationStates(t 
 	}
 }
 
-// mintingTokens is roleTokens that keeps the owner of every token it is asked for and refuses
-// each owner whose installation does not cover the repository, as a transfer leaves GitHub: an
+// mintingTokens is servedOwnerTokens keeping the owner of every token it is asked for: it refuses
+// each owner but the one whose installation covers the repository, as a transfer leaves GitHub: an
 // App is installed on an owner, so the installation holding a moved repository is the owner it
 // moved to, and a mint for the owner it left reaches nothing, however the address redirects. A
 // source that answered whatever owner it was asked for would hide which owner a read of GitHub's
 // spelling or a role's token is minted for.
 type mintingTokens struct {
-	roleTokens
-	// installed are the owners whose installation covers the repositories GitHub holds.
-	installed []string
+	servedOwnerTokens
 
 	mu     sync.Mutex
 	minted []string
@@ -258,10 +248,7 @@ func (t *mintingTokens) Token(ctx context.Context, role appauth.AppRole, owner s
 	t.mu.Lock()
 	t.minted = append(t.minted, strings.ToLower(owner))
 	t.mu.Unlock()
-	if !slices.ContainsFunc(t.installed, func(held string) bool { return strings.EqualFold(held, owner) }) {
-		return appauth.Lease{}, fmt.Errorf("no installation of the %s App on %s covers the repository", role, owner)
-	}
-	return t.roleTokens.Token(ctx, role, owner)
+	return t.servedOwnerTokens.Token(ctx, role, owner)
 }
 
 // owners is every owner a token was minted for, lowercased, sorted and once each.
@@ -279,16 +266,11 @@ func (t *mintingTokens) owners() []string {
 // to cybermonklabs/legion, at main.
 func transferredRuntime(t *testing.T, installs *installations, tokens *mintingTokens) *workflowRuntime {
 	t.Helper()
-	ctx := context.Background()
-	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "301 cybermonklabs/legion", "cybermonklabs/legion": "cybermonklabs/legion@main"})
+	github := newNamedGitHub(t, map[string]string{renameFrom: "301 " + renameTo, renameTo: renameTo + "@main"})
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: &repositoryDispatch{},
 		dispatchProject: "LEGION", installs: installs, tokens: tokens, repositories: newRepositories("LEGION", transferredLegion), log: quietLogger()}
 	w.defaultBranches = newDefaultBranches(tokens, w.repositories, github.url, defaultBranchTTL, time.Now)
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		return w.records.PutIssue(ctx, tx, anchorOn("LEGION-1", "sjawhar/legion"))
-	}); err != nil {
-		t.Fatal(err)
-	}
+	putOutboxIssue(t, w.pool, w.records, anchorOn("LEGION-1", renameFrom))
 	return w
 }
 
@@ -297,13 +279,13 @@ func transferredRuntime(t *testing.T, installs *installations, tokens *mintingTo
 // owner's: the refresher's first job reads both names (readPairs) and prepares the record's
 // repository under the name the rename rule serves it as (prepareLive), so the mint of a role's
 // token, the read of its default branch and the gh bundle's owner alias (bundleDirs'
-// renames.OwnerAliases) are each the new owner's. Control (check a-go, item 6): with served
-// meaning a repository that a record names, sjawhar/legion is served under its own name and each
-// of the three goes to sjawhar, whose installation covers nothing.
+// renames.OwnerAliases) are each the new owner's. Control (dispatch://INFRA-4401 check a-go, item
+// 6): with served meaning a repository that a record names, sjawhar/legion is served under its own
+// name and each of the three goes to sjawhar, whose installation covers nothing.
 func TestARecordOnAPairsOldNameGetsTheNewOwner(t *testing.T) {
 	ctx := context.Background()
-	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
-	tokens := &mintingTokens{installed: []string{"cybermonklabs"}}
+	const old, moved = renameFrom, renameTo
+	tokens := &mintingTokens{servedOwnerTokens: servedOwnerTokens{owner: "cybermonklabs"}}
 	w := transferredRuntime(t, &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}, tokens)
 	w.prepareAtStart(ctx)
 	if got := w.repositories.serving(ghrepo.MustParse(old)); got.String() != moved {
@@ -324,15 +306,15 @@ func TestARecordOnAPairsOldNameGetsTheNewOwner(t *testing.T) {
 }
 
 // An issue Dispatch resolves to a configured pair's old name, with nothing read for either name
-// yet, is recorded on the pair's new name (D1): GitHub answers that neither role App is installed
-// on the old name, which a transfer leaves, so the preparation reads the pair's other name and
-// both Apps answer installed there (readRecordable). The record takes GitHub's name and default
-// branch of the new name, and the read is kept under both names, so the issue's apply finds it
-// under the name it resolves to. Control: with the read of the pair's other name removed, the
-// issue is refused for the Apps the old name lacks.
+// yet, is recorded on the pair's new name (INFRA-4401 D1): GitHub answers that neither role App is
+// installed on the old name, which a transfer leaves, so the preparation reads the pair's other
+// name and both Apps answer installed there (readRecordable). The record takes GitHub's name and
+// default branch of the new name, and the read is kept under both names, so the issue's apply
+// finds it under the name it resolves to. Control: with the read of the pair's other name removed,
+// the issue is refused for the Apps the old name lacks.
 func TestAnIssueResolvingToAPairsOldNameIsRecordedOnItsNewName(t *testing.T) {
 	ctx := context.Background()
-	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
+	const old, moved = renameFrom, renameTo
 	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}
 	github := newNamedGitHub(t, map[string]string{old: "301 " + moved, moved: moved + "@main"})
 	repos := newRepositories("LEGION", transferredLegion)
@@ -352,15 +334,15 @@ func TestAnIssueResolvingToAPairsOldNameIsRecordedOnItsNewName(t *testing.T) {
 }
 
 // A boot whose installation read of a configured pair's `to` does not answer still serves the
-// pair as configured (D2): until GitHub has answered both role Apps' reads of the `to`, a record
-// on the `from` is served under the `to`, so the mint of its role's token is the new owner's,
-// never the old owner's, whose installation no longer covers the repository (the outage of
-// 2026-11-06, api/handoff_rename_test.go). Control: with an unanswered read counted as not served,
-// the record is served under its own name and the mint goes to sjawhar, which refuses it.
+// pair as configured (INFRA-4401 D2): until GitHub has answered both role Apps' reads of the `to`,
+// a record on the `from` is served under the `to`, so the mint of its role's token is the new
+// owner's, never the old owner's, whose installation no longer covers the repository (the outage
+// of 2026-11-06, api/handoff_rename_test.go). Control: with an unanswered read counted as not
+// served, the record is served under its own name and the mint goes to sjawhar, which refuses it.
 func TestAnUnansweredReadOfAPairsNewNameStillServesIt(t *testing.T) {
 	ctx := context.Background()
-	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
-	tokens := &mintingTokens{installed: []string{"cybermonklabs"}}
+	const old, moved = renameFrom, renameTo
+	tokens := &mintingTokens{servedOwnerTokens: servedOwnerTokens{owner: "cybermonklabs"}}
 	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}
 	installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, "implement "+moved)
 	w := transferredRuntime(t, installs, tokens)

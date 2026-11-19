@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -91,15 +90,18 @@ func repositoryRigJS(t *testing.T, installs *installations, opts ...func(*workfl
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1)}
 	// The records ask the refresher for a read of the live records at the commit of each write that
 	// can change them, as the daemon's do (projectRecords, refreshLive), so a repository a new
-	// record names is among the ones whose bad answers the refresher reads again.
-	w.records = projectRecords{Store: record.NewStore(), project: "LEGION", live: w.wakeLive}
+	// record names is among the ones whose bad answers the refresher reads again. The anchors are
+	// written through the bare store, which asks for none: heardAtBoot reads them below, so such a
+	// read would find nothing the boot's did not.
+	records := projectRecords{Store: record.NewStore(), project: "LEGION", live: w.wakeLive}
+	w.records = records
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
 		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		for _, anchor := range []record.Issue{anchorOn(anchorWidgets, "acme/widgets"), anchorOn(anchorTools, "zeta/tools")} {
-			if err := w.records.PutIssue(ctx, tx, anchor); err != nil {
+			if err := records.Store.PutIssue(ctx, tx, anchor); err != nil {
 				return err
 			}
 			if err := openTreeTx(ctx, tx, "LEGION", anchor.Key); err != nil {
@@ -135,7 +137,7 @@ func repositoryRigJS(t *testing.T, installs *installations, opts ...func(*workfl
 // App answered not installed, or why a read did not answer.
 func prepared(w *workflowRuntime, repo string) bool {
 	entry := w.repositories.entryOf(repo)
-	return served(w, repo) || entry.readError != "" || len(entry.missing()) != 0
+	return recordsOn(w, repo) || entry.readError != "" || len(entry.missing()) != 0
 }
 
 // rigHandlers is the rig's engine and admission (of three slots), wired to the rig's runtime as the
@@ -272,8 +274,8 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 	w, client, installs, stream := repositoryRig(t, map[string]bool{"review acme/widgets": true, "review zeta/tools": true})
 	client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}
 	for _, repo := range []string{"acme/widgets", "zeta/tools"} {
-		if entry := w.repositories.entryOf(repo); served(w, repo) || !slices.Equal(entry.missing(), []appauth.AppRole{appauth.Review}) {
-			t.Fatalf("%s recorded on %v, entry %+v; want nothing recorded on it and its review App named missing", repo, served(w, repo), entry)
+		if entry := w.repositories.entryOf(repo); recordsOn(w, repo) || !slices.Equal(entry.missing(), []appauth.AppRole{appauth.Review}) {
+			t.Fatalf("%s recorded on %v, entry %+v; want nothing recorded on it and its review App named missing", repo, recordsOn(w, repo), entry)
 		}
 	}
 	if filters := githubFilterSubjects(t, stream); !slices.Contains(filters, "notifications.github.acme.widgets.>") || !slices.Contains(filters, "notifications.github.zeta.tools.>") {
@@ -497,33 +499,6 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 	}
 }
 
-// failingGitHub answers GET /repos/{owner}/{repo} as newNamedGitHub does, and 502 while fail is
-// set: for every path, or only for those containing only when it is set.
-type failingGitHub struct {
-	named map[string]string
-	only  string
-	fail  atomic.Bool
-}
-
-func (g *failingGitHub) start(t *testing.T) string {
-	t.Helper()
-	named := newNamedGitHub(t, g.named)
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		if g.fail.Load() && (g.only == "" || strings.Contains(r.URL.Path, g.only)) {
-			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
-			return
-		}
-		proxied, err := http.Get(named.url + r.URL.Path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		defer proxied.Body.Close()
-		w.WriteHeader(proxied.StatusCode)
-		_, _ = io.Copy(w, proxied.Body)
-	}})
-}
-
 // quickInstallReads shortens installReadRetry for a test, restoring it once the rig the test
 // opens after it has stopped reading it.
 func quickInstallReads(t *testing.T) {
@@ -533,9 +508,9 @@ func quickInstallReads(t *testing.T) {
 	t.Cleanup(func() { installReadRetry = retry })
 }
 
-// served is whether w records an issue that resolves to repo on it now: a preparation found both
-// role Apps installed on it and GitHub naming it (repositories.lookup).
-func served(w *workflowRuntime, repo string) bool {
+// recordsOn is whether w records an issue that resolves to repo on it now: a preparation found
+// both role Apps installed on it and GitHub naming it (repositories.lookup).
+func recordsOn(w *workflowRuntime, repo string) bool {
 	_, recorded := w.repositories.lookup(repo)
 	return recorded
 }
@@ -571,14 +546,14 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	installs := &installations{}
 	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
 	w, client, installs, stream := repositoryRigWith(t, installs)
-	if !served(w, "acme/widgets") {
+	if !recordsOn(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not recorded on, want it recorded on beside the repository whose read failed")
 	}
 	if entry := w.repositories.entryOf("zeta/tools"); entry.answered() || !strings.Contains(entry.readError, "the implement App's installation on zeta/tools could not be read") {
 		t.Fatalf("zeta/tools' entry = %+v, want it unanswered for its failed read", entry)
 	}
 	testwait.Eventually(t, "zeta/tools' installation read again", func() bool { return installs.reads("implement zeta/tools") >= 3 })
-	if served(w, "zeta/tools") {
+	if recordsOn(w, "zeta/tools") {
 		t.Fatal("zeta/tools recorded on while its read still fails")
 	}
 
@@ -603,13 +578,13 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	}
 
 	installs.setFailing(nil, "implement zeta/tools")
-	testwait.Eventually(t, "zeta/tools recorded on once GitHub answers", func() bool { return served(w, "zeta/tools") })
+	testwait.Eventually(t, "zeta/tools recorded on once GitHub answers", func() bool { return recordsOn(w, "zeta/tools") })
 	// A later preparation of acme/widgets, as a launch's (prepareLive), whose review App read fails.
 	installs.setFailing(errors.New("GitHub answered 502"), "review acme/widgets")
-	if _, err := w.prepareLive(ctx, ghrepo.MustParse("acme/widgets"), true); err == nil {
+	if _, err := w.prepareLive(ctx, ghrepo.MustParse("acme/widgets"), w.onceRecordedBranches(ctx)); err == nil {
 		t.Fatal("the preparation of acme/widgets whose review App read failed answered, want its failure")
 	}
-	if !served(w, "acme/widgets") {
+	if !recordsOn(w, "acme/widgets") {
 		t.Fatalf("acme/widgets no longer recorded on once its read failed (entry %+v), want it kept on its last answer", w.repositories.entryOf("acme/widgets"))
 	}
 	if bad := w.badAnswers(); len(bad) != 1 || !strings.HasPrefix(bad[0], "acme/widgets: ") {
@@ -860,11 +835,11 @@ func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
 	installs := &installations{delay: 600 * time.Millisecond}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	w, _, installs, _ := repositoryRigWith(t, installs)
-	if served(w, "zeta/tools") {
+	if recordsOn(w, "zeta/tools") {
 		t.Fatal("zeta/tools served at boot while its read fails")
 	}
 	installs.setFailing(nil, "implement zeta/tools")
-	if !within(10*time.Second, func() bool { return served(w, "zeta/tools") }) {
+	if !within(10*time.Second, func() bool { return recordsOn(w, "zeta/tools") }) {
 		t.Fatalf("zeta/tools not served after %d slow reads, want it served once GitHub answers", installs.reads("implement zeta/tools"))
 	}
 }
@@ -951,7 +926,7 @@ func serveAndRecover(t *testing.T, w *workflowRuntime, installs *installations) 
 	t.Helper()
 	installs.setFailing(nil, "implement zeta/tools")
 	testwait.Eventually(t, "zeta/tools recorded on and recovered", func() bool {
-		return served(w, "zeta/tools") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+		return recordsOn(w, "zeta/tools") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
 }
 
@@ -1225,7 +1200,7 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 
 	installs.setFailing(nil, "implement orbit/gadgets")
 	testwait.Eventually(t, "orbit/gadgets recorded on and recovered", func() bool {
-		return served(w, "orbit/gadgets") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+		return recordsOn(w, "orbit/gadgets") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
 	time.Sleep(100 * time.Millisecond)
 	idle := len(recorded())
@@ -1389,7 +1364,7 @@ func TestARecoveryHeldPastItsBoundTellsItsReleaseWaitsOnce(t *testing.T) {
 	before := h.notices(t)
 	h.behind(t, heldParent)
 	h.serve()
-	testwait.Eventually(t, "the recovery's listing held", func() bool { return served(h.w, "zeta/tools") && h.admission.Held() })
+	testwait.Eventually(t, "the recovery's listing held", func() bool { return recordsOn(h.w, "zeta/tools") && h.admission.Held() })
 	testwait.Eventually(t, "the release wait told past the bound", func() bool { return h.notices(t) > before })
 	notices := treeNotices(t, h.w, heldTree)[before:]
 	if len(notices) != 1 || !strings.Contains(notices[0], heldChild+" (its parent "+heldParent+" is not recorded: release "+heldParent+" first, then "+heldChild+")") {
@@ -1583,7 +1558,7 @@ func TestARecoveryHeldWithReleaseWaitsIsToldAtItsBoundNotItsBackoff(t *testing.T
 	before := h.notices(t)
 	h.behind(t, "LEGION-1950")
 	h.serve()
-	testwait.Eventually(t, "the recovery's listing held", func() bool { return served(h.w, "zeta/tools") && h.admission.Held() })
+	testwait.Eventually(t, "the recovery's listing held", func() bool { return recordsOn(h.w, "zeta/tools") && h.admission.Held() })
 	start := time.Now()
 	if !within(1500*time.Millisecond, func() bool { return h.notices(t) > before }) {
 		t.Fatalf("no notice %s after the hold began, want one at about the 500ms bound, before the 2s backoff", time.Since(start))
@@ -1604,7 +1579,7 @@ func TestARecoveryWhoseHoldFlapsIsToldOnceAtTheBound(t *testing.T) {
 	before := h.notices(t)
 	h.behind(t, "LEGION-1960")
 	h.serve()
-	testwait.Eventually(t, "zeta/tools served", func() bool { return served(h.w, "zeta/tools") })
+	testwait.Eventually(t, "zeta/tools served", func() bool { return recordsOn(h.w, "zeta/tools") })
 	start := time.Now()
 	// Each run's hold is released at the next poll, so the flap is seen as Held turning false
 	// between runs that keep listing.
@@ -1629,7 +1604,7 @@ func failPastTheBound(t *testing.T, fault, clear func(h *heldRecovery)) {
 	before := h.notices(t)
 	h.behind(t, "LEGION-1970")
 	h.serve()
-	testwait.Eventually(t, "the recovery's listing held", func() bool { return served(h.w, "zeta/tools") && h.admission.Held() })
+	testwait.Eventually(t, "the recovery's listing held", func() bool { return recordsOn(h.w, "zeta/tools") && h.admission.Held() })
 	fault(h)
 	time.Sleep(2 * recoveryHoldBound)
 	listings, reads := h.client.listingCount(), h.installs.reads("implement zeta/tools")
@@ -1676,8 +1651,8 @@ func TestARecoveryWhoseNoticeFailsPastItsBoundWaitsItsBackoff(t *testing.T) {
 // from acme/widgets to cybermonklabs/widgets, and a done record on orbit/gadgets, against a
 // Dispatch whose repository settings name zeta/extra for the project as well. zeta/extra is in
 // neither set, and the boot asks Dispatch nothing under /api/v1/settings/repo-projects. Control
-// (check a-go, item 3): with the boot's sets read from those settings again, zeta/extra is heard
-// and cached, and the count of requests under the route is not 0.
+// (dispatch://INFRA-4401 check a-go, item 3): with the boot's sets read from those settings
+// again, zeta/extra is heard and cached, and the count of requests under the route is not 0.
 func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 	ctx := context.Background()
 	var settings atomic.Int64
@@ -1724,8 +1699,8 @@ func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 
 // Each of the refresher's six jobs (refreshRepositories) runs on its own cause, with nothing in
 // the sub-test standing in for it: each sub-test fails with its job deleted from the refresher and
-// nothing in its place (check a-go, item 7). republishHeard, job 4, keeps a test of its own besides
-// (heard_republish_test.go).
+// nothing in its place (dispatch://INFRA-4401 check a-go, item 7). republishHeard, job 4, keeps a
+// test of its own besides (heard_republish_test.go).
 func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 	t.Run("job 1 prepares the repositories the records name as the refresher starts", func(t *testing.T) {
 		// prepareAtStart: with no admission, launch or other read, each anchor's repository has
@@ -1733,7 +1708,7 @@ func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 		installs := &installations{}
 		w, client, _, _ := repositoryRigWith(t, installs)
 		for _, repo := range []string{"acme/widgets", "zeta/tools"} {
-			if !served(w, repo) {
+			if !recordsOn(w, repo) {
 				t.Fatalf("%s is not recorded on after the refresher's start (entry %+v), want the first job's preparation of it", repo, w.repositories.entryOf(repo))
 			}
 			for _, role := range []string{"implement ", "review "} {
@@ -1807,7 +1782,7 @@ func TestEachRefresherJobRunsOnItsOwnCause(t *testing.T) {
 		github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", 2*time.Second, &reset))
 		w, _, _, _ := repositoryRigWith(t, &installations{}, limitedRig(t, github, &syncBuffer{}))
 		resetAt := time.Unix(reset.Load(), 0)
-		if !served(w, "zeta/tools") {
+		if !recordsOn(w, "zeta/tools") {
 			t.Fatalf("zeta/tools is not recorded on through the limit (entry %+v), want it served on the branch its record holds", w.repositories.entryOf("zeta/tools"))
 		}
 		testwait.Eventually(t, "zeta/tools read from GitHub again after the limit's reset", func() bool {

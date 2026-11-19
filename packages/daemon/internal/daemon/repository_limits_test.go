@@ -108,24 +108,13 @@ func secondaryLimit(w http.ResponseWriter) {
 
 // limitedRig is an option of repositoryRigWith that has the rig's runtime read each repository's
 // default branch from github and log to logs, as JSON, as the boot wires it (heldThroughLimit told
-// of each read answered from the branch held), with each of recorded recorded beside the anchors
-// before the boot reads the records, as an earlier boot of the project left them.
-func limitedRig(t *testing.T, github *limitedGitHub, logs *syncBuffer, recorded ...record.Issue) func(*workflowRuntime) {
+// of each read answered from the branch held).
+func limitedRig(t *testing.T, github *limitedGitHub, logs *syncBuffer) func(*workflowRuntime) {
 	t.Helper()
 	return func(w *workflowRuntime) {
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
 		w.defaultBranches.onHold = w.heldThroughLimit
 		w.log = slog.New(slog.NewJSONHandler(logs, nil))
-		if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
-			for _, issue := range recorded {
-				if err := w.records.PutIssue(context.Background(), tx, issue); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("record the project's issues: %v", err)
-		}
 	}
 }
 
@@ -201,8 +190,8 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 	if repos, _ := prepared["repositories"].([]any); !slices.Contains(repos, any("zeta/tools")) || !slices.Contains(repos, any("acme/widgets")) {
 		t.Fatalf("the first job prepared %v, want acme/widgets and zeta/tools", prepared["repositories"])
 	}
-	if !served(w, "zeta/tools") || !served(w, "acme/widgets") {
-		t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want both", served(w, "zeta/tools"), served(w, "acme/widgets"))
+	if !recordsOn(w, "zeta/tools") || !recordsOn(w, "acme/widgets") {
+		t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want both", recordsOn(w, "zeta/tools"), recordsOn(w, "acme/widgets"))
 	}
 	held := loggedLines(t, logs.String(), heldLine)
 	if len(held) != 1 || held[0]["repo"] != "zeta/tools" || held[0]["defaultBranch"] != "main" || held[0]["rateLimit"] != "15000" ||
@@ -228,7 +217,7 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Before(resetAt) || reads[1].After(resetAt.Add(10*time.Second)) {
 		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more soon after the reset at %s", reads, resetAt)
 	}
-	if !served(w, "zeta/tools") {
+	if !recordsOn(w, "zeta/tools") {
 		t.Fatal("zeta/tools is not recorded on after its read again")
 	}
 }
@@ -236,8 +225,8 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 // A preparation whose read of a repository's default branch GitHub refuses for a spent rate limit,
 // where no record holds a branch for the repository — the launch of an issue no record names —
 // keeps the limit as the repository's read error and refuses that launch alone for now, naming the
-// limit, rather than holding a branch nothing recorded (holdLimited's unheld). Nothing is held, so
-// the next launch after the reset reads GitHub once more and works the repository on its answer.
+// limit, rather than holding a branch nothing recorded (holdLimited answering none held). Nothing
+// is held, so the next launch reads GitHub once more and works the repository on its answer.
 func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnceMore(t *testing.T) {
 	ctx := context.Background()
 	var reset atomic.Int64
@@ -258,14 +247,12 @@ func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnce
 	if _, kept := w.defaultBranches.Kept("zeta/tools"); kept {
 		t.Fatal("a default branch is held for zeta/tools, want none: no record names it")
 	}
-	resetAt := time.Unix(reset.Load(), 0)
-	time.Sleep(time.Until(resetAt) + 100*time.Millisecond)
 	repo, branch, err := w.launchRepository(ctx, "LEGION-5")
 	if err != nil || repo.String() != "zeta/tools" || branch != "trunk" {
-		t.Fatalf("the launch after the reset = %s@%s, %v; want GitHub's zeta/tools@trunk", repo, branch, err)
+		t.Fatalf("the next launch = %s@%s, %v; want GitHub's zeta/tools@trunk", repo, branch, err)
 	}
-	if reads := github.readsOf("zeta/tools"); len(reads) != 2 || reads[1].Before(resetAt) {
-		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more after the reset at %s", reads, resetAt)
+	if reads := github.readsOf("zeta/tools"); len(reads) != 2 {
+		t.Fatalf("GitHub was read for zeta/tools at %v, want the refused read and one more by the next launch", reads)
 	}
 }
 
@@ -286,8 +273,8 @@ func TestARepositoryGitHubStillRateLimitsIsServedOnItsHeldBranchUntilGitHubAnswe
 	})
 	logs := &syncBuffer{}
 	w, _, _, _ := repositoryRigWith(t, &installations{}, limitedRig(t, github, logs))
-	if !served(w, "zeta/tools") || !served(w, "acme/widgets") {
-		t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want both", served(w, "zeta/tools"), served(w, "acme/widgets"))
+	if !recordsOn(w, "zeta/tools") || !recordsOn(w, "acme/widgets") {
+		t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want both", recordsOn(w, "zeta/tools"), recordsOn(w, "acme/widgets"))
 	}
 	testwait.Eventually(t, "zeta/tools read again after the wait GitHub asked for and held again", func() bool {
 		return len(linesFor(loggedLines(t, logs.String(), heldLine), "zeta/tools")) >= 2
@@ -300,7 +287,7 @@ func TestARepositoryGitHubStillRateLimitsIsServedOnItsHeldBranchUntilGitHubAnswe
 	if reads := github.readsOf("zeta/tools"); len(reads) < 2 || reads[1].Sub(reads[0]) < time.Second {
 		t.Fatalf("GitHub was read for zeta/tools at %v, want the read again a second after the refused one, as Retry-After asked", reads)
 	}
-	if !served(w, "zeta/tools") || !served(w, "acme/widgets") {
+	if !recordsOn(w, "zeta/tools") || !recordsOn(w, "acme/widgets") {
 		t.Fatal("a repository is no longer recorded on while GitHub's limit refuses zeta/tools, want both served throughout")
 	}
 	limiting.Store(false)
@@ -337,8 +324,8 @@ func TestAReadAfterARateLimitThatGetsNoAnswerLeavesTheRepositoryServed(t *testin
 	testwait.Eventually(t, "the read after the limit failing, logged", func() bool {
 		return len(linesFor(loggedLines(t, logs.String(), failed), "zeta/tools")) != 0
 	})
-	if !served(w, "zeta/tools") || !served(w, "acme/widgets") {
-		t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want both: the unanswered read refuses nothing", served(w, "zeta/tools"), served(w, "acme/widgets"))
+	if !recordsOn(w, "zeta/tools") || !recordsOn(w, "acme/widgets") {
+		t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want both: the unanswered read refuses nothing", recordsOn(w, "zeta/tools"), recordsOn(w, "acme/widgets"))
 	}
 }
 
@@ -373,7 +360,7 @@ func TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit(t *testing.T) {
 	if reads := github.readsOf("zeta/tools"); len(reads) != 1 {
 		t.Fatalf("GitHub was read for zeta/tools %d times, want the one refused read and none inside the limit", len(reads))
 	}
-	if !served(w, "zeta/tools") {
+	if !recordsOn(w, "zeta/tools") {
 		t.Fatal("zeta/tools is not recorded on, want it served at the recorded main")
 	}
 }
@@ -400,8 +387,8 @@ func TestADefaultBranchRead404Or500IsKeptAsTheRepositorysReadError(t *testing.T)
 			if entry := w.repositories.entryOf("zeta/tools"); !strings.Contains(entry.readError, "the name and default branch of zeta/tools could not be read") || !strings.Contains(entry.readError, want) {
 				t.Fatalf("zeta/tools' read error = %q, want GitHub's answer, %q", entry.readError, want)
 			}
-			if served(w, "zeta/tools") || !served(w, "acme/widgets") {
-				t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want acme/widgets alone", served(w, "zeta/tools"), served(w, "acme/widgets"))
+			if recordsOn(w, "zeta/tools") || !recordsOn(w, "acme/widgets") {
+				t.Fatalf("recorded on zeta/tools %v, acme/widgets %v; want acme/widgets alone", recordsOn(w, "zeta/tools"), recordsOn(w, "acme/widgets"))
 			}
 			if got := len(github.readsOf("zeta/tools")); got != 1 {
 				t.Fatalf("GitHub was read for zeta/tools %d times, want once", got)
@@ -443,18 +430,18 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 				defaultBranches: newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)}
 			limited := limitedRead{repo: ghrepo.MustParse(tc.read), answer: &githubrest.Answer{Status: http.StatusForbidden},
 				wait: time.Minute, until: time.Now().Add(time.Minute)}
-			held, unheld, err := w.holdLimited(ctx, []limitedRead{limited})
+			held, ok, err := w.holdLimited(limited, w.onceRecordedBranches(ctx))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if tc.held == "" {
-				if _, kept := w.defaultBranches.Kept(tc.read); len(held) != 0 || len(unheld) != 1 || kept {
-					t.Fatalf("held %v, unheld %d, kept %v; want %s unheld and nothing kept", held, len(unheld), kept, tc.read)
+				if _, kept := w.defaultBranches.Kept(tc.read); ok || kept {
+					t.Fatalf("held %v (%v), kept %v; want %s unheld and nothing kept", held, ok, kept, tc.read)
 				}
 				return
 			}
-			if len(held) != 1 || held[0].Name.String() != tc.held || len(unheld) != 0 {
-				t.Fatalf("held %v, unheld %d; want %s served as %s", held, len(unheld), tc.read, tc.held)
+			if !ok || held.Name.String() != tc.held {
+				t.Fatalf("held %v (%v); want %s served as %s", held, ok, tc.read, tc.held)
 			}
 			if kept, ok := w.defaultBranches.Kept(tc.read); !ok || kept.Name.String() != tc.held || kept.DefaultBranch != "main" {
 				t.Fatalf("the branch held for %s = %+v, %v; want %s at main", tc.read, kept, ok, tc.held)
@@ -572,7 +559,7 @@ func TestTheFirstJobReadsTheRecordsRepositoriesRepositoryReadsAtATime(t *testing
 	w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
 	w.prepareAtStart(ctx)
 	for _, repo := range repos {
-		if !served(w, repo) {
+		if !recordsOn(w, repo) {
 			t.Fatalf("%s is not recorded on after the first job, want every repository the records name", repo)
 		}
 	}
@@ -683,16 +670,18 @@ func TestAHeldDefaultBranchAnswersAReadAfterTheHoldsReset(t *testing.T) {
 	logs := &syncBuffer{}
 	w, _, _, _ := repositoryRigWith(t, &installations{}, limitedRig(t, github, logs))
 	reads := github.readsOf("acme/widgets")
-	if len(reads) == 0 || !served(w, "acme/widgets") {
-		t.Fatalf("GitHub was read for acme/widgets at %v, recorded on %v; want the first job's read, held", reads, served(w, "acme/widgets"))
+	if len(reads) == 0 || !recordsOn(w, "acme/widgets") {
+		t.Fatalf("GitHub was read for acme/widgets at %v, recorded on %v; want the first job's read, held", reads, recordsOn(w, "acme/widgets"))
 	}
-	first := reads[:1]
-	time.Sleep(time.Until(first[0].Add(1500 * time.Millisecond)))
+	first := reads[0]
+	testwait.Eventually(t, "acme/widgets refused again after its hold's reset and held again", func() bool {
+		return len(linesFor(loggedLines(t, logs.String(), heldLine), "acme/widgets")) >= 2
+	})
 	if got, err := w.defaultBranches.Named(context.Background(), ghrepo.MustParse("acme/widgets")); err != nil || got.DefaultBranch != "main" {
 		t.Fatalf("a read of acme/widgets after its hold's reset = %+v, %v; want the held main", got, err)
 	}
 	heldAdmission(t, w, "acme/widgets")
-	if reads := github.readsOf("acme/widgets"); len(reads) < 2 || reads[1].Before(first[0].Add(time.Second)) {
+	if reads := github.readsOf("acme/widgets"); len(reads) < 2 || reads[1].Before(first.Add(time.Second)) {
 		t.Fatalf("GitHub was read for acme/widgets at %v, want a read again after the first hold's reset", reads)
 	}
 	if held := linesFor(loggedLines(t, logs.String(), heldLine), "acme/widgets"); len(held) < 2 {

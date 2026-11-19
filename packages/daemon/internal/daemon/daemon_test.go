@@ -1126,16 +1126,16 @@ func (s *shim) prompt() shimwire.Prompt {
 	return prompt
 }
 
-// liveTreeBoard is the Dispatch of a daemon booted over a live tree (bootOverALiveTree): the calls
-// every boot makes (servedBootCall) and an empty listing of issues, with every other call
-// answered 404. A request under /api/v1/settings/repo-projects, Dispatch's repo-projects table,
-// fails the test, since the daemon reads nothing of it.
-func liveTreeBoard(t *testing.T, project string) string {
+// repoProjectsBoard is the Dispatch of a daemon whose project names no repository: the calls every
+// boot makes (servedBootCall) and an empty listing of issues, with every other call answered 404.
+// A request under /api/v1/settings/repo-projects, Dispatch's repo-projects table, is answered 404
+// too, and told to onRepoProjects, since the daemon reads nothing of it.
+func repoProjectsBoard(t *testing.T, project string, onRepoProjects func(*http.Request)) string {
 	t.Helper()
 	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/v1/settings/repo-projects"):
-			t.Errorf("Dispatch request = %s %s: the daemon reads no repo-projects table", r.Method, r.URL.Path)
+			onRepoProjects(r)
 			http.NotFound(w, r)
 		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
@@ -1149,13 +1149,22 @@ func liveTreeBoard(t *testing.T, project string) string {
 	})
 }
 
+// liveTreeBoard is the Dispatch of a daemon booted over a live tree (bootOverALiveTree),
+// repoProjectsBoard failing the test on a request under /api/v1/settings/repo-projects.
+func liveTreeBoard(t *testing.T, project string) string {
+	t.Helper()
+	return repoProjectsBoard(t, project, func(r *http.Request) {
+		t.Errorf("Dispatch request = %s %s: the daemon reads no repo-projects table", r.Method, r.URL.Path)
+	})
+}
+
 // bootOverALiveTree boots a daemon whose store holds one live tree of its project, its root
 // running in implementing on repo (seedWorkflowTree), with tokens, GitHub's REST API at githubAPI
-// and logging to log. It answers the root's key, the daemon's configuration and the state's
-// entry for repo once that entry carries what the refresher's preparation of the records'
-// repositories kept (its Apps or its read error): the boot itself reads GitHub for no repository,
-// and the preparation runs once the API serves (prepareAtStart, INFRA-4401 D4).
-func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, config.Config, api.LiveRepositoryView) {
+// and logging to log. It answers the root's key, the running daemon and the state's entry for repo
+// once that entry carries what the refresher's preparation of the records' repositories kept (its
+// Apps or its read error): the boot itself reads GitHub for no repository, and the preparation
+// runs once the API serves (prepareAtStart, INFRA-4401 D4).
+func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, *daemon, api.LiveRepositoryView) {
 	t.Helper()
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 	project, err := claim.ProjectToken(cfg.Project)
@@ -1166,41 +1175,11 @@ func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubA
 	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: repo, DefaultBranch: "main", GitHubRepo: repo,
 		Project: cfg.Project, Tree: root, Title: "a tree on " + repo, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
 		DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() {
-		done <- run(ctx, cfg, log, overrides{
-			listen: heldListen, runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{},
-			workflowTokens: tokens, githubAPI: githubAPI,
-		})
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("run: %v", err)
-			}
-		case <-time.After(15 * time.Second):
-			t.Error("daemon did not stop")
-		}
-	})
+	o := fakeRuntime(fake.NewRuntime(), &built{})
+	o.workflowTokens, o.githubAPI = tokens, githubAPI
+	d := startDaemonWithin(t, cfg, o, log, 20*time.Second)
 	var entry api.LiveRepositoryView
-	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
-		select {
-		case err := <-done:
-			t.Fatalf("the daemon stopped instead of booting: %v", err)
-		default:
-		}
-		response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state")
-		if err != nil {
-			return false
-		}
-		defer response.Body.Close()
-		var state api.State
-		if json.NewDecoder(response.Body).Decode(&state) != nil || response.StatusCode != http.StatusOK {
-			return false
-		}
+	settled(t, d, "name "+repo+" with what GitHub answered for it", func(state api.State) bool {
 		for _, live := range state.Repositories.Live {
 			if live.Repo == repo && (live.Apps != nil || live.ReadError != "") {
 				entry = live
@@ -1208,10 +1187,8 @@ func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubA
 			}
 		}
 		return false
-	}) {
-		t.Fatalf("the daemon's state never named %s with what GitHub answered for it", repo)
-	}
-	return root, cfg, entry
+	})
+	return root, d, entry
 }
 
 // warnLinesNaming is each WARN line of logged, a daemon's JSON log, that holds every one of words.
@@ -1286,42 +1263,32 @@ func TestABootOverARecordWhoseInstallationReadFailsAnswersItsState(t *testing.T)
 // and the log and changes no record.
 //
 // The control is a boot preparation that returns the 404 as an error that stops the boot
-// (INFRA-4401 P4, check a-go item 4): the daemon then exits before its state names the repository.
+// (INFRA-4401 P4; dispatch://INFRA-4401 check a-go, item 4): the daemon then exits before its
+// state names the repository.
 func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
 	missing := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 	}})
 	var logged syncBuffer
-	root, cfg, entry := bootOverALiveTree(t, "acme/gone", &workflowTokenRecorder{}, missing, slog.New(slog.NewJSONHandler(&logged, nil)))
+	root, d, entry := bootOverALiveTree(t, "acme/gone", &workflowTokenRecorder{}, missing, slog.New(slog.NewJSONHandler(&logged, nil)))
 	if entry.Apps == nil || !entry.Apps.Implement || !entry.Apps.Review || !strings.HasPrefix(entry.ReadError, "the name and default branch of acme/gone could not be read: ") ||
 		!strings.Contains(entry.ReadError, "404") {
 		t.Fatalf("state's entry for acme/gone = %+v, want both Apps installed and GitHub's 404 as its read error", entry)
 	}
-	response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/readyz")
-	if err != nil {
-		t.Fatalf("GET /readyz: %v", err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("GET /readyz = %d, want 200: the daemon serves over a record on a missing repository", response.StatusCode)
+	if status, body := d.request(http.MethodGet, "/readyz", nil, false); status != http.StatusOK {
+		t.Fatalf("GET /readyz = %d %s, want 200: the daemon serves over a record on a missing repository", status, body)
 	}
 	if warned := warnLinesNaming(logged.String(), "leaves it unworkable for now", `"repo":"acme/gone"`, "the name and default branch of acme/gone could not be read: "); len(warned) != 1 {
 		t.Fatalf("WARN lines naming acme/gone's read error = %q, want one", warned)
 	}
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	st, err := store.Open(context.Background(), d.cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	var kept *record.Issue
-	if err := pgx.BeginFunc(context.Background(), st.Pool(), func(tx pgx.Tx) error {
-		kept, err = record.NewStore().Issue(context.Background(), tx, root)
-		return err
-	}); err != nil {
-		t.Fatalf("read %s: %v", root, err)
-	}
-	if kept == nil || kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
+	kept := storedIssueOf(t, context.Background(), st.Pool(), record.NewStore(), root)
+	if kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
 		t.Fatalf("%s after the boot = %+v, want it unchanged on acme/gone@main in implementing", root, kept)
 	}
 }
@@ -1329,10 +1296,11 @@ func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
 // No boot warning names commit_issue_trailer_repos or a configured rename: the daemon reads no
 // table of Dispatch's about repositories, so a trailer repository or a pair's name that no such
 // table names is no gap to warn of, and nothing of the boot or of the refresher's first job says
-// either (check a-go, item 9). Here the project's commit_issue_trailer_repos names orbit/gadgets
-// and repository_renames pairs sjawhar/legion with cybermonklabs/legion, and no record names any
-// of them. Control: with either warning back (the boot's warning of a trailer repository, or of a
-// pair naming a repository the project does not serve), a WARN line names it.
+// either (dispatch://INFRA-4401 check a-go, item 9). Here the project's commit_issue_trailer_repos
+// names orbit/gadgets and repository_renames pairs sjawhar/legion with cybermonklabs/legion
+// (transferredLegion), and no record names any of them. Control: with either warning back (the
+// boot's warning of a trailer repository, or of a pair naming a repository the project does not
+// serve), a WARN line names it.
 func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	if cfg.Projects == nil {
@@ -1341,7 +1309,7 @@ func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
 	project := cfg.Projects[cfg.Project]
 	project.CommitIssueTrailerRepos = []ghrepo.Repository{ghrepo.MustParse("orbit/gadgets")}
 	cfg.Projects[cfg.Project] = project
-	cfg.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	cfg.RepositoryRenames = transferredLegion
 	var logged syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens = &workflowTokenRecorder{}

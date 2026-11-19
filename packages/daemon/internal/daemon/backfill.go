@@ -49,13 +49,22 @@ func leaveUnfilled(log *slog.Logger, key, repo, why string) {
 		"issue", key, "repo", repo, "cause", why, "retryIn", installReadRetry.Initial.String())
 }
 
-// writeBackfill runs write in one transaction under the lock every fact applies under
-// (intake.SerializeFacts), so no fact applies with a copy of a record read before the backfill
-// wrote it.
-func writeBackfill(ctx context.Context, pool *store.Pool, write func(pgx.Tx) error) error {
+// leaveUnnamed says that key's record, which carries its repository, repo, is left without
+// GitHub's spelling of it (nameRepositories), and why it was left.
+func leaveUnnamed(log *slog.Logger, key, repo, why string) {
+	log.Warn("workflow backfill: a record is left as it is, without GitHub's spelling of its repository, and the backfill tries it again",
+		"issue", key, "repo", repo, "cause", why, "retryIn", installReadRetry.Initial.String())
+}
+
+// serializedTx runs write in one transaction under the lock every fact applies under
+// (intake.SerializeFacts), so no fact applies with a copy of a record read before write wrote it
+// or read it: the backfill's writes (fillRepositories, nameRepositories), the rename pass's
+// (renamePass.write) and the refresher's read of the live records (refreshLive). A lock not taken
+// is the error what names, wrapping the lock's own.
+func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
-			return fmt.Errorf("serialize the backfill with every fact: %w", err)
+			return fmt.Errorf("%s: %w", what, err)
 		}
 		return write(tx)
 	})
@@ -128,7 +137,10 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 	if err != nil {
 		return false, true, err
 	}
-	type fill struct{ key, repo, branch, github string }
+	type fill struct {
+		key string
+		filling
+	}
 	fills := make([]fill, 0, len(unfilled))
 	for _, issue := range unfilled {
 		if resolved[issue.Key] == "" {
@@ -142,18 +154,18 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 			left = true
 			continue
 		}
-		why, values := fillOf(ctx, issue, repo, pulls, clones, stateDir, named, renames)
-		if why != "" {
-			leaveUnfilled(log, issue.Key, repo.String(), why)
+		values, err := fillOf(ctx, issue, repo, pulls, clones, stateDir, named, renames)
+		if err != nil {
+			leaveUnfilled(log, issue.Key, repo.String(), err.Error())
 			left = true
 			continue
 		}
-		fills = append(fills, fill{issue.Key, values.repo, values.branch, values.github})
+		fills = append(fills, fill{issue.Key, values})
 	}
 	if len(fills) == 0 {
 		return false, left, nil
 	}
-	if err := writeBackfill(ctx, pool, func(tx pgx.Tx) error {
+	if err := serializedTx(ctx, pool, "serialize the backfill with every fact", func(tx pgx.Tx) error {
 		for _, fill := range fills {
 			if err := records.FillIssueRepository(ctx, tx, fill.key, fill.repo, fill.branch, fill.github); err != nil {
 				return err
@@ -177,10 +189,10 @@ type filling struct{ repo, branch, github string }
 // fillOf is what issue's record is filled with from repo, the repository Dispatch resolves it to,
 // as fillRepositories says, or why it is left, naming the step that settles it.
 func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pulls map[string]record.PullRequest, clones []workspace.Workspace,
-	stateDir string, named *defaultBranches, renames ghrepo.Renames) (string, filling) {
+	stateDir string, named *defaultBranches, renames ghrepo.Renames) (filling, error) {
 	read, err := backfillRead(ctx, named, repo)
 	if err != nil {
-		return fmt.Sprintf("the read of %s from GitHub failed: %v", repo, err), filling{}
+		return filling{}, err
 	}
 	spelling := read.Name.String()
 	var spelled []string
@@ -191,25 +203,25 @@ func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pul
 		}
 	}
 	if len(spelled) > 1 {
-		return fmt.Sprintf("two shared clones spell %s (%s): remove the one no issue works in", repo, strings.Join(spelled, ", ")), filling{}
+		return filling{}, fmt.Errorf("two shared clones spell %s (%s): remove the one no issue works in", repo, strings.Join(spelled, ", "))
 	}
 	if !renames.Same(spelling, read.Name.String()) {
-		return fmt.Sprintf("GitHub renamed %s to %s, and the shared clone %s still has the old name: set the repository of %s in Dispatch to %s, or remove that clone if no issue works in it",
-			repo, read.Name, spelled[0], issue.Key, read.Name), filling{}
+		return filling{}, fmt.Errorf("GitHub renamed %s to %s, and the shared clone %s still has the old name: set the repository of %s in Dispatch to %s, or remove that clone if no issue works in it",
+			repo, read.Name, spelled[0], issue.Key, read.Name)
 	}
 	if pull, ok := pulls[issue.Key]; ok && !renames.Same(pull.Repo, repo.String()) && !renames.Same(pull.Repo, read.Name.String()) {
-		return fmt.Sprintf("Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
-			repo, pull.Number, pull.Repo, pull.Repo, issue.Key, pull.Repo), filling{}
+		return filling{}, fmt.Errorf("Dispatch resolves it to %s, but its pull request #%d is on %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
+			repo, pull.Number, pull.Repo, pull.Repo, issue.Key, pull.Repo)
 	}
 	workspaces, err := issueWorkspaces(stateDir, issue.Key)
 	if err != nil {
-		return err.Error(), filling{}
+		return filling{}, err
 	}
 	if dir, in, ok := workspaceElsewhere(workspaces, repo, read.Name, renames); ok {
-		return fmt.Sprintf("Dispatch resolves it to %s, but its workspace %s is in %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
-			repo, dir, in, in, issue.Key, in), filling{}
+		return filling{}, fmt.Errorf("Dispatch resolves it to %s, but its workspace %s is in %s: set the issue's repository in Dispatch to %s (dispatch issue-update --issue %s --repo %s)",
+			repo, dir, in, in, issue.Key, in)
 	}
-	return "", filling{repo: spelling, branch: read.DefaultBranch, github: recordedSpelling(renames, spelling, read.Name)}
+	return filling{repo: spelling, branch: read.DefaultBranch, github: recordedSpelling(renames, spelling, read.Name)}, nil
 }
 
 // backfillLater is the backfill the refresher's second job tries again while a record is left
@@ -311,18 +323,18 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 	for _, issue := range unnamed {
 		repo, err := issue.Repository()
 		if err != nil {
-			leaveUnfilled(log, issue.Key, issue.Repo, err.Error())
+			leaveUnnamed(log, issue.Key, issue.Repo, err.Error())
 			left = true
 			continue
 		}
 		read, err := backfillRead(ctx, named, repo)
 		if err != nil {
-			leaveUnfilled(log, issue.Key, issue.Repo, fmt.Sprintf("the read of %s from GitHub failed: %v", repo, err))
+			leaveUnnamed(log, issue.Key, issue.Repo, err.Error())
 			left = true
 			continue
 		}
 		if !renames.Same(read.Name.String(), issue.Repo) {
-			leaveUnfilled(log, issue.Key, issue.Repo, fmt.Sprintf("GitHub renamed %s to %s, and a record keeps its repository name unless a pair of repository_renames names both; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
+			leaveUnnamed(log, issue.Key, issue.Repo, fmt.Sprintf("GitHub renamed %s to %s, and a record keeps its repository name unless a pair of repository_renames names both; only a pre-release build of this daemon leaves a record with no GitHub spelling, so recreate that build's database",
 				issue.Repo, read.Name))
 			left = true
 			continue
@@ -332,7 +344,7 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 	if len(names) == 0 {
 		return false, left, nil
 	}
-	if err := writeBackfill(ctx, pool, func(tx pgx.Tx) error {
+	if err := serializedTx(ctx, pool, "serialize the backfill with every fact", func(tx pgx.Tx) error {
 		for _, issue := range unnamed {
 			if name, ok := names[issue.Key]; ok {
 				if err := records.NameIssueRepository(ctx, tx, issue.Key, issue.Repo, name); err != nil {

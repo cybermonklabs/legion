@@ -200,10 +200,11 @@ func (d *repositoryDispatch) detailReads(key string) int {
 }
 
 // The preparation of the repositories the records name bounds each installation read by
-// installReadAttempt and nothing else: twenty slow reads, more than two rounds of repositoryReads,
-// are each answered and every repository recorded on, however long the whole preparation takes,
-// and a read longer than installReadAttempt is a read that did not answer, kept as the
-// repository's read error for the refresher to read again.
+// installReadAttempt and nothing else: ten repositories, twenty slow reads, two rounds of
+// repositoryReads that take longer as a whole than installReadAttempt, are each answered and every
+// repository recorded on, however long the whole preparation takes, and a read longer than
+// installReadAttempt is a read that did not answer, kept as the repository's read error for the
+// refresher to read again.
 func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 	read := installReadAttempt
 	t.Cleanup(func() { installReadAttempt = read })
@@ -218,7 +219,9 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 		w := &workflowRuntime{dispatch: &repositoryDispatch{}, installs: &installations{delay: 150 * time.Millisecond},
 			repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
 			defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
-		eachRepository(repos, func(repo ghrepo.Repository) { _, _ = w.prepareLive(context.Background(), repo, true) })
+		eachRepository(repos, func(repo ghrepo.Repository) {
+			_, _ = w.prepareLive(context.Background(), repo, w.onceRecordedBranches(context.Background()))
+		})
 		return w
 	}
 
@@ -238,31 +241,75 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 	}
 }
 
+// A read of a repository's default branch that GitHub never answers is bounded by
+// installReadAttempt, as every other read of a preparation is (prepareLive), so it holds up neither
+// the refresher's first job nor any job after it. Here GitHub holds zeta/tools' read open until its
+// reader goes: the first job keeps the read's deadline as zeta/tools' read error and records on
+// acme/widgets, and the refresher's loop then runs its sixth job at the close of zeta/tools'
+// tree, which takes the repository out of the cache set. Control: with prepareLive's read made on
+// the caller's context, the first job never returns and zeta/tools keeps no answer.
+func TestADefaultBranchReadGitHubNeverAnswersHoldsUpNoJobOfTheRefresher(t *testing.T) {
+	attempt := installReadAttempt
+	installReadAttempt = 300 * time.Millisecond
+	t.Cleanup(func() { installReadAttempt = attempt })
+	silent := githubtest.Server(t, githubtest.Spec{Handle: func(rw http.ResponseWriter, r *http.Request) {
+		repo := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
+		if repo == "zeta/tools" {
+			<-r.Context().Done()
+			return
+		}
+		_, _ = rw.Write([]byte(`{"full_name":"` + repo + `","default_branch":"main"}`))
+	}})
+	w, _, _, _ := repositoryRigWith(t, &installations{}, func(w *workflowRuntime) {
+		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, silent, defaultBranchTTL, time.Now)
+	})
+	if entry := w.repositories.entryOf("zeta/tools"); !strings.Contains(entry.readError, "the name and default branch of zeta/tools could not be read") ||
+		!strings.Contains(entry.readError, context.DeadlineExceeded.Error()) {
+		t.Fatalf("zeta/tools' entry = %+v, want the bounded read's deadline as its read error", entry)
+	}
+	if !recordsOn(w, "acme/widgets") {
+		t.Fatalf("acme/widgets is not recorded on (entry %+v), want it prepared beside zeta/tools' unanswered read", w.repositories.entryOf("acme/widgets"))
+	}
+	ctx := context.Background()
+	closed := anchorOn(anchorTools, "zeta/tools")
+	closed.Phase, closed.Status, closed.DispatchStatus = phase.Done, "done", "done"
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error { return w.records.PutIssue(scoped, tx, closed) }); err != nil {
+		t.Fatal(err)
+	}
+	committed()
+	testwait.Eventually(t, "the refresher's sixth job taking zeta/tools out of the cache set at its tree's close", func() bool {
+		return slices.Equal(repositoryNames(w.cacheRepositories()), []string{"acme/widgets"})
+	})
+}
+
 // The refresher's first job, the boot's preparation of the repositories the records name, records
 // on each repository whose installation reads GitHub answered and keeps, for one whose read failed,
 // transient or not, the App, the repository and the failure as its read error, which legion state
 // shows: no boot waits on it or is refused for it, and the refresher reads it again. It says so at
 // WARN, never at ERROR.
 func TestTheBootsPreparationRecordsOnTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
+	ctx := context.Background()
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/gadgets": "acme/gadgets@main"})
+	pool := isolatedOutboxPool(t)
+	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		for _, issue := range []record.Issue{doneOn("LEGION-1", "LEGION", "acme/widgets", "main"), doneOn("LEGION-2", "LEGION", "acme/gadgets", "main")} {
+			if err := records.PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, failure := range []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}, errors.New("read whether the implement App is installed on acme/gadgets failed (403)")} {
-		ctx := context.Background()
 		installs := &installations{}
 		installs.setFailing(failure, "implement acme/gadgets")
 		var logged bytes.Buffer
-		github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/gadgets": "acme/gadgets@main"})
-		w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: &repositoryDispatch{},
+		w := &workflowRuntime{pool: pool, records: records, dispatch: &repositoryDispatch{},
 			dispatchProject: "LEGION", installs: installs, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewTextHandler(&logged, nil)),
 			defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
-		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-			for _, issue := range []record.Issue{doneOn("LEGION-1", "LEGION", "acme/widgets", "main"), doneOn("LEGION-2", "LEGION", "acme/gadgets", "main")} {
-				if err := w.records.PutIssue(ctx, tx, issue); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
 		w.prepareAtStart(ctx)
 		if _, recorded := w.repositories.lookup("acme/widgets"); !recorded {
 			t.Fatalf("acme/widgets is not recorded on, want it answered beside acme/gadgets' failed read (%v)", failure)
@@ -271,7 +318,7 @@ func TestTheBootsPreparationRecordsOnTheRepositoriesWhoseInstallationReadsAnswer
 			t.Fatalf("acme/gadgets is recorded on while its implement App's read fails (%v)", failure)
 		}
 		want := "the implement App's installation on acme/gadgets could not be read: " + failure.Error()
-		view := w.repositories.view([]ghrepo.Repository{ghrepo.MustParse("acme/gadgets")}, nil)
+		view := w.repositories.view(liveOf(t, "acme/gadgets"), nil)
 		if len(view.Live) != 1 || view.Live[0].ReadError != want || view.Live[0].Apps != nil {
 			t.Fatalf("state's entry for acme/gadgets = %#v, want no Apps and the read error %q", view.Live, want)
 		}
@@ -341,15 +388,18 @@ func (d *webhookDispatch) install(repo string) {
 	d.installed[repo] = true
 }
 
-// fail has the check answer 502 with body for repo, or answer again when body is "".
+// fail has the check answer 502 with body for repo.
 func (d *webhookDispatch) fail(repo, body string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if body == "" {
-		delete(d.failing, repo)
-		return
-	}
 	d.failing[repo] = body
+}
+
+// answer has the check for repo answered again, as installed names it, after fail.
+func (d *webhookDispatch) answer(repo string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.failing, repo)
 }
 
 // checks is how many webhook App checks Dispatch was asked for repo.
@@ -362,12 +412,22 @@ func (d *webhookDispatch) checks(repo string) int {
 // liveView is the state's repositories block over the repositories w's live records name, as
 // legion state reads it (repositories.view).
 func liveView(w *workflowRuntime) api.RepositoriesView {
-	live := w.repositories.liveNames()
-	repos := make([]ghrepo.Repository, 0, len(live))
-	for _, key := range slices.Sorted(maps.Keys(live)) {
-		repos = append(repos, live[key])
+	return w.repositories.view(w.repositories.liveNames(), nil)
+}
+
+// liveOf is the live map a read of records naming repos, one record each, hands view
+// (repositoriesOf): each repository once, by its lowercased <owner>/<name>, in the first spelling.
+func liveOf(t *testing.T, repos ...string) map[string]ghrepo.Repository {
+	t.Helper()
+	issues := make([]record.Issue, 0, len(repos))
+	for index, repo := range repos {
+		issues = append(issues, record.Issue{Key: fmt.Sprintf("LEGION-%d", index+1), GitHubRepo: repo})
 	}
-	return w.repositories.view(repos, nil)
+	live, err := repositoriesOf(issues)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return live
 }
 
 // liveEntry is the state's entry for repo, compared without case, and whether the state lists it.
@@ -395,8 +455,8 @@ func TestARepositoryWithoutTheWebhookAppIsWorkedAndNamed(t *testing.T) {
 	quickInstallReads(t)
 	standIn := newWebhookDispatch(t, true, map[string]bool{"acme/widgets": false, "zeta/tools": false})
 	w, _, _, _ := repositoryRigWith(t, &installations{missing: map[string]bool{"review zeta/tools": true}}, standIn.serve)
-	if !served(w, "acme/widgets") || served(w, "zeta/tools") {
-		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want acme/widgets alone", served(w, "acme/widgets"), served(w, "zeta/tools"))
+	if !recordsOn(w, "acme/widgets") || recordsOn(w, "zeta/tools") {
+		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want acme/widgets alone", recordsOn(w, "acme/widgets"), recordsOn(w, "zeta/tools"))
 	}
 	if entry, _ := liveEntry(w, "acme/widgets"); entry.WebhookApp != notInstalledWebhookApp("acme/widgets") {
 		t.Fatalf("state's entry for acme/widgets = %+v, want it named without Dispatch's GitHub App", entry)
@@ -422,18 +482,18 @@ func TestAFailedWebhookAppCheckIsNamedAndCheckedAgainWhileTheRepositoryIsWorked(
 	message := "read the GitHub App's installation on acme/widgets: GET https://api.github.com/repos/acme/widgets/installation: status 500: Server Error"
 	standIn.fail("acme/widgets", `{"code":"GITHUB_UNREADABLE","error":"`+message+`"}`)
 	w, _, _, _ := repositoryRigWith(t, &installations{}, standIn.serve)
-	if !served(w, "acme/widgets") || !served(w, "zeta/tools") {
-		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want both", served(w, "acme/widgets"), served(w, "zeta/tools"))
+	if !recordsOn(w, "acme/widgets") || !recordsOn(w, "zeta/tools") {
+		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want both", recordsOn(w, "acme/widgets"), recordsOn(w, "zeta/tools"))
 	}
 	want := "the webhook App check failed: GITHUB_UNREADABLE: " + message
 	if entry, _ := liveEntry(w, "acme/widgets"); entry.WebhookApp != want {
 		t.Fatalf("state's entry for acme/widgets = %+v, want the webhook App gap %q", entry, want)
 	}
 	testwait.Eventually(t, "acme/widgets' webhook App checked again while the check fails", func() bool { return standIn.checks("acme/widgets") >= 3 })
-	if !served(w, "acme/widgets") {
+	if !recordsOn(w, "acme/widgets") {
 		t.Fatal("acme/widgets is no longer recorded on while its webhook App check fails, want it worked throughout")
 	}
-	standIn.fail("acme/widgets", "")
+	standIn.answer("acme/widgets")
 	testwait.Eventually(t, "acme/widgets named with no gap once Dispatch answers", func() bool {
 		entry, _ := liveEntry(w, "acme/widgets")
 		return entry.WebhookApp == ""
@@ -445,8 +505,8 @@ func TestAFailedWebhookAppCheckIsNamedAndCheckedAgainWhileTheRepositoryIsWorked(
 func TestAnOlderDispatchWithoutTheWebhookAppRouteIsNamed(t *testing.T) {
 	standIn := newWebhookDispatch(t, false, nil)
 	w, _, _, _ := repositoryRigWith(t, &installations{}, standIn.serve)
-	if !served(w, "acme/widgets") || !served(w, "zeta/tools") {
-		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want both", served(w, "acme/widgets"), served(w, "zeta/tools"))
+	if !recordsOn(w, "acme/widgets") || !recordsOn(w, "zeta/tools") {
+		t.Fatalf("recorded on acme/widgets %v, zeta/tools %v; want both", recordsOn(w, "acme/widgets"), recordsOn(w, "zeta/tools"))
 	}
 	for _, repo := range []string{"acme/widgets", "zeta/tools"} {
 		if entry, _ := liveEntry(w, repo); entry.WebhookApp != "this Dispatch does not answer the webhook App check" {
@@ -605,7 +665,7 @@ func TestTheStatesViewCarriesTheRepositoryCaches(t *testing.T) {
 	repos.fill(ghrepo.MustParse("Acme/Widgets"), ghrepo.MustParse("zeta/tools"))
 	fetched := time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC)
 	retained := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
-	view := repos.view([]ghrepo.Repository{ghrepo.MustParse("Acme/Widgets"), ghrepo.MustParse("zeta/tools")}, []sandbox.CacheStatus{
+	view := repos.view(liveOf(t, "Acme/Widgets", "zeta/tools"), []sandbox.CacheStatus{
 		{Repo: ghrepo.MustParse("acme/legacy"), Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "failing",
 			Reason: "container cache ImagePullBackOff: pull access denied (restarted 0 times)", RetainedUntil: retained},
 		{Repo: ghrepo.MustParse("acme/widgets"), Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
@@ -636,7 +696,7 @@ func TestTheStatesRepositoriesAreTheOnesTheLiveRecordsName(t *testing.T) {
 	repos.fill(ghrepo.MustParse("Acme/Widgets"))
 	repos.keepRead(ghrepo.MustParse("zeta/tools"), nameRead{installed: []bool{true, false}, failed: make([]error, len(appauth.Roles))})
 	repos.recordRepository("stranger/tools", ghbranch.Repository{Name: ghrepo.MustParse("Stranger/Tools"), DefaultBranch: "trunk"})
-	view := repos.view([]ghrepo.Repository{ghrepo.MustParse("Acme/Widgets"), ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools"), ghrepo.MustParse("orbit/gadgets")}, nil)
+	view := repos.view(liveOf(t, "Acme/Widgets", "acme/widgets", "zeta/tools", "orbit/gadgets"), nil)
 	want := []api.LiveRepositoryView{
 		{Repo: "Acme/Widgets", Apps: &api.AppInstallationsView{Implement: true, Review: true}},
 		{Repo: "orbit/gadgets"},
@@ -889,13 +949,14 @@ func TestAReleaseWaitInFlightAcrossAnAnswerIsRefusedRatherThanStranded(t *testin
 // role Apps' installations, GitHub's name and default branch. It launches on X at X's default
 // branch as GitHub names it, and the answer is kept for the issue while it holds its workspace, so
 // a second launch asks Dispatch nothing; once the workspace is gone the next launch reads Dispatch
-// again. An issue that resolves to no repository refuses that one launch with A3's text, and so do
-// a Dispatch that does not answer, a role App that is not installed on the repository and a read
-// that did not answer, each naming its cause; the next launch of another issue succeeds, so the
-// daemon is up throughout.
+// again. An issue that resolves to no repository refuses that one launch with INFRA-4401 A3's
+// text, and so do a Dispatch that does not answer, a role App that is not installed on the
+// repository and a read that did not answer, each naming its cause; the next launch of another
+// issue succeeds, so the daemon is up throughout.
 //
-// The control is issueRepository's read of the project's default back (INFRA-4401 check a-go, item
-// 5): no issue here names a repository the daemon holds a default for, so each launch would refuse.
+// The control is issueRepository's read of the project's default back (dispatch://INFRA-4401
+// check a-go, item 5): no issue here names a repository the daemon holds a default for, so each
+// launch would refuse.
 func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
 	ctx := context.Background()
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "zeta/tools": "zeta/tools@main", "zeta/gadgets": "zeta/gadgets@main"})

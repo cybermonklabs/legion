@@ -492,8 +492,8 @@ func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPrepara
 // consumer's filters in the same pass, with no restart: work in a repository the project never
 // worked gets the same event service as work in one it did (R5). The repository caches follow
 // the same records, the repositories of the project's live records, and the state lists the
-// repository from the same moment (R6). Control (check a-go, item 3b): with the record-driven
-// path deleted (hearRecorded), the repository stays unheard, uncached and unlisted.
+// repository from the same moment (R6). Control (dispatch://INFRA-4401 check a-go, item 3b): with
+// the record-driven path deleted (hearRecorded), the repository stays unheard.
 func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 	ctx := context.Background()
 	w, client, _, stream := preparationRig(t, &installations{})
@@ -534,18 +534,16 @@ func TestRecordingAnIssueOnANewRepositoryHearsItInTheSamePass(t *testing.T) {
 
 // A launch of an issue whose record names a repository the cache set does not hold — a production
 // check's look on a done issue, whose repository no live record names any longer — prepares that
-// repository first and adds it to the cache set and the heard set (launchRepository, D8), so the
-// pod it launches finds the repository's cache, with no restart. The launch works the record's
-// repository at the record's default branch. Control (check a-go, item 3b): with the launch's
-// preparation deleted (repositoryOf's launch path), the repository is neither cached nor heard.
+// repository first and adds it to the cache set and the heard set (launchRepository, INFRA-4401
+// D8), so the pod it launches finds the repository's cache, with no restart. The launch works the
+// record's repository at the record's default branch. Control (dispatch://INFRA-4401 check a-go,
+// item 3b): with the launch's preparation deleted (repositoryOf's launch path), the repository is
+// neither cached nor heard. The done record is written through the bare store, so no read of the
+// live records it would ask for replaces the cache set the launch adds to.
 func TestALaunchAddsItsRepositoryToTheCacheSetAndTheHeardSet(t *testing.T) {
 	ctx := context.Background()
 	w, _, installs, stream := preparationRig(t, &installations{})
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-		return w.records.PutIssue(ctx, tx, doneOn("LEGION-942", "LEGION", strangerNamed, "trunk"))
-	}); err != nil {
-		t.Fatal(err)
-	}
+	putOutboxIssue(t, w.pool, w.records.(projectRecords).Store, doneOn("LEGION-942", "LEGION", strangerNamed, "trunk"))
 	heard := "notifications.github." + strings.ReplaceAll(strangerNamed, "/", ".") + ".>"
 	if slices.Contains(repositoryNames(w.cacheRepositories()), strangerNamed) || slices.Contains(githubFilterSubjects(t, stream), heard) {
 		t.Fatalf("%s cached or heard before the launch, want neither: no live record names it and the boot did not read its record", strangerNamed)
@@ -576,12 +574,10 @@ func TestTheStateListsARepositoryOnlyALiveRecordNamesAfterARestart(t *testing.T)
 	w, _, _, _ := preparationRig(t, &installations{})
 	put := func(at phase.Phase, status string) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
-			return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-968", Tree: "LEGION-968", Project: "LEGION", Title: "a tree on a repository no other record names",
-				Phase: at, Generation: 1, Status: status, Rank: "A", Repo: strangerNamed, DefaultBranch: "trunk", GitHubRepo: strangerNamed})
-		}); err != nil {
-			t.Fatal(err)
-		}
+		// Written through the bare store, so no read of the live records it would ask for sets the
+		// live set before the boot's own read below does.
+		putOutboxIssue(t, w.pool, w.records.(projectRecords).Store, record.Issue{Key: "LEGION-968", Tree: "LEGION-968", Project: "LEGION", Title: "a tree on a repository no other record names",
+			Phase: at, Generation: 1, Status: status, Rank: "A", Repo: strangerNamed, DefaultBranch: "trunk", GitHubRepo: strangerNamed})
 		// The boot's own read of the records, which is where a restarted daemon learns what its
 		// records name: no preparation has read GitHub for the repository in this process.
 		if _, err := w.heardAtBoot(ctx); err != nil {

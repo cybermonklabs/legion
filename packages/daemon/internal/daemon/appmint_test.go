@@ -77,7 +77,7 @@ func jwtIssuer(t *testing.T, r *http.Request) string {
 // appTokens is a real App token manager whose GitHub is a stand-in, the implement App id 1 and the
 // review App id 2; discover answers each installation discovery, with its App and its number, from 1,
 // among that App's. The manager is returned as itself, not as the interface, so a test that counts
-// what the boot asks of it can embed it (bootMints) and keep every other method it answers.
+// what the boot asks of it can embed it (refusingMints) and keep every other method it answers.
 func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Request, app string, n int)) (*appauth.Manager, *gitHubStandIn) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -236,17 +236,12 @@ func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testin
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
 		t.Errorf("installation discoveries by App = %v, want one of each: the second attempt joins the implement App's read in flight", got)
 	}
-	retried := 0
-	for line := range strings.SplitSeq(logged.String(), "\n") {
-		if strings.Contains(line, "boot probe failed transiently") && strings.Contains(line, `"probe":"GitHub App key proof"`) {
-			retried++
-			if !strings.Contains(line, context.DeadlineExceeded.Error()) {
-				t.Errorf("the transient attempt's line = %s, want it naming the attempt's deadline", line)
-			}
-		}
+	retried := warnLinesNaming(logged.String(), "boot probe failed transiently", `"probe":"GitHub App key proof"`)
+	if len(retried) != 1 {
+		t.Fatalf("the key proof was said transient %d times, want once: the attempt its bound ended, then the one that passed", len(retried))
 	}
-	if retried != 1 {
-		t.Fatalf("the key proof was said transient %d times, want once: the attempt its bound ended, then the one that passed", retried)
+	if !strings.Contains(retried[0], context.DeadlineExceeded.Error()) {
+		t.Errorf("the transient attempt's line = %s, want it naming the attempt's deadline", retried[0])
 	}
 }
 
@@ -308,18 +303,6 @@ func (m *refusingMints) ReadToken(context.Context, appauth.AppRole, string) (app
 	return appauth.Lease{}, errors.New("this token source mints no lease")
 }
 
-// noInstallationWarnings is each WARN line of logged, a daemon's JSON log, that says a GitHub App
-// is installed on no account (proveAppKeys).
-func noInstallationWarnings(logged string) []string {
-	var lines []string
-	for line := range strings.SplitSeq(logged, "\n") {
-		if strings.Contains(line, `"level":"WARN"`) && strings.Contains(line, "a GitHub App is installed on no account") {
-			lines = append(lines, line)
-		}
-	}
-	return lines
-}
-
 // The boot proves each role App's key with GitHub's App-level read of its installations, GET
 // /app/installations under the App's JWT, once for each App, and mints no token for any owner: a
 // project works in each repository both role Apps reach, so no owner's installation is the boot's
@@ -328,9 +311,9 @@ func noInstallationWarnings(logged string) []string {
 // token source here refuses every mint, of a write lease or a read lease, and the boot comes up
 // all the same, having asked it for none and GitHub for no installation token.
 //
-// The control is any Token call during the boot (INFRA-4401 P4, check a-go item 8): with the
-// boot's mint per owner back (mintAtBoot), that mint is refused and the boot stops, and GitHub is
-// asked for a token.
+// The control is any Token call during the boot (INFRA-4401 P4; dispatch://INFRA-4401 check a-go,
+// item 8): with the boot's mint per owner back (mintAtBoot), that mint is refused and the boot
+// stops, and GitHub is asked for a token.
 func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 	t.Run("each App's key is proved and nothing is minted", func(t *testing.T) {
 		quickAppMints(t)
@@ -346,7 +329,7 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 		if asked, exchanged := tokens.asked.Load(), standIn.Exchanges(); asked != 0 || exchanged != 0 {
 			t.Errorf("the boot asked the token source for %d leases and GitHub for %d installation tokens, want none of either", asked, exchanged)
 		}
-		if warned := noInstallationWarnings(logged.String()); len(warned) != 0 {
+		if warned := warnLinesNaming(logged.String(), "a GitHub App is installed on no account"); len(warned) != 0 {
 			t.Errorf("the boot warned %q, want nothing: both Apps are installed on acme", warned)
 		}
 	})
@@ -382,7 +365,7 @@ func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 		if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), &refusingMints{Manager: manager}, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 			t.Fatalf("boot = %v, want the daemon up: an App installed on no account boots", err)
 		}
-		if warned := noInstallationWarnings(logged.String()); len(warned) != 1 || !strings.Contains(warned[0], `"app":"implement"`) {
+		if warned := warnLinesNaming(logged.String(), "a GitHub App is installed on no account"); len(warned) != 1 || !strings.Contains(warned[0], `"app":"implement"`) {
 			t.Fatalf("the boot's WARN lines of an App installed on no account = %q, want one naming the implement App", warned)
 		}
 	})

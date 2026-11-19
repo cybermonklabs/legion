@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,14 +22,14 @@ import (
 // A daemon boots and serves for a project that has no repository of its own — no default and no
 // row in Dispatch's repo-projects table — since it reads that table for nothing: an issue's
 // repository is Dispatch's resolution of the issue, and the repositories it prepares are the ones
-// its records name, of which a new project has none (check a-go, item 1). The first case runs the
-// real Dispatch (startScratchDispatchWithNATS, the harness of
+// its records name, of which a new project has none (dispatch://INFRA-4401 check a-go, item 1).
+// The first case runs the real Dispatch (startScratchDispatchWithNATS, the harness of
 // blockers_scratch_dispatch_test.go); the second a stand-in Dispatch that answers 404 to every
-// request under /api/v1/settings/repo-projects and counts them, and that publishes Dispatch's own
-// settings.repo_project.updated event on the project's subject after the boot: the count is 0 at
-// the boot and after the event. Control: with the boot's read of Dispatch's repo-projects table
-// put back, the first case refuses its boot for a project that table names no repository for,
-// and the second counts the boot's request and fails on its 404.
+// request under /api/v1/settings/repo-projects and counts them (repoProjectsBoard), and that
+// publishes Dispatch's own settings.repo_project.updated event on the project's subject after the
+// boot: the count is 0 at the boot and after the event. Control: with the boot's read of
+// Dispatch's repo-projects table put back, the first case refuses its boot for a project that
+// table names no repository for, and the second counts the boot's request and fails on its 404.
 func TestADaemonBootsAndServesForAProjectWithNoRepository(t *testing.T) {
 	t.Run("the real Dispatch, a project with no default and no repository row", func(t *testing.T) {
 		// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
@@ -59,21 +58,7 @@ func TestADaemonBootsAndServesForAProjectWithNoRepository(t *testing.T) {
 		var settings atomic.Int64
 		natsURL := workflowNATS(t)
 		cfg := workflowConfigOn(t, natsURL, func(t *testing.T, project string) string {
-			return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
-				switch {
-				case strings.HasPrefix(r.URL.Path, "/api/v1/settings/repo-projects"):
-					settings.Add(1)
-					http.NotFound(w, r)
-				case servedBootCall(t, w, r, project):
-				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
-					w.Header().Set("Content-Type", "application/json")
-					if err := json.NewEncoder(w).Encode([]any{}); err != nil {
-						t.Errorf("write Dispatch issues: %v", err)
-					}
-				default:
-					http.NotFound(w, r)
-				}
-			})
+			return repoProjectsBoard(t, project, func(*http.Request) { settings.Add(1) })
 		})
 		o := fakeRuntime(fake.NewRuntime(), &built{})
 		o.workflowTokens = &workflowTokenRecorder{}
@@ -109,14 +94,7 @@ func servesWithNoRepository(t *testing.T, d *daemon) {
 		status, body := d.request(http.MethodGet, "/readyz", nil, false)
 		t.Fatalf("GET /readyz = %d %s, want 200: the daemon serves a project with no repository", status, body)
 	}
-	status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
-	if status != http.StatusOK {
-		t.Fatalf("GET the state = %d; body %s", status, body)
-	}
-	var state api.State
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode the state %s: %v", body, err)
-	}
+	state, _ := settled(t, d, "answer its own state", func(api.State) bool { return true })
 	if len(state.Repositories.Live) != 0 {
 		t.Fatalf("the state's repositories.live = %+v, want none: no record names a repository", state.Repositories.Live)
 	}

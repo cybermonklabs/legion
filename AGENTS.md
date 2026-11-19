@@ -618,8 +618,9 @@ A daemon that takes its tokens from the secrets broker through `token_command` i
 `projects.<KEY>.commit_issue_trailer_repos` is the one key of `legion.yaml` that names repositories: the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends.
 A pane stamps the commit when its launch's repository is one of those names.
 The loader checks the list for its shape and for two names of one repository, and the daemon compares it with nothing at boot.
-The daemon reads no repository at boot: once its API serves, it prepares each repository its records name, reading both role Apps' installations on it, its name and default branch, and Dispatch's webhook App on it;
-it prepares a repository again when the first issue on it is admitted, when a record first names it, and when a launch finds its repository cache missing.
+The daemon reads GitHub for no repository at boot but to fill a record that lacks its repository columns: one read per such record, bounded at 15 s, a read that fails leaving the record for the refresher.
+Once its API serves, it prepares each repository its records name, reading both role Apps' installations on it, its name and default branch, and Dispatch's webhook App on it;
+it prepares a repository again when the first issue on it is admitted and when a launch works a repository the cache set does not hold (no live record names it).
 `legion state --json` reports, under `repositories.live`, each repository a live record names with each App's installation (`apps`), why GitHub's last read did not name it (`readError`), and why Dispatch's webhook App is not known to be installed on it (`webhookApp`).
 A repository a role App is not installed on, or whose installation read GitHub does not answer (any failure but a 404), changes no record and is read again, 30 s doubling to 10 min, until GitHub answers;
 one already read as installed keeps that answer while a later read does not answer.

@@ -29,10 +29,21 @@ import (
 // (ghrepo.NewRenames), so a row on the new name never matches the old one, and a second run
 // writes nothing.
 
+// RenameTable is a table whose columns hold a repository name, as a count by table names it
+// (RenameCandidate.Rows, RenameWrite.Rows).
+type RenameTable string
+
+// The tables whose columns hold a repository name, one constant each.
+const (
+	RenameTableIssues           RenameTable = "issues"
+	RenameTablePullRequests     RenameTable = "pull_requests"
+	RenameTableProductionChecks RenameTable = "production_checks"
+	RenameTableRepoNotes        RenameTable = "repo_notes"
+)
+
 // RenameTables are the tables whose columns hold a repository name, in the order the rename pass
-// writes and logs them. A count by table (RenameCandidate.Rows, RenameWrite.Rows, RenameLeft) is
-// keyed by these names.
-var RenameTables = []string{"issues", "pull_requests", "production_checks", "repo_notes"}
+// writes and logs them.
+var RenameTables = []RenameTable{RenameTableIssues, RenameTablePullRequests, RenameTableProductionChecks, RenameTableRepoNotes}
 
 // RenameCandidate is one issue whose stored rows name a rename's old name: Rows is how many rows
 // of each table (RenameTables) do, which is what its write changes, and Spellings each spelling
@@ -40,7 +51,7 @@ var RenameTables = []string{"issues", "pull_requests", "production_checks", "rep
 // named by (workspace.Location keeps the case of the name it is handed).
 type RenameCandidate struct {
 	Issue     string
-	Rows      map[string]int
+	Rows      map[RenameTable]int
 	Spellings []string
 }
 
@@ -48,20 +59,23 @@ type RenameCandidate struct {
 // by key, or of keys alone when keys is not nil (the issues whose pod ended). An issue is of
 // project when its record is (issues.project); a repository note is too when its issue's key is
 // the project's (`<project>-…`, as ClaimedIssuesSince reads the claims), since the note of an
-// issue the daemon refused to record has no record to name its project.
+// issue the daemon refused to record has no record to name its project. With keys nil, its rows
+// summed by table are what the rename pass logs as left once it has run, the count each pair
+// waits on to be zero before it can leave `repository_renames`.
 func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys []string) ([]RenameCandidate, error) {
 	byIssue := map[string]*RenameCandidate{}
 	for _, read := range []struct {
-		table, sql string
+		table RenameTable
+		sql   string
 	}{
-		{"issues", `select key, repo, github_repo from issues
+		{RenameTableIssues, `select key, repo, github_repo from issues
 			where project = $1 and (lower(repo) = lower($2) or lower(github_repo) = lower($2))
 			and ($3::text[] is null or key = any($3))`},
-		{"pull_requests", `select p.issue, p.repo, ''::text from pull_requests p join issues i on i.key = p.issue
+		{RenameTablePullRequests, `select p.issue, p.repo, ''::text from pull_requests p join issues i on i.key = p.issue
 			where i.project = $1 and lower(p.repo) = lower($2) and ($3::text[] is null or p.issue = any($3))`},
-		{"production_checks", `select c.issue, c.repo, ''::text from production_checks c join issues i on i.key = c.issue
+		{RenameTableProductionChecks, `select c.issue, c.repo, ''::text from production_checks c join issues i on i.key = c.issue
 			where i.project = $1 and lower(c.repo) = lower($2) and ($3::text[] is null or c.issue = any($3))`},
-		{"repo_notes", `select n.issue, n.resolved_repo, ''::text from repo_notes n
+		{RenameTableRepoNotes, `select n.issue, n.resolved_repo, ''::text from repo_notes n
 			where lower(n.resolved_repo) = lower($2) and ($3::text[] is null or n.issue = any($3))
 			and (starts_with(n.issue, $1 || '-') or n.issue in (select key from issues where project = $1))`},
 	} {
@@ -78,7 +92,7 @@ func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys
 			}
 			candidate := byIssue[issue]
 			if candidate == nil {
-				candidate = &RenameCandidate{Issue: issue, Rows: map[string]int{}}
+				candidate = &RenameCandidate{Issue: issue, Rows: map[RenameTable]int{}}
 				byIssue[issue] = candidate
 			}
 			candidate.Rows[read.table]++
@@ -106,7 +120,7 @@ func RenameCandidates(ctx context.Context, tx pgx.Tx, project, from string, keys
 // (RenameTables) it wrote the new name on, and the issue's pull request row it deleted, nil for
 // none.
 type RenameWrite struct {
-	Rows    map[string]int
+	Rows    map[RenameTable]int
 	Deleted *RenameCollision
 }
 
@@ -136,7 +150,7 @@ type RenameCollision struct {
 // key. The row under the new name stays, and the deletion is returned for the pass to log, naming
 // both issues.
 func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to string) (RenameWrite, error) {
-	written := RenameWrite{Rows: map[string]int{}}
+	written := RenameWrite{Rows: map[RenameTable]int{}}
 	tag, err := tx.Exec(ctx, `update issues set
 		repo = case when lower(repo) = lower($2) then $3 else repo end,
 		github_repo = case when lower(github_repo) = lower($2) then $3 else github_repo end
@@ -144,7 +158,7 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 	if err != nil {
 		return RenameWrite{}, fmt.Errorf("write %s over %s on the record of %s: %w", to, from, issue, err)
 	}
-	written.Rows["issues"] = int(tag.RowsAffected())
+	written.Rows[RenameTableIssues] = int(tag.RowsAffected())
 
 	var collision RenameCollision
 	err = tx.QueryRow(ctx, `select other.issue, other.repo, mine.repo, mine.branch, mine.number
@@ -159,7 +173,7 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 		if err != nil {
 			return RenameWrite{}, fmt.Errorf("write %s over %s on the pull request of %s: %w", to, from, issue, err)
 		}
-		written.Rows["pull_requests"] = int(tag.RowsAffected())
+		written.Rows[RenameTablePullRequests] = int(tag.RowsAffected())
 	case err != nil:
 		return RenameWrite{}, fmt.Errorf("read whether the pull request of %s would hold %s twice: %w", issue, to, err)
 	default:
@@ -170,9 +184,12 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 		written.Deleted = &collision
 	}
 
-	for _, write := range []struct{ table, sql string }{
-		{"production_checks", "update production_checks set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
-		{"repo_notes", "update repo_notes set resolved_repo = $3 where issue = $1 and lower(resolved_repo) = lower($2)"},
+	for _, write := range []struct {
+		table RenameTable
+		sql   string
+	}{
+		{RenameTableProductionChecks, "update production_checks set repo = $3 where issue = $1 and lower(repo) = lower($2)"},
+		{RenameTableRepoNotes, "update repo_notes set resolved_repo = $3 where issue = $1 and lower(resolved_repo) = lower($2)"},
 	} {
 		tag, err := tx.Exec(ctx, write.sql, issue, from, to)
 		if err != nil {
@@ -181,21 +198,4 @@ func RenameIssueRepository(ctx context.Context, tx pgx.Tx, issue, from, to strin
 		written.Rows[write.table] = int(tag.RowsAffected())
 	}
 	return written, nil
-}
-
-// RenameLeft is how many rows of each table (RenameTables) of project's issues still name from,
-// compared without case, read as RenameCandidates reads them: what the pass logs after it runs,
-// the count each pair waits on to be zero before it can leave `repository_renames`.
-func RenameLeft(ctx context.Context, tx pgx.Tx, project, from string) (map[string]int, error) {
-	var issues, pulls, checks, notes int
-	if err := tx.QueryRow(ctx, `select
-		(select count(*) from issues where project = $1 and (lower(repo) = lower($2) or lower(github_repo) = lower($2))),
-		(select count(*) from pull_requests p join issues i on i.key = p.issue where i.project = $1 and lower(p.repo) = lower($2)),
-		(select count(*) from production_checks c join issues i on i.key = c.issue where i.project = $1 and lower(c.repo) = lower($2)),
-		(select count(*) from repo_notes n where lower(n.resolved_repo) = lower($2)
-			and (starts_with(n.issue, $1 || '-') or n.issue in (select key from issues where project = $1)))`,
-		project, from).Scan(&issues, &pulls, &checks, &notes); err != nil {
-		return nil, fmt.Errorf("count the rows of %s that still name %s: %w", project, from, err)
-	}
-	return map[string]int{"issues": issues, "pull_requests": pulls, "production_checks": checks, "repo_notes": notes}, nil
 }

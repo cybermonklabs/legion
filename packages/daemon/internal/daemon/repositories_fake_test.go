@@ -35,12 +35,19 @@ func (r *repositories) fill(repos ...ghrepo.Repository) {
 }
 
 // fillRead fills read's entry as a preparation that found both role Apps installed on read.Name
-// and GitHub naming it at read.DefaultBranch would: both Apps answered installed (keepRead), so the
-// rename rule serves the name (servesRepository), and the read recorded as what an issue resolving
-// to it is recorded on (recordRepository), so an admission on it reads GitHub no further (lookup).
+// and GitHub naming it at read.DefaultBranch would: both Apps answered installed
+// (answerInstalled), so the rename rule serves the name (servesRepository), and the read recorded
+// as what an issue resolving to it is recorded on (recordRepository), so an admission on it reads
+// GitHub no further (lookup).
 func (r *repositories) fillRead(read ghbranch.Repository) {
-	r.keepRead(read.Name, nameRead{installed: slices.Repeat([]bool{true}, len(appauth.Roles)), failed: make([]error, len(appauth.Roles))})
+	answerInstalled(r, read.Name.String(), true)
 	r.recordRepository(read.Name.String(), read)
+}
+
+// answerInstalled keeps in name's entry GitHub's answer that both role Apps are installed on it,
+// or that neither is, as one preparation's reads of it would (keepRead).
+func answerInstalled(repos *repositories, name string, installed bool) {
+	repos.keepRead(ghrepo.MustParse(name), nameRead{installed: slices.Repeat([]bool{installed}, len(appauth.Roles)), failed: make([]error, len(appauth.Roles))})
 }
 
 // entryOf is a copy of the entry repo's name holds, compared without case, and the zero entry

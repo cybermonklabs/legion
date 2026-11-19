@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -77,15 +78,17 @@ func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repos
 		append([]any{"repo", read.repo.String(), "defaultBranch", held.DefaultBranch, "readAgainAt", read.until.UTC().Format(time.RFC3339)}, limitAttributes(read)...)...)
 }
 
-// holdLimited serves each of limited that a record of the project's issues holds a default branch
-// for on that branch, at once: GitHub's rate limit refuses a read for a while and says nothing
-// about the repository, and the branch a record holds is the one GitHub named when the issue was
-// recorded, which a read after the limit corrects if GitHub has since renamed it. limited is only
-// ever repositories the daemon held no read of, since Named answers a limited read of one it holds
-// from what it holds; the records are read once, and only when a read was refused. Each held one
-// stands until the limit's reset (defaultBranches.hold), so nothing reads it inside the limit, and
-// every later read GitHub's limit refuses is answered from it too, the boot's own included
-// (defaultBranches.Named); heldThroughLimit says so and has the refresher read it again then.
+// holdLimited serves read, a read GitHub refused for its rate limit, on the default branch a
+// record of the project's issues holds for its repository, where one does, at once: GitHub's rate
+// limit refuses a read for a while and says nothing about the repository, and the branch a record
+// holds is the one GitHub named when the issue was recorded, which a read after the limit corrects
+// if GitHub has since renamed it. read is only ever of a repository the daemon held no read of,
+// since Named answers a limited read of one it holds from what it holds; the records are read
+// once for the pass or the launch recorded is made for, and only when a read was refused
+// (onceRecordedBranches). A held one stands until the limit's reset (defaultBranches.hold), so
+// nothing reads it inside the limit, and every later read GitHub's limit refuses is answered from
+// it too, the boot's own included (defaultBranches.Named); heldThroughLimit says so and has the
+// refresher read it again then.
 //
 // A record holds a branch only for the repository it names itself, without case, and gives it in
 // the record's own spelling, GitHub's as recorded, which is what intake's case-sensitive subjects
@@ -96,27 +99,33 @@ func (w *workflowRuntime) heldThroughLimit(read limitedRead, held ghbranch.Repos
 // repository is held only from a read of it the daemon made itself (Named), and otherwise read
 // again as any repository with nothing held is.
 //
-// held is each so served, as the record holds it; unheld is each no record holds a branch for, for
-// the caller to keep as a read that did not answer (prepareLive), which the refresher reads again.
-func (w *workflowRuntime) holdLimited(ctx context.Context, limited []limitedRead) (held []ghbranch.Repository, unheld []limitedRead, err error) {
-	if len(limited) == 0 {
-		return nil, nil, nil
-	}
-	recorded, err := w.recordedBranches(ctx)
+// It answers the branch so served, as the record holds it, and whether one was; one no record holds
+// a branch for is for the caller to keep as a read that did not answer (prepareLive), which the
+// refresher reads again.
+func (w *workflowRuntime) holdLimited(read limitedRead, recorded recordBranches) (ghbranch.Repository, bool, error) {
+	branches, err := recorded()
 	if err != nil {
-		return nil, nil, err
+		return ghbranch.Repository{}, false, err
 	}
-	for _, read := range limited {
-		branch, ok := recorded[strings.ToLower(read.repo.String())]
-		if !ok {
-			unheld = append(unheld, read)
-			continue
-		}
-		w.defaultBranches.hold(read.repo, branch, read.until)
-		w.heldThroughLimit(read, branch)
-		held = append(held, branch)
+	branch, ok := branches[strings.ToLower(read.repo.String())]
+	if !ok {
+		return ghbranch.Repository{}, false, nil
 	}
-	return held, unheld, nil
+	w.defaultBranches.hold(read.repo, branch, read.until)
+	w.heldThroughLimit(read, branch)
+	return branch, true, nil
+}
+
+// recordBranches is the default branch the project's records hold for each repository a record
+// names (recordedBranches), as one pass of preparations, or one launch's, reads them: at most once,
+// and only once a read GitHub's rate limit refused asks for them (holdLimited).
+type recordBranches func() (map[string]ghbranch.Repository, error)
+
+// onceRecordedBranches is the records' default branches for one pass or launch under ctx
+// (recordBranches): recordedBranches, read at the first call and answered again, failure
+// included, at every later one.
+func (w *workflowRuntime) onceRecordedBranches(ctx context.Context) recordBranches {
+	return sync.OnceValues(func() (map[string]ghbranch.Repository, error) { return w.recordedBranches(ctx) })
 }
 
 // recordedBranches is the default branch the project's records hold for each repository a record
@@ -172,13 +181,18 @@ func limitAttributes(read limitedRead) []any {
 // nameRepositories): one read, bounded by installReadAttempt, answered from the read named keeps
 // within its ttl, or holds until a limit's reset, without asking GitHub (defaultBranches.Named).
 // A read that fails for any reason, GitHub's rate limit and a read GitHub does not answer among
-// them, is returned, for the caller to leave the record as it is and say so: a boot that waited
-// on GitHub for a record's repository would serve nothing meanwhile, and the refresher tries the
-// record again on installReadRetry (backfillLater), as the next boot does. No record's branch
-// stands in for the read, since what the backfill reads GitHub for is GitHub's spelling of the
-// repository the record will carry.
+// them, is returned as the cause the backfill logs ("the read of <repo> from GitHub failed: …"),
+// for the caller to leave the record as it is and say so: a boot that waited on GitHub for a
+// record's repository would serve nothing meanwhile, and the refresher tries the record again on
+// installReadRetry (backfillLater), as the next boot does. No record's branch stands in for the
+// read, since what the backfill reads GitHub for is GitHub's spelling of the repository the record
+// will carry.
 func backfillRead(ctx context.Context, named *defaultBranches, repo ghrepo.Repository) (ghbranch.Repository, error) {
 	read, cancel := context.WithTimeout(ctx, installReadAttempt)
 	defer cancel()
-	return named.Named(read, repo)
+	branch, err := named.Named(read, repo)
+	if err != nil {
+		return ghbranch.Repository{}, fmt.Errorf("the read of %s from GitHub failed: %w", repo, err)
+	}
+	return branch, nil
 }

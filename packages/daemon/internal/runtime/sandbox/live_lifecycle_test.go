@@ -45,7 +45,7 @@ func (r *liveRig) checkRootReady() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.recordRepository(r.env.repo)
+	r.cacheRepository(r.env.repo)
 	root := r.claim("root")
 	since := time.Now()
 	loc, err := r.spawn(root, true)
@@ -1311,7 +1311,7 @@ func (r *liveRig) checkIndependentProvision() error {
 // that helper hands out for LEGION_E2E_REPO the receive-pack advertisement (200), the answer it
 // gives a token that may write. What a role reaches is its App's installations: an issue of one
 // owner's repository holds a token that writes another owner's. The run's cache set holds both
-// repositories (recordRepository, here and before the root's launch), so this proves reach across
+// repositories (cacheRepository, here and before the root's launch), so this proves reach across
 // owners and nothing about a repository no live record names.
 // The advertisement is the request a `git push` opens with and writes nothing,
 // where a real push would leave a branch on a repository every run shares and nothing here would
@@ -1323,7 +1323,7 @@ func (r *liveRig) checkSecondOwner() error {
 	if err := r.recordSandbox(cache); err != nil {
 		return err
 	}
-	r.recordRepository(c.repo)
+	r.cacheRepository(c.repo)
 	since := time.Now()
 	if _, err := r.spawn(c, true); err != nil {
 		return err

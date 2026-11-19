@@ -41,14 +41,16 @@ answer, when a role App is not installed on the repository, or when GitHub does 
 read, that launch is refused too, naming the cause. The daemon stays up in each case.
 
 The daemon boots for any project: one with no repository, one with no default repository, and
-one with no record. The boot reads no repository. It proves each role App's key with GitHub's
-read of that App's installations: a refusal of that read stops the boot and names the App, and an
-App installed on no account boots, with one log line that says so. Once the API serves, the
-daemon prepares each repository its records name. It also prepares a repository when the first
-issue on it is admitted, when a record first names it, and when a launch finds its repository
-cache missing. To prepare a repository is to read both role Apps' installations on it, its name
-and default branch as GitHub has them, and Dispatch's webhook App on it, and then to hear its
-GitHub events and, under `runtime: kubernetes`, to keep its cache.
+one with no record. The boot reads GitHub for no repository but to fill a record that lacks its
+repository columns: one read per such record, bounded at 15 seconds, and a read that fails leaves
+the record for the daemon to fill later. It proves each role App's key with GitHub's read of that
+App's installations: a refusal of that read stops the boot and names the App, and an App
+installed on no account boots, with one log line that says so. Once the API serves, the daemon
+prepares each repository its records name. It also prepares a repository when the first issue on
+it is admitted, and when a launch works a repository that no live record names. To prepare a
+repository is to read both role Apps' installations on it, its name and default branch as GitHub
+has them, and Dispatch's webhook App on it, and then to hear its GitHub events and, under
+`runtime: kubernetes`, to keep its cache.
 
 A repository that either App is missing from, or that GitHub does not have, changes no record:
 `legion state` prints a `repository <owner/name>: <why>` line for it, `legion state --json` shows

@@ -413,9 +413,11 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // the record carried its repository (backfillRepositories, which leaves a record it cannot fill
 // for the refresher), then the deployment's design-gate steps queued for the project's Dispatch
 // row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
-// for its own (queueRecordedGatesPublish). It reads nothing of any repository: the preparation of
-// the repositories the records name is the refresher's first job, once the API serves
-// (prepareAtStart), so no read of GitHub for a repository can stop or slow the boot.
+// for its own (queueRecordedGatesPublish). It reads GitHub for a repository only to fill a record
+// that lacks its repository columns, one read per such record bounded by installReadAttempt
+// (backfillRead), a read that fails leaving the record for the refresher; the preparation of the
+// repositories the records name is the refresher's first job, once the API serves
+// (prepareAtStart), so no other read of GitHub for a repository can stop or slow the boot.
 //
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.
@@ -1276,13 +1278,22 @@ func workspaceHeldBy(rt runtime.Runtime, stateDir string) func(issue string, rep
 		}
 	}
 	return func(issue string, repo ghrepo.Repository) bool {
-		location, err := workspace.Location(stateDir, repo, issue)
-		if err != nil {
-			return false
-		}
-		_, err = os.Stat(location.Dir)
+		_, err := workspaceDir(stateDir, repo, issue)
 		return err == nil
 	}
+}
+
+// workspaceDir is the workspace directory a daemon on its own host provisions for issue and repo
+// under stateDir (workspace.Location), "" where Location names none, and what os.Stat answers for
+// it, Location's refusal where it names none. Each caller keeps its own rule for what that means:
+// a held workspace (workspaceHeldBy) and a rename the pass keeps an issue from (workspaceKeep).
+func workspaceDir(stateDir string, repo ghrepo.Repository, issue string) (string, error) {
+	location, err := workspace.Location(stateDir, repo, issue)
+	if err != nil {
+		return "", err
+	}
+	_, err = os.Stat(location.Dir)
+	return location.Dir, err
 }
 
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:

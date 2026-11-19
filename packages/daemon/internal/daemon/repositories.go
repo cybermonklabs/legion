@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -330,12 +331,11 @@ func (r *repositories) keepWebhookAnswer(repo ghrepo.Repository, gap string) {
 	held.webhookApp, held.webhookChecked = gap, true
 }
 
-// answered is whether GitHub answered both role Apps' installation reads of name.
-func (r *repositories) answered(name ghrepo.Repository) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	held := r.entries[strings.ToLower(name.String())]
-	return held != nil && held.answered()
+// servedEntryLocked is the name the rename rule serves repo under (ghrepo.Renames.Serving) and that
+// name's entry, nil where none is held, for a caller that holds the read lock.
+func (r *repositories) servedEntryLocked(repo ghrepo.Repository) (ghrepo.Repository, *repositoryEntry) {
+	served := r.renames.Serving(repo, r.servesLocked)
+	return served, r.entries[strings.ToLower(served.String())]
 }
 
 // setLive replaces the repositories the project's live issue records name (live) with repos, by
@@ -372,16 +372,16 @@ func (r *repositories) liveNames() map[string]ghrepo.Repository {
 // Apps' installation reads of the name it is served under, a read of it did not answer for it
 // (readError), a role App is not installed on it, or Dispatch's webhook App is not known to be
 // installed on it. Each is read from the entry of the name the rename rule serves the repository
-// under, which is the name its reads are made under (prepareLive).
-func (r *repositories) badLive() ([]ghrepo.Repository, []string) {
+// under, which is the name its reads are made under (prepareLive). reread is each repository whose
+// answer from GitHub is bad, for the refresher to prepare again; recheck is the served name of
+// each whose one bad answer is its webhook App gap, for the refresher to ask Dispatch alone again,
+// since GitHub's answers there are good.
+func (r *repositories) badLive() (reread, recheck []ghrepo.Repository, reasons []string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var repos []ghrepo.Repository
-	var reasons []string
 	for _, key := range slices.Sorted(maps.Keys(r.live)) {
 		repo := r.live[key]
-		served := r.renames.Serving(repo, r.servesLocked)
-		held := r.entries[strings.ToLower(served.String())]
+		served, held := r.servedEntryLocked(repo)
 		var why string
 		switch {
 		case held == nil || !held.answered():
@@ -389,16 +389,18 @@ func (r *repositories) badLive() ([]ghrepo.Repository, []string) {
 		case held.readError != "":
 			why = held.readError
 		case len(held.missing()) != 0:
-			why = notInstalled(held.missing(), served)
+			why = appauth.NotInstalledOn(held.missing(), served.String())
 		case held.webhookApp != "":
-			why = held.webhookApp
+			recheck = append(recheck, served)
+			reasons = append(reasons, repo.String()+": "+held.webhookApp)
+			continue
 		default:
 			continue
 		}
-		repos = append(repos, repo)
+		reread = append(reread, repo)
 		reasons = append(reasons, repo.String()+": "+why)
 	}
-	return repos, reasons
+	return reread, recheck, reasons
 }
 
 // unansweredPairs is each name of a configured pair whose role Apps' installation reads GitHub has
@@ -432,8 +434,7 @@ func (r *repositories) uncheckedLive(before map[string]ghrepo.Repository) []ghre
 		if _, held := before[key]; held {
 			continue
 		}
-		served := r.renames.Serving(repo, r.servesLocked)
-		if held := r.entries[strings.ToLower(served.String())]; held == nil || !held.webhookChecked {
+		if served, held := r.servedEntryLocked(repo); held == nil || !held.webhookChecked {
 			unchecked = append(unchecked, served)
 		}
 	}
@@ -441,49 +442,42 @@ func (r *repositories) uncheckedLive(before map[string]ghrepo.Repository) []ghre
 }
 
 // view is the state's repositories block (api.RepositoriesView) over live, the repositories the
-// live records of the state's own read name (source.State): one entry for each, once each and
-// sorted by its lowercased <owner>/<name>, under the name the records keep it under; the name the
-// rename rule serves it under, where that is the other name of its configured pair; from the
-// served name's own entry, each role App's installation once GitHub answered both reads,
-// readError and webhookApp; and its repository cache from caches, matched whatever the case,
-// where the Kubernetes runtime has made one. The rest of caches, each cache of a repository no
-// live record names, kept until its retention ends (workflowRuntime.cacheRepositories), is the
-// block's caches. It reads the entries alone and performs no I/O.
-func (r *repositories) view(live []ghrepo.Repository, caches []sandbox.CacheStatus) api.RepositoriesView {
+// live records of the state's own read name by their lowercased <owner>/<name>
+// (repositoriesOf, source.State): one entry for each, sorted by that key, under the name the
+// records keep it under; the name the rename rule serves it under, where that is the other name
+// of its configured pair; from the served name's own entry, each role App's installation once
+// GitHub answered both reads, readError and webhookApp; and its repository cache from caches,
+// matched whatever the case, where the Kubernetes runtime has made one. The rest of caches, each
+// cache of a repository no live record names, kept until its retention ends
+// (workflowRuntime.cacheRepositories), is the block's caches. It reads the entries alone and
+// performs no I/O.
+func (r *repositories) view(live map[string]ghrepo.Repository, caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := make(map[string]sandbox.CacheStatus, len(caches))
 	for _, cache := range caches {
 		byRepo[strings.ToLower(cache.Repo.String())] = cache
 	}
-	named := make(map[string]api.LiveRepositoryView, len(live))
+	view := api.RepositoriesView{Live: make([]api.LiveRepositoryView, 0, len(live))}
 	r.mu.RLock()
-	for _, repo := range live {
-		key := strings.ToLower(repo.String())
-		if _, held := named[key]; held {
-			continue
-		}
+	for _, key := range slices.Sorted(maps.Keys(live)) {
+		repo := live[key]
 		entry := api.LiveRepositoryView{Repo: repo.String()}
-		served := r.renames.Serving(repo, r.servesLocked)
+		served, held := r.servedEntryLocked(repo)
 		if served != repo {
 			entry.ServedAs = served.String()
 		}
-		if held := r.entries[strings.ToLower(served.String())]; held != nil {
+		if held != nil {
 			if held.answered() {
 				entry.Apps = &api.AppInstallationsView{Implement: held.implement.installed, Review: held.review.installed}
 			}
 			entry.ReadError, entry.WebhookApp = held.readError, held.webhookApp
 		}
-		named[key] = entry
-	}
-	r.mu.RUnlock()
-	view := api.RepositoriesView{Live: make([]api.LiveRepositoryView, 0, len(named))}
-	for _, key := range slices.Sorted(maps.Keys(named)) {
-		entry := named[key]
 		if cache, held := byRepo[key]; held {
 			entry.Cache = new(cacheView(cache))
 			delete(byRepo, key)
 		}
 		view.Live = append(view.Live, entry)
 	}
+	r.mu.RUnlock()
 	for _, cache := range caches {
 		if _, unnamed := byRepo[strings.ToLower(cache.Repo.String())]; unnamed {
 			view.Caches = append(view.Caches, cacheView(cache))
@@ -502,18 +496,6 @@ func cacheView(cache sandbox.CacheStatus) api.CacheView {
 		view.Head, view.LastFetchAt, view.Bytes = health.Head, health.LastFetchAt, health.Bytes
 	}
 	return view
-}
-
-// notInstalled is the refusal of missing, the role Apps GitHub answered are not installed on repo.
-func notInstalled(missing []appauth.AppRole, repo ghrepo.Repository) string {
-	if len(missing) == 1 {
-		return fmt.Sprintf("the %s App is not installed on %s", missing[0], repo)
-	}
-	names := make([]string, 0, len(missing))
-	for _, role := range missing {
-		names = append(names, string(role))
-	}
-	return fmt.Sprintf("the %s Apps are not installed on %s", strings.Join(names, " and "), repo)
 }
 
 // missingApps is each role App installed answers not installed, in appauth.Roles order, of reads
@@ -555,6 +537,18 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 	return ""
 }
 
+// checkWebhookAppOn asks Dispatch whether its webhook App is installed on repo (checkWebhookApp),
+// bounded by installReadAttempt, and keeps the answer for repo (repositories.keepWebhookAnswer). A
+// check ctx's end cut short answered for the stop, not for Dispatch, so it keeps nothing.
+func (w *workflowRuntime) checkWebhookAppOn(ctx context.Context, repo ghrepo.Repository) {
+	check, cancel := context.WithTimeout(ctx, installReadAttempt)
+	gap := checkWebhookApp(check, w.dispatch, repo)
+	cancel()
+	if ctx.Err() == nil {
+		w.repositories.keepWebhookAnswer(repo, gap)
+	}
+}
+
 // installReadRetry is how long the refresher waits before it runs one of its jobs again of its own
 // while that job's cause stands (refreshRepositories): 30 s doubling to 10 min, without limit
 // (Attempts is unused), back to 30 s once the cause is gone.
@@ -569,10 +563,11 @@ var recoveryHoldBound = defaultHoldWarnEvery
 // GitHub call the boot waits for (appMintAttempt), so a GitHub that answers slowly is still
 // answered for, while a read GitHub has not answered by then is a read that did not answer, and a
 // repository GitHub hangs on is read again later rather than holding up the rest. It bounds each
-// installation read (readInstallations), each webhook App check (checkWebhookApp), and each read
-// of a record's repository for its backfill (backfillRead). Nothing bounds a preparation as a
-// whole: repositoryReads repositories are prepared at once, so a preparation of n repositories,
-// four reads each, takes at most ceil(n / repositoryReads) × 4 of these.
+// installation read (readInstallations), each webhook App check (checkWebhookAppOn), each
+// preparation's read of a repository's name and default branch (prepareLive), and each read of a
+// record's repository for its backfill (backfillRead). Nothing bounds a preparation as a whole:
+// repositoryReads repositories are prepared at once, so a preparation of n repositories, four
+// reads each, takes at most ceil(n / repositoryReads) × 4 of these.
 var installReadAttempt = 15 * time.Second
 
 // repositoryReads is how many repositories the refresher prepares at once.
@@ -599,12 +594,13 @@ var errNoApps = errors.New("the daemon has no GitHub Apps to read the installati
 // prepareLive is the preparation of repo, a repository a record names or a launch works: both role
 // Apps' installations read under the name the rename rule serves repo under (serving), repo's
 // name and default branch as GitHub has them (defaultBranches.Named, which reads that served name
-// too and keeps its TTL), and, with check set, Dispatch's webhook App on the served name. Every
-// answer is kept in the served name's entry (keepRead, keepWebhookAnswer), where an installation
-// read that did not answer keeps the last answer GitHub gave; and a read GitHub's rate limit
-// refused with no read of repo held is served on the default branch a record of the project holds
-// for it, where one does (holdLimited). Answers ctx's end cut short are the stop's, and none is
-// kept.
+// too and keeps its TTL), and Dispatch's webhook App on the served name, each read bounded by
+// installReadAttempt, so a read GitHub or Dispatch never answers holds up neither the refresher nor
+// a launch. Every answer is kept in the served name's entry (keepRead, keepWebhookAnswer), where an
+// installation read that did not answer keeps the last answer GitHub gave; and a read GitHub's rate
+// limit refused with no read of repo held is served on the default branch a record of the project
+// holds for it, where one does (holdLimited, from branches, the records read once for the pass or
+// the launch that prepares). Answers ctx's end cut short are the stop's, and none is kept.
 //
 // It answers GitHub's read of repo, and why repo cannot be worked now: a role App GitHub answered
 // is not installed on the served name, naming the App and the name, and otherwise the first read
@@ -614,27 +610,21 @@ var errNoApps = errors.New("the daemon has no GitHub Apps to read the installati
 // recorded on (recordRepository), so an admission on it reads GitHub no further. Either answer of
 // the installation reads that GitHub gave begins the repository's recovery where an admission's
 // preparation left it unread (readAnswered).
-func (w *workflowRuntime) prepareLive(ctx context.Context, repo ghrepo.Repository, check bool) (ghbranch.Repository, error) {
+func (w *workflowRuntime) prepareLive(ctx context.Context, repo ghrepo.Repository, branches recordBranches) (ghbranch.Repository, error) {
 	if w.installs == nil {
 		return ghbranch.Repository{}, errNoApps
 	}
 	served := w.repositories.serving(repo)
 	installed, failed := w.readInstallations(ctx, served)
-	named, err := w.defaultBranches.Named(ctx, repo)
+	attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
+	named, err := w.defaultBranches.Named(attempt, repo)
+	cancel()
 	if answer, wait, limited := defaultBranchLimit(err); limited {
-		held, _, holdErr := w.holdLimited(ctx, []limitedRead{{repo: repo, answer: answer, err: err, wait: wait, until: w.defaultBranches.now().Add(wait)}})
-		if holdErr == nil && len(held) == 1 {
-			named, err = held[0], nil
+		if held, ok, holdErr := w.holdLimited(limitedRead{repo: repo, answer: answer, err: err, wait: wait, until: w.defaultBranches.now().Add(wait)}, branches); holdErr == nil && ok {
+			named, err = held, nil
 		}
 	}
-	if check {
-		read, cancel := context.WithTimeout(ctx, installReadAttempt)
-		gap := checkWebhookApp(read, w.dispatch, served)
-		cancel()
-		if ctx.Err() == nil {
-			w.repositories.keepWebhookAnswer(served, gap)
-		}
-	}
+	w.checkWebhookAppOn(ctx, served)
 	if err := ctx.Err(); err != nil {
 		return ghbranch.Repository{}, err
 	}
@@ -651,7 +641,7 @@ func (w *workflowRuntime) prepareLive(ctx context.Context, repo ghrepo.Repositor
 	var refusal error
 	switch {
 	case len(missing) != 0:
-		refusal = errors.New(notInstalled(missing, served))
+		refusal = errors.New(appauth.NotInstalledOn(missing, served.String()))
 	case read.readError != "":
 		refusal = errors.New(read.readError)
 	}
@@ -720,8 +710,9 @@ func eachRepository(repos []ghrepo.Repository, read func(ghrepo.Repository)) {
 // would otherwise bound how long it takes and refuse it on a repository GitHub does not answer for.
 // It reads both role Apps' installations on both names of each configured pair, each under its own
 // name (readPairs), and then prepares each distinct repository a record of the project names
-// (prepareLive, with Dispatch's webhook App checked), repositoryReads at a time; a record with no
-// GitHub spelling of its repository is passed by. A 404, or a role App that is not installed, is
+// (prepareLive), repositoryReads at a time, with the records' default branches read once for the
+// pass where GitHub's rate limit asks for them (onceRecordedBranches); a record with no GitHub
+// spelling of its repository is passed by. A 404, or a role App that is not installed, is
 // kept in the entry, shown in legion state and logged once; a read that does not answer is kept as
 // such for the refresher's next job to read again (rereadBadAnswers); no record changes. Until it
 // has answered, the state shows each repository with no Apps, and the rename rule serves each
@@ -737,16 +728,18 @@ func (w *workflowRuntime) prepareAtStart(ctx context.Context) {
 			"error", err)
 		return
 	}
-	eachRepository(repos, func(repo ghrepo.Repository) { _, _ = w.prepareLive(ctx, repo, true) })
+	branches := w.onceRecordedBranches(ctx)
+	eachRepository(repos, func(repo ghrepo.Repository) { _, _ = w.prepareLive(ctx, repo, branches) })
 	if ctx.Err() == nil {
 		w.log.Info("legion workflow prepared the repositories its records name", "repositories", repositoryNames(repos))
 	}
 }
 
 // recordedRepositories is each distinct repository a record of the project names, as the record
-// keeps GitHub's spelling of it (record.Issue.GitHubRepo), read in one read-only transaction
-// bounded by appMintAttempt; a record that keeps no GitHub spelling, or one that is no
-// <owner>/<name>, is passed by.
+// keeps GitHub's spelling of it (record.Issue.GitHubRepo, repositoriesOf), sorted, read in one
+// read-only transaction bounded by appMintAttempt; a record that keeps no GitHub spelling is passed
+// by, and one whose spelling is no <owner>/<name> refuses the read, as it refuses the boot
+// (heardAtBoot).
 func (w *workflowRuntime) recordedRepositories(ctx context.Context) ([]ghrepo.Repository, error) {
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
@@ -758,37 +751,29 @@ func (w *workflowRuntime) recordedRepositories(ctx context.Context) ([]ghrepo.Re
 	}); err != nil {
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)
 	}
-	named := map[string]ghrepo.Repository{}
-	for _, issue := range issues {
-		if issue.GitHubRepo == "" {
-			continue
-		}
-		key := strings.ToLower(issue.GitHubRepo)
-		if _, held := named[key]; held {
-			continue
-		}
-		if repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo); err == nil {
-			named[key] = repo
-		}
+	named, err := repositoriesOf(issues)
+	if err != nil {
+		return nil, err
 	}
-	repos := make([]ghrepo.Repository, 0, len(named))
-	for _, key := range slices.Sorted(maps.Keys(named)) {
-		repos = append(repos, named[key])
-	}
-	return repos, nil
+	return sortedRepositories(named), nil
 }
 
 // rereadBadAnswers is the refresher's second job, run on installReadRetry while any of its causes
 // stands (badAnswers): it reads again both role Apps' installations on each configured pair's name
 // GitHub has not answered both reads of yet, under its own name (readPairs); prepares again each
-// repository a live record names whose answer is bad (badLive, prepareLive), since nothing else
-// tells the daemon that an App was installed or a repository came back after the boot, and legion
-// state and the rename rule read these answers; and tries again the backfill of each record still
-// without its repository columns (backfillLater).
+// repository a live record names whose answer from GitHub is bad (badLive, prepareLive, with the
+// records' default branches read once for the pass where GitHub's rate limit asks for them), since
+// nothing else tells the daemon that an App was installed or a repository came back after the
+// boot, and legion state and the rename rule read these answers; asks Dispatch alone again of its
+// webhook App on each whose one bad answer is that App's gap (checkWebhookAppOn), since only
+// Dispatch's answer there can change; and tries again the backfill of each record still without
+// its repository columns (backfillLater).
 func (w *workflowRuntime) rereadBadAnswers(ctx context.Context) {
 	w.readPairs(ctx, true)
-	bad, _ := w.repositories.badLive()
-	eachRepository(bad, func(repo ghrepo.Repository) { _, _ = w.prepareLive(ctx, repo, true) })
+	reread, recheck, _ := w.repositories.badLive()
+	branches := w.onceRecordedBranches(ctx)
+	eachRepository(reread, func(repo ghrepo.Repository) { _, _ = w.prepareLive(ctx, repo, branches) })
+	eachRepository(recheck, func(served ghrepo.Repository) { w.checkWebhookAppOn(ctx, served) })
 	if w.backfillPending.Load() {
 		w.backfillLater(ctx)
 	}
@@ -802,7 +787,7 @@ func (w *workflowRuntime) badAnswers() []string {
 	if w.installs == nil {
 		return nil
 	}
-	_, reasons := w.repositories.badLive()
+	_, _, reasons := w.repositories.badLive()
 	_, pairs := w.repositories.unansweredPairs()
 	reasons = append(reasons, pairs...)
 	if w.backfillPending.Load() {
@@ -862,9 +847,10 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //     starts.
 //  2. Bad answers read again (rereadBadAnswers), on installReadRetry while any stands
 //     (badAnswers): a live repository with no answer, a role App that is not installed, a read
-//     that did not answer or a webhook App gap; a configured pair's name GitHub has not answered;
-//     a record still without its repository columns. A preparation outside the refresher that
-//     leaves a bad answer wakes it (rereadWake), so its clock is taken at once.
+//     that did not answer or a webhook App gap, which alone has only Dispatch asked again; a
+//     configured pair's name GitHub has not answered; a record still without its repository
+//     columns. A preparation outside the refresher that leaves a bad answer wakes it
+//     (rereadWake), so its clock is taken at once.
 //  3. The unread repositories recovered (recoverRepositories), at once when leaveUnread,
 //     leaveForRecovery or readAnswered wakes it (recoverWake, markUnread), and on installReadRetry
 //     while any repository is unread or to recover (unreadReasons, recoveringReasons). While a held
@@ -998,9 +984,7 @@ func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 		for _, repo := range slices.Concat(w.heardMissed, recorded) {
 			named[strings.ToLower(repo.String())] = repo
 		}
-		for _, key := range slices.Sorted(maps.Keys(named)) {
-			heard = append(heard, named[key])
-		}
+		heard = sortedRepositories(named)
 		err = w.updateSubscription(publish, heard)
 	}
 	if err != nil {
@@ -1067,10 +1051,7 @@ func (w *workflowRuntime) rereadHeldBranches(ctx context.Context, now time.Time)
 func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 	before := w.repositories.liveNames()
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
-	err := pgx.BeginFunc(read, w.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(read, tx); err != nil {
-			return fmt.Errorf("serialize the read of the live records with admission: %w", err)
-		}
+	err := serializedTx(read, w.pool, "serialize the read of the live records with admission", func(tx pgx.Tx) error {
 		return w.refreshCacheRepositories(read, tx)
 	})
 	cancel()
@@ -1081,14 +1062,7 @@ func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 		}
 		return err
 	}
-	eachRepository(w.repositories.uncheckedLive(before), func(repo ghrepo.Repository) {
-		check, cancel := context.WithTimeout(ctx, installReadAttempt)
-		gap := checkWebhookApp(check, w.dispatch, repo)
-		cancel()
-		if ctx.Err() == nil {
-			w.repositories.keepWebhookAnswer(repo, gap)
-		}
-	})
+	eachRepository(w.repositories.uncheckedLive(before), func(repo ghrepo.Repository) { w.checkWebhookAppOn(ctx, repo) })
 	return nil
 }
 
@@ -2020,8 +1994,9 @@ func (w *workflowRuntime) updateSubscription(ctx context.Context, repositories [
 	return w.consumers.SetRepositories(ctx, repositories)
 }
 
-// heardNames is whether held, a set GitHub intake was given (heard), names repo, compared without
-// case as GitHub compares names. A nil set, before the boot has given intake one, names nothing.
+// heardNames is whether held, a set the daemon publishes to its readers — the one GitHub intake
+// was given (heard), or the cache set (cacheRepos) — names repo, compared without case as GitHub
+// compares names. A nil set, before the boot has published one, names nothing.
 func heardNames(held *[]ghrepo.Repository, repo ghrepo.Repository) bool {
 	if held == nil {
 		return false
@@ -2055,14 +2030,14 @@ func (w *workflowRuntime) cacheRepositories() []ghrepo.Repository {
 // The same read gives the repository state the repositories the live records name
 // (repositories.setLive), which the refresher reads again while their answers are bad (badLive).
 // legion state reads the live records itself, in the state's own snapshot (source.State), and
-// names their repositories by the same rule (liveRecordRepositories), so a daemon that boots over
+// names their repositories by the same rule (repositoriesOf), so a daemon that boots over
 // a live tree reports its repository from the records alone, before any event of it.
 func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.Tx) error {
 	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
 	if err != nil {
 		return fmt.Errorf("read the repositories the project's live records name for the repository caches: %w", err)
 	}
-	live, err := liveRecordRepositories(issues)
+	live, err := repositoriesOf(issues)
 	if err != nil {
 		return err
 	}
@@ -2073,13 +2048,15 @@ func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.T
 	return nil
 }
 
-// liveRecordRepositories is the repository each of issues, the project's live records, names, once
-// each by its lowercased <owner>/<name>, as the record keeps GitHub's spelling of it
-// (record.Issue.GitHubRepo); a record that keeps none names nothing, and one whose spelling is no
-// <owner>/<name> refuses the read, naming the issue. It is the one reading of the live records
-// that the cache set, the repository state's live set (refreshCacheRepositories) and legion
-// state's repositories block (source.State) each take.
-func liveRecordRepositories(issues []record.Issue) (map[string]ghrepo.Repository, error) {
+// repositoriesOf is the repository each of issues, any slice of records, names, once each by its
+// lowercased <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo),
+// the first record's spelling where several name one; a record that keeps none names nothing, and
+// one whose spelling is no <owner>/<name> refuses the read, naming the issue. It is the one reading
+// of the repositories records name: the live records' for the cache set and the repository state's
+// live set (refreshCacheRepositories) and for legion state's repositories block (source.State),
+// and every record's for what GitHub intake hears (heardRepositories) and for the refresher's
+// preparation at its start (recordedRepositories).
+func repositoriesOf(issues []record.Issue) (map[string]ghrepo.Repository, error) {
 	live := map[string]ghrepo.Repository{}
 	for _, issue := range issues {
 		if issue.GitHubRepo == "" {
@@ -2118,11 +2095,18 @@ func (w *workflowRuntime) cacheRepository(repo ghrepo.Repository) {
 // storeCacheRepositories publishes cached as the cache set, sorted by name, for the sweep to read
 // without a lock of its own. Its caller holds cacheReposMu.
 func (w *workflowRuntime) storeCacheRepositories(cached map[string]ghrepo.Repository) {
-	repos := make([]ghrepo.Repository, 0, len(cached))
-	for _, key := range slices.Sorted(maps.Keys(cached)) {
-		repos = append(repos, cached[key])
-	}
+	repos := sortedRepositories(cached)
 	w.cacheRepos.Store(&repos)
+}
+
+// sortedRepositories is the repositories of named, a map by each one's lowercased <owner>/<name>,
+// sorted by that key.
+func sortedRepositories(named map[string]ghrepo.Repository) []ghrepo.Repository {
+	repos := make([]ghrepo.Repository, 0, len(named))
+	for _, key := range slices.Sorted(maps.Keys(named)) {
+		repos = append(repos, named[key])
+	}
+	return repos
 }
 
 // heardRepositories is what GitHub intake hears: every repository a record of the project names,
@@ -2141,23 +2125,13 @@ func (w *workflowRuntime) storeCacheRepositories(cached map[string]ghrepo.Reposi
 // a partner, for a name no record names, as the pair configures it, so a restart subscribes with
 // no read of GitHub.
 func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]ghrepo.Repository, error) {
-	heard := map[string]ghrepo.Repository{}
 	issues, err := w.records.Issues(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)
 	}
-	for _, issue := range issues {
-		if issue.GitHubRepo == "" {
-			continue
-		}
-		if _, ok := heard[strings.ToLower(issue.GitHubRepo)]; ok {
-			continue
-		}
-		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo)
-		if err != nil {
-			return nil, err
-		}
-		heard[strings.ToLower(repo.String())] = repo
+	heard, err := repositoriesOf(issues)
+	if err != nil {
+		return nil, err
 	}
 	// One pass over the configured pairs, not over everything heard: a deployment configures no
 	// pair at all nearly always, and this runs at every boot and consumer re-open. A partner is
@@ -2176,14 +2150,7 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]g
 			heard[from] = pair.From
 		}
 	}
-	repos := make([]ghrepo.Repository, 0, len(heard))
-	for _, repo := range heard {
-		repos = append(repos, repo)
-	}
-	slices.SortFunc(repos, func(a, b ghrepo.Repository) int {
-		return strings.Compare(strings.ToLower(a.String()), strings.ToLower(b.String()))
-	})
-	return repos, nil
+	return sortedRepositories(heard), nil
 }
 
 // issueRepository is the repository issue key works and its default branch: the record's
@@ -2226,8 +2193,8 @@ func (w *workflowRuntime) repositoryOf(ctx context.Context, key string, launch b
 	if err != nil {
 		return ghrepo.Repository{}, "", err
 	}
-	if launch && !slices.ContainsFunc(w.cacheRepositories(), func(held ghrepo.Repository) bool { return strings.EqualFold(held.String(), repo.String()) }) {
-		if _, err := w.prepareLive(ctx, repo, true); err != nil && ctx.Err() == nil {
+	if launch && !heardNames(w.cacheRepos.Load(), repo) {
+		if _, err := w.prepareLive(ctx, repo, w.onceRecordedBranches(ctx)); err != nil && ctx.Err() == nil {
 			w.log.Warn("workflow: a launch's preparation of its record's repository did not answer, so the launch works the record's repository on what the record holds",
 				"issue", key, "repo", repo.String(), "reason", err)
 		}
@@ -2260,17 +2227,13 @@ func (w *workflowRuntime) unrecordedRepository(ctx context.Context, key string) 
 		return ghrepo.Repository{}, "", fmt.Errorf("read the repository of %s from Dispatch: %w", key, err)
 	}
 	if issue.ResolvedRepo == "" {
-		project := issue.Project
-		if project == "" {
-			project = w.dispatchProject
-		}
-		return ghrepo.Repository{}, "", fmt.Errorf("%s names no repository: set the repository of %s, or the default repository of project %s, in Dispatch", key, key, project)
+		return ghrepo.Repository{}, "", fmt.Errorf("%s names no repository: set the repository of %s, or the default repository of project %s, in Dispatch", key, key, cmp.Or(issue.Project, w.dispatchProject))
 	}
 	repo, err := ghrepo.Parse("the repository Dispatch resolves "+key+" to", issue.ResolvedRepo)
 	if err != nil {
 		return ghrepo.Repository{}, "", err
 	}
-	read, err := w.prepareLive(ctx, repo, true)
+	read, err := w.prepareLive(ctx, repo, w.onceRecordedBranches(ctx))
 	if err != nil {
 		return ghrepo.Repository{}, "", fmt.Errorf("prepare %s, the repository Dispatch resolves %s to: %w", repo, key, err)
 	}
@@ -2772,13 +2735,7 @@ func (w *workflowRuntime) prepareRead(ctx context.Context, issue intake.Dispatch
 		w.leaveUnread(repo, reason+"; Legion reads it again")
 		return issue, nil
 	}
-	check, cancel := context.WithTimeout(ctx, installReadAttempt)
-	gap := checkWebhookApp(check, w.dispatch, read.Name)
-	cancel()
-	// A check ctx's end cut short answered for the stop, not for Dispatch, so it keeps nothing.
-	if ctx.Err() == nil {
-		w.repositories.keepWebhookAnswer(read.Name, gap)
-	}
+	w.checkWebhookAppOn(ctx, read.Name)
 	// The read is kept before the marker is dropped: readAnswered starts the recovery of the
 	// issues the repository left, and each of those preparations is to find the read here rather
 	// than read GitHub again, which could fail and leave the repository unread once more.
@@ -2808,7 +2765,7 @@ func (w *workflowRuntime) readRecordable(ctx context.Context, repo ghrepo.Reposi
 	}
 	partner, paired := w.repositories.renames.Partner(repo.String())
 	if len(missing) != len(appauth.Roles) || !paired {
-		return ghrepo.Repository{}, notInstalled(missing, repo), ""
+		return ghrepo.Repository{}, appauth.NotInstalledOn(missing, repo.String()), ""
 	}
 	installed, failed = w.readInstallations(ctx, partner)
 	reason = unanswered(partner, failed)
@@ -2817,7 +2774,7 @@ func (w *workflowRuntime) readRecordable(ctx context.Context, repo ghrepo.Reposi
 		return ghrepo.Repository{}, "", reason
 	}
 	if moved := missingApps(installed); len(moved) != 0 {
-		return ghrepo.Repository{}, notInstalled(missing, repo) + "; " + notInstalled(moved, partner), ""
+		return ghrepo.Repository{}, appauth.NotInstalledOn(missing, repo.String()) + "; " + appauth.NotInstalledOn(moved, partner.String()), ""
 	}
 	return partner, "", ""
 }

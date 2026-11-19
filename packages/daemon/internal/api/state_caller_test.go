@@ -851,15 +851,8 @@ func TestTheStateServedToAPodAContractBehindLeavesTheNextCallersStateWhole(t *te
 // `live`, which is all this contract's block holds beside `caches`.
 func repositoriesServed(t *testing.T, body []byte) ([]string, json.RawMessage) {
 	t.Helper()
-	var state map[string]json.RawMessage
-	if err := json.Unmarshal(body, &state); err != nil {
-		t.Fatalf("decode state %s: %v", body, err)
-	}
-	var keyed map[string]json.RawMessage
-	if err := json.Unmarshal(state["repositories"], &keyed); err != nil {
-		t.Fatalf("decode the state's repositories %s: %v", state["repositories"], err)
-	}
-	return slices.Sorted(maps.Keys(keyed)), state["repositories"]
+	block := keysOf(t, body)["repositories"]
+	return slices.Sorted(maps.Keys(keysOf(t, block))), block
 }
 
 // sameJSON is whether got and want encode one JSON value, whatever the spacing and the key order
