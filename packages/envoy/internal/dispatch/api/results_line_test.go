@@ -587,7 +587,7 @@ var earlyStopTokens = []string{
 	strings.Repeat("x", 79), strings.Repeat("y", 80), strings.Repeat("z", 81), strings.Repeat("w", 100),
 	strings.Repeat("q", 75) + "ACME-12xyz", "ACME-12xyz",
 	"ACME-12", "acme-3", "(ACME-4)", "dispatch://x/y", "https://dispatch.example/a", "dispatch.example",
-	"vm-1.c.proj-1.internal", "vm.internal.", "box.tail1234.ts.net", "a->b", "Vec<u8>", "[ACME](#)-12",
+	"vm-1.c.proj-1.internal", "vm.internal.", "box.example-tailnet.ts.net", "a->b", "Vec<u8>", "[ACME](#)-12",
 	"ACME<!--", "-->-12", "**ACME**-12", "ACME\u034f-12", "ACME&#45;12", "\xff\xfe", "\xff",
 }
 
