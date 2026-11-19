@@ -2150,6 +2150,16 @@ After such a release is live, an earlier daemon publishes nothing, and each new 
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
+
+This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that a token login which proved an account enrolled: from the pod's account alone to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).
+Every pod enrollment this release's broker writes carries the pair as well.
+A broker from before this release spells a pod's carry principal as its account alone, so its `adopt` takes no row that carries the pair, the rewritten ones and the ones this release wrote alike.
+So after a rollback a session enrolled again on the earlier broker starts with none of the grants and pending requests its pair rows hold, and asks again for the secrets it needs; the rows keep them only until the carry sweep ends each one, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after it went dormant, when its grants are revoked.
+A roll forward inside that window takes them back: the migration's version row stands, so the rewrite does not run again, and the next enrollment of a session by its own daemon takes both the rows that carry the pair and the account-alone rows the earlier broker wrote for that daemon's login (`adopt`'s legacy arm).
+The rollback needs no statement.
+`legion claims release-names` needs `POST /v1/enrollments/carried`, which an earlier broker does not serve: it answers `404` or `405`, the release answers `502` and frees nothing, so run no release until the broker is rolled forward again.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -4443,8 +4453,8 @@ The namespaces keep a role's tokens and private files out of a sibling's own rea
 One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
 Each role's session is registered bound to that role's own key: the thumbprint of the key the role's shim names at its hello, which the daemon sends with every write of the registration.
 The broker refuses a trade for a session proved with any other key, so a sibling role that holds the pod's exchange token and its own key is refused another role's session.
-Set no `exchange_audience` until three more changes of plan E are in your daemon, its pods and its broker: t-e-53, which makes a role trade with its own key, since until then a role's own trade is refused; t-e-41, which binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and t-e-39, which has the daemon choose each role's session id rather than take its agent's report.
-The daemon already holds each session id to the claim of its project that first recorded it (t-e-54) and registers no session another of its claims holds.
+Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report.
+The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds.
 That closes a direct mint only: the roles of one issue are no boundary against code a sibling plants in another role's process, which then runs with that role's key as it runs with that role's tokens ([Trust model](#trust-model-the-provisioning-token) lists what a plant reaches).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the role's gh files hold a directory for (in an issue pod, an owner both role Apps are installed on) and the role's App is installed on that repository;
 git in the shared clone asks the same helper it asked before, and every other host is left to the configuration files.
@@ -7199,7 +7209,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The broker holds a pod's grants to the pair of its account and the account its daemon logs in as, so a pod of another project's daemon enrolled under the same session id takes none of that session's grants.
   The session name itself is still bound under the pod's account alone (`namePrincipal`), so such a pod is admitted under the name.
   That leaves one gap, which this release does not widen: a pod of another project's daemon that runs as the same account can be registered under the same session id at `POST /v1/oauth/exchange/pod-sessions`, and can then trade under the name, because the name stays bound to the shared account.
-  Plan E's t-e-41 closes it: the broker binds each session name to the daemon that registered it.
+  Closing it needs a broker that binds each session name to the daemon that registered it, which this release does not make.
   Until then leave `exchange_audience` unset: without it no pod carries the exchange token a trade needs, and the daemon registers no pod session.
 
 - The broker keys a pod's grants on the account its daemon logs in as, the one `BROKER_SERVICE_LOGINS` names for `legion-daemon` (below), beside the pod's own account.
@@ -7246,8 +7256,8 @@ each issue's pod (every role of it alike) and the image probe's.
   - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
 
   - The registration needs a broker that binds it to the key and orders it by generation: a broker before this release refuses the `thumbprint` and `generation` fields as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
-    Set no `exchange_audience` until three more changes of plan E are in your daemon, its pods and its broker: t-e-53, which makes a role trade with its own key, since until then a role's own trade is refused; t-e-41, which binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and t-e-39, which has the daemon choose each role's session id rather than take its agent's report.
-    The daemon already holds each session id to the claim of its project that first recorded it (t-e-54) and registers no session another of its claims holds.
+    Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report.
+    The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds.
 
   - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
     a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
@@ -7270,7 +7280,7 @@ each issue's pod (every role of it alike) and the image probe's.
   - Unset, the daemon makes no registration call.
 
   - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
-    Which session a role registers is held to its claim (t-e-54) and is still its agent's word until t-e-39, and until t-e-41 binds session names to the daemon that registered them, any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
+    Which session a role registers is held to its claim, but it is still its agent's word, and until session names are bound to the daemon that registered them any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
