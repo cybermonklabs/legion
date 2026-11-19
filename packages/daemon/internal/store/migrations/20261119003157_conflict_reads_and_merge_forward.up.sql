@@ -12,8 +12,8 @@
 -- hold to the worker of the phase the issue stays in, and, once a new head lands, the word that it
 -- landed and the reviewer's ask to read the merge.
 --
--- The check is one list, so the migration that sets it names every kind, as 20261116165926 did:
--- that migration's twenty-five kinds and these two. Its version stands above 20261116165926 on
+-- The check is one list, so the migration that sets it names every kind, as 20261117000528 did:
+-- that migration's twenty-six kinds and these two. Its version stands above 20261117000528 on
 -- purpose: Migrate applies every unrecorded migration in version order, so the list with the
 -- higher version is the last word on any database.
 --
@@ -28,8 +28,8 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake',
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
-  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'conflict_confirm',
-  'merge_forward'));
+  'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record',
+  'conflict_confirm', 'merge_forward'));
 
 -- Every phase_ended row still queued goes. Each is a message the release before queued about a
 -- move it made, a conflict that sent the issue back to implementing, to the role whose phase that

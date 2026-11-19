@@ -34,9 +34,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 func architect() api.SpawnRequest {
@@ -1211,6 +1213,10 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3},
 			supervise.StreamLateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
+		{stream.Answered{Claim: token, Provider: "second", Model: "second-model", Generation: 3},
+			supervise.StreamAnswered{Claim: token, Model: "second/second-model", Generation: 3}},
+		{stream.Answered{Claim: token, Model: "claude-sonnet-4-5", Generation: 4},
+			supervise.StreamAnswered{Claim: token, Model: "claude-sonnet-4-5", Generation: 4}},
 	}
 	mapped := map[string]bool{}
 	for _, testCase := range cases {
@@ -1220,8 +1226,9 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 			t.Errorf("superviseEvent(%#v) = %#v, %v; want %#v", testCase.in, got, err, testCase.want)
 		}
 	}
-	if sealed := streamEventTypes(t); len(sealed) != len(mapped) {
-		t.Fatalf("internal/stream seals %d event types %v; this test maps %d — map the new one", len(sealed), sealed, len(mapped))
+	// A Drained is no agent fact: the pump puts it behind the claim's events itself (pump).
+	if sealed := streamEventTypes(t); len(sealed) != len(mapped)+1 || !slices.Contains(sealed, "Drained") {
+		t.Fatalf("internal/stream seals %d event types %v; this test maps %d and the pump keeps Drained — map the new one", len(sealed), sealed, len(mapped))
 	}
 }
 
@@ -1358,3 +1365,88 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 		t.Errorf("the stale address was charged: %+v", c.Budgets)
 	}
 }
+
+// An agent's own request — a completion, which ends its step — reaches the daemon on its HTTP
+// request, while the answer its model gave just before can still wait in the claim's inbox behind
+// an earlier frame the machine is deciding. Read then, the step's agent names no model, and the
+// record of the step it ends would keep none. The request first waits for the claim's machine to
+// handle what the stream had queued (supervision.awaitStream): while the machine still decides,
+// the wait runs out its bound and says so in one line naming the claim and how long it waited;
+// once the machine has handled the answer, the wait ends on the machine's mark, before its bound
+// and with no line logged, and the read names the model. A claim the daemon does not supervise
+// has nothing to wait for.
+func TestAnAgentsRequestWaitsForTheAnswerItsClaimsMachineHasNotHandled(t *testing.T) {
+	ctx := context.Background()
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	held := &heldStepStore{outboxClaimStore: sup.deps.Store.(*outboxClaimStore), entered: make(chan struct{}), release: make(chan struct{})}
+	sup.deps.Store = held
+	t.Cleanup(held.open)
+	tester := mustClaimToken(t, "LEGION-208", claim.RoleTester)
+	if _, _, err := sup.Create(ctx, supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+		Role: claim.RoleTester, State: supervise.StateWorking, Session: "ses_tester", Generation: 3}, ""); err != nil {
+		t.Fatalf("create the tester's claim: %v", err)
+	}
+	listening, stop := context.WithCancel(ctx)
+	t.Cleanup(stop)
+	listener, err := stream.Listen(listening, "tcp://127.0.0.1:0",
+		func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }, stream.Options{RPCTimeout: time.Second, Log: quietLogger()})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	logs := &testlog.Buffer{}
+	s := &supervision{stream: listener, supervisor: sup, log: slog.New(slog.NewTextHandler(logs, nil))}
+	go s.pump()
+	w := &workflowRuntime{log: quietLogger()}
+	w.attach(s)
+
+	sup.post(tester, supervise.StreamToolStep{Claim: tester, Tool: "bash", CallID: "toolu_1"})
+	testwait.Eventually(t, "the machine to decide the tool step", func() bool {
+		select {
+		case <-held.entered:
+			return true
+		default:
+			return false
+		}
+	})
+	sup.post(tester, supervise.StreamAnswered{Claim: tester, Model: "second/tester-model", Generation: 3})
+	if got := w.stepAgent(tester); got.Model != "" {
+		t.Fatalf("the agent read while its answer waits behind the machine = %+v, want no model yet", got)
+	}
+	s.awaitStreamWithin(ctx, tester, 50*time.Millisecond)
+	if lines := strings.Split(strings.TrimSpace(logs.String()), "\n"); len(lines) != 1 ||
+		!strings.Contains(lines[0], "claim="+string(tester)) || !strings.Contains(lines[0], "waited=") {
+		t.Fatalf("the log of a wait the machine outlasted = %q, want one line naming the claim and how long it waited", logs.String())
+	}
+	logs.Reset()
+	held.open()
+	s.awaitStreamWithin(ctx, tester, time.Minute)
+	if logs.Len() != 0 {
+		t.Fatalf("the wait once the machine was free logged %q, want it ended by the machine's mark, not its bound", logs.String())
+	}
+	if got := w.stepAgent(tester); got != (workflow.StepAgent{Session: "ses_tester", Model: "second/tester-model"}) {
+		t.Fatalf("the agent read after the wait = %+v, want its session and the model that answered", got)
+	}
+	s.awaitStreamWithin(ctx, mustClaimToken(t, "LEGION-208", claim.RoleReviewer), 50*time.Millisecond)
+	if logs.Len() != 0 {
+		t.Fatalf("the wait for a claim the daemon does not supervise logged %q, want it answered at once", logs.String())
+	}
+}
+
+// heldStepStore is outboxClaimStore with its write of a claim's step held: the write says it has
+// begun on entered, and waits for open, so the machine deciding it decides nothing else.
+type heldStepStore struct {
+	*outboxClaimStore
+	entered chan struct{}
+	release chan struct{}
+	began   sync.Once
+	opened  sync.Once
+}
+
+func (s *heldStepStore) PutClaimStep(ctx context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	s.began.Do(func() { close(s.entered) })
+	<-s.release
+	return s.outboxClaimStore.PutClaimStep(ctx, token, step)
+}
+
+// open lets every held write go on.
+func (s *heldStepStore) open() { s.opened.Do(func() { close(s.release) }) }

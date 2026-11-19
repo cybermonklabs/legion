@@ -1169,6 +1169,17 @@ type Machine struct {
 	// that arrived after the sweep read the claims is already in this machine's inbox, ahead of
 	// the backstop's own event, so a turn whose agent moved in that window is left alone.
 	steppedAt time.Time
+	// answer is the model that answered last and the session it answered in (answered,
+	// LastAnswer), nil before any. It is apart from mu, so a read never waits on a decision, and it
+	// is memory only, as steppedAt is.
+	answer atomic.Pointer[sessionAnswer]
+	// sessionFrom is the first launch of the claim's current session: the launch that spawned it
+	// (spawn), which every later resume continues. The fence takes an answer of any launch from it
+	// to the claim's generation as the session's own and drops an answer of an earlier launch, which
+	// answered a session the claim has left. A machine read back at boot starts it at the claim's
+	// generation: no answer of an earlier launch is in this daemon's stream. It is memory only, as
+	// answer is.
+	sessionFrom uint64
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
@@ -1453,12 +1464,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps.Log = slog.Default()
 	}
 	m := &Machine{
-		ctx:    ctx,
-		deps:   deps,
-		log:    deps.Log.With("claim", string(c.Token)),
-		claim:  copyClaim(c),
-		timers: map[TimerKind]armed{},
-		stale:  map[string]bool{},
+		ctx:         ctx,
+		deps:        deps,
+		log:         deps.Log.With("claim", string(c.Token)),
+		claim:       copyClaim(c),
+		sessionFrom: c.Generation,
+		timers:      map[TimerKind]armed{},
+		stale:       map[string]bool{},
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -2185,9 +2197,9 @@ func (m *Machine) Wait() {
 }
 
 // fence applies the checks an event carries the fields for: the incarnation an observation is
-// about, the generation of a hello or a prompt outcome or a request, the session a request comes
-// from, the delivery a turn or a refusal or a timer names, and the arming a timer came from. It
-// reports whether the event goes on to the table.
+// about, the generation of a hello or an answer or a prompt outcome or a request, the session a
+// request comes from, the delivery a turn or a refusal or a timer names, and the arming a timer
+// came from. It reports whether the event goes on to the table.
 //
 // A hello and a registration are the two events that move a launch on (helloed, register), and a
 // live claim past launching records its process. So neither reaches the table while the claim is
@@ -2216,6 +2228,18 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 		}
 		if m.launchRecordsNoProcess() {
 			m.dropStale("StreamHello", "process", fmt.Sprint(ev.Generation), "none")
+			return false, nil
+		}
+	case StreamAnswered:
+		// A registration reaches the machine on its HTTP request, and the operator's suspend and
+		// resume on theirs, not behind the stream's queue. So an answer of a launch whose session
+		// the claim has left can arrive after a fresh session registered, and would name a model
+		// that never served that session; and an answer of an earlier launch of the claim's own
+		// session can arrive after a resume moved the generation on, and is that session's answer
+		// all the same (sessionFrom).
+		if ev.Generation < m.sessionFrom || ev.Generation > m.claim.Generation {
+			m.dropStale("StreamAnswered", "generation", fmt.Sprint(ev.Generation),
+				fmt.Sprintf("%d..%d", m.sessionFrom, m.claim.Generation))
 			return false, nil
 		}
 	case StreamTurnStart:
@@ -2745,7 +2769,7 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 		return runtime.Locator{}, err
 	}
 	if m.claim.SessionFile == "" {
-		return m.deps.Runtime.Spawn(ctx, spec)
+		return m.spawn(ctx, spec)
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
@@ -2790,7 +2814,7 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause error) (ru
 	if err != nil {
 		return runtime.Locator{}, err
 	}
-	loc, err := m.deps.Runtime.Spawn(ctx, spec)
+	loc, err := m.spawn(ctx, spec)
 	if err != nil {
 		return loc, err
 	}
@@ -2798,6 +2822,14 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause error) (ru
 		m.deps.SessionLost(m.current(), fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %v", lost, cause))
 	}
 	return loc, nil
+}
+
+// spawn starts a fresh agent for this launch, and so a session of its own: from here an answer of
+// an earlier launch answered a session the claim no longer has (sessionFrom), where a resume keeps
+// the session, and the answers of its earlier launches with it.
+func (m *Machine) spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	m.sessionFrom = m.claim.Generation
+	return m.deps.Runtime.Spawn(ctx, spec)
 }
 
 // stopPrevious stops the process letGo moved into previous when a launch fails: the claim no longer
@@ -3677,6 +3709,8 @@ func claimOf(ev Event) claim.Token {
 	case IssueTurnEnded:
 		return ev.Claim
 	case StreamToolStep:
+		return ev.Claim
+	case StreamAnswered:
 		return ev.Claim
 	case StreamPromptResult:
 		return ev.Claim

@@ -21,7 +21,7 @@ const conflictReadsVersion = 20261119003157
 // merge_forward row is one message about a confirmed conflict the daemon acted on. The outbox
 // refuses a kind its constraint does not name, so neither could be queued before this migration:
 // the negative control is that refusal, read before the migration, on a database that carries the
-// role-holders publication's list (20261116165926), which this version stands above. After it
+// step-record list (20261117000528), which this version stands above. After it
 // both are queued, and so is every kind the constraint already named, phase_ended among them,
 // since the migration rewrites the list whole and a rollback to the release before still queues
 // that kind. A kind that is none is still refused.
@@ -76,7 +76,7 @@ func TestTheOutboxTakesTheConflictConfirmAndMergeForwardKindsWith20261119003157(
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal",
+		"merge_queue_read", "merge_queue_removal", "step_record",
 	}, added...)
 	for _, kind := range kinds {
 		if err := queue(kind); err != nil {

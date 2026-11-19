@@ -376,6 +376,21 @@ Each item below names a script, then what it proves.
   with Dispatch stopped the write fails and the completion is refused `DISPATCH_READ_FAILED`, and once it is back both land and the issue's handoff list holds the record.
   No GitHub, no cluster
 
+- `step-records.sh`
+
+  each phase of an issue leaves a step record on its Dispatch issue, and a person reads the records back with the real `dispatch steps` command, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with one issue that walks planning to done with one failed review:
+  with the Dispatch process stopped once the issue is in reviewing for the second time, the review, the acceptance, the retro and the merge walk it to done, `dispatch steps` fails naming the unreachable server, and once Dispatch is back the records of those steps reach it, each ended;
+  `dispatch steps --issue <KEY>`, run as a person with their personal token, prints `<KEY>: 10 steps in 1 tasks` and the ten runs, each ended with its result and an agent, each of kind `step` with its model, and reports the failed review missing once its record is deleted from Dispatch's database;
+  a step write that names another session is refused `403 STEP_WRITER`, and the same body as the daemon's own session is taken.
+  No GitHub, no cluster
+
+- `step-records-read.sh`
+
+  the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
+  It passes only when steps 1 to 5, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
+  a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
+  A deployed Dispatch and the operator's credential; it starts nothing
+
 - `review-range.sh`
 
   a later review round is told the commit the review before it read, driven against the real Dispatch server this checkout builds and the whole daemon booted with `dispatch_url` at it, as `handoff-records.sh` drives them, with the review App's review, the implementer's push and GitHub's synchronize as GitHub envelopes:
@@ -4984,6 +4999,69 @@ the Apps' tokens are placeholders; Envoy's listener is the package's `noticeList
 and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace.
 The issues, pull requests, slots and the claims the boot relaunches are seeded through the store, as every daemon test seeds its fixture.
 `HANDOFF_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## step-records.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/step-records.sh     # → "step records e2e: PASS in <n>s", exit 0
+```
+
+The live proof that each phase of an issue leaves a step record on its Dispatch issue and that a person reads the records back with `dispatch steps`, run before the change merges.
+It runs on any Linux host with `go`, `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes: most of it builds Dispatch and the driver, and up to a minute and a half waits for the daemon's outbox after the outage.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestStepRecordsLive` (`internal/daemon/step_records_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the record path is stood in for.
+The driver starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), on a database of its own with NATS off, creates a project of the run's own (`SR<6 hex>`), maps `acme/widgets` to it, and creates one issue, in progress with the `legion` label.
+It seeds that issue in the daemon's store at `admitted` with its design gate approved and an open pull request at a clean head, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server, so each step record goes through the daemon's outbox and its Dispatch client to the real `PUT /api/v1/issues/{key}/steps/{id}`.
+The issue walks as the package's whole-daemon tests walk it (`stepRecordsRig`, `internal/daemon/step_records_rig_test.go`):
+each role over the daemon's worker stream and its own routes, each answer a `message_end` frame naming the model `stand-in/model`, each handoff record written to Dispatch under the role's own session;
+a person's review and GitHub's merge as envelopes on the broker; and the architect's sign-off through `POST /legion/v1/signoff`.
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts steps --issue <KEY>`), run as a person's own shell runs it by hand (`DISPATCH_HOST=omp`, a session of its own, `DISPATCH_URL`) with the personal token Dispatch minted for the person who set the project up (`POST /api/v1/me/agent-tokens`), and with a home, configuration file (absent) and session state of the run's own.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `walk-to-the-second-review-with-dispatch-up` | planning, implementing and testing, each completing with its handoff record; a person's review requesting changes on the pull request's head; implementing and testing again | the issue in `implementing` after the review, then in `reviewing` again; each of those completions reads its handoff record from Dispatch, which is why Dispatch is up for them (with it stopped, the completion is refused `502 DISPATCH_READ_FAILED`) |
+| `a-phase-moves-while-dispatch-is-down` | the Dispatch process stopped (SIGINT); the second review approving; the architect's sign-off; the retro's completion; GitHub's merge; Dispatch started again on the same database and port | the issue at `done`; control: `dispatch steps` exits non-zero with `Dispatch at <url> is unreachable`, and the daemon's outbox holds the issue's `step_record` rows unfinished; then, within the outbox's longest backoff and one lease (94 s), `dispatch steps` prints the review's second run, the acceptance, the retro and the merge, each ended `passed` |
+| `walk-to-done-with-one-failed-review` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 10 steps in 1 tasks` and exactly ten lines: step 1; steps 2 and 3 attempts 1 and 2; step 4 attempt 1 `failed` and attempt 2 `passed`; step 5; the retro; the merge; each of task `default` with its role and type, an agent, a start, an end and its result, and each of kind `step` with the model `stand-in/model`; control: the failed review's record deleted from Dispatch's database (its `workflow_nodes` row and every `workflow_tuples` row naming it), the same parse of the same command reports `4 step reviewer review attempt 1 … failed` missing |
+| `a-write-that-names-another-session-is-refused` | a step write to a new id with the agent's bearer and the actor `ses_step_agent`; then the same body with the daemon's own credential (the token its `dispatch_token_file` holds) and the actor `legion-daemon:<PROJECT>` | `403 STEP_WRITER` and no record of that id; control: `200` and the record read back; what the check holds, and no more: a write that names another session is refused, while a credential that proves no session can still name the daemon's session, as it can for the daemon's status writes |
+
+What the proof stands in for lies outside the records:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for the one pull request;
+the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
+`STEP_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## step-records-read.sh
+
+```sh
+scripts/e2e/step-records-read.sh <ISSUE>     # → "PASS: <ISSUE>: <n> records; …", exit 0
+```
+
+The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records.
+It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then one verdict.
+It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
+It sets none of those, reads no credential of its own, writes nothing and starts nothing.
+It reads an issue that is done, so every step of it has ended.
+
+| exit | printed | when |
+| :--- | :--- | :--- |
+| 0 | `PASS: <ISSUE>: <n> records; …` | the read lists a record of each of steps 1 to 5, of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
+| 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of the merge`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
+
+`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
 
 ## review-range.sh
 

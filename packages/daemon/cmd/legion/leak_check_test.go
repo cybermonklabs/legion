@@ -349,3 +349,81 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 		t.Errorf("legion leak-check --help = %d, stdout %q, stderr %q; want exit 0 and its usage", code, out.String(), errb.String())
 	}
 }
+
+// `legion leak-check pre-push` to a repository whose owner the gh bundle holds no directory for:
+// the guard's REST read goes through the pod's `gh`, `legion gh`, which refuses it, exit 2, naming
+// the owner, and the real gh never runs. The guard then reads the visibility with git's
+// ls-remote and no credential, once. Where ls-remote lists the refs, the repository is public and
+// the push goes on to the scan, which refuses this push's ref name, exit 3. Where GitHub asks
+// ls-remote for a credential, as it does for a private repository, the push is refused as a setup
+// failure naming both reads, exit 2. A push to a repository of an owner the bundle holds is read
+// by the real gh, as before, and git never runs.
+func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := "printf '%s\\tHEAD\\n' " + strings.Repeat("1", 40) + "\nexit 0\n"
+	refused := "echo 'fatal: could not read Username for '\\''https://github.com'\\'': terminal prompts disabled' >&2\nexit 128\n"
+	for _, tc := range []struct {
+		name, repo, git string
+		// code and says are the command's exit status and what it prints; reads is what the
+		// stand-ins recorded, in order: rest for the real gh's read, git for ls-remote.
+		code  int
+		says  []string
+		reads string
+	}{
+		{
+			name: "an unserved owner's repository ls-remote lists", repo: "other-owner/invented-repo", git: lists,
+			code: 3, says: []string{"LEAK CHECK: refusing the push to origin: this repository's own private-name rules match it", theLeakCheckClass},
+			reads: "git\n",
+		},
+		{
+			name: "an unserved owner's repository GitHub asks ls-remote a credential for", repo: "other-owner/invented-repo", git: refused,
+			code: 2,
+			says: []string{
+				"LEAK CHECK SETUP ERROR: the push to origin: the visibility of other-owner/invented-repo could not be read: " +
+					`gh api repos/other-owner/invented-repo exited 2: legion gh: the role's GitHub App is not installed on "other-owner": ` + root + " holds no gh directory for it, " +
+					"and git ls-remote with no credential could not answer: git ls-remote of other-owner/invented-repo exited 128",
+				"could not read Username",
+			},
+			reads: "git\n",
+		},
+		{name: "a served owner's private repository", repo: "acme/widgets", git: lists, code: 0, reads: "rest\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+			stub := filepath.Join(bin, "real-gh")
+			script := ghStandInHelp(help) +
+				"echo rest >> \"$GH_STANDIN_RECORD\"\n" +
+				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' private\nexit 0\n"
+			if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho git >> \"$GH_STANDIN_RECORD\"\n"+tc.git), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(t.TempDir())
+			for name, value := range map[string]string{
+				testMainEnv: "1", "PATH": ghWrapperDir(t) + ":" + bin + ":" + os.Getenv("PATH"),
+				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+				"GH_TOKEN": "", "GITHUB_TOKEN": "", "GH_STANDIN_RECORD": record, "XDG_STATE_HOME": t.TempDir(),
+				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+			} {
+				t.Setenv(name, value)
+			}
+			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
+			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
+			line := "refs/heads/work " + noSHA + " refs/heads/legion/" + theLeakCheckHost + " " + noSHA + "\n"
+			code, printed := leakCheck(t, line, "pre-push", "origin", "https://github.com/"+tc.repo+".git")
+			if code != tc.code {
+				t.Errorf("exited %d, want %d: %s", code, tc.code, printed)
+			}
+			says(t, printed, tc.says)
+			if got := readRecord(t, record); got != tc.reads {
+				t.Errorf("the stand-ins recorded the reads %q, want %q", got, tc.reads)
+			}
+		})
+	}
+}

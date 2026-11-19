@@ -516,9 +516,9 @@ const idleRigRoleLapsed = roleholder.HolderLapsed
 const idleRigRoleUnclaimed = roleholder.Unclaimed
 
 // idleRigRoleAnswer is what a role publish's answer says about the keep and the holder: the
-// 202's own kept, kept_reason and kept_until (cmd/listener's publishResponse), the 404's reason
-// (its roleHolderError), which names the same holder states in the same words, and the holder and
-// holder_state both carry for a holder the claim names.
+// 202's own kept, kept_reason and kept_until (listenerwire.PublishResponse), the 404's reason
+// (listenerwire.RoleRefusal), which names the same holder states in the same words, and the holder
+// and holder_state both carry for a holder the claim names.
 type idleRigRoleAnswer struct {
 	Kept        bool   `json:"kept"`
 	KeptReason  string `json:"kept_reason"`
@@ -622,11 +622,11 @@ func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, mes
 	idleRigDeliveredOnce(t, rig, issue, message)
 }
 
-// The words a send's answer gives its target (cmd/listener's sendResponse and sendHandler): state
-// stopped is a session nothing holds the relay subject of, or one the listener knows only by its
-// known-session record, and recipient_state gone is a session the registry holds no entry of
-// within the gone horizon. A role publish names a lapsed holder's session by the same word, its
-// holder_state.
+// The words a send's answer gives its target (listenerwire.SendResponse, cmd/listener's
+// sendHandler): state stopped is a session nothing holds the relay subject of, or one the listener
+// knows only by its known-session record, and recipient_state gone is a session the registry
+// holds no entry of within the gone horizon. A role publish names a lapsed holder's session by the
+// same word, its holder_state.
 const (
 	idleRigSendStopped   = "stopped"
 	idleRigRecipientGone = "gone"

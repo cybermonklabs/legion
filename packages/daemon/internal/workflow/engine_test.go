@@ -84,30 +84,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	// start carries its task (every phase start through StartOrOwe), as do the architect's
 	// (awaiting_reconcile.go) and the wake's (wake.go); a child's own architect's plain start carries
 	// none (gateOpened, reviveArchitect), and the task-less starts admission brings back beside a
-	// phase worker are written in internal/admit, never here.
-	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
-	if err != nil {
-		t.Fatalf("read outbox: %v", err)
-	}
-	defer rows.Close()
-	var kinds []string
-	for rows.Next() {
-		var kind string
-		var payload []byte
-		if err := rows.Scan(&kind, &payload); err != nil {
-			t.Fatalf("scan outbox: %v", err)
-		}
-		kinds = append(kinds, kind)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate outbox: %v", err)
-	}
-	// The registration binds the spec step to its document, which moves the issue's
-	// step-to-document pairs, so it queues the publication of that set as well
-	// (record.PublishChangedGates).
-	if want := []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "supervise", "notice"}; !sameStrings(kinds, want) {
-		t.Fatalf("outbox kinds = %v, want %v", kinds, want)
-	}
+	// phase worker are written in internal/admit, never here. The registration binds the spec step
+	// to its document, which moves the issue's step-to-document pairs, so it queues the publication
+	// of that set as well (record.PublishChangedGates).
+	assertOutboxKinds(t, pool, []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "supervise", "notice"})
 }
 
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
@@ -912,10 +892,13 @@ func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 }
 
 // assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
-// phase worker's start is one of them: one row, which carries the task (StartOrOwe).
+// phase worker's start is one of them: one row, which carries the task (StartOrOwe). A step record
+// is left out: each start and end of a step writes one beside the move's own rows, and the tests
+// of the step sites (step_sites_test.go, step_sites_linger_test.go) read those rows exactly
+// (stepWrites), so every row of any other kind is still compared here.
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox order by id`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1 order by id`, string(record.OutboxKindStepRecord))
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}

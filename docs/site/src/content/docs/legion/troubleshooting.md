@@ -564,23 +564,24 @@ the try started or failed for another reason. It is not cleared while the claim 
 tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
 claim, and in `legion claims list --json` and the last column of `legion claims list` for every
 claim. The project's controller is on no claim view of the state, so its sentence shows in the
-listing alone. What follows the colon says where to look:
+listing alone. What follows the colon says where to look. Each sentence names the repository
+the check is published from, written `<owner>/<repository>` below, and its owner, `<owner>`:
 
-- `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
-  could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
-  configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
-  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+- `the daemon runs with no GitHub App, so it cannot read <owner>/<repository>`, or `the daemon
+  could not mint its read-only token for <owner>/<repository>: …`: the daemon's GitHub App
+  configuration, and the implement App's installation on `<owner>`.
+- `GitHub refused the daemon's implement App the reading permissions on <owner>, …`: what the
+  account grants the implement App's installation on `<owner>`. The read lease needs contents,
   pull requests and metadata read. The daemon asks for no wider token in its place.
-- `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
-  tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
+- `GitHub answered the read of <owner>/<repository> at <tag> with HTTP <status>…`, or `the
+  tarball of <owner>/<repository> at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
-- `the daemon could not read theorem-labs/agent-infra at <tag>: …`, `the daemon's read of
-  theorem-labs/agent-infra at <tag> did not finish within <bound>`, `the daemon could not ask
+- `the daemon could not read <owner>/<repository> at <tag>: …`, `the daemon's read of
+  <owner>/<repository> at <tag> did not finish within <bound>`, `the daemon could not ask
   GitHub for …` or `the daemon could not slice the check it read at <tag>: …`: the daemon's own
   connection to GitHub, or what GitHub sent. The daemon keeps no failed read, so the next launch
   reads again.
-- `the start stopped waiting for the daemon's read of theorem-labs/agent-infra at <tag>: …`: the
+- `the start stopped waiting for the daemon's read of <owner>/<repository> at <tag>: …`: the
   launch reached its own bound before the daemon's read ended. The read goes on, and the next
   launch takes what it read.
 - `the pod asked for the tag "<tag>", which is not of the published shape leak-check-v<n>`: the

@@ -765,6 +765,18 @@ func TestLoadRefusesFailedPrivateKeyCommandEvenWhenItPrintsPEM(t *testing.T) {
 	}
 }
 
+// A private_key_command a signal ended has no status, so its refusal names the signal: read as a
+// status, it was `failed (exit -1)`.
+func TestLoadRefusesAPrivateKeyCommandASignalEndedNamingTheSignal(t *testing.T) {
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", `private_key_command: "echo dying >&2; kill -KILL $$"`, 1)
+
+	_, err := Load(writeConfigFile(t, body), noEnv)
+
+	if want := "github_apps.implement.private_key_command failed (signal: killed): dying"; err == nil || err.Error() != want {
+		t.Errorf("Load error = %v, want %q", err, want)
+	}
+}
+
 func TestLoadRefusesEveryStage3Key(t *testing.T) {
 	for _, tc := range []struct {
 		name string

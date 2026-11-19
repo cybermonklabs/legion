@@ -220,9 +220,9 @@ export type AgentStreamFrame =
   /**
    * How much of its context window the session fills now, as the host's own `getContextUsage()`
    * reports it (INFRA-812). The publisher sends it after each message of a turn, at each turn
-   * start and after a compaction, at most one time in each of its own intervals, and keeps the
-   * newest one in every replay. The frame carries the two figures alone; the share they make is
-   * the viewer's to draw.
+   * start and after a compaction, at most one time in each of its own intervals, and keeps in
+   * every replay the newest reading or the `context-cleared` frame, whichever came last. The frame
+   * carries the two figures alone; the share they make is the viewer's to draw.
    *
    * They travel in a frame of their own rather than beside the model on `settings` because a
    * viewer drops a whole frame whose fields do not validate, and a bad figure here would take
@@ -236,9 +236,20 @@ export type AgentStreamFrame =
       readonly tokens: number;
       /**
        * The current model's context window, in tokens. Always above zero: a session whose host
-       * reports no window publishes no frame at all.
+       * reports no window sends `context-cleared` instead.
        */
       readonly contextWindow: number;
+    }
+  /**
+   * The session reports no context window now: its host answers no usage, or a window of zero
+   * (INFRA-4325). A viewer draws no ring and no figure. The frame shares the `context` frame's
+   * slot, and a viewer applies whichever of the two carries the higher `seq`. A viewer that
+   * predates it drops it: a page built before it drops a frame of a kind it does not know.
+   */
+  | {
+      readonly v: typeof AGENT_STREAM_PROTOCOL;
+      readonly kind: "context-cleared";
+      readonly seq: number;
     };
 
 /** What the relay asks a session for, and the ping that keeps it publishing. */

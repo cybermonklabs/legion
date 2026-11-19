@@ -30,7 +30,16 @@ import (
 // outage, or a row it could not decode — because answering that as "not live" would both deny a
 // sound token and hide the outage; notLive is how the two are told apart, and brokerFailure makes
 // that error say which of the two it was.
+//
+// A token whose HMAC is not the broker's is answered not live before anything is read: the
+// provider's own HMAC strategy (codeStrategy, built in New) checks it, as ValidateAccessToken ends
+// by doing (authelia strategy_hmac.go:125-141), with no prefix to trim since the broker's tokens
+// carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every session token a
+// NATS connection presents, so a forged one must cost the broker no database query.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
+	if p.strategy.Enigma.Validate(ctx, token) != nil {
+		return oauthwire.Introspection{}, nil
+	}
 	kind, request, err := p.oauth.IntrospectToken(ctx, token, oauth2.AccessToken, oauthstore.NewExchangeSession())
 	if err != nil {
 		if notLive(err) {

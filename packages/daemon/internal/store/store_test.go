@@ -813,7 +813,7 @@ var thisRelease = map[int]bool{
 	20261102003600: true, 20261105081500: true, 20261105183200: true, 20261107095842: true,
 	20261108152000: true, 20261108190000: true, 20261109130413: true, 20261111181500: true,
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116165926: true,
-	20261119003157: true,
+	20261117000528: true, 20261117004117: true, 20261117064152: true, 20261119003157: true,
 }
 
 const idleRelease = 20261101222956
@@ -844,7 +844,7 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	// and it is how a kind of the role-message lane came to be missing from two rewrites of an
 	// earlier release.
 	var kinds []record.OutboxKind
-	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage} {
+	for _, lane := range record.OutboxLanes() {
 		kinds = append(kinds, record.LaneKinds(lane)...)
 	}
 	insert := "insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, 'LEGION-208', '{}', 0, now(), '')"

@@ -482,6 +482,12 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// The close ends the merge of each member it neither hands over nor leaves an open pull request:
+	// that merge can no longer land, and the record keeps no mark of the close for the fact's settle
+	// to read (closeLinger, mergeCanLand).
+	if err := e.closeLinger(ctx, issue.Tree); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.warnKeptDecisionsOfAClosedTree(ctx, tx, *issue, handed); err != nil {
 		return intake.Result{}, err
 	}

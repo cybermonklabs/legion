@@ -1657,6 +1657,11 @@ var gitConfigPairs = [][2]string{
 	{"core.hooksPath", "/dev/null"},
 }
 
+// GitConfigPairs is gitConfigPairs, the git settings every process of a pod gets, for `legion
+// gh`, which hands the git gh runs a caller's GIT_CONFIG pair only where it is one of these, key
+// and value alike (cmd/legion's ghChildGitConfig).
+func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
+
 // gitConfigEnv is gitConfigPairs as GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>,
 // which git reads after every configuration file, the repository's own `.git/config` among them,
 // as it reads `-c`. Every git a role process runs then answers https://github.com from the role's
