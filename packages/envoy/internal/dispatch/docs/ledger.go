@@ -311,8 +311,10 @@ func eventSink(ctx context.Context) func(model.Event) {
 }
 
 // Now is the transaction's now(): the time it started, which Postgres holds fixed for the whole
-// transaction, read once. A row whose column defaults to now() is written with it explicitly by a
-// queued insert, so a reader in the read phase knows the value the row will carry.
+// transaction, read once. A row whose column defaults to now() carries that same value whether a
+// queued insert writes it explicitly or leaves it to the column's default, as the carried
+// approval's review row does (writeCarriedReview, approval_carry.go), so a reader in the read
+// phase knows the value the row will carry either way.
 func (l *Ledger) Now(ctx context.Context) (time.Time, error) {
 	if l.writer == nil {
 		return time.Time{}, errUnjoined
