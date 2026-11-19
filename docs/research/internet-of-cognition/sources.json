@@ -45,7 +45,7 @@
       ],
       "paths": ["spend"],
       "read": "2026-11-19",
-      "comment": "The private repository five rows read with git: n-collector-keep-keys, n-spend-call-keys, n-spend-span-fields, n-spend-no-step-view and n-3176-columns; n-arms-precedent reads one of its pull requests through the REST API. env.sh clones it under IOC_CLONES/agent-infra blobless, with no checkout, at exactly these commits, and then fetches the blobs under paths at each of them, every file those rows read, through the machine's git credential helper, which in a Legion pod answers for the repository's path. a0ccd32ea96b24555efe7fe54cc8ce8963835a07 is the head of pull request 3176 as read on 2026-11-19, which GitHub serves by its id. --replay reads the repository with git ls-remote before it builds anything, and a machine whose git cannot read it cannot run --replay."
+      "comment": "The private repository rows of claims.jsonl read: most with git, and a few its pull requests through the REST API. env.sh clones it under IOC_CLONES/agent-infra blobless, with no checkout, at exactly these commits, and then fetches the blobs under paths at each of them, every file those rows read, through the machine's git credential helper, which in a Legion pod answers for the repository's path. a0ccd32ea96b24555efe7fe54cc8ce8963835a07 is the head of pull request 3176 as read on 2026-11-19, which GitHub serves by its id. --replay reads the repository with git ls-remote before it builds anything, and a machine whose git cannot read it cannot run --replay."
     }
   ],
   "python_environment": {

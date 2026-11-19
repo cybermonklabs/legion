@@ -3110,23 +3110,22 @@ fi
 
 # 115. A row that reads a private repository cannot run where git cannot read it (test round
 # 37, and R11 of round 38, under which the gate reads GitHub through git and the REST API and
-# never through gh). Six rows read theorem-labs/agent-infra, a private repository:
-# n-collector-keep-keys and four more from the clone env.sh fetches with git, and
-# n-arms-precedent one of its pull requests through the REST API. A reader whose git cannot
-# read that repository would see env.sh refuse its clone, or each row's read fail, a FAIL of
-# replay-command that is no verdict on the deliverable. --replay reads the repository with git
-# ls-remote through live_read before the GitHub budget and before env.sh builds anything
-# (private_repository_read), so such a reader gets check.sh cannot run, exit 2, naming the
-# repository and the rows. The case runs --replay over this directory with a git of the
-# case's own first on PATH, which refuses ls-remote of theorem-labs/agent-infra with exit 128,
-# as git does for a repository its credential cannot read, and runs the real git for
-# everything else; the run must end exit 2, its last line naming theorem-labs/agent-infra and
-# the rows, with no FAIL line. A curl of the case's own, also first on PATH, answers nothing,
-# so a gate that read the repository after the budget, or not at all, would end at the
-# budget's read, which names neither, and never start the whole replay. Both reads are the
-# case's own plants, GitHub's, so the run's reason is read as planted when it is either, and a
-# run that ends at the budget's read fails the case rather than reading as one that could not
-# run.
+# never through gh). Rows read theorem-labs/agent-infra, a private repository: most from
+# the clone env.sh fetches with git, and a few its pull requests through the REST API. A
+# reader whose git cannot read that repository would see env.sh refuse its clone, or each
+# row's read fail, a FAIL of replay-command that is no verdict on the deliverable. --replay
+# reads the repository with git ls-remote through live_read before the GitHub budget and
+# before env.sh builds anything (private_repository_read), so such a reader gets check.sh
+# cannot run, exit 2, naming the repository and the rows. The case runs --replay over this
+# directory with a git of the case's own first on PATH, which refuses ls-remote of
+# theorem-labs/agent-infra with exit 128, as git does for a repository its credential cannot
+# read, and runs the real git for everything else; the run must end exit 2, its last line
+# naming theorem-labs/agent-infra and the rows, with no FAIL line. A curl of the case's own,
+# also first on PATH, answers nothing, so a gate that read the repository after the budget,
+# or not at all, would end at the budget's read, which names neither, and never start the
+# whole replay. Both reads are the case's own plants, GitHub's, so the run's reason is read as
+# planted when it is either, and a run that ends at the budget's read fails the case rather
+# than reading as one that could not run.
 PRIVATE="$WORK/private-repository"
 mkdir -p "$PRIVATE/bin"
 cat >"$PRIVATE/bin/git" <<'STUB'
@@ -3152,7 +3151,7 @@ if grep -q '^FAIL' "$out/text"; then
     case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
 else
     ending_result "$private_case" 2 \
-        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of theorem-labs/agent-infra, the private repository the six rows n-collector-keep-keys, n-arms-precedent, n-spend-call-keys, n-spend-span-fields, n-spend-no-step-view and n-3176-columns read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/theorem-labs/agent-infra\\.git/' not found" "$out" \
+        "^check\\.sh cannot run --replay: GitHub's answer to git ls-remote of theorem-labs/agent-infra, the private repository the rows n-collector-keep-keys, [^,]*(, [a-z0-9-]+)* read, did not answer: remote: Repository not found\\. fatal: repository 'https://github\\.com/theorem-labs/agent-infra\\.git/' not found" "$out" \
         '^check\.sh cannot run --replay: GitHub'
 fi
 

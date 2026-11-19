@@ -36,7 +36,7 @@
 #
 #   IOC_CACHE       the cache root, everything below is under it
 #   IOC_CLONES      the clone root: the three clones at the commits sources.json pins, and
-#                   agent-infra, the private repository five rows read with git, fetched
+#                   agent-infra, the private repository rows read with git, fetched
 #                   blobless at the commits its private_repositories entry pins
 #   IOC_EVID        the absolute path of the committed evidence/ directory
 #   IOC_DESIGN      the design under check, dispatch://INFRA-3134/artifact/ioc-design-2026-11-12-md
@@ -185,7 +185,7 @@ ioc_env_clone() {
 # for a repository gets git's refusal and never a prompt.
 ioc_env_git() { GIT_TERMINAL_PROMPT=0 GIT_ASKPASS='' git "$@"; }
 
-# The private repository five rows read with git, theorem-labs/agent-infra, as a fourth
+# The private repository rows read with git, theorem-labs/agent-infra, as a fourth
 # clone under IOC_CLONES, by its entry of sources.json's private_repositories. It is fetched
 # blobless (--filter=blob:none), with no checkout, at exactly the commits the entry pins;
 # then the blobs of the paths the entry names, at each of those commits, are fetched by
