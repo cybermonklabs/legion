@@ -1681,11 +1681,22 @@ func kernelKillLead(report shimwire.LauncherMemoryKill) string {
 }
 
 // controllerMemoryGuardKill tells the project's controller which of its own programs the memory
-// guard of the controller's pod ended, and why (intake.ControllerMemoryGuardKill): one controller
-// notice of kind memory-guard-kill, filed under the project key as a tick is, and enqueued in the
-// fact's transaction, so a fact that rolls back tells nobody and the outbox carries the telling
-// across a restart. No architect is told: the controller's pod is of no issue, and the program
-// was the controller's.
+// guard of the controller's pod ended, or the pod's own kernel stopped, and why
+// (intake.ControllerMemoryGuardKill): one controller notice of kind memory-guard-kill, filed under
+// the project key as a tick is, and enqueued in the fact's transaction, so a fact that rolls back
+// tells nobody and the outbox carries the telling across a restart. No architect is told: the
+// controller's pod is of no issue, and the program was the controller's.
+//
+// The report's cause chooses the note, as memoryGuardKill's does. The controller's pod in gVisor
+// runs the guard, whose reports carry no cause; the controller's pod in a microVM runs the guest
+// watch over the launcher's controllerClassifier in its place, and reports the kernel's kills
+// with their causes, where the daemon's acknowledgement carried KernelKills (runtime/sandbox's
+// launcherHelloAck sets it on the controller's). So the kernel's note of a command
+// (controllerKernelKillNote) answers shimwire.MemoryKillCauseKernel; the kernel's note of one of
+// the processes that run the controller's session (controllerKernelProtectedKillNote) answers
+// shimwire.MemoryKillCauseKernelProtected; and the guard's (controllerMemoryGuardNote) answers
+// shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
+// (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
 //
 // Each kill is a row of its own, written here and never through admission's wakeController,
 // whose rule keeps one unsent notice per kind and project: a second kill while the first one's
@@ -1709,31 +1720,92 @@ func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact 
 			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
 		return intake.Result{}, nil
 	}
+	var note, told string
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
+		note, told = controllerKernelKillNote(report), "workflow: the controller whose program the pod's kernel stopped is told why"
+	case shimwire.MemoryKillCauseKernelProtected:
+		note, told = controllerKernelProtectedKillNote(report), "workflow: the controller is told why the pod's kernel stopped one of the processes that run its session"
+	default:
+		note, told = controllerMemoryGuardNote(report), "workflow: the controller whose program the memory guard ended is told why"
+	}
 	if err := e.enqueue(ctx, tx, e.cfg.Project, record.ControllerNotice(record.Notice{
-		Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: controllerMemoryGuardNote(report)})); err != nil {
+		Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: note})); err != nil {
 		return intake.Result{}, err
 	}
-	e.logOnCommit(ctx, "workflow: the controller whose program the memory guard ended is told why",
+	e.logOnCommit(ctx, told,
 		"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
-		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "limitBytes", report.LimitBytes)
+		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "counterBytes", report.CounterBytes,
+		"limitBytes", report.LimitBytes)
 	return intake.Result{}, nil
 }
 
+// The ends of the controller's notes of a process stopped for memory, which it reads in place of
+// a role's (memoryKillGoesOn, memoryKillHeavyWork): the controller has no worker's tools
+// reference, so each note points to its own wakes reference, whose memory-guard-kill section says
+// the same at more length. controllerMemoryKillGoesOn says what goes on after a command of the
+// controller's is stopped, in the guard's note and the kernel's note of a command; it is not true
+// of a process that runs the controller's session, whose note says what happens instead
+// (controllerKernelProtectedKillEnd). controllerMemoryKillRunAgain, what to run in place of the
+// same program, ends both notes of a command.
+const (
+	controllerMemoryKillGoesOn   = "Your session and the pod's other processes go on. "
+	controllerMemoryKillRunAgain = "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
+		"or send heavy work where your deployment's instructions say. " +
+		"Read skill://legion-controller/references/wakes.md before you run it again."
+)
+
+// controllerKernelProtectedKillEnd is what the controller reads of one of the processes that run
+// its session stopped by its microVM pod's kernel (shimwire.MemoryKillCauseKernelProtected): the
+// shim and its direct children, the agent among them, which the launcher's controllerClassifier
+// marks as the session's. The controller's pod has no role-init: its shim is the launcher's
+// generation itself. The agent's end ends the shim's (the shim returns the agent's exit), and the
+// shim's is the generation's exit: the launcher, the container's PID 1, ends what the generation
+// left (cleanExitedGeneration) and reports that exit. The daemon reads that as the controller's
+// process gone, as it reads every exit of that process (supervise's died): it takes back the task
+// the turn was running, charges one launch failure and relaunches the same session, and where the
+// claim's budget has run out and the claim fails, the controller keeper retries it with fresh
+// budgets after a wait (the daemon's controllerKeeper). Either way the same session starts again,
+// which is all the note says of it. A helper of the agent's may end alone, which is why the note
+// says what follows only of the agent. It never says the session goes on, which the end of the
+// agent's own process makes false, and it points to the controller's wakes reference as the notes
+// of a command do.
+const controllerKernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
+	"If it was your agent, your turn ended with it, and so did every command it was running. " +
+	"The daemon then starts the same session again, as it does after any exit of your session's process. " +
+	"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say. " +
+	"Read skill://legion-controller/references/wakes.md before your next command."
+
 // controllerMemoryGuardNote is the reason of the notice the controller reads when the memory guard
 // of its pod ended one of its programs: which process, how much it held, how near the limit the
-// pod was, that its session and the pod's other processes go on, and what to run in place of the
-// same program. It is written as memoryGuardNote is: sizes in binary units (binarySize), and the
-// process by its executable alone in a code span (codeSpan), with none of its arguments. The
-// controller has no worker's tools reference, so it is pointed to its own wakes reference, whose
-// memory-guard-kill section says the same at more length.
+// pod was, that its session and the pod's other processes go on (controllerMemoryKillGoesOn), and
+// what to run in place of the same program (controllerMemoryKillRunAgain). It is written as
+// memoryGuardNote is: sizes in binary units (binarySize), and the process by its executable alone
+// in a code span (codeSpan), with none of its arguments.
 func controllerMemoryGuardNote(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: "+
 		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
-		"Your session and the pod's other processes go on. "+
-		"Do not run the same program again unchanged: bound its output (a page, a limit, a stream), "+
-		"or send heavy work where your deployment's instructions say. "+
-		"Read skill://legion-controller/references/wakes.md before you run it again.",
+		controllerMemoryKillGoesOn+controllerMemoryKillRunAgain,
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// controllerKernelKillNote is the reason of the notice the controller reads when its microVM
+// pod's own kernel stopped one of its commands because the pod ran out of memory
+// (shimwire.MemoryKillCauseKernel): which process, how much it held, the pod's memory counter
+// against its limit, as kernelKillNote's lead gives them (kernelKillLead), then what the guard's
+// note says after its lead: that the controller's session and the pod's other processes go on,
+// and what to run in place of the same program.
+func controllerKernelKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + controllerMemoryKillGoesOn + controllerMemoryKillRunAgain
+}
+
+// controllerKernelProtectedKillNote is the reason of the notice the controller reads when its
+// microVM pod's own kernel stopped one of the processes that run its session
+// (shimwire.MemoryKillCauseKernelProtected): which process, how much it held, the pod's memory
+// counter against its limit (kernelKillLead), and what that process's end does to the controller
+// (controllerKernelProtectedKillEnd), as kernelProtectedKillNote tells a role.
+func controllerKernelProtectedKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + controllerKernelProtectedKillEnd
 }
 
 // codeSpan is text as one Markdown code span that nothing in text ends early or spreads over

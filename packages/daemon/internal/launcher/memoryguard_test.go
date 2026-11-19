@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -1397,11 +1398,18 @@ func controllerManager() (*manager, *lockedBuffer) {
 }
 
 // serveControllerGuard runs the controller pod's guard for m, with the pid guard pids, as Run's
-// single-role branch does, until the test's end.
+// single-role branch does, until the test's end: serveControllerGuardOf a gVisor pod's zero Config.
 func serveControllerGuard(t *testing.T, m *manager, pids *pidGuard) {
 	t.Helper()
+	serveControllerGuardOf(t, Config{}, m, pids)
+}
+
+// serveControllerGuardOf runs the controller pod's memory watch of cfg (serveMemoryGuard) for m,
+// with the pid guard pids, as Run's single-role branch does, until the test's end.
+func serveControllerGuardOf(t *testing.T, cfg Config, m *manager, pids *pidGuard) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := serveMemoryGuard(ctx, Config{}, []*manager{m}, pids)
+	done := serveMemoryGuard(ctx, cfg, []*manager{m}, pids)
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -1419,11 +1427,60 @@ func waitingReports(m *manager) []shimwire.LauncherMemoryKill {
 	return slices.Clone(m.memoryKills)
 }
 
+// guestControllerTree is controllerTree, with no sizes, as a microVM controller pod's guest watch
+// reads it: the container's starting score of 0, and every process of the tree at it.
+func guestControllerTree(t *testing.T) *guardPod {
+	t.Helper()
+	pod := controllerTree(t, nil)
+	pod.setSelfScore(0)
+	pod.setScore(os.Getpid(), 0, 0)
+	for pid := ctlHeld; pid <= ctlFakeHelper; pid++ {
+		pod.setScore(pid, 0, 0)
+	}
+	return pod
+}
+
+// askedGuest has every guest watch a launcher builds from here to the test's end built as the
+// test's newGuest already builds it (useGuestPod), and answers a function that answers the
+// configuration the launcher asked for, its own classifier and SessionDrain, failing the test
+// where the launcher built none, or a second.
+func askedGuest(t *testing.T) func() memoryguard.GuestConfig {
+	t.Helper()
+	asked := make(chan memoryguard.GuestConfig, 1)
+	built := newGuest
+	newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest {
+		select {
+		case asked <- cfg:
+		default:
+			t.Error("the launcher built a second guest watch")
+		}
+		return built(cfg)
+	}
+	t.Cleanup(func() { newGuest = built })
+	return func() memoryguard.GuestConfig {
+		t.Helper()
+		select {
+		case cfg := <-asked:
+			return cfg
+		default:
+			t.Fatal("the launcher built no guest watch")
+			return memoryguard.GuestConfig{}
+		}
+	}
+}
+
 // runControllerLauncher runs the controller pod's launcher, Run's single-role form, for the role
 // "controller" until the test's end, when Run must return the end of its context and nothing else.
 // The test takes each of its connections itself (acceptController), since what it drives is the
 // acknowledgement.
 func runControllerLauncher(t *testing.T) *rig {
+	t.Helper()
+	return runControllerLauncherOf(t, Config{StopGrace: 2 * time.Second})
+}
+
+// runControllerLauncherOf is runControllerLauncher whose launcher carries cfg's fields besides the
+// ones every controller launcher of these tests is given.
+func runControllerLauncherOf(t *testing.T, cfg Config) *rig {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1432,10 +1489,8 @@ func runControllerLauncher(t *testing.T) *rig {
 	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &rig{t: t, listener: listener, private: shortTempDir(t), cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
-	cfg := Config{
-		Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-controller",
-		Role: "controller", PodUID: "pod-1", PrivateDir: g.private, Stderr: g.stderr, StopGrace: 2 * time.Second,
-	}
+	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), "launcher-token", "legion-legion-controller"
+	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "controller", "pod-1", g.private, g.stderr
 	go func() {
 		g.result <- Run(ctx, cfg)
 	}()
@@ -1674,43 +1729,148 @@ func TestControllerPodMemoryGuardEndsTheLargestAtTheMarkAndTheNextAfterAFall(t *
 	step("at the mark after the reading has been below it", guardHigh, 0, ctlEval, ctlKernel, ctlCommand)
 }
 
-// The controller's pod is never a microVM's, so the launcher's single-role form runs the guard and
-// never the guest watch, also where its configuration says MicroVM (Config.runsGuest): the guard
-// ends the largest at the mark, the controller's manager holds it, and the kill's report, with the
-// guard's own cause, waits for the controller's connection.
-func TestControllerPodMemoryGuardRunsTheGuardWhateverMicroVMSays(t *testing.T) {
-	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 700 * guardMiB})
-	rig := useGuardPod(t, pod, nil)
-	previous := newGuest
-	newGuest = func(memoryguard.GuestConfig) *memoryguard.Guest {
-		panic("the controller pod's launcher built the guest watch")
-	}
-	t.Cleanup(func() { newGuest = previous })
-	m, _ := controllerManager()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := serveMemoryGuard(ctx, Config{MicroVM: true}, []*manager{m}, &pidGuard{})
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the memory guard did not return after its context ended")
+// The controller's launcher in a microVM pod keeps the memory rule of a microVM pod rather than
+// the gVisor guard (INFRA-4567). As the container's first process, the single-role form with
+// MicroVM logs the one off line through the role's own log, builds no guard, so its manager holds
+// none, and runs the guest watch over the controller's classifier (controllerClassifier): one scan
+// raises what the guard may end of the controller's tree and keeps the launcher, what its pid
+// guard holds, the shim and the agent's own processes at the container's starting score. The
+// watch's SessionDrain is that form's own drain of an exited generation, its StopGrace, and a
+// second (controllerSessionDrain), which through Run counts from Run's default of 30 seconds where
+// the configuration names none; an acknowledgement's guard settings reach no guard there, so no
+// settings line follows the off line. The kill reports of its one role go only on a connection
+// whose acknowledgement carried kernelKills, whatever it says of the guard, as the daemon's answer
+// to the controller does beside its guard settings; one of guard settings alone, an earlier
+// daemon's answer, or of neither drops them with the line a microVM issue pod's launcher writes.
+// Without MicroVM the controller's launcher runs the guard, as INFRA-3531 has it: the guard ends
+// the largest at the mark, its manager holds the guard, the guest watch is never built, and its
+// reports go where guard settings came and are dropped where kernelKills alone did.
+func TestTheControllersLauncherInAMicroVMRunsTheGuestWatch(t *testing.T) {
+	const off = "launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process"
+	t.Run("in a microVM", func(t *testing.T) {
+		pod := guestControllerTree(t)
+		noGuard(t, "a microVM controller pod's launcher built a memory guard")
+		rig := useGuestPod(t, pod, nil)
+		asked := askedGuest(t)
+		m, log := controllerManager()
+		pids := &pidGuard{pids: map[int]bool{ctlHeld: true}}
+		serveControllerGuardOf(t, Config{MicroVM: true, StopGrace: 5 * time.Second}, m, pids)
+		rig.started()
+		if got := guardLines(log, ""); !slices.Equal(got, []string{off}) {
+			t.Fatalf("the controller's memory guard lines are %q, want %q alone", got, off)
+		}
+		if !strings.Contains(log.String(), "\nlauncher: guest memory: start ") {
+			t.Fatalf("the controller's log holds no start line of the guest watch, behind no prefix: %s", log.String())
+		}
+		if m.memoryGuard != nil {
+			t.Fatalf("the controller's manager holds the guard %v in a microVM pod's launcher, want none", m.memoryGuard)
+		}
+		cfg := asked()
+		if want := 6 * time.Second; cfg.SessionDrain != want {
+			t.Errorf("the guest watch's SessionDrain is %s, want the controller's StopGrace of 5s and a second, %s", cfg.SessionDrain, want)
+		}
+		table := scanTable(t, pod)
+		if got, want := cfg.Classify(table), newControllerClassifier(m, pids).classify(table); !maps.Equal(got, want) {
+			t.Errorf("the guest watch classifies the controller's tree as %v, want the controller's classifier's %v", got, want)
+		}
+		for _, pid := range []int{os.Getpid(), ctlHeld, ctlHeldChild, ctlShim, ctlOmp, ctlRenewer, ctlKeygen, ctlBroker, ctlMux} {
+			if got := pod.score(pid); got != 0 {
+				t.Errorf("pid %d, which the controller's classifier spares, reads oom_score_adj %d after one scan, want the starting 0; the watch's log:\n%s", pid, got, rig.log())
+			}
+		}
+		for _, pid := range controllerEndable {
+			if got := pod.score(pid); got != 1000 {
+				t.Errorf("pid %d, which the guard may end, reads oom_score_adj %d after one scan, want 1000; the watch's log:\n%s", pid, got, rig.log())
+			}
 		}
 	})
-	rig.started()
-	pod.setAnon(3400 * guardMiB)
-	rig.tick()
-	pod.setAnon(guardHigh)
-	rig.tick()
-	if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
-		t.Fatalf("the guard killed %v at the mark, want %d alone; its log:\n%s", kills, ctlEval, rig.log())
-	}
-	if m.memoryGuard == nil {
-		t.Fatal("the controller's manager holds no guard under MicroVM, want the guard the launcher built")
-	}
-	if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlEval || reports[0].Cause != shimwire.MemoryKillCauseGuard {
-		t.Fatalf("the controller's manager holds the reports %+v, want the guard's one report of pid %d", reports, ctlEval)
-	}
+	t.Run("through Run", func(t *testing.T) {
+		pod := guestControllerTree(t)
+		noGuard(t, "a microVM controller pod's launcher built a memory guard")
+		rig := useGuestPod(t, pod, nil)
+		asked := askedGuest(t)
+		g := runControllerLauncherOf(t, Config{MicroVM: true})
+		rig.started()
+		if cfg := asked(); cfg.SessionDrain != 31*time.Second {
+			t.Errorf("the guest watch's SessionDrain is %s, want Run's default StopGrace of 30s and a second, 31s", cfg.SessionDrain)
+		}
+		ack := controllerDefaultsAck()
+		ack.KernelKills = true
+		g.acceptController(ack)
+		if got := guardLines(g.stderr, ""); !slices.Equal(got, []string{off}) {
+			t.Fatalf("the launcher's memory guard lines are %q, want %q alone", got, off)
+		}
+	})
+	t.Run("under gVisor", func(t *testing.T) {
+		pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 700 * guardMiB})
+		rig := useGuardPod(t, pod, nil)
+		previous := newGuest
+		newGuest = func(memoryguard.GuestConfig) *memoryguard.Guest {
+			panic("a gVisor controller pod's launcher built the guest watch")
+		}
+		t.Cleanup(func() { newGuest = previous })
+		m, _ := controllerManager()
+		serveControllerGuard(t, m, &pidGuard{})
+		rig.started()
+		pod.setAnon(3400 * guardMiB)
+		rig.tick()
+		pod.setAnon(guardHigh)
+		rig.tick()
+		if kills := rig.signal.kills(); !slices.Equal(kills, []int{ctlEval}) {
+			t.Fatalf("the guard killed %v at the mark, want %d alone; its log:\n%s", kills, ctlEval, rig.log())
+		}
+		if m.memoryGuard == nil {
+			t.Fatal("the controller's manager holds no guard under gVisor, want the guard the launcher built")
+		}
+		if reports := waitingReports(m); len(reports) != 1 || reports[0].PID != ctlEval || reports[0].Cause != shimwire.MemoryKillCauseGuard {
+			t.Fatalf("the controller's manager holds the reports %+v, want the guard's one report of pid %d", reports, ctlEval)
+		}
+	})
+	t.Run("its reports", func(t *testing.T) {
+		const noKernelKills = "reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
+		const noSettings = "reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
+		both := controllerDefaultsAck()
+		both.KernelKills = true
+		for _, tc := range []struct {
+			name    string
+			microVM bool
+			ack     shimwire.LauncherHelloAck
+			dropped string
+		}{
+			{"a microVM controller on kernelKills and guard settings", true, both, ""},
+			{"a microVM controller on kernelKills and no guard settings", true, shimwire.LauncherHelloAck{KernelKills: true}, ""},
+			{"a microVM controller on guard settings and no kernelKills", true, controllerDefaultsAck(), noKernelKills},
+			{"a microVM controller on an older daemon's acknowledgement", true, shimwire.LauncherHelloAck{}, noKernelKills},
+			{"a gVisor controller on kernelKills and guard settings", false, both, ""},
+			{"a gVisor controller on kernelKills and no guard settings", false, shimwire.LauncherHelloAck{KernelKills: true}, noSettings},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				report := shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: 1, PID: 900, Executable: "python3",
+					SizeBytes: 600 * guardMiB, ReadingBytes: 3500 * guardMiB, CounterBytes: 3900 * guardMiB, LimitBytes: 4096 * guardMiB,
+					At: time.Date(2026, 11, 19, 6, 0, 0, 0, time.UTC)}
+				if tc.microVM {
+					report.Cause = shimwire.MemoryKillCauseKernel
+				}
+				conn, stderr := waitingControllerKillReport(t, tc.microVM, report)
+				conn.acknowledgeWith(tc.ack)
+				if tc.dropped == "" {
+					if got := conn.nextMemoryKill(); got != report {
+						t.Fatalf("the connection carries the report %+v, want the one that waited for it, %+v", got, report)
+					}
+					conn.noMemoryKill("after the report that waited for it, the connection")
+					if strings.Contains(stderr.String(), "report dropped") {
+						t.Fatalf("the launcher logged %s, want no report dropped", stderr.String())
+					}
+					return
+				}
+				conn.noMemoryKill("a connection whose acknowledgement does not say the daemon knows the report")
+				line := "launcher: memory guard: report dropped sequence=1 pid=900 " + tc.dropped
+				if !slices.Contains(strings.Split(stderr.String(), "\n"), line) {
+					t.Fatalf("the launcher logged %s, want the line %q, behind no prefix", stderr.String(), line)
+				}
+			})
+		}
+	})
 }
 
 // When the guard stops for a rise in the controller's pod, its line names each process it could not
@@ -3483,33 +3643,48 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
+	return servedKillReport(t, Config{Sandbox: "legion-legion-legion-208", RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM}, report)
+}
+
+// waitingControllerKillReport is waitingKillReport for the controller pod's one role: the
+// single-role form's manager as Run builds it, whose lines carry no role's prefix.
+func waitingControllerKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+	t.Helper()
+	return servedKillReport(t, Config{
+		Sandbox: "legion-legion-controller", Token: "launcher-token", Role: "controller", PrivateDir: shortTempDir(t), MicroVM: microVM,
+	}, report)
+}
+
+// servedKillReport is the rest of waitingKillReport and waitingControllerKillReport: it builds
+// cfg's first manager, with the listener, the pod, the log and the stop grace every such test's is
+// given, queues report on it and serves it until the test's end.
+func servedKillReport(t *testing.T, cfg Config, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
 	stderr := &lockedBuffer{}
-	managers, err := newManagers(Config{
-		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
-		RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM, Stdout: stderr, Stderr: stderr, StopGrace: 2 * time.Second,
-	}, &pidGuard{})
+	cfg.Connect, cfg.PodUID, cfg.Stdout, cfg.Stderr, cfg.StopGrace = "tcp://"+listener.Addr().String(), "pod-1", stderr, stderr, 2*time.Second
+	managers, err := newManagers(cfg, &pidGuard{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tester := managers[0]
-	tester.queueMemoryKill(report)
+	m := managers[0]
+	m.queueMemoryKill(report)
 	ctx, cancel := context.WithCancel(context.Background())
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		_ = tester.serveUntil(ctx, listener.Addr().String())
+		_ = m.serveUntil(ctx, listener.Addr().String())
 	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
 		case <-served:
 		case <-time.After(30 * time.Second):
-			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
+			t.Errorf("the %s's manager did not return after its context ended; its log: %s", m.role, stderr.String())
 		}
 	})
 	return acceptRole(t, listener), stderr

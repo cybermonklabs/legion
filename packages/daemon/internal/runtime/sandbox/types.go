@@ -24,45 +24,52 @@ import (
 // Scheduling is where Legion's pods may run, beyond the Legion pool every one of them selects.
 type Scheduling struct {
 	// NodeSelector is added to {legion.dev/pool: legion}; it may not set legion.dev/pool itself. A
-	// microVM issue pod names its own ComputeClass in place of any this names (placement).
+	// microVM pod, an issue's or the project controller's, names its own ComputeClass in place of
+	// any this names (placement).
 	NodeSelector map[string]string
 	// Tolerations are appended to the Legion pool's own toleration, less one of another
-	// ComputeClass on a microVM issue pod (placement).
+	// ComputeClass on a microVM pod, an issue's or the project controller's (placement).
 	Tolerations   []corev1.Toleration
 	PriorityClass string
 }
 
-// SandboxType is the sandbox an issue pod runs in.
+// SandboxType is the sandbox a pod runs in: an issue pod's, its issue's (SandboxConfig.Of), and
+// the project controller's, the project's type (SandboxConfig.Controller).
 type SandboxType string
 
 const (
 	// SandboxGVisor is gVisor: the sandbox of every issue pod the configuration names no other
-	// for, and of every other pod the runtime builds.
+	// for, of the controller's pod where the project's type is not microvm, and of every other pod
+	// the runtime builds, the repository cache pods and the image probe's, whatever it says.
 	SandboxGVisor SandboxType = "gvisor"
 	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVM names.
 	SandboxMicroVM SandboxType = "microvm"
 )
 
 // SandboxConfig is runtime.kubernetes.sandbox, settled, as the daemon hands it over member for
-// member (config.SandboxConfig): the sandbox of the project's issue pods, the issues whose pods run
-// in the other one, and where a microVM pod runs. It places issue pods alone: the controller's pod,
-// the repository cache pods and the image probe run in gVisor whatever it says. The zero value
-// runs every issue pod in gVisor.
+// member (config.SandboxConfig): the sandbox of the project's issue pods and of its controller's
+// pod, the issues whose pods run in the other one, and where a microVM pod runs. It places the
+// issue pods (Of) and the controller's pod (Controller) alone: the repository cache pods and the
+// image probe run in gVisor whatever it says. The zero value runs every pod in gVisor.
 type SandboxConfig struct {
-	// Type is the sandbox of the project's issue pods. Any value but SandboxMicroVM, the zero
-	// value's included, reads as gVisor.
+	// Type is the sandbox of the project's issue pods and of its controller's pod. Any value but
+	// SandboxMicroVM, the zero value's included, reads as gVisor.
 	Type SandboxType
-	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name.
+	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name. They name
+	// issues, so they never move the controller's pod, which has none.
 	CanaryIssues []string
 	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the
 	// configuration names none. New refuses a nil one, or one naming no ComputeClass or no
-	// StorageClass, while an issue pod runs in a microVM (AnyMicroVM).
+	// StorageClass, while an issue pod runs in a microVM (AnyMicroVM), which every project whose
+	// controller's pod runs in one has: its type is microvm.
 	MicroVM *MicroVM
 }
 
 // MicroVM is runtime.kubernetes.sandbox.microvm: the GKE ComputeClass whose nodes run the microVM
-// pods; the StorageClass of their disks, runtime.kubernetes.storage_class where the block names
-// none, which the loader fills in; and the metadata endpoint their launchers serve, nil for none.
+// pods; the StorageClass of the microVM issue pods' disks, runtime.kubernetes.storage_class where
+// the block names none, which the loader fills in (the controller's disk stays on
+// runtime.kubernetes.storage_class in either sandbox, diskSpec); and the metadata endpoint their
+// launchers serve, nil for none.
 type MicroVM struct {
 	ComputeClass, StorageClass string
 	Metadata                   *MetadataEndpoint
@@ -89,8 +96,20 @@ func (c SandboxConfig) Of(issue string) SandboxType {
 	return SandboxGVisor
 }
 
-// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
-// names an issue, whose pod then runs in a microVM on a gVisor project.
+// Controller is the sandbox the project controller's pod runs in: Type, a microVM where it is
+// microvm and gVisor otherwise. CanaryIssues never moves it: the list names issues, and the
+// controller has none, so the controller of a gVisor project stays in gVisor whatever the list or
+// the microvm block says.
+func (c SandboxConfig) Controller() SandboxType {
+	if c.Type == SandboxMicroVM {
+		return SandboxMicroVM
+	}
+	return SandboxGVisor
+}
+
+// AnyMicroVM reports whether a pod may run in a microVM: Type is microvm, under which the
+// controller's pod runs in one and so does every issue pod the canary list does not name, or
+// CanaryIssues names an issue, whose pod then runs in a microVM on a gVisor project.
 func (c SandboxConfig) AnyMicroVM() bool {
 	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
@@ -164,8 +183,8 @@ type Options struct {
 	// default (runtime.kubernetes.issue_volume, config.defaultIssueVolume when the file sets none).
 	IssueVolume resource.Quantity
 	Scheduling  Scheduling
-	// Sandbox is the sandbox each issue pod runs in, and where a microVM pod runs (SandboxConfig).
-	// Every pod runs in gVisor under the zero value.
+	// Sandbox is the sandbox each issue pod and the controller's pod runs in, and where a microVM
+	// pod runs (SandboxConfig). Every pod runs in gVisor under the zero value.
 	Sandbox SandboxConfig
 	// Resources are the two pods' requirements: every issue pod's one container and its two init
 	// containers carry Issue, the controller's pod's one container Controller. The daemon hands
@@ -394,12 +413,14 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
-	// ControllerMemoryGuardKilled takes one process the controller pod's memory guard ended, as
-	// that pod's launcher reported it on the controller's connection
-	// (runtime.ControllerMemoryGuardKilled): the daemon turns it into the notice that tells the
-	// project's controller which of its programs ended and why. A runtime given none drops such a
-	// report as MemoryGuardKilled's absence drops an issue pod's: it logs a warning naming where
-	// the daemon sets this field, and keeps the connection open.
+	// ControllerMemoryGuardKilled takes one process the memory guard of a gVisor controller pod
+	// ended, or one that a microVM controller pod's own kernel stopped (the report's Cause,
+	// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process
+	// that runs the controller's session), as that pod's launcher reported it on the controller's
+	// connection (runtime.ControllerMemoryGuardKilled): the daemon turns it into the notice that
+	// tells the project's controller which of its programs ended and why. A runtime given none
+	// drops such a report as MemoryGuardKilled's absence drops an issue pod's: it logs a warning
+	// naming where the daemon sets this field, and keeps the connection open.
 	ControllerMemoryGuardKilled runtime.ControllerMemoryGuardKilled
 	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
 	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's

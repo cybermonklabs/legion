@@ -368,16 +368,20 @@ runtime:
     #                                  # 80Gi over 6Gi of disk; controller 1 and 4Gi, 10Gi over 1Gi. On GKE
     #                                  # Autopilot, which caps a pod's ephemeral storage at 10Gi, set
     #                                  # issue: { ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi }
-    # sandbox:                         # optional: the sandbox the project's issue pods run in.
-    #   type: gvisor                   # gvisor or microvm. gvisor is the default.
+    # sandbox:                         # optional: the sandbox the project's issue pods and its
+    #                                  # controller's pod (controller: daemon) run in.
+    #   type: gvisor                   # gvisor or microvm. gvisor is the default. The controller's
+    #                                  # pod follows type alone.
     #   canary_issues: [WIDGETS-12]    # issues whose pods run in the other sandbox, for a canary.
     #                                  # Each is an exact issue key, named once. The default is [].
+    #                                  # The list never moves the controller's pod.
     #   microvm:                       # where a microVM pod runs.
     #     compute_class: example-microvm # the ComputeClass whose nodes run the microVM pods.
     #                                  # Required while type is microvm or canary_issues names an
     #                                  # issue.
-    #     storage_class: example-microvm-disk # the class of a microVM pod's workspace volume.
-    #                                  # The default is storage_class above.
+    #     storage_class: example-microvm-disk # the class of a microVM issue pod's workspace volume.
+    #                                  # The default is storage_class above. The controller's disk
+    #                                  # stays on storage_class in either sandbox.
     #     metadata:                    # optional: a microVM pod's launcher serves the metadata
     #                                  # server's paths inside the pod. The pod then gets its
     #                                  # Google credential without the node's own address.
@@ -387,10 +391,15 @@ runtime:
     #                                  # That launcher sets GCE_METADATA_HOST and GCE_METADATA_IP to
     #                                  # the endpoint's address, so pod.env must not set them.
     #                                  # A microvm block does nothing while no issue pod runs in a
-    #                                  # microVM. The controller's pod, the repository cache pods
-    #                                  # and the image probe always run in gVisor. While an issue
-    #                                  # pod runs in a microVM, scheduling must not name
-    #                                  # sandbox.gke.io/runtime: the RuntimeClass places the pod.
+    #                                  # microVM. The repository cache pods and the image probe
+    #                                  # always run in gVisor. In a microVM pod the launcher runs
+    #                                  # the guest memory watch in place of memory_guard's guard.
+    #                                  # While an issue pod runs in a microVM, scheduling must not
+    #                                  # name sandbox.gke.io/runtime: the RuntimeClass places the pod.
+    #                                  # A change of type moves the controller's pod at its next
+    #                                  # launch that installs nothing, and legion claims suspend,
+    #                                  # then legion claims resume, of its claim moves it at once
+    #                                  # where the resume installs nothing.
     # repository_cache:                # each mapped repository's cache pod, which every issue pod's feed is
     #   volume: 20Gi                   # filled from before GitHub is asked for the rest: the cache's own volume,
     #   refresh_minutes: 10            # holding a bare clone; how often it fetches GitHub; how long it outlives

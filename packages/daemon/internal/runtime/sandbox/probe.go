@@ -1302,25 +1302,26 @@ type probeSpec struct {
 }
 
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
-// deleted by the controller at shutdown, placed exactly as every worker is placed — the Legion
-// pool, gVisor, the configured scheduling — with the workers' pod security and what the operator
-// adds to every pod (its ServiceAccount, volumes, mounts, and variables, and the providers
-// Secret's configured keys), and a single container running the image's Go `legion probe-image`
-// against p's contract as a worker runs: on the pod's baseline (--pod-safety), loading the plugins
-// from the roots a pod loads them from (--plugin-root, --envoy-plugin-root), with the providers
-// Secret's keys exported as the worker's shim exports them (--provider-env-dir) when its pod mounts
-// that Secret (mountsProviders), each providers secret's `<NAME>_FILE` pointing at its file there
-// as a worker's does (so neither exports it), and resolving the daemon's own role prompts'
-// references (--role-references), which ProbeImage requires, and, first, running one role
-// generation's namespaces as an issue pod's launcher runs every role (--role-namespaces), over a
-// disk emptyDir of its own at RoleProbeDir, as an issue pod's role homes volume is, so a runtime
-// that refuses a role's namespaces fails the probe rather than every role's start. Its command and
-// env are escaped against the kubelet's expansion as every worker container's are
-// (kubeletLiteral). It carries Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's
-// `safe-to-evict` (podTemplate sets both): GKE Autopilot places a pod carrying that one on a node
-// of its own whenever possible, so each boot's probe would ask for a node, and a probe minutes long
-// and already retried on failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day
-// eviction window.
+// deleted by the controller at shutdown, placed as a gVisor worker is placed — the Legion pool,
+// gVisor, the configured scheduling — whatever runtime.kubernetes.sandbox says, as a repository
+// cache pod is, where an issue pod or the controller's pod may run in a microVM (placement), with
+// the workers' pod security and what the operator adds to every pod (its ServiceAccount, volumes,
+// mounts, and variables, and the providers Secret's configured keys), and a single container
+// running the image's Go `legion probe-image` against p's contract as a worker runs: on the pod's
+// baseline (--pod-safety), loading the plugins from the roots a pod loads them from
+// (--plugin-root, --envoy-plugin-root), with the providers Secret's keys exported as the worker's
+// shim exports them (--provider-env-dir) when its pod mounts that Secret (mountsProviders), each
+// providers secret's `<NAME>_FILE` pointing at its file there as a worker's does (so neither
+// exports it), and resolving the daemon's own role prompts' references (--role-references), which
+// ProbeImage requires, and, first, running one role generation's namespaces as an issue pod's
+// launcher runs every role (--role-namespaces), over a disk emptyDir of its own at RoleProbeDir,
+// as an issue pod's role homes volume is, so a runtime that refuses a role's namespaces fails the
+// probe rather than every role's start. Its command and env are escaped against the kubelet's
+// expansion as every worker container's are (kubeletLiteral). It carries Karpenter's
+// `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate sets both):
+// GKE Autopilot places a pod carrying that one on a node of its own whenever possible, so each
+// boot's probe would ask for a node, and a probe minutes long and already retried on failure
+// (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per
 // arm the project declares that names overlays (Options.ExperimentVariants), that arm's files

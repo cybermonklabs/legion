@@ -38,6 +38,16 @@ var newGuest = memoryguard.NewGuest
 // does not show" in docs/kubernetes.md).
 const guestSessionDrain = roleNamespaceDrain + time.Second
 
+// controllerSessionDrain is the guest watch's SessionDrain in the controller's pod, whose launcher
+// runs it in a microVM (INFRA-4567); stopGrace is Run's StopGrace, which Run has defaulted. The
+// controller's pod has no role-init: once the shim has exited, the launcher, PID 1, drains the
+// exited generation itself (cleanExitedGeneration, process.go): it sends SIGTERM over the
+// container's processes, waits up to stopGrace for them to go, and then sends SIGKILL to each one
+// left. So a SIGKILL the controller's processes show can be that drain's up to stopGrace after its
+// session process leaves /proc, and the second past it is the margin guestSessionDrain gives
+// role-init's kill to land.
+func controllerSessionDrain(stopGrace time.Duration) time.Duration { return stopGrace + time.Second }
+
 // containerInit is whether this launcher is its container's first process, PID 1 of the
 // container's PID namespace, the one rule that also starts the orphan reaper (Run). Either form's
 // classifier holds only there: PID 1 sees every process of the container and owns each one no
@@ -77,12 +87,16 @@ const maxWaitingMemoryKills = 32
 // memoryguard.Defaults, the controller pod's at memoryguard.ControllerDefaults, its wait of 1
 // second after a kill (INFRA-3531, R4), each what the daemon's configuration sends that kind of pod
 // by default. Each role's acknowledgement then hands it the daemon's settings (serve). In a
-// microVM issue pod (Config.runsGuest, the pod as built) the pod's own kernel stops one process,
-// so the guard is never built and no acknowledgement's settings reach one: the launcher logs one
-// off line and runs the guest watch (memoryguard.Guest, INFRA-3729), which steers that kernel to
-// the processes the guard would end, by the same classifier, and reports each process it stopped
-// through the same sink, each report carrying one of the kernel's two causes. The controller's pod
-// is never a microVM's, so its form runs the guard whatever --microvm says.
+// microVM pod (Config.runsGuest, the pod as built), an issue pod's (INFRA-3729) or the
+// controller's (INFRA-4567), the pod's own kernel stops one process, so the guard is never built
+// and no acknowledgement's settings reach one: the launcher logs one off line, through its form's
+// writer, and runs the guest watch (memoryguard.Guest), which steers that kernel to the processes
+// the guard would end, by its form's classifier, and reports each process it stopped through its
+// form's sink, each report carrying one of the kernel's two causes, which serve sends where the
+// acknowledgement carried KernelKills; the daemon sets it on the controller's acknowledgement as
+// on an issue pod's. The watch's SessionDrain is its form's: guestSessionDrain in an issue pod,
+// whose role-init drains a role, and controllerSessionDrain in the controller's, whose launcher
+// drains the one generation itself.
 // A kill of a process in a role is reported to that role's manager, which sends it on that role's
 // connection (queueMemoryKill). In an issue pod a kill of a process in no role has the watch's own
 // line and nothing else; in the controller's pod every process is the controller's, so every kill
@@ -103,10 +117,12 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	var classify memoryguard.Classifier
 	var sink func(memoryguard.Kill)
 	start := memoryguard.Defaults()
+	drain := guestSessionDrain
 	if controller {
 		classify = newControllerClassifier(managers[0], pids).classify
 		sink = func(k memoryguard.Kill) { managers[0].queueMemoryKill(k.LauncherMemoryKill) }
 		start = memoryguard.ControllerDefaults()
+		drain = controllerSessionDrain(cfg.StopGrace)
 	} else {
 		byRole := make(map[string]*manager, len(managers))
 		for _, m := range managers {
@@ -122,7 +138,7 @@ func serveMemoryGuard(ctx context.Context, cfg Config, managers []*manager, pids
 	var watch func(context.Context)
 	if cfg.runsGuest() {
 		logf("launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process")
-		watch = newGuest(memoryguard.GuestConfig{Classify: classify, Sink: sink, Logf: logf, SessionDrain: guestSessionDrain}).Run
+		watch = newGuest(memoryguard.GuestConfig{Classify: classify, Sink: sink, Logf: logf, SessionDrain: drain}).Run
 	} else {
 		guard := newMemoryGuard(memoryguard.Config{Classify: classify, Sink: sink, Logf: logf, Start: start})
 		for _, m := range managers {
@@ -346,8 +362,8 @@ func protectTrees(t *memoryguard.Table, roots []int, protected map[int]bool) {
 // It marks as a session process (memoryguard.Class.Session) the shim and every direct child of
 // the shim, as podClassifier marks a role's (the controller's pod has no role-init): the agent
 // and the shim's other children, which no place in the tree tells from it. Only the guest watch
-// reads the mark, and the controller's pod, never a microVM's, runs the guard (serveMemoryGuard),
-// which ignores it; it is set so that the one Class means the same in either form.
+// reads the mark, which a microVM controller pod's launcher runs over this classifier
+// (serveMemoryGuard, INFRA-4567); the guard a gVisor controller pod's launcher runs ignores it.
 //
 // It keeps nothing a scan changes: the shim's pid is read under the manager's lock and the
 // launcher's own children under the pid guard's lock, at each scan, so the guard's loop and its

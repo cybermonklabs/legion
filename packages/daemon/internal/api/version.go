@@ -2467,4 +2467,60 @@ package api
 // again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 174
+//
+// 175: dispatch://INFRA-4567 -- the project controller's pod in the project's sandbox, which moves
+// the launcher wire. Where `runtime.kubernetes.sandbox.type` is `microvm`, the daemon renders the
+// controller's pod as it renders a microVM issue pod (sandbox's prepare and
+// SandboxConfig.Controller; `canary_issues` never moves it), and that pod's launcher command
+// gains `--microvm` and, where `runtime.kubernetes.sandbox.microvm.metadata` is set,
+// `--metadata-workload-pool` and `--metadata-identity-provider`, with the projected token mounted
+// at /var/run/legion/workload-identity (sandbox's controllerPod.launcherContainer). The daemon's
+// answer to the hello of the controller pod's launcher now carries `kernelKills`
+// (`shimwire.LauncherHelloAck.KernelKills`) beside its `memoryGuard`, as every issue pod's has
+// since 151, and still no `volumeTrim`, which an issue pod's alone carries (160) (sandbox's
+// Runtime.launcherHelloAck). The single-role launcher given `--microvm` runs the guest watch over
+// controllerClassifier in the guard's place (the launcher's runsGuest and serveMemoryGuard) and
+// sends its `launcher_memory_kill` reports, each carrying one of the kernel's two causes, only on
+// a connection whose answer carried `kernelKills`; given the metadata flags too, it serves the
+// pod-local metadata endpoint from the token at /var/run/legion/workload-identity/token (the
+// launcher's validateMetadata no longer needs `--roles-dir`). The daemon tells the controller of
+// a `kernel` report and of a `kernel-protected` one with a note of its own for each (workflow's
+// controllerKernelKillNote and controllerKernelProtectedKillNote), under the same event id
+// `memory-guard-kill:<guard>:<sequence>` and as the same controller notice kind,
+// `memory-guard-kill`. So entry 151's "on no controller pod's" and entry 174's "The controller's
+// pod is never a microVM's (151)" no longer hold from this contract: a microVM controller pod's
+// launcher runs the guest watch and never the guard, and every controller pod's acknowledgement
+// carries `kernelKills`. A gVisor project's controller pod is the pod 174 renders, byte for byte;
+// its launcher ignores `kernelKills` and sends its guard's reports where the answer carried
+// `memoryGuard`, as 174's does. The state's settings block is unchanged.
+//
+// The skew is safe in both directions. A single-role launcher of an earlier image refuses the
+// metadata flags (its validateMetadata needed `--roles-dir`), one built before 151 refuses
+// `--microvm` as an unknown flag, and one of 151 or later takes `--microvm` alone and runs no
+// guest watch: 174's runs the gVisor guard in its place, since its runsGuest needed
+// `--roles-dir`, and 151's runs no memory watch in that form. So a daemon of this release must
+// never render those flags into a controller pod whose image predates them, and it never does:
+// the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`), as it
+// did for 151. A microVM controller pod of this release under an earlier daemon gets no
+// `kernelKills`, so its launcher drops each report of a process the pod's kernel stopped, with a
+// line of its own, and the controller is told nothing. That daemon records the controller's
+// gVisor shape alone, so its next launch that installs nothing rebuilds the controller in gVisor,
+// for the recorded shape's `sandbox` member or for the pod's image, and 174's launch that installs
+// its plugin pair does so too where the pod is on another image (podImageDrift). The rollback:
+// docs/kubernetes.md, "Rolling back" in "Pods in microVMs", says the controller returns to gVisor
+// at that launch, and that suspending and resuming its claim does it at once where the launch at
+// the resume installs nothing.
+// (This change took 167 against the base's 155, 169 at the forward merge of 2026-11-19 that
+// brought legion/INFRA-3531 in at 4d6665d5d593, and 171 at the one that brought it in at
+// 41d4f45b156d. It takes 175 at the forward merge of 2026-11-19 that brings legion/INFRA-3531 in
+// at f301a926dec2, whose 174, cybermonklabs/legion#4273's, is the entry right above. A reading of
+// `const DaemonAPIVersion` at the head of each of the 243 open pull requests of this repository,
+// made between 2026-11-19T16:45:54Z and 16:48:48Z, gave above main's 168: 168 (#3993, #4175,
+// #4387, #4492 and #4525), 169 (#3831 and #4065), 170 (#2230, #4030, #4173, #4180 and #4193), 171
+// (#4115, #4495 and this change's own earlier number), 172 (#3659), 173 (#4493) and 174 (#4273),
+// so 175 was the lowest free number above the base's at that reading. That is a reading and never
+// the rule: read the base's own number and every open head again at the next forward merge rather
+// than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 175

@@ -2,8 +2,8 @@ package workflow
 
 // A process an issue pod's memory guard ended is told to the role whose process it was, on that
 // role's own topic, and to nobody else (dispatch://INFRA-3557). One the controller pod's guard
-// ended is told to the project's controller alone, in a controller notice of its own for each kill
-// (dispatch://INFRA-3531).
+// ended, or its microVM's own kernel stopped, is told to the project's controller alone, in a
+// controller notice of its own for each kill (dispatch://INFRA-3531, dispatch://INFRA-4567).
 
 import (
 	"bytes"
@@ -232,6 +232,71 @@ func TestMemoryGuardAControllerKillOfATokenThatIsNotTheControllersIsLoggedAndDro
 	}
 	if !strings.Contains(text, "role=legion-other-controller") || !strings.Contains(text, "role=legion-legion-legion-209-tester") {
 		t.Fatalf("log = %q, want each line to name the token the kill was dropped for", text)
+	}
+}
+
+// A process the controller's microVM pod's own kernel stopped is told to the controller with the
+// kernel's note and not the guard's, as a role's is
+// (TestAKernelKillTellsItsRoleTheKernelStoppedItsProcess,
+// TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped), each in the controller
+// notice a guard's kill is told in. One of a command (cause kernel) names the process, escaped as
+// the guard's note names it, its size, the pod's memory counter and its limit, says the
+// controller's session goes on and the same program is not to be run again unchanged, and points
+// to the controller's wakes reference. One of the processes that run the controller's session
+// (cause kernel-protected) says it was no command the controller ran, that were it the agent its
+// turn and every command it was running ended with it, and that the daemon starts the same
+// session again; it never says the session goes on, and it points to the wakes reference too. A
+// report of no cause, the guard's of a gVisor controller pod, is still told in the guard's words,
+// and the line logged for each kill names what stopped the process and its cause.
+func TestAKernelKillInTheControllersPodTellsTheControllerTheKernelStoppedIt(t *testing.T) {
+	pool := migratedPool(t)
+	var logs bytes.Buffer
+	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
+	token := claim.ControllerToken("legion")
+	const kernelLead = "The pod's kernel stopped one of your processes because the pod ran out of memory: "
+	const runAgain = "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
+		"or send heavy work where your deployment's instructions say. " +
+		"Read skill://legion-controller/references/wakes.md before you run it again."
+
+	var told []record.OutboxPayload
+	for i, tc := range []struct {
+		cause      shimwire.MemoryKillCause
+		executable string
+		reason     string
+		logged     string
+	}{
+		{shimwire.MemoryKillCauseKernel, "x`y", kernelLead +
+			"``x`y`` (pid 4242) held 812.40 MiB when the pod's memory read 3.26 GiB of its 4.00 GiB limit. " +
+			"Your session and the pod's other processes go on. " + runAgain,
+			`msg="workflow: the controller whose program the pod's kernel stopped is told why" role=legion-legion-controller pod=pod-controller guard=guard-7f3a sequence=1 pid=4242 cause=kernel`},
+		{shimwire.MemoryKillCauseKernelProtected, "omp", kernelLead +
+			"`omp` (pid 4242) held 812.40 MiB when the pod's memory read 3.26 GiB of its 4.00 GiB limit. " +
+			"It was one of the processes that run your session, not a command you ran. " +
+			"If it was your agent, your turn ended with it, and so did every command it was running. " +
+			"The daemon then starts the same session again, as it does after any exit of your session's process. " +
+			"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say. " +
+			"Read skill://legion-controller/references/wakes.md before your next command.",
+			`msg="workflow: the controller is told why the pod's kernel stopped one of the processes that run its session" role=legion-legion-controller pod=pod-controller guard=guard-7f3a sequence=2 pid=4242 cause=kernel-protected`},
+		{shimwire.MemoryKillCauseGuard, "python3",
+			"The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: " +
+				"`python3` (pid 4242) held 812.40 MiB of anonymous memory while the pod's anonymous memory read 3.13 GiB of its 4.00 GiB limit. " +
+				"Your session and the pod's other processes go on. " + runAgain,
+			`msg="workflow: the controller whose program the memory guard ended is told why" role=legion-legion-controller pod=pod-controller guard=guard-7f3a sequence=3 pid=4242 cause=""`},
+	} {
+		report := memoryGuardKillReport()
+		report.Sequence, report.Cause, report.Executable = uint64(i+1), tc.cause, tc.executable
+		applyControllerKill(t, pool, engine, token, report)
+
+		told = append(told, record.ControllerNotice{Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: tc.reason})
+		if got := noticeRows(t, pool); !reflect.DeepEqual(got, told) {
+			t.Fatalf("notice rows after the kill of cause %q = %+v\nwant %+v", tc.cause, got, told)
+		}
+		if text := logs.String(); !strings.Contains(text, tc.logged) {
+			t.Fatalf("log = %q, want a line holding %q", text, tc.logged)
+		}
+	}
+	if rows, all := outboxRowsOf(t, pool, "LEGION"), outboxRows(t, pool); rows != 3 || all != 3 {
+		t.Fatalf("the outbox holds %d rows under the project key LEGION and %d in all, want the three notices under it and nothing else", rows, all)
 	}
 }
 

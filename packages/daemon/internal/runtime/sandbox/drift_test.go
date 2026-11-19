@@ -78,11 +78,13 @@ func shapedOptions(o *Options) {
 	o.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
 }
 
-// The shapes an issue pod built under shapedOptions records. shapedGVisorShape is a gVisor pod's,
-// byte for byte what every release before the sandbox setting recorded for that configuration, so a
-// pod those releases left running is read against it
-// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The two others are a microVM pod's under
-// testMicroVM's block, and under that block naming no metadata endpoint.
+// The shapes a pod built under shapedOptions records. shapedGVisorShape is a gVisor issue pod's,
+// byte for byte what every release before the sandbox setting recorded for that configuration, so
+// a pod those releases left running is read against it
+// (TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift). The two after it are a microVM issue
+// pod's under testMicroVM's block, and under that block naming no metadata endpoint. The last is
+// the controller's pod's in a microVM under testMicroVM's block, on the controller's own
+// reservation, which names no storage class: its disk stays on runtime.kubernetes.storage_class.
 const (
 	shapedGVisorShape = `{"image":"` + testImage + `",` +
 		`"resources":{"limits":{"cpu":"2","ephemeral-storage":"80Gi","memory":"8Gi"},"requests":{"cpu":"2","ephemeral-storage":"6Gi","memory":"8Gi"}},` +
@@ -103,6 +105,14 @@ const (
 		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
 		`"disk":"200Gi",` +
 		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm","storage_class":"example-microvm-rwo"}}`
+	shapedControllerMicroVMShape = `{"image":"` + testImage + `",` +
+		`"resources":{"limits":{"cpu":"1","ephemeral-storage":"10Gi","memory":"4Gi"},"requests":{"cpu":"1","ephemeral-storage":"1Gi","memory":"4Gi"}},` +
+		`"volumes":[{"name":"operator-extra","configMap":{"name":"legion-operator-extra"}}],` +
+		`"mounts":[{"name":"operator-extra","readOnly":true,"mountPath":"/etc/legion-operator-extra"}],` +
+		`"disk":"200Gi",` +
+		`"sandbox":{"runtime_class":"microvm","compute_class":"example-microvm",` +
+		`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
+		`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}}`
 )
 
 // testMicroVMSandboxShape is the sandbox member a microVM pod under testMicroVM's block records,
@@ -111,12 +121,13 @@ const testMicroVMSandboxShape = `{"runtime_class":"microvm","compute_class":"exa
 	`"metadata":{"workload_pool":"example-project.svc.id.goog",` +
 	`"identity_provider":"https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"}}`
 
-// The keys of the three shapes a runtime builds its pods from (podShapes): an issue pod's in
-// either sandbox, and the controller's pod's, which runs in gVisor whatever the configuration says.
+// The keys of the four shapes a runtime builds its pods from (podShapes): an issue pod's and the
+// controller's pod's, each in either sandbox.
 var (
-	issueInGVisor      = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
-	issueInMicroVM     = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
-	controllerInGVisor = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+	issueInGVisor       = podShapeKey{kind: issuePod{}, sandbox: SandboxGVisor}
+	issueInMicroVM      = podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}
+	controllerInGVisor  = podShapeKey{kind: controllerPod{}, sandbox: SandboxGVisor}
+	controllerInMicroVM = podShapeKey{kind: controllerPod{}, sandbox: SandboxMicroVM}
 )
 
 // sandboxBlock is a runtime.kubernetes.sandbox of type kind naming testMicroVM's block, its
@@ -131,10 +142,12 @@ func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
 // value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
 // mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
 // microvm block's ComputeClass, StorageClass and metadata endpoint, which a block naming none
-// leaves out. A gVisor pod records no sandbox at all, beside a microvm block or without one, so its
-// shape is the one every release before the sandbox setting recorded. It is pinned whole because it
-// is what every later daemon compares a running pod against: a change of spelling here reads as
-// drift on every pod of the fleet at once.
+// leaves out. The controller's microVM pod records no StorageClass: its disk stays on
+// runtime.kubernetes.storage_class (diskSpec), so the key is absent from its shape. A gVisor pod
+// records no sandbox at all, beside a microvm block or without one, so its shape is the one every
+// release before the sandbox setting recorded. It is pinned whole because it is what every later
+// daemon compares a running pod against: a change of spelling here reads as drift on every pod of
+// the fleet at once.
 func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 	withoutMetadata := testMicroVM()
 	withoutMetadata.Metadata = nil
@@ -152,6 +165,9 @@ func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 		},
 		"a microVM issue pod whose block names no metadata endpoint": {
 			SandboxConfig{Type: SandboxMicroVM, MicroVM: withoutMetadata}, issueInMicroVM, shapedMicroVMShapeWithoutMetadata,
+		},
+		"the controller's pod in a microVM": {
+			SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, controllerInMicroVM, shapedControllerMicroVMShape,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -246,11 +262,11 @@ func TestPodShapeIgnoresTheCacheTrimmersSettings(t *testing.T) {
 	}
 	none := shaped(nil)
 	trimming := shaped(&shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60})
-	// Each shape a pod is built from: either kind in gVisor, and an issue pod in a microVM.
+	// Each shape a pod is built from: either kind in gVisor, and either kind in a microVM.
 	for _, shape := range []struct {
 		kind    podKind
 		microVM *MicroVM
-	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}} {
+	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}, {controllerPod{}, testMicroVM()}} {
 		if podShape(none, shape.kind, shape.microVM) != podShape(trimming, shape.kind, shape.microVM) {
 			t.Fatalf("%T (microvm %v) encodes differently once the trimmer is configured:\n%s\n%s", shape.kind, shape.microVM != nil,
 				podShape(none, shape.kind, shape.microVM), podShape(trimming, shape.kind, shape.microVM))

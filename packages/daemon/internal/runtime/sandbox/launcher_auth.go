@@ -110,18 +110,23 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 // its cache trimmer runs by (Options.VolumeTrim), none when the deployment configured none; the
 // controller's pod is handed none of it, since its launcher runs no trimmer in its single-role
 // form, the volume it works on being its Sandbox's own and no issue's cache. An absent member is
-// what a launcher reads as "run none". Every issue pod's launcher is also told that this daemon
+// what a launcher reads as "run none". Every launcher of either kind is also told that this daemon
 // knows the pod's kernel's kill (KernelKills), whatever the guard's settings, since a microVM
 // pod's launcher sends those reports only where it is told so and its roles are owed the note
-// however the guard is set. The controller's launcher is not: its pod is never a microVM's, so it
-// runs the guard and sends its reports where guard settings came, and no guest watch's.
+// however the guard is set. The controller's launcher is answered both, its guard's settings and
+// KernelKills, whatever the project's sandbox is now, since its pod may be one an earlier
+// configuration built, and the launcher, not this answer, knows which sandbox it runs in: a gVisor
+// controller pod's launcher reads the guard's settings and ignores KernelKills, and a microVM
+// controller pod's launcher ignores the guard's settings and sends its reports where KernelKills
+// came, as a microVM issue pod's does (the launcher's runsGuest). So a gVisor controller pod
+// re-adopted after a change of runtime.kubernetes.sandbox.type, which runs on until its next
+// launch replaces it, keeps its guard.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
-	var ack shimwire.LauncherHelloAck
+	ack := shimwire.LauncherHelloAck{KernelKills: true}
 	switch kind.(type) {
 	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
 		ack.VolumeTrim = r.volumeTrim
-		ack.KernelKills = true
 	case controllerPod:
 		ack.MemoryGuard = r.controllerMemoryGuard
 	}

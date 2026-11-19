@@ -50,10 +50,13 @@ type launchers struct {
 	// A launchers built without the pair restores nothing.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
-	// guardKilled takes a memory guard's report of one process it ended in an issue pod into the
-	// daemon's fact path (Options.MemoryGuardKilled), and controllerKilled one it ended in the
-	// controller's pod (Options.ControllerMemoryGuardKilled). A launchers built without the one a
-	// report needs reads the frame, logs that no receiver took it, and drops it (memoryKilled).
+	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
+	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
+	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
+	// gVisor, or one the pod's own kernel stopped in a microVM, with the report's Cause
+	// (shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process
+	// that runs a role's session or the controller's). A launchers built without the one a report
+	// needs reads the frame, logs that no receiver took it, and drops it (memoryKilled).
 	guardKilled      runtime.MemoryGuardKilled
 	controllerKilled runtime.ControllerMemoryGuardKilled
 	// volume takes a cache trimmer's sweep report into the daemon's fact path

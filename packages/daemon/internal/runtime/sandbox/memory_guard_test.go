@@ -167,41 +167,66 @@ func TestMemoryGuardAControllerPodSettingsChangeReplacesNoPod(t *testing.T) {
 	}
 }
 
-// Every role's launcher of an issue pod is told the daemon knows the pod's kernel's kill
-// (kernelKills), with the guard's settings and with the guard turned off alike, since a microVM
-// pod's launcher sends those reports on nothing else; the controller's launcher is not, nor is a
-// refused hello.
-func TestKernelKillsTheResolverTellsEveryIssuePodLauncherAndNotTheControllers(t *testing.T) {
-	settings := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
-	for name, guard := range map[string]*shimwire.LauncherMemoryGuard{"the guard on": &settings, "the guard off": nil} {
-		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard = guard }))
-			controller := g.spawn(controllerSpec(t))
-			issue := g.spawn(workerSpec(t))
-			accept := g.r.LauncherResolver()
+// Every launcher the resolver accepts is told the daemon knows the pod's kernel's kill
+// (kernelKills), with the guard's settings and with the guard turned off alike: each role's
+// launcher of an issue pod beside the issue pods' settings, and the controller's launcher beside
+// the controller pod's own (controller_pod's), in a gVisor project and in a microVM one alike. A
+// microVM pod's launcher sends the kernel's reports on kernelKills and nothing else, and a gVisor
+// controller pod's launcher reads the settings and ignores kernelKills, so a controller pod built
+// under either type is answered all it reads (launcherHelloAck). The controller's pod is rendered
+// in the project's sandbox, or the microVM case would prove nothing of a microVM controller. A
+// refused hello is told neither.
+func TestKernelKillsTheResolverTellsEveryLauncher(t *testing.T) {
+	issueSettings, controllerSettings := issueGuardSettings, controllerGuardSettings
+	for _, project := range []SandboxConfig{{Type: SandboxGVisor}, {Type: SandboxMicroVM, MicroVM: testMicroVM()}} {
+		for _, tc := range []struct {
+			name              string
+			issue, controller *shimwire.LauncherMemoryGuard
+		}{
+			{"the guards on", &issueSettings, &controllerSettings},
+			{"the guards off", nil, nil},
+		} {
+			t.Run(string(project.Type)+"/"+tc.name, func(t *testing.T) {
+				g := newRig(t, nil, withOptions(func(o *Options) {
+					o.Sandbox, o.MemoryGuard, o.ControllerMemoryGuard = project, tc.issue, tc.controller
+				}))
+				controller := g.spawn(controllerSpec(t))
+				issue := g.spawn(workerSpec(t))
+				if got := renderedSandbox(t, g.sandbox(controller.Sandbox.Name).Spec.PodTemplate); got != project.Controller() {
+					t.Fatalf("the controller's pod of a %s project runs in %s, want %s", project.Type, got, project.Controller())
+				}
+				accept := g.r.LauncherResolver()
 
-			for _, role := range claim.Roles {
-				handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
+				for _, role := range claim.Roles {
+					handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, role))
+					if handler == nil {
+						t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
+					}
+					if !ack.KernelKills || !sameGuard(ack.MemoryGuard, tc.issue) {
+						t.Fatalf("the issue pod's %s launcher was answered kernelKills=%t and the memory guard %s, want kernelKills and %s",
+							role, ack.KernelKills, guardText(ack.MemoryGuard), guardText(tc.issue))
+					}
+				}
+				handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
 				if handler == nil {
-					t.Fatalf("the issue pod's %s launcher was refused: %s", role, reason)
+					t.Fatalf("the controller's launcher was refused: %s", reason)
 				}
-				if !ack.KernelKills {
-					t.Fatalf("the issue pod's %s launcher was answered %+v, want kernelKills", role, ack)
+				if !ack.KernelKills || !sameGuard(ack.MemoryGuard, tc.controller) {
+					t.Fatalf("the controller's launcher was answered kernelKills=%t and the memory guard %s, want kernelKills and the controller pod's %s",
+						ack.KernelKills, guardText(ack.MemoryGuard), guardText(tc.controller))
 				}
-			}
-			handler, ack, reason := accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
-			if handler == nil {
-				t.Fatalf("the controller's launcher was refused: %s", reason)
-			}
-			if ack.KernelKills {
-				t.Fatalf("the controller's launcher was answered %+v, want no kernelKills", ack)
-			}
-			refused := rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester)
-			refused.Token = "not-the-token"
-			if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack.KernelKills {
-				t.Fatalf("a hello with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement", handler, ack, reason)
-			}
-		})
+				for _, refused := range []shimwire.LauncherHello{
+					rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester),
+					rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController),
+				} {
+					refused.Token = "not-the-token"
+					if handler, ack, reason := accept(refused); handler != nil || reason == "" || ack != (shimwire.LauncherHelloAck{}) {
+						t.Fatalf("a hello of the %s launcher with a stale token was answered handler=%v ack=%+v reason=%q, want refused with the zero acknowledgement",
+							refused.Role, handler, ack, reason)
+					}
+				}
+			})
+		}
 	}
 }
 

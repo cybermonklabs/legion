@@ -52,10 +52,10 @@ const (
 	// testPGVolume is the disk emptyDir an issue pod keeps its own test PostgreSQL's cluster on
 	// (TestPGDir), when the deployment sets runtime.kubernetes.test_postgres.
 	testPGVolume = "testpg"
-	// workloadIdentityTokenVolume is the projected ServiceAccount token a microVM issue pod's
-	// launcher exchanges for a Google one to serve the pod's metadata endpoint
-	// (WorkloadIdentityDir, workloadIdentityVolumes), when the deployment names that endpoint
-	// (runtime.kubernetes.sandbox.microvm.metadata).
+	// workloadIdentityTokenVolume is the projected ServiceAccount token a microVM pod's launcher,
+	// an issue pod's or the controller's, exchanges for a Google one to serve the pod's metadata
+	// endpoint (WorkloadIdentityDir, ControllerWorkloadIdentityDir, workloadIdentityVolumes), when
+	// the deployment names that endpoint (runtime.kubernetes.sandbox.microvm.metadata).
 	workloadIdentityTokenVolume = "workload-identity-token"
 )
 
@@ -80,7 +80,7 @@ const (
 	gvisor    = "gvisor"
 )
 
-// A microVM issue pod's placement (placement): GKE Sandbox's microVM RuntimeClass, which adds the
+// A microVM pod's placement (placement): GKE Sandbox's microVM RuntimeClass, which adds the
 // node affinity and the toleration of the sandbox's own nodes (sandbox.gke.io/runtime) to the pod
 // at admission, on the nodes of the ComputeClass the pod names by computeClassKey. That key is the
 // node label of a custom ComputeClass and the key of the taint GKE puts on the class's nodes,
@@ -250,13 +250,13 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
 // test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
-// whether or not this deployment enrolls, the workload identity token whether or not an issue pod
-// of it serves the metadata endpoint, and the test database's whether or not it sets
-// `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The exchange
-// identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment names
-// an exchange audience: one that names none keeps that name the operator's, as it was before the
-// key existed. Every launcher
-// role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
+// whether or not this deployment enrolls, the workload identity token whether or not a pod of it,
+// an issue's or the controller's, serves the metadata endpoint, and the test database's whether or
+// not it sets `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The
+// exchange identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the
+// deployment names an exchange audience: one that names none keeps that name the operator's, as it
+// was before the key existed. Every launcher role, the controller's included, has a key volume when
+// the pod enrolls and a gh volume always.
 func legionVolumeNames(exchange bool) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, workloadIdentityTokenVolume,
@@ -284,14 +284,16 @@ func legionVolumeNames(exchange bool) []string {
 // role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
 // pod's roles container mounts what belongs under the home (homeMountsView), which each role's
 // namespace covers too once it has bound each back, RoleProbeDir is the image probe's volume
-// for its role-namespace check, and TestPGLogFile is reserved whether or not the deployment
-// serves a test database: it is where each role's namespace binds the pod's test server log when
-// the pod serves one.
+// for its role-namespace check, ControllerWorkloadIdentityDir is where the controller's pod mounts
+// the metadata endpoint's token, reserved whether or not that pod runs in a microVM or the
+// deployment names the endpoint (an issue pod's, WorkloadIdentityDir, is under RolesDir), and
+// TestPGLogFile is reserved whether or not the deployment serves a test database: it is where each
+// role's namespace binds the pod's test server log when the pod serves one.
 func legionMountPaths(exchange bool) []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
 		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir,
-		TestPGLogFile,
+		ControllerWorkloadIdentityDir, TestPGLogFile,
 	}
 	if exchange {
 		paths = append(paths, AgentSecretsExchangeDir)
@@ -330,11 +332,12 @@ type launch struct {
 	// issue pod and the project controller's build differently is the kind's.
 	kind podKind
 	// microVM is where the pod runs when it runs in a microVM (Options.Sandbox's MicroVM), decided
-	// once from the issue (prepare), and nil for a gVisor pod: the controller's always, and every
-	// launch built other than by prepare. Every facet of the pod a microVM pod builds differently
-	// reads it (placement, the label, the disk's class, the launcher's flags, the workload
-	// identity token, and the shape the template records, launch.shapeKey); a role started in a
-	// pod the launch keeps reads none of them.
+	// once (prepare): an issue pod's from its issue, the controller's from the project's type
+	// (SandboxConfig.Controller). It is nil for a gVisor pod and for every launch built other than
+	// by prepare. Every facet of the pod a microVM pod builds differently reads it (placement, the
+	// label, the launcher's flags, the workload identity token, the shape the template records,
+	// launch.shapeKey, and an issue pod's disk's class, diskSpec); a role started in a pod the
+	// launch keeps reads none of them.
 	microVM *MicroVM
 	// roles are the pod's launcher roles, all of them served by the pod's one container: the roles
 	// of the kind its labels name (podKindOf).
@@ -594,10 +597,10 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // its issue's pod, which refuses a spec with no repository (issuePod.prepare). The labels the kind
 // gives the pod must name that kind back (podKindOf), so a launch and the Sandbox it leaves cannot
 // disagree on the pod's roles. It decides the pod's sandbox too, once: an issue pod's is its
-// issue's (SandboxConfig.Of), and the controller's pod runs in gVisor whatever the configuration
-// names. The system prompt is composed here (runtime.ComposePrompt), and a prompt whose start
-// frame no launcher would read is refused here too (runtime.PromptTooLarge, wrapped so the
-// supervisor can tell it from a launch that failed).
+// issue's (SandboxConfig.Of), and the controller's pod's the project's type
+// (SandboxConfig.Controller), which no canary list moves. The system prompt is composed here
+// (runtime.ComposePrompt), and a prompt whose start frame no launcher would read is refused here
+// too (runtime.PromptTooLarge, wrapped so the supervisor can tell it from a launch that failed).
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if err := runtime.ValidateSpawnSpec(spec, r.specOwned()); err != nil {
 		return launch{}, err
@@ -612,7 +615,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if spec.Role != claim.RoleController {
 		l.cacheURL = r.cacheURL(CacheSandboxName(r.project, spec.Repository))
 	}
-	if _, issue := l.kind.(issuePod); issue && r.sandboxConfig.Of(spec.Issue) == SandboxMicroVM {
+	where := r.sandboxConfig.Controller()
+	if _, issue := l.kind.(issuePod); issue {
+		where = r.sandboxConfig.Of(spec.Issue)
+	}
+	if where == SandboxMicroVM {
 		l.microVM = r.sandboxConfig.MicroVM
 	}
 	if l.runsClaude() {
@@ -767,16 +774,16 @@ func (l launch) claudeArgv() []string {
 func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.project, l) }
 
 // diskSpec is the claim of a pod's disk, wherever it is declared: ReadWriteOnce on the launch's
-// StorageClass at the operator's size (runtime.kubernetes.issue_volume). The class is the microVM
-// block's for a microVM pod (MicroVM.StorageClass) and the operator's
-// runtime.kubernetes.storage_class for every other, the controller's included, so whatever
-// declares an issue's disk takes its class from here. The controller's Sandbox declares it as the
-// claim template it owns, an issue pod as the template of its own ephemeral volume, so the two
-// disks are provisioned alike and differ only in who deletes them.
+// StorageClass at the operator's size (runtime.kubernetes.issue_volume), so whatever declares a
+// pod's disk takes its class from here. The class is microVMDiskClass's where it names one, a
+// microVM issue pod's, and the operator's runtime.kubernetes.storage_class for every other pod.
+// The controller's Sandbox declares it as the claim template it owns, an issue pod as the template
+// of its own ephemeral volume, so the two disks are provisioned alike and differ only in who
+// deletes them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 	storageClass := r.storageClass
-	if l.microVM != nil {
-		storageClass = l.microVM.StorageClass
+	if class := microVMDiskClass(l.kind, l.microVM); class != "" {
+		storageClass = class
 	}
 	return corev1.PersistentVolumeClaimSpec{
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -785,6 +792,20 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 			Requests: corev1.ResourceList{corev1.ResourceStorage: r.volumeSize},
 		},
 	}
+}
+
+// microVMDiskClass is the class the microVM block gives the disk of a pod of kind running in
+// microVM (nil in gVisor): the block's own for an issue pod (MicroVM.StorageClass, which New
+// refuses empty while an issue pod may run in a microVM), and "" for the controller's, whose disk
+// stays on runtime.kubernetes.storage_class in either sandbox: the CRD holds its Sandbox's claim
+// template immutable (replaceSupersededSandbox), so a class that followed the sandbox would take a
+// new Sandbox, and a new volume, at every change of the project's type. The disk (diskSpec) and
+// the shape that records it (podShape) both read it.
+func microVMDiskClass(kind podKind, microVM *MicroVM) string {
+	if _, issue := kind.(issuePod); issue && microVM != nil {
+		return microVM.StorageClass
+	}
+	return ""
 }
 
 // sandboxManifest is the Sandbox a relaunch creates when none exists: Suspended, so no pod starts
@@ -1013,12 +1034,14 @@ func brokerTokenProjection(broker *AgentSecrets) *corev1.ServiceAccountTokenProj
 const workloadIdentityTokenSeconds = 3600
 
 // workloadIdentityVolumes are, for a microVM launch whose block names the metadata endpoint
-// (MicroVM.Metadata), the one projected ServiceAccount token the pod's launcher exchanges for a
-// Google one at Google's security token service: for the Workload Identity pool's audience, which
-// is the audience that exchange takes, at launcher.WorkloadIdentityTokenFile, readable by the pod's
-// group, which is the fsGroup every file of the pod's volumes carries (podTemplate). Its one mount
-// is the issue pod's container's, under RolesDir (issuePod.launcherContainer). None for any other
-// launch, a gVisor pod's and the controller's included.
+// (MicroVM.Metadata), an issue pod's or the controller's, the one projected ServiceAccount token
+// the pod's launcher exchanges for a Google one at Google's security token service: for the
+// Workload Identity pool's audience, which is the audience that exchange takes, at
+// launcher.WorkloadIdentityTokenFile, readable by the pod's group, which is the fsGroup every file
+// of the pod's volumes carries (podTemplate). Its one mount is the pod's one container's: an issue
+// pod's under RolesDir, where no role's namespace shows it (issuePod.launcherContainer), and the
+// controller's at ControllerWorkloadIdentityDir, where its agent can read it
+// (controllerPod.launcherContainer). None for any other launch, a gVisor pod's included.
 func workloadIdentityVolumes(l launch) []corev1.Volume {
 	if l.microVM == nil || l.microVM.Metadata == nil {
 		return nil
@@ -1769,13 +1792,14 @@ func (r *Runtime) tolerations() []corev1.Toleration {
 }
 
 // placement is where a launch's pod runs: its RuntimeClass, node selector and tolerations. A
-// gVisor pod's are every other pod's: gVisor, on the Legion pool (nodeSelector, tolerations). A
-// microVM pod (launch.microVM) runs under microVMRuntimeClass on the Legion pool's nodes of its
-// ComputeClass: its selector is the gVisor pod's with computeClassKey set to that class, in place
-// of any class the operator's selector names, and its tolerations are the gVisor pod's, less any
-// the operator gave of computeClassKey, which tolerates the class being replaced, then the taint
-// GKE puts on that class's nodes. The RuntimeClass adds the sandbox's own selector and toleration
-// at admission.
+// gVisor pod's are every other pod's (the repository cache pods' and the image probe's, which run
+// in gVisor whatever the sandbox block says): gVisor, on the Legion pool (nodeSelector,
+// tolerations). A microVM pod (launch.microVM), an issue's or the controller's, runs under
+// microVMRuntimeClass on the Legion pool's nodes of its ComputeClass: its selector is the gVisor
+// pod's with computeClassKey set to that class, in place of any class the operator's selector
+// names, and its tolerations are the gVisor pod's, less any the operator gave of computeClassKey,
+// which tolerates the class being replaced, then the taint GKE puts on that class's nodes. The
+// RuntimeClass adds the sandbox's own selector and toleration at admission.
 func (r *Runtime) placement(l launch) (runtimeClass string, selector map[string]string, tolerations []corev1.Toleration) {
 	selector, tolerations = r.nodeSelector(), r.tolerations()
 	if l.microVM == nil {

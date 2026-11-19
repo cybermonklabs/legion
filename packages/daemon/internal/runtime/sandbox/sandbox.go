@@ -301,7 +301,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	case opts.StorageClass == "":
 		return refuse("no storage class for the issue volume (the cluster has no default class to fall back on)")
 	case opts.Sandbox.AnyMicroVM() && (opts.Sandbox.MicroVM == nil || opts.Sandbox.MicroVM.ComputeClass == ""):
-		return refuse("no compute class for the issue pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
+		return refuse("no compute class for the pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
 			opts.Sandbox.Type, opts.Sandbox.CanaryIssues)
 	case opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.StorageClass == "":
 		return refuse("no storage class for the disks of the issue pods that run in a microVM (the cluster has no default class to fall back on)")
@@ -351,9 +351,10 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if a := opts.AgentSecrets; a != nil {
-		// The Workload Identity pool is the audience of the token a microVM pod's launcher
-		// exchanges for a Google one (workloadIdentityVolumes); empty, no pod carries that token.
-		// While an issue pod runs in a microVM the switch above has refused a nil MicroVM.
+		// The Workload Identity pool is the audience of the token a microVM pod's launcher, an issue
+		// pod's or the controller's, exchanges for a Google one (workloadIdentityVolumes); empty, no
+		// pod carries that token. While any pod runs in a microVM (AnyMicroVM, which holds wherever
+		// the controller's pod runs in one) the switch above has refused a nil MicroVM.
 		var workloadPool string
 		if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.Metadata != nil {
 			workloadPool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
