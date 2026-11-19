@@ -10,8 +10,9 @@
 // the package's tests named before Create ended such a request, and reads the ended request's
 // detail for its two phrases rather than its whole text, so the same file compiles and runs
 // against the code from before the change: there every case of a request signed for another
-// broker address fails, and the two cases that read what today's rule already did pass, the one
-// of a request signed for this broker and the one of an ask refused before a request is written.
+// broker address fails, and the three cases that read what today's rule already did pass: the one
+// of a request signed for this broker, the one of an ask refused before a request is written, and
+// the one of a reuse with no request signed for another broker address, which takes no lock.
 package requests
 
 import (

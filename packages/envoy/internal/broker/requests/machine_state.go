@@ -854,13 +854,10 @@ func (m *Machine) endSignedForAnotherBroker(ctx context.Context, tx pgx.Tx, enro
 // enrollment's row lock for share, in the order Create's transaction takes them, and end what
 // endSignedForAnotherBroker, reading again under those locks, finds; that second read decides
 // what is ended. The read without locks can miss only a request that reaches the enrollment after
-// it, which the session's next ask ends, as it would had that request arrived just after the
-// locked read. Create writes only requests whose aud is this broker's (record.VerifyRequestObject
-// with Machine.Audience); an adoption moves requests onto an enrollment only as it creates that
-// enrollment (enroll's adopt); and a hand-over (enroll's handOver), the end of another pod of the
-// same Legion claim, can move that pod's requests onto this one at any time. A request the broker
-// it was signed for decides between the two reads is no longer pending at the locked read, which
-// ends nothing for it.
+// it, such as one a hand-over (enroll's handOver) moves there, and the session's next ask ends
+// that request, as it would had the request arrived just after the locked read. A request the
+// broker it was signed for decides between the two reads is no longer pending at the locked read,
+// which ends nothing for it.
 // The enrollment's lock is what keeps an enrollment's end (enroll's endEnrollment), which updates
 // the enrollment and then ends all its pending requests in one statement, in whatever order that
 // statement reaches them, from holding one of these requests while this transaction holds
