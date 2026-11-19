@@ -245,10 +245,9 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 // and typed fields, headers that name no method override and no Content-Length, the output
 // filters and the pagination switches, in each of their spellings and each value in the next
 // word; exactly one raw `query` field and no other field naming the query; no typed value gh
-// reads from a file; and a query no name token of which, read past its comments and strings in
-// one pass, is `mutation` or `subscription`, and which leaves no string open. A call it admits is
-// one ghTargetOf reads, and still one that does not write nothing by ghWritesNothing's rule,
-// which the guard's reading of the call rests on.
+// reads from a file; and a query whose text holds neither `mutation` nor `subscription`, in any
+// case and wherever it stands. A call it admits is one ghTargetOf reads, and still one that does
+// not write nothing by ghWritesNothing's rule, which the guard's reading of the call rests on.
 func TestGhGraphQLQueryRead(t *testing.T) {
 	graphql := func(words ...string) []string { return append([]string{"api", "graphql"}, words...) }
 	const viewer = "query={viewer{login}}"
@@ -257,17 +256,20 @@ func TestGhGraphQLQueryRead(t *testing.T) {
 		argv []string
 		want bool
 	}{
-		// `mutation` where GraphQL reads no name: in a comment, a string and a block string, one
-		// holding an escaped `\"""` among them; a fragment; the shorthand query; a number read
-		// whole.
-		{graphql("-f", "query=query{viewer{login}} # mutation{addStar}"), true},
-		{graphql("-f", "query=# mutation\r\nquery{viewer{login}}"), true},
-		{graphql("-f", `query=query{a(x:"mutation{b} \" # \\")}`), true},
-		{graphql("-f", `query=query{a(x:"""mutation{b}""")}`), true},
-		{graphql("-f", "query=query{a(x:\"\"\"line\nmutation{b} \\\"\"\" still the string\"\"\")}"), true},
+		// A fragment; the shorthand query; and three documents whose block string opens on a run
+		// of quotes, its `"""` followed by a backslash and four quotes, by a backslash and five, or
+		// by three more quotes, which lexers may close at different quotes: each holds neither
+		// word, so it is a read whatever a lexer makes of its quotes.
 		{graphql("-f", "query=query{...f} fragment f on Query{viewer{login}}"), true},
 		{graphql("-f", viewer), true},
-		{graphql("-f", "query=query{a(x:-1.5e+3,y:2)}"), true},
+		{graphql("-f", `query=query Q{a(x:"""\"""" "){b}} query M{c}`), true},
+		{graphql("-f", `query=query Q{a(x:"""\""""" "){b}} query M{c}`), true},
+		{graphql("-f", `query=query Q{a(x:"""""" "){b}} query M{c}`), true},
+		// The twins of two refused documents below, each holding neither word: a repository's
+		// nameWithOwner read in place of its viewerSubscription, and the review's document with a
+		// query in place of its mutation.
+		{graphql("-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"), true},
+		{graphql("-f", "owner=octocat", "-f", "operationName=M", "-f", `query=query Q{nodes(ids:["""\"""" "]){id}} query M{viewer{login}} # """`), true},
 		// A variable typed beside the raw query, and each option and switch, by each spelling.
 		{graphql("-F", "owner=octocat", "-f", "query=query($owner:String!){repositoryOwner(login:$owner){login}}"), true},
 		{graphql("-F", "name=hello", "-f", viewer), true},
@@ -281,24 +283,39 @@ func TestGhGraphQLQueryRead(t *testing.T) {
 		{graphql("--header", "Accept: application/json", "-f", viewer), true},
 		{graphql("-f", viewer, "--jq", ".data"), true},
 		{graphql("-f", viewer, "--template", "{{.data}}"), true},
-		// A document naming `mutation` or `subscription` as a name, wherever it stands.
+		// A document naming `mutation` or `subscription` as an operation, a field or an argument.
 		{graphql("-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), false},
 		{graphql("-f", "query=subscription{x}"), false},
 		{graphql("-f", `query=query{viewer{login}} mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), false},
 		{graphql("-f", "query=query{mutation}"), false},
 		{graphql("-f", "query=query{a(subscription:1){b}}"), false},
-		{graphql("-f", "query=query{a}1e5mutation{b}"), false},
-		// A `#` in a string starts no comment, and a comment ends at any line terminator, so a
-		// quote in it starts no string.
+		// The word anywhere refuses, where GraphQL reads no name too: in a comment, a string and a
+		// block string, one holding an escaped `\"""` among them; inside a longer name; and in any
+		// case.
+		{graphql("-f", "query=query{viewer{login}} # mutation{addStar}"), false},
+		{graphql("-f", "owner=octocat", "-f", "query=query{viewer{login}} # mutation"), false},
+		{graphql("-f", "query=# mutation\r\nquery{viewer{login}}"), false},
+		{graphql("-f", `query=query{a(x:"mutation{b} \" # \\")}`), false},
+		{graphql("-f", "owner=octocat", "-f", `query=query{search(query:"subscription",type:REPOSITORY,first:1){repositoryCount}}`), false},
+		{graphql("-f", `query=query{a(x:"""mutation{b}""")}`), false},
+		{graphql("-f", "query=query{a(x:\"\"\"line\nmutation{b} \\\"\"\" still the string\"\"\")}"), false},
+		{graphql("-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){viewerSubscription}}"), false},
+		{graphql("-f", "query=query{a} MUTATION{b}"), false},
+		{graphql("-f", "query=query{a} Subscription{b}"), false},
+		// A mutation after a run of quotes: the review's document, whose block string GitHub's
+		// lexer closes at the backslash and four quotes and a lexer written to the GraphQL
+		// specification runs on to the comment's `"""`, and the three documents above with a
+		// mutation in place of their second query.
+		{graphql("-f", "owner=octocat", "-f", "operationName=M", "-f", "id=x", "-f", `query=query Q{nodes(ids:["""\"""" "]){id}} mutation M($id:ID!){addStar(input:{starrableId:$id}){clientMutationId}} # """`), false},
+		{graphql("-f", `query=query Q{a(x:"""\"""" "){b}} mutation M{c}`), false},
+		{graphql("-f", `query=query Q{a(x:"""\""""" "){b}} mutation M{c}`), false},
+		{graphql("-f", `query=query Q{a(x:"""""" "){b}} mutation M{c}`), false},
+		// A mutation a lexer could take for a comment's text where it reads comments and strings
+		// otherwise than GraphQL: after a `#` in a string, after a comment a lone `\r` ends, and
+		// after a comment holding a quote.
 		{graphql("-f", `query=query{a(x:"#")} mutation{b}`), false},
 		{graphql("-f", "query=query{a} #\rmutation{b}"), false},
 		{graphql("-f", "query=query{a} # \"\nmutation{b}"), false},
-		// A string left open: at a line's end, after an escape there, at the text's end; a
-		// block string left open.
-		{graphql("-f", "query=query{a(x:\"y\n\")}"), false},
-		{graphql("-f", "query=query{a(x:\"y\\\n\")}"), false},
-		{graphql("-f", `query=query{a(x:"y`), false},
-		{graphql("-f", `query=query{a(x:"""y \""")}`), false},
 		// Not exactly one raw `query` field, or another field gh reads as the query.
 		{graphql("-f", viewer, "-f", viewer), false},
 		{graphql("-f", "owner=octocat"), false},
