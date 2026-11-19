@@ -4321,6 +4321,7 @@ jobs:
               - '!packages/envoy/internal/serverwait/**/*_test.go'
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/smoke/**/*_test.go'
+              - '!packages/envoy/internal/sockettest/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testnats/**/*_test.go'
