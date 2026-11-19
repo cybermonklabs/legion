@@ -66,9 +66,10 @@ picks a directory the same way, so a command naming an owner the App is not inst
 refused there, not merely discouraged. The one exception is a `gh` read the wrapper knows (a
 command such as `pr list` typed by its full name with each value its own word, a `gh api` GET,
 or a `gh api graphql -f query=…` whose query holds neither the word `mutation` nor
-`subscription`) that names only such owners, names no repository a configured rename moves, and
-reads no remote of the working directory: it runs with `GH_CONFIG_DIR`'s token, which GitHub
-lets read public data and that installation's own repositories alone.
+`subscription`, in any case) that names only such owners, names no repository a configured
+rename moves, and reads no `github.com` remote of the working directory: it runs with
+`GH_CONFIG_DIR`'s token, which GitHub lets read public data and that installation's own
+repositories alone.
 
 ## The controller
 
