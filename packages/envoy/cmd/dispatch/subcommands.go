@@ -54,6 +54,9 @@ var subcommands = []subcommand{
 	{"census", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return census(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
+	{"versions", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
+		return versions(ctx, env.get("DATABASE_URL"), stdout, stderr)
+	}},
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
 	}},

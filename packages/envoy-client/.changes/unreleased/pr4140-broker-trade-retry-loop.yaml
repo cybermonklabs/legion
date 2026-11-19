@@ -1,0 +1,104 @@
+kind: Changed
+body: |-
+  The broker credential trades through one retry loop per session, which no caller cuts short, so
+  the broker sees one trade per slot of the loop's schedule however many callers ask. Each trade
+  ends at 30 s where the broker has not answered. A trade the broker did not answer, answered with
+  a 5xx, its 429 or a DPoP refusal, refused for a person Dispatch holds (`membership_held`), or
+  that the identity's source could not make, is traded again 15 s later, doubling to 5 minutes, so
+  a hold's release is taken at the loop's next trade; a pod session not registered yet is traded
+  again on its own 2 s to 30 s schedule; a refusal no trade cures ends the loop, and a call before
+  the next slot is told the same with no trade. A caller fails fast, as gRPC's default call does:
+  where the last trade failed in a way the loop trades again on and no live token is in hand, it
+  is told so at once with `TradeRetryingError`, so a listener that asks for no credential keeps its
+  calls while the broker is down. Every caller waits out a pending registration within its own
+  deadline. Once a renewal has failed, calls take the token in hand at once while it is live. The
+  NATS credential's startup paths wait for ready: `ready({ life })` for as long as its caller
+  lives, `ready({ waitForReady: true })` for 20 s or its `boundMs`, and a session switch's follow
+  within its bound (`FOLLOW_DEADLINE_MS`, 28 s, by default), which ride out a first trade's 503 and
+  then fail naming it. A session switch ends every wait for the session before. The loop logs as
+  the Go client does: a pending
+  registration once, every 30 minutes and when it ends; any other failure at each wait. Where no
+  caller gives it a `log`, its line goes to `console.warn` through the held-secret scrub. A closed
+  client answers `TokenClientClosedError`, and a NATS line prints it whole, as it does a machine
+  whose broker route went away between two trades. Before, both printed as an error whose message
+  is withheld.
+  A request's credential waits the request's deadline less a reserve of `min(1 s, half)`: 4 s of
+  a listener call's 5 s attempt, and a Dispatch call's client deadline (`DispatchClient`'s new
+  `deadlineMs` option, 60 s when absent) less 1 s. A wait that ends with a live token in hand
+  presents it; one with none lets the request go without a credential in the reserve. A listener
+  that wants a credential answers that request 401 at its auth gate, and the call's error names
+  both the 401 and why the credential could not be minted; a send so refused is refused, never
+  "may or may not have arrived", since nothing was stored, and so is a send whose connection was
+  refused or whose listener's name did not resolve. An unconfirmed send names the attempts it
+  made. Any other answer, a 403 included, is the listener's own. A caller whose wait ends before
+  any trade has ended is told the trade is still unanswered (`TradeUnansweredError`), not the
+  runtime's "The operation timed out.". A Dispatch write keeps one idempotency key across every
+  send of the call — its attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`, and each
+  retry after an old build's answer of no route, which used to mint a new key and could write
+  twice. How a Dispatch write ends is now one transition table (`write-outcome.ts`) that the write
+  loop follows and nothing else decides. An attempt may have landed when it got a 5xx or `409
+  KEY_IN_FLIGHT`, was cut off for silence (an upload's included), failed in transport after it
+  went out (a reset after Dispatch read it), or was ended by the deadline or the caller's stop in
+  flight; a refused connection or a name that did not resolve reached nothing. A 2xx's body is
+  read inside its attempt: a body the deadline or the caller's stop ends is that stop in flight,
+  and a body that breaks off or is not the JSON its `Content-Type` says is asked again under the
+  key, paced by the `Retry-After` its headers carried and with the key they echoed read as
+  Dispatch's keyed layer. Once an attempt may have landed, only a 2xx whose body was read whole,
+  or a refusal Dispatch's keyed layer judged for the key, settles the write. A 2xx that is no
+  answer of Dispatch's settles nothing, wherever it comes: one whose body is empty or not typed
+  JSON (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205),
+  whatever the process knows, and one that carries no key back from a Dispatch this process
+  knows runs the keyed layer. Every other end — a 3xx, a gateway's
+  page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second `401
+  BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
+  the caller's stop, or no attempt or time left, a 5xx included — is
+  `DispatchWriteUnsettledError`, carrying the write's key as `key`, with that failure as its
+  cause. Before, a 5xx on every attempt, a 3xx, a cancellation or a refusal after a landing could
+  each reach the caller as a plain refusal, which reads as nothing written and invited a resend
+  under a new key that wrote twice. A fail-fast credential whose trade goes on
+  (`TradeRetryingError`) is presented again on the write's pacing; a trade still unanswered and a
+  pod's registration still pending, which the credential tells only once it has waited out its
+  share of the call's deadline, and a credential refused for good, end the write at once with
+  their own error. Where the deadline or the caller's stop ends the wait after such a failure,
+  before anything landed, the write ends with the credential's latest error, not the wait's. A
+  write presents as one identity: once an attempt may have landed, a presentation as another (a
+  sign-out, a sign-in or a session switch between two attempts) is never sent, and the write ends
+  unsettled with its key. Dispatch keys a write per person or service, so a repeat as another
+  person or as the machine could run it twice; the client's pin is stricter, holding the session
+  too, since it cannot tell whether another session trades as the same person. Before
+  anything of a write may have landed (a refused connection, a 408 or 429, a credential whose trade
+  goes on), it is asked again without asking `/healthz` first, since a repeat then is no second
+  write; before, the probe came first, and a fail-fast credential, which failed the probe's
+  presentation too, ended the write there. The `/healthz` probe now presents no credential, since
+  Dispatch serves it outside its API, so a credential failing at that moment no longer ends a
+  write the keyed layer could take again. No Dispatch or Envoy request follows a redirect any
+  more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
+  as the write's answer, and a 307 or 308 sent it again to another origin. A 3xx is now the
+  answer, and its error names the origin its `Location` points at, never its path, query or user
+  info; on a first attempt it says nothing reached Dispatch. Every body that is not the server's
+  own is named in one line with the bearer and any `Authorization`, `Bearer` or `DPoP` value
+  redacted (`bodyForText`, the new `@legion/envoy-client/excerpt`), as the Dispatch client names a
+  gateway's page: the Envoy client's error for an answer that is not the listener's error JSON,
+  and for a 2xx whose body is not JSON (no longer the parser's message, which quotes the word it
+  stopped at), where it printed the body whole. Each client redacts every token it presented
+  lately as well as the one its credential holds now, so a page that echoes a token sent before
+  a renewal prints none of it, and a `DPoP` token is redacted as a bearer's is, where the value
+  after `Authorization: DPoP` was left in. The broker credential's pool identity follows no
+  redirect either: a 307 or
+  308 from Google's security token service would have sent the projected token in its body on to
+  another origin. The dead token's re-send happens once per write call, and a dead token is
+  dropped alone: the credential is told which presentation it went out in
+  (`RequestCredential.stale`'s new second argument, `BrokerTokenClient.drop(accessToken)`), so a
+  session the host moved to in between, and a token traded since, keep the token they hold, where
+  the current session's still-valid token was dropped and traded again. The markdown round-trip,
+  a POST that writes nothing, is never read as a write that may have landed, so a 503 and then an
+  old build's no route leave the route absent and the upload goes on, as before this change. A
+  Dispatch read, PUT or DELETE whose 2xx is empty, not typed JSON or not JSON (a captive portal's
+  200 page) is refused as something in Dispatch's place (`DispatchGatewayError`, `transient`, and
+  advice that a retry may succeed), naming the body in one redacted line, where its text was
+  handed back as the route's answer: `dispatch open-asks` and Claude Code's session hook read
+  such a page as no asks at all. A JSON type is read as Dispatch reads it, letter case aside and
+  with `+json` types.
+time: 2026-11-17T12:39:04Z
+custom:
+    Issue: pr4140

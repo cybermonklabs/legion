@@ -106,11 +106,14 @@ type Config struct {
 	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
-	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
-	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
-	// a reviewing round is owed from outside the record, and what moves an approved issue to
-	// accepting. The daemon answers it with a ladder of reads (workflowRuntime.queueMergeState);
-	// nil asks for none, which is the API-only daemon and a test that drives the reads itself.
+	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
+	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
+	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
+	// issue to accepting; and, by the gate classify.MergeStateReadOwed, a head move of an issue in
+	// implementing through merging and a base push of an issue in testing through merging, each of
+	// which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
+	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
+	// is the API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
 	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
 	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
@@ -142,9 +145,11 @@ type Config struct {
 	// StepAgent is the daemon's read of the agent of a step at the moment the engine writes the
 	// step's end (endStep): the session its claim records and the model that answered it last in
 	// that session (supervise.Machine.LastAnswer), read from the claim's machine without waiting
-	// on a decision in flight. Nil reads nothing, so a record names no session and no model,
-	// which is the API-only daemon and every test that reads no agent.
-	StepAgent func(claim.Token) StepAgent
+	// on a decision in flight. tx is the fact's own transaction, which holds the fact lock: a read
+	// the agent's record needs is made in it, never on another connection and never a write. Nil
+	// reads nothing, so a record names no session and no model, which is the API-only daemon and
+	// every test that reads no agent.
+	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
@@ -262,6 +267,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dequeued(ctx, tx, fact)
 	case intake.MergeQueueReadDone:
 		return e.mergeQueueReadDone(ctx, tx, fact)
+	case intake.ConflictConfirmDone:
+		return e.conflictConfirmDone(ctx, tx, fact)
 	case intake.PullRequestMissing:
 		return e.pullRequestMissing(ctx, tx, fact)
 	case intake.ClaimReady:
@@ -802,15 +809,15 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // rather than refused: the daemon started role on this issue, which is what gives it the claim the
 // completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
 // (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
-// on without it - the review event taking reviewing on, or a conflicting head taking a later phase
-// back - and its handoff is the findings the next phase reads, which a refusal would lose. Four
-// completions are not: one from a role whose handoff already stands, which is reporting a phase it
-// finished a second time; one from a role the daemon never started on this issue, which has held
-// no phase of it to report; any while the issue stands where no role works - parked, closed or
-// held - which is past recording work at all; and any while it stands at admitted. Admitted is the
-// architect's own phase (phase.RoleFor), which completes nothing (handoff), and it comes before
-// every phase a worker works, so no worker's phase there is one the issue moved on from: the guard
-// keeps the refusal a completion at admitted had while no role was named for that phase.
+// on without it - the review event taking reviewing on - and its handoff is the findings the next
+// phase reads, which a refusal would lose. Four completions are not: one from a role whose handoff
+// already stands, which is reporting a phase it finished a second time; one from a role the daemon
+// never started on this issue, which has held no phase of it to report; any while the issue stands
+// where no role works - parked, closed or held - which is past recording work at all; and any
+// while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
+// completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
+// there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
+// while no role was named for that phase.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	if token == "" || issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
@@ -880,6 +887,19 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// A completion of the phase the issue stands in that is at the head a merge forward replaced
+	// reports code the pull request no longer stands on, and one that names no head once such a
+	// merge landed says nothing about which head it judged: each is refused before anything of it
+	// is recorded (mergedForwardRefusal). A completion of a phase the issue has left is not
+	// fenced: it moves nothing, and its handoff is the report of the work the role did before the
+	// move, which the next phase reads (leftItsPhase) and no later completion can make again,
+	// since the review a landed merge forward asks of the reviewer is made with none
+	// (record.MergeForwardReview).
+	if current {
+		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
+			return refusal, nil
+		}
+	}
 	if word, _, ok := phase.Handoff(reported); ok {
 		// A phase with a handoff ends with a Dispatch handoff record, which the route read back
 		// and held to this issue, the phase's word, the reported version and the claim's session:
@@ -893,6 +913,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 				fact.Role, fact.HandoffRecord, issue.Key, issue.Key, word)), nil
 		}
 		row.LastHandoff = fact.HandoffRecord
+	}
+	// The rating of the plan is judged here (planRatingRefusal), past every refusal above, so a
+	// held issue's, a stale run's or a lingering tree's completion is told that first, and before
+	// anything is written. It reads the issue this transaction read under the fact's lock, which is
+	// the read the retro ends on below (TriggerRetroCompleted): the route's read came before that
+	// lock, and the issue can move between the two, as a retried hold does. Its refusal writes
+	// nothing and leaves the fact unspent, so the same completion, corrected, applies under its key.
+	if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: true}, nil
 	}
 	// The round as the completion found it is what a notice is deduped against (settleRound): a
 	// round already stuck at this head before the completion was told then, and the completion
@@ -936,7 +965,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, "")
+		// The completion that ends the retro carries the rating its agent gave the plan, which
+		// planRatingRefusal above took on no other completion, and a plugin before the rating
+		// sends none, so its retro writes no rating.
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.rateRetro(ctx, tx, *issue, *fact.PlanRating)
 	}
 	return intake.Result{}, nil
 }
@@ -2000,9 +2035,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
-	// counts the implementer a pass: the tester's fail, a review's request for changes, a worker's
-	// backward move, and the one move the daemon makes on its own, a head that conflicts with its
-	// base (TriggerConflict). The pass tells each pass through a phase from the last
+	// counts the implementer a pass: the tester's fail, a review's request for changes and a
+	// worker's backward move. The pass tells each pass through a phase from the last
 	// (api/handoff.go): a move that counted none would give a completion reporting the last pass's
 	// carrying commit that pass's key, answered as already received instead of refused as a handoff
 	// not written anew. The move's two phases go with the pass, because the move is counted under
@@ -2011,8 +2045,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// The round is the review's alone — it counts the review rounds review_round_cap bounds, so
 	// only a review that requested changes moves it, and a send-back for anything else leaves it
 	// where it stands. The pull request goes with both because each reads it: a move made while
-	// the record holds this head as conflicting with its base is a conflict round, which
-	// review_round_cap does not count and no pair counts either (recordRound, recordPass).
+	// the record holds this head in a confirmed conflict with its base (record.PullRequest's
+	// ConflictingHead) is a conflict round, which review_round_cap does not count and no pair
+	// counts either (recordRound, recordPass).
 	//
 	// The same reading goes onto the entry the start below raises, in this transaction, because
 	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
@@ -2032,7 +2067,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, pr, reason)); err != nil {
+	if err := e.status(ctx, tx, issue, status, moveReason(trigger, issue.Phase, row.To, reason)); err != nil {
 		return err
 	}
 	// The move names the end of the step the issue stood in, on the issue as it stood, before the
@@ -2071,6 +2106,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
+	// The move out of admitted is where the run's work starts, and so where the plan it carries
+	// out is written (WritePlan): the default plan, the steps whose first is the start below.
+	if trigger == TriggerGateOpened {
+		if err := e.WritePlan(ctx, tx, issue); err != nil {
+			return err
+		}
+	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
 	// session until its issue closes (leave), and its phase entry ends here, not its process. The
 	// workspace passes to the next role at the completion this move records, which the worker reports
@@ -2080,11 +2122,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// the finished role answers questions read-only: a completion it reports is refused, since it no
 	// longer works the issue's phase (handoff), and a task queued for a phase the issue has left is
 	// dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one role -
-	// retro back to implementing on a conflicting head - hands the running worker the new phase's
-	// task once its turn is over, as any start of a working claim does. A move no completion
-	// records - the head started conflicting with its base while the tester tested, or the reviewer
-	// reviewed a round it had not completed - starts the next role the same way: that role keeps
-	// its turn, its jobs, its process and its session, and the start waits for none of them.
+	// retro back to implementing on the implementer's own backward move - hands the running worker
+	// the new phase's task once its turn is over, as any start of a working claim does. A move no
+	// completion records - the review App's decision on a round the reviewer had not completed -
+	// starts the next role the same way: that role keeps its turn, its jobs, its process and its
+	// session, and the start waits for none of them.
 	starting := phase.RoleFor(row.To)
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
@@ -2113,7 +2155,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
-	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
+	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
+	// it, and a move at a head held in a confirmed conflict asks for it where the phase entered
+	// needs a head that merges. It comes after the start, so the worker of the phase entered is
+	// started before the hold that tells it to wait for the merge.
+	if err := e.mergeForwardOnEntry(ctx, tx, issue, from); err != nil {
 		return err
 	}
 	if mergedAlready {
@@ -2126,16 +2172,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from
-// finished, with its worker's handoff, or, when the head started conflicting with its base
-// (TriggerConflict), why, under the checks-red kind the architect's prompt reads, since that is
-// the daemon stopping the phase on something it read of the head. Two moves tell it nothing (a
-// notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
-// architect that just acted, and the merge that closes the issue, whose close tells the architect
-// above a child child-closed itself (leave) and closes the child's own architect with its other
-// claims, and suspends a root's architect with the rest of its tree. A third move names no role:
-// the gate's opening, the one move out of admitted (Table), whose role is the architect. A
-// phase-finished names the worker whose phase ended, and admitted has none: its role is an
-// architect, the role that reads this notice.
+// finished, with its worker's handoff. Two moves tell it nothing (a notice of no kind, which notice
+// drops): its own sign-off, whose only recipient would be the architect that just acted, and the
+// merge that closes the issue, whose close tells the architect above a child child-closed itself
+// (leave) and closes the child's own architect with its other claims, and suspends a root's
+// architect with the rest of its tree. A third move names no role: the gate's opening, the one move
+// out of admitted (Table), whose role is the architect. A phase-finished names the worker whose
+// phase ended, and admitted has none: its role is an architect, the role that reads this notice.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
@@ -2144,8 +2187,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // summary and no verdict and cannot tell it from a worker that finished its phase.
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
-	case TriggerConflict:
-		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
 	case TriggerGateOpened:
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
@@ -2155,29 +2196,6 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 		return record.Notice{}
 	}
 	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
-}
-
-// phaseEnded tells the role a conflicting-head transition out of from leaves with no phase that
-// its phase ended, which phase the issue is in now and why (record.PhaseEnded), on that role's own
-// Envoy topic. Only that move sends one: every other move out of a phase is the working role's own
-// completion or backward move, which that role made and so already knows of, and the approval and
-// the merge the daemon raises of its own leave a role that has just finished the work they report,
-// with no reason of the kind this message carries. A CI result moves no issue
-// (dispatch://INFRA-714 R1), so the trigger is a head that starts conflicting with its base.
-// The recipient is phase.RoleFor(from) whenever that is a role other than the architect, read from
-// the transition alone rather than from what the role had done: the tester in testing, the reviewer
-// in reviewing whether or not it completed its round, the merger in merging, and the implementer in
-// retro, which is also the role starting, told that its task for the new phase follows. Accepting
-// sends none — its role is the architect, which the conflict notice tells (noticeFor). Without the
-// message nothing tells that role: no transition stops a worker, and the daemon's next task for a
-// role is delivered only once that role's turn ends, while this message reaches its session at its
-// next model turn and ends a wait.
-func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
-	ended := phase.RoleFor(from)
-	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect {
-		return nil
-	}
-	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: ended, From: from, To: to, Reason: reason, TaskFollows: ended == starting})
 }
 
 func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {

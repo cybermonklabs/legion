@@ -324,16 +324,17 @@ func TestRegisterSessionIDInsideAnExecSessionWithNoOmpNamesIt(t *testing.T) {
 // its ancestry before the command runs. It fails, rather than skipping, when an `omp` is still
 // above that shell: a check that cannot see the thing it is for must say so.
 //
-// The orphan cannot be waited on, so it reports through files: its stdout, its stderr and its
-// exit code, the last written under another name and renamed, so a code read is never a partial
-// write.
+// The orphan cannot be waited on, so it reports through files: its process ID, its stdout, its
+// stderr and its exit code. The process ID and the exit code are written under another name and
+// renamed, so a read of either is never a partial write.
 func runWithNoLauncherAbove(t *testing.T, binary string, env []string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "orphan.sh")
 	const body = `d=$1
 shift
-printf '%s\n' "$$" > "$d/shell.pid"
+printf '%s\n' "$$" > "$d/shell.pid.tmp"
+mv "$d/shell.pid.tmp" "$d/shell.pid"
 i=0
 while [ ! -e "$d/go" ]; do
 	if [ -e "$d/stop" ]; then exit 1; fi

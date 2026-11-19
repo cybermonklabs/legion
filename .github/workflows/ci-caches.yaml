@@ -19,7 +19,8 @@ name: CI caches
 # go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
 # envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
 # envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
-# go-envoy-test (envoy-go, and the binaries, multiprocess and visual jobs of
+# go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binary of that set,
+# and the binaries, multiprocess and visual jobs of
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
 # build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
 # build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
@@ -29,10 +30,16 @@ name: CI caches
 # its objects. So each family is filled on every architecture one of its readers runs on, one
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
-# each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, envoy-go-checks, the browser lane and the release builds on the second). A leg builds
+# each has a reader on each (typecheck and the envoy lanes but one on the first; daemon-go,
+# plugin-pack, pi-legion, envoy-go-checks, envoy-go-claim-model, the browser lane and the release
+# builds on the second). A leg builds
 # what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
-# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg. One
+# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
+# go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
+# other four after it: the go-notices entry holds go-licenses, a program lint's notices step
+# runs, and a run of a workflow file older than the architecture in the key restores by
+# go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what
+# that did). One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
 # go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
 # module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
@@ -179,7 +186,10 @@ jobs:
 
   # go-notices, in a job of its own on ubuntu-24.04-arm, the runner of lint, whose notices step the
   # family belongs to. It keys on packages/daemon/go.mod's Go, which lint installs, though that
-  # step also builds the envoy and infra modules' commands.
+  # step also builds the envoy and infra modules' commands, and on the runner's architecture
+  # before the OS, as lint's restore does: the entry holds the go-licenses that step runs, and an
+  # <os>-<arch> key would start with the go-notices-<os>- prefix of a run of a workflow file older
+  # than the architecture in the key, which then restores this arm64 program on x86_64.
   notices:
     runs-on: ubuntu-24.04-arm
     # The notices build is the long one: it writes the notices of, and cross-compiles, every
@@ -203,7 +213,7 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
@@ -224,13 +234,13 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
   # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
   # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
   # independent, and each build is gated on its own lookup. One leg per runner: the envoy lanes
-  # that restore them run on ubuntu-24.04-arm, and the browser lane's jobs that restore them on
-  # ubuntu-24.04.
+  # that restore them run on ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were
+  # measured on ubuntu-24.04, and the browser lane's jobs restore them on ubuntu-24.04.
   envoy:
     strategy:
       fail-fast: false

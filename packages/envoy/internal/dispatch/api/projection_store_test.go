@@ -697,6 +697,17 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/daemon/internal/record/store.go#record.*Postgres.MoveKeptClaims: update table":      {},
 	"packages/daemon/internal/store/kept_decisions.go#store.tellKeptDecisions: delete from table": {},
 	"packages/daemon/internal/store/kept_decisions.go#store.releaseKeptDecisions: update table":   {},
+	// A migration runner's version table, which its caller names: schema_migrations for
+	// Dispatch's store (store.versionTable) and the broker's own for the broker. pgmigrate records
+	// each migration it applies and fills the identity of a row an earlier runner wrote; its test
+	// helper package, which every runner's tests share, writes rows of that table to drive the
+	// refusals. Neither reaches a projected table.
+	"packages/envoy/internal/pgmigrate/identity.go#pgmigrate.writeFixes: update pgx.Identifier{…}.Sanitize()":                     {},
+	"packages/envoy/internal/pgmigrate/identity.go#pgmigrate.Record: insert into pgx.Identifier{…}.Sanitize()":                    {},
+	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.RunIdentityChecks: insert into table":              {},
+	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.RunIdentityChecks: update table":                   {},
+	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.CheckVersionsOfAnEarlierRunner: update table":      {},
+	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.CheckVersionsOfAnEarlierRunner: insert into table": {},
 }
 
 // runtimeTableHead matches a literal that ends where a write's table begins, the expression

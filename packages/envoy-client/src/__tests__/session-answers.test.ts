@@ -10,6 +10,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
@@ -35,6 +37,8 @@ const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOStrin
 /** Where a read at `NOW` starts its window: 72 hours before it. */
 const SINCE = hoursAgo(72);
 const stateDir = temporaryDirectories("session-answers");
+/** The Dispatch bearer each test's Dispatch is reached with. */
+const TOKEN = fixtureSecret("dsp");
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -486,7 +490,7 @@ function dispatchAt(): ActiveDispatchConfig {
   return {
     enabled: true,
     url: `http://answers-${dispatchCount}.test`,
-    credential: bearerCredential("test-token"),
+    credential: bearerCredential(TOKEN),
   };
 }
 let sessionCount = 0;
@@ -579,7 +583,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 HTML sign-in page",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with a body that is not JSON \("Sign in"\), which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => page(200, "<!doctype html><html><title>Sign in</title><form></form></html>"),
   },
@@ -597,7 +602,8 @@ const failedReads: readonly {
   },
   {
     kind: "a 200 with an empty body",
-    reason: "Dispatch answered with something that is not an answers list",
+    reason:
+      /^HTTP_200: GET \S+\/answers\?since=[^&\s]+&max_chars=8000 answered 200 with an empty body, which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may succeed\.$/,
     deadlineMs: 2_000,
     respond: () => new Response("", { status: 200 }),
   },
@@ -798,8 +804,9 @@ describe("readSessionAnswers", () => {
   });
 
   // The notice is a line the host shows the session, so it names a Dispatch URL that carries a
-  // user and a password without them; the read itself goes to the URL as configured.
-  test("the no-route notice names the Dispatch URL without its user and password", async () => {
+  // user and a password by its fixed phrase alone, no part of it; the read itself goes to the URL
+  // as configured.
+  test("the no-route notice names a Dispatch URL with user info by its fixed phrase", async () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const { calls, fetchImpl } = fakeDispatchFetch({ handler: noRoute });
@@ -815,10 +822,32 @@ describe("readSessionAnswers", () => {
       now: () => NOW,
     });
     expect(calls.map((call) => call.url.username)).toEqual([user]);
-    expect(read.notice).toBe(noRouteNotice(`http://answers-userinfo-${dispatchCount}.test`));
+    expect(read.notice).toBe(noRouteNotice(`the configured Dispatch URL ${URL_NOT_PRINTED}`));
     expect(read.notice).not.toContain(user);
     expect(read.notice).not.toContain(secret);
   });
+
+  // A password holding an unencoded '@' names no host, and the URL parser reads the password's
+  // tail as one. The runtime's own fetch (no stand-in) fails to resolve it and names it in its
+  // message; the line both plugins add to every model request names the failure by its class and
+  // the URL by its fixed phrase (#4140, B1). The read waits for that failure, not the 800 ms a
+  // model request waits: on a loaded machine the resolver's answer comes later than that, and a
+  // read that ran out first names no failure at all.
+  test("a failed read of a Dispatch whose password holds an '@' names no part of the password", async () => {
+    const tail = `Tail${crypto.randomUUID().slice(0, 8)}`;
+    const dispatch = { ...dispatchAt(), url: `https://user-7f2a:p@ssword${tail}.invalid` };
+    const read = await readSessionAnswers({
+      session: newSession(),
+      dispatch,
+      env: envAt(stateDir()),
+      now: () => NOW,
+      deadlineMs: 10_000,
+    });
+    expect(read.text).toContain(
+      `Dispatch at the configured Dispatch URL ${URL_NOT_PRINTED} is unreachable: `
+    );
+    expect(JSON.stringify(read).toLowerCase()).not.toContain(tail.toLowerCase());
+  }, 30_000);
 
   test("a cached list carried after Dispatch's no-route 404 never names `dispatch answers`, its left-out line included", async () => {
     // Twelve items of about 1,000 characters each: the cap leaves the oldest out.
@@ -903,7 +932,10 @@ describe("readSessionAnswers", () => {
     expect(read.text).toBe(
       renderSessionAnswers(recent, {
         now: NOW,
-        cached: { readAt, reason: "Unable to connect" },
+        cached: {
+          readAt,
+          reason: `Dispatch at ${dispatch.url} is unreachable: TypeError (message withheld). If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
+        },
       })
     );
   });

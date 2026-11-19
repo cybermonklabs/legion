@@ -116,7 +116,7 @@ func TestRegisterGateStepRefusals(t *testing.T) {
 			recorder := h.request(http.MethodPost, "/legion/v1/gates/register", body, nil)
 			if tc.code != "" {
 				refusal := recorder.Body.String()
-				assertFailure(t, recorder, tc.status, tc.code)
+				refused(t, recorder, tc.status, tc.code)
 				for _, says := range tc.says {
 					if !strings.Contains(refusal, says) {
 						t.Fatalf("the refusal %s does not say %q", refusal, says)

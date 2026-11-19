@@ -39,7 +39,7 @@
 # to the fake Envoy's session list and puts the list back when it ends, and builds
 # `envoy-dispatch` from this checkout and runs that build, whatever PATH holds.
 #
-# The node writers' own grep, where a reader wants one: `graphstore\.(WriteUncaused|Write|WriteArms)\(|graphstore\.Node\{`,
+# The node writers' own grep, where a reader wants one: `graphstore\.(QueueNodes|Write|WriteArms)\(|graphstore\.Node\{`,
 # with api/comment_create.go as its control. `graphstore.Caused` is left out on purpose: it names
 # every deferred write of the store, a block index's and a follow's among them, so it cannot tell a
 # node writer from the cause of another write.

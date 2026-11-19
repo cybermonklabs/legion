@@ -1431,6 +1431,9 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
+	// for a caller that sent `Dispatch-Trees: 1`.
+	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
@@ -2472,15 +2475,28 @@ var MentionSweepWindowInterval = fmt.Sprintf("interval '%d seconds'", int64(Ment
 // so, a comment mention's and a targeted message's alike.
 var DeliveryClaimFreeSQL = `(claimed_at is null or claimed_at < now() - ` + DeliveryClaimLapseInterval + `)`
 
-// DeliveryClaimMineSQL is true of a delivery attempt whose claim is the caller's own: the row was
-// claimed no earlier than the claim param names, and that claim is itself still live. A claim only
-// moves forward and a sender takes one only once the claim on the row has lapsed, so while the
-// caller's own claim is live every claim the row can carry is one the caller wrote itself - the
-// claim it took, and the refreshes it has made since. The mention sender's queued sends read it
-// beside DeliveryClaimFreeSQL (claimCommentDeliveryAttempt): each holds a claim from the moment
-// its attempt was committed, so the attempt its lane finally sends is claimed, and claimed by it.
-func DeliveryClaimMineSQL(param string) string {
-	return `(claimed_at >= ` + param + ` and ` + param + ` > now() - ` + DeliveryClaimLapseInterval + `)`
+// DeliveryClaimSinceSQL is true of a delivery attempt whose claim was written by the holder of the
+// claim param names: the row was claimed no earlier than param and less than DeliveryClaimLapse
+// after it. A claim only moves forward, and another sender takes one only once the claim on the
+// row has lapsed (DeliveryClaimFreeSQL), so the claim it writes is more than a lease past every
+// claim the row carried before it, param among them; and the mention sender writes a claim again
+// only while the one it names is live (refreshMentionClaims in internal/dispatch/api), so each of
+// its own is less than a lease past the one before. A claim inside the lease after param is
+// therefore its holder's own, whether or not param is still live - a refresh that wrote the row
+// just before param lapsed leaves it the holder's. The mention sender's bound sends read it beside
+// DeliveryClaimFreeSQL (claimCommentDeliveryAttempt), with the claim it recorded as param: each
+// holds a claim from the moment its attempt was committed, so the attempt its lane finally sends is
+// claimed, and claimed by it. So does its re-read of a claim a refresh whose answer was lost may
+// have written (rereadMentionClaims).
+func DeliveryClaimSinceSQL(param string) string {
+	return `(claimed_at >= ` + param + ` and claimed_at < ` + param + ` + ` + DeliveryClaimLapseInterval + `)`
+}
+
+// DeliveryClaimLiveSQL is true of the claim param names while it is live: written less than
+// DeliveryClaimLapse ago. The mention sender's refresh writes a claim again only while the one it
+// names is (refreshMentionClaims in internal/dispatch/api), so it never revives a lapsed one.
+func DeliveryClaimLiveSQL(param string) string {
+	return `(` + param + ` > now() - ` + DeliveryClaimLapseInterval + `)`
 }
 
 // mentionLaterAttemptSQL is true of the comment_deliveries row named row when a later attempt of
@@ -2603,6 +2619,150 @@ func MentionAbandonedSQL(row string) string {
 func MentionLiveSQL(row string) string {
 	return `(not ` + MentionResumedSQL(row) + ` and not ` + MentionAbandonedSQL(row) + `)`
 }
+
+// OwedTopicFamily and OwedAnySession are the two words of events.owed_keys that name no subject:
+// what an event still owes once the outbox's last record of it was written (recordBatch and
+// owedKeys in internal/dispatch/outbox). OwedTopicFamily is a send to the event's owner's topic
+// family, the notifications.dispatch. subjects of its issue, document or project, which reach
+// every session that follows them. OwedAnySession is the session an event whose recipient read
+// failed may still owe a copy, unnamed because the read that would name it did not answer. Every
+// other word is a subject: notifications.agent.<session>, a send to that session, or a role's own
+// topic (contracts.RoleTopicPrefix), a role route not reached yet, whatever session holds the role
+// - the holder is read when a copy asks (MentionCopyRolesSQL), as the outbox reads it again at
+// each batch, so a holder that changed between the record and the copy is the one asked about.
+const (
+	OwedTopicFamily = "topic-family"
+	OwedAnySession  = "any-session"
+)
+
+// MentionCopyHolderSQL reads the earlier event a copy of a mention waits behind before it reaches
+// the session it is bound for - its id and its publish_error, the reason its last publish attempt
+// failed - and no row while the copy waits for nothing. The copy is of the comment whose
+// comment.created event's id is $1, and $2 is that session's key (the subject OwedTopicFamily's
+// doc names). It waits while an earlier event of the same owner - an issue, a document or a
+// project, spelled as the outbox orders an owner's events - is unpublished, is no pending
+// subscription command, and still owes a send that session may take before the copy: one to the
+// owner's topic family, which any session may follow and the outbox cannot know which do, one to
+// that very key, or one to a session its failed recipient read did not name (OwedAnySession). The
+// earliest such event is the one read. A role route an earlier event still owes holds the copy
+// only when the role's holder is that session, which this statement cannot read:
+// MentionCopyRuleSQL reads MentionCopyRolesSQL's rows for those routes beside it, in the same
+// statement, when this one answers no row.
+//
+// What an earlier event owes is what the outbox's last record of it says (events.owed_keys), as
+// its destinations stood when the batch that wrote it read them, and that record is trusted only
+// while no event of the owner has been written since that read: events.owed_seq is the owner's
+// last_seq the batch read beside them, and an owner whose last_seq is past it has had a write the
+// record did not see. Every write that makes a session a destination of an owner's events - the
+// issue's route, its claim, an ask's follower - appends an event of that owner in the same
+// transaction, and an event write takes the owner's row before it draws its seq, so the owner's
+// events commit in seq order and such a write always moves last_seq past every record made
+// before it. A record older than the owner's newest event therefore holds the copy until a batch
+// that read that event writes it again, whatever that write was and whether its own event is
+// published yet: the comment's own event moves last_seq too, so a copy waits for a record made
+// after its comment of each earlier event still unpublished. The newest event is read as the
+// owner's newest that is no pending subscription command (api/subscribers.go): such a command
+// moves last_seq too, but makes no session a destination and no batch reads it, so counting it
+// would hold a copy until the earlier event's own back-off ended
+// (TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent). The record that writes owed_keys
+// writes owed_seq beside it, under the same hold; a record that writes neither - one made after
+// its process lost the publisher hold, or one of the release before this one - leaves both as
+// they were, and the copy waits on them.
+//
+// An event the outbox has not recorded yet (owed_keys and owed_seq null) owes its topic family at
+// least, the first destination of every event, so it holds every copy. It must: a new event has
+// no record until the outbox's first batch of it, and a comment written directly after it would
+// otherwise pass it, which is the case the order exists for. Null is also every event no record
+// of this release has written, the release before it among them: such an event holds the copies
+// of its owner's later comments until it is published or recorded again, as one that owes its
+// topic family would.
+//
+// It is the order the outbox keeps for its own sends (planChains), asked by the two roads a
+// mention's copy takes outside the outbox's chains: the API's send of the mention
+// (deliverResolvedCommentMention in internal/dispatch/api) and the outbox's fallback pass
+// (decideFallbackCopy), each through copyrule.Holder and MentionCopyRuleSQL. The read walks the
+// partial index events_outbox_owner, whose predicate the query's own clauses spell, so it reads
+// the owner's unpublished events and no other, and the owner's newest seq backwards over its
+// unique (owner, seq) index, once: the newest-seq subquery ends with offset 0, which keeps the
+// planner from pulling it up into the filter on the earlier events, where it ran once for each of
+// them and read the newest event's payload each time. The exhaustive model of this order
+// (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds this rule, and
+// TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows, through copyrule.Holder. It is a
+// constant so that a guard reading a statement's SQL can read it (the keyed-write guard of
+// internal/dispatch/api).
+const MentionCopyHolderSQL = `select k.id, k.publish_error
+		from events c
+		cross join lateral (
+			select coalesce(
+				(select n.seq from events n where n.issue_key = c.issue_key
+				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1),
+				(select n.seq from events n where n.artifact_id = c.artifact_id
+				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1),
+				(select n.seq from events n where n.project_key = c.project_key
+				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1)
+			) as last_seq offset 0
+		) o
+		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)
+		where c.id = $1::bigint
+		  and k.id < c.id
+		  and k.published_at is null
+		  and (k.payload ->> 'pending') is distinct from 'true'
+		  and (k.owed_keys is null
+		       or k.owed_seq is null
+		       or k.owed_seq < o.last_seq
+		       or k.owed_keys && array['` + OwedTopicFamily + `', '` + OwedAnySession + `', $2::text]::text[])
+		order by k.id
+		limit 1`
+
+// MentionCopyRolesSQL reads the role routes the earlier events of a comment's owner still owe:
+// for each role topic one of them owes, that topic and the earliest such event, with its id and
+// publish_error, the comment's comment.created event's id being $1. Its rows are the earlier
+// events MentionCopyHolderSQL cannot judge: each holds a copy bound for the role's holder, and
+// only the caller can read who that is now (copyrule.Holder's holds, which the API's send and the
+// outbox's fallback pass each give it). It reads the same owner's unpublished events as
+// MentionCopyHolderSQL, through events_outbox_owner, and answers no row - the usual case - when
+// none of them owes a role route.
+const MentionCopyRolesSQL = `select distinct on (owed.owed_key) owed.owed_key, k.id, k.publish_error
+		from events c
+		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)
+		cross join lateral unnest(k.owed_keys) as owed(owed_key)
+		where c.id = $1::bigint
+		  and k.id < c.id
+		  and k.published_at is null
+		  and (k.payload ->> 'pending') is distinct from 'true'
+		  and starts_with(owed.owed_key, '` + contracts.RoleTopicPrefix + `')
+		order by owed.owed_key, k.id`
+
+// MentionCopyRuleSQL is the copy rule as one statement, so in one snapshot: MentionCopyHolderSQL's
+// row, with an empty role topic, and, only when that answers none, MentionCopyRolesSQL's rows, in
+// role topic order. $1 and $2 are MentionCopyHolderSQL's. Read as two statements, a write between
+// them could move what an earlier event owes from a role route the copy's session holds to that
+// session's own key - a route moved to the session, which a batch then records - and the second
+// statement would find no role owed while the first found no key: the copy would pass an event
+// that each read alone holds it behind (TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot in
+// internal/dispatch/outbox). Its one reader is copyrule.Holder, which both roads of a copy call
+// (TestOnlyHolderReadsTheCopyRule).
+const MentionCopyRuleSQL = `with holder as materialized (` + MentionCopyHolderSQL + `)
+	select ''::text as role_topic, id, publish_error from holder
+	union all
+	select owed_key, id, publish_error from (` + MentionCopyRolesSQL + `) roles
+	where not exists (select 1 from holder)
+	order by role_topic`
+
+// MentionCopyHolder is the earlier event a copy of a mention waits behind (MentionCopyRuleSQL):
+// its id, and why its last publish attempt failed, nil while none has.
+type MentionCopyHolder struct {
+	EventID      int64
+	PublishError *string
+}
+
+// MentionCopyHeldWarnAfter is how long a copy of a mention waits behind an earlier event before
+// the road that holds it logs one WARN naming the owner, that event and its last publish error.
+// It is a claim lease (DeliveryClaimLapse), the longest the outbox waits on a live mention before
+// it holds that mention's copy as a fallback row: a copy normally waits the milliseconds the
+// outbox takes to publish an event, and one waiting a lease waits on an earlier event whose
+// publish has failed, by then about six times on the outbox's back-off (retry.Delay).
+const MentionCopyHeldWarnAfter = DeliveryClaimLapse
 
 // MentionSession is the one session a mention attempt counts under, ok false when it counts under
 // none: sessionID, the session the mention is pinned to ("" when it is pinned to none), or else
@@ -3180,25 +3340,29 @@ type HandoffRecordedEventPayload struct {
 // step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
 // ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
 // the merge's place, and Report the handoff its ending role named, each null where the run has
-// none.
+// none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
+// the retro gave the plan the issue ran, and its reason, each null where the record holds none
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
 type StepRecord struct {
-	ID         string     `json:"id"`
-	Issue      string     `json:"issue"`
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind" enum:"step,retro,merge"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Session    string     `json:"session"`
-	Model      string     `json:"model"`
-	Generation int64      `json:"generation"`
-	Attempt    int        `json:"attempt"`
-	StartedAt  *time.Time `json:"started_at"`
-	EndedAt    *time.Time `json:"ended_at"`
-	Result     string     `json:"result" enum:",passed,failed,stopped"`
-	ReturnedTo *int       `json:"returned_to"`
-	Report     *string    `json:"report"`
+	ID           string     `json:"id"`
+	Issue        string     `json:"issue"`
+	Task         string     `json:"task"`
+	Step         int        `json:"step"`
+	Kind         string     `json:"kind" enum:"step,retro,merge"`
+	Role         string     `json:"role"`
+	Type         string     `json:"type"`
+	Agent        string     `json:"agent"`
+	Session      string     `json:"session"`
+	Model        string     `json:"model"`
+	Generation   int64      `json:"generation"`
+	Attempt      int        `json:"attempt"`
+	StartedAt    *time.Time `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	Result       string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo   *int       `json:"returned_to"`
+	Report       *string    `json:"report"`
+	Rating       *int       `json:"rating"`
+	RatingReason *string    `json:"rating_reason"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.
@@ -3213,6 +3377,62 @@ type StepTask struct {
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
+}
+
+// PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
+// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+type PlanTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+// PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
+// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
+// owner's document and the version of it the plan was read from (both null for the source
+// default, the default steps of an issue whose owner gave none), and its tasks.
+type PlanRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Generation int64      `json:"generation"`
+	Source     string     `json:"source" enum:"default,owner"`
+	ArtifactID *string    `json:"artifact_id"`
+	Version    *int       `json:"version"`
+	Tasks      []PlanTask `json:"tasks"`
+}
+
+// PlanRating is the rating of one retro of a finished issue: the rating, 1 to 5, the agent that did
+// the retro gave the plan, its reason, the retro's step record and the moment it ended, null where
+// its end never reached Dispatch.
+type PlanRating struct {
+	Rating  int        `json:"rating"`
+	Reason  string     `json:"reason"`
+	StepID  string     `json:"step_id"`
+	EndedAt *time.Time `json:"ended_at"`
+}
+
+// FinishedIssue is one issue of a project that is done and closed, as GET
+// /api/v1/projects/{key}/plans lists it: its plan (that of its newest run, null for an issue whose
+// work started before Legion wrote plans or that Legion never ran), the rating of each of its
+// retros in the order they ran, the earliest start and the latest end of its step records and the
+// whole seconds between them (each null where no record holds one, and the seconds null too where
+// that end is before that start), and its count of step records of kind step that failed.
+type FinishedIssue struct {
+	Issue           string       `json:"issue"`
+	Title           string       `json:"title"`
+	ClosedAt        time.Time    `json:"closed_at"`
+	Plan            *PlanRecord  `json:"plan"`
+	Ratings         []PlanRating `json:"ratings"`
+	StartedAt       *time.Time   `json:"started_at"`
+	EndedAt         *time.Time   `json:"ended_at"`
+	DurationSeconds *int64       `json:"duration_seconds"`
+	FailedSteps     int          `json:"failed_steps"`
+}
+
+// ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
+// close first.
+type ProjectPlans struct {
+	Project string          `json:"project"`
+	Issues  []FinishedIssue `json:"issues"`
 }
 
 // ReferencedBy identifies a post or artifact that mentions an artifact.

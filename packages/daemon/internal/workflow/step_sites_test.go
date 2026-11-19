@@ -25,7 +25,9 @@ var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
 	engine := testEngine(config.DesignGateOff, nil)
 	engine.cfg.Clock = func() time.Time { return stepClock }
-	engine.cfg.StepAgent = agent
+	if agent != nil {
+		engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, token claim.Token) StepAgent { return agent(token) }
+	}
 	return engine
 }
 
@@ -107,7 +109,7 @@ func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger 
 		if err != nil {
 			return err
 		}
-		// A move no completion records (a conflict, a backward move) says why, as the engine
+		// A move no completion records (a backward move) says why, as the engine
 		// requires of its notice; the other moves carry the reason unread.
 		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, "the step test's move")
 	})
@@ -300,17 +302,18 @@ func TestAMoveBackToTheRetroReturnsToPlaceZero(t *testing.T) {
 	}
 }
 
-// A head that conflicts with its base sends the work back with no report asking for it: the step
-// it interrupts ends stopped, naming the step the work returns to.
-func TestAConflictEndsTheStepStopped(t *testing.T) {
-	pool := migratedPool(t)
-	stepRoot(t, pool, phase.Testing)
-	move(t, pool, stepEngine(nil), "LEGION-208", TriggerConflict, "", record.PhaseRow{})
-	writes := stepWrites(t, pool, "LEGION-208")
-	if len(writes) != 2 {
-		t.Fatalf("step rows = %+v, want the end of testing and the start of implementing", writes)
+// A head that conflicts with its base moves no issue (dispatch://INFRA-4374): the merge forward
+// keeps the phase, so the step the issue stands in neither ends nor starts again, and its run goes
+// on through the merge.
+func TestAConflictEndsNoStep(t *testing.T) {
+	pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
+	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Testing {
+		t.Fatalf("the merge forward = %+v, want one asked with the issue in testing", asked)
 	}
-	assertEnd(t, writes[0], "step", 3, 1, "stopped", new(2))
+	if writes := stepWrites(t, pool, "LEGION-208"); len(writes) != 0 {
+		t.Fatalf("step rows = %+v, want none: a confirmed conflict ends no step and starts none", writes)
+	}
 }
 
 // One run of a step gets one end, however many writes end it: a second end of the same run, in

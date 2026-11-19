@@ -469,20 +469,6 @@ func (f *brokerFleet) database(t *testing.T) *pgx.Conn {
 	return connectToBroker(t, f.DatabaseURL)
 }
 
-// connectToBroker opens a connection of the test's own to a broker's database, closed when t
-// ends. It is a connection outside every broker's pool, which is what a row needs to hold a row
-// lock a broker then waits on: a lock taken through the pool the broker draws on would starve it
-// of a connection rather than block it on the row.
-func connectToBroker(t *testing.T, databaseURL string) *pgx.Conn {
-	t.Helper()
-	conn, err := pgx.Connect(context.Background(), databaseURL)
-	if err != nil {
-		t.Fatalf("connect to the broker's database: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	return conn
-}
-
 // countRows runs a counting query on the brokers' own database and answers what it counted.
 func countRows(t *testing.T, conn *pgx.Conn, query string, args ...any) int {
 	t.Helper()
@@ -1409,6 +1395,20 @@ func rolloutAccounts(fixer string) string {
 	return strings.Join(entries, " ")
 }
 
+// rolloutRegistrars is BROKER_POD_REGISTRARS for both generations of the rollout:
+// registrarAccount, which registers each pod that asks for a name its entry at the serving
+// process does not fix, listed as the registrar of each of the three accounts' pods, since a
+// row's exchange may be any of the three's. oldEntryAccount is registrarAccount's own account, so
+// that entry pairs an account with itself, as the entry of a daemon registering the sibling pods
+// of its own account does; a registrar's token bound to no pod is refused no pod of its account.
+func rolloutRegistrars() string {
+	entries := make([]string, 0, 3)
+	for _, account := range []string{oldEntryAccount, newEntryAccount, podAccount} {
+		entries = append(entries, registrarAccount+"="+account)
+	}
+	return strings.Join(entries, " ")
+}
+
 // rolloutBroker is one process of the rollout: what its messages call it, the account its
 // configuration fixes rolloutSession for, the process whose log a row reads, and a client of that
 // process's own address.
@@ -1417,20 +1417,6 @@ type rolloutBroker struct {
 	fixer   string
 	process *brokerProcess
 	client  *liveBroker
-}
-
-// sessionHolder reads who holds session in the database every process of the rollout shares, and
-// whether that hold is the configuration's, which never runs out: the one record of whose a name
-// is, read past every process's own opinion of it.
-func sessionHolder(t *testing.T, conn *pgx.Conn, session string) (string, bool) {
-	t.Helper()
-	var principal string
-	var fixed bool
-	if err := conn.QueryRow(context.Background(), `select principal, expires_at = 'infinity' from oauth_session_bindings
-		where session = $1`, session).Scan(&principal, &fixed); err != nil {
-		t.Fatalf("read the claim on %s: %v", session, err)
-	}
-	return principal, fixed
 }
 
 // TestAFixedSessionNameAcrossARollout drives a rollout that re-points a fixed session name, on
@@ -1452,12 +1438,13 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 
 	// start starts a process of the generation whose configuration fixes rolloutSession for
 	// fixer, on the one database, living as long as t: exchangeEnv with that generation's
-	// accounts in place of its own, a later value of a variable being the one a process gets, as
-	// startBroker's own Env takes precedence over productionEnv.
+	// accounts, and the registrar listed for each of them, in place of its own, a later value of
+	// a variable being the one a process gets, as startBroker's own Env takes precedence over
+	// productionEnv.
 	start := func(t *testing.T, name, fixer string) rolloutBroker {
 		t.Helper()
 		process := startBroker(t, brokerOptions{Binary: binary, Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
-			"BROKER_EXCHANGE_ACCOUNTS="+rolloutAccounts(fixer), "BROKER_DRAIN_SECONDS=0")})
+			"BROKER_EXCHANGE_ACCOUNTS="+rolloutAccounts(fixer), "BROKER_POD_REGISTRARS="+rolloutRegistrars(), "BROKER_DRAIN_SECONDS=0")})
 		return rolloutBroker{name: fmt.Sprintf("%s (%s)", name, process.Addr), fixer: fixer, process: process, client: newLiveBroker(process.Addr, key)}
 	}
 	// exchange is a pod of account exchanging its projected token at broker for a token under

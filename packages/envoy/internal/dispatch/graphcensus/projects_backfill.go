@@ -614,7 +614,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			run := write[start:end]
 			// A node a writer left standing for an earlier row is stated gone and then live by
 			// the run's own tuples, both under its cause: one node write of the node in this
-			// transaction leaves one mark on its row (graphstore's nodeMark), so a second write of
+			// transaction leaves one mark on its row (graphstore's nodeMarks), so a second write of
 			// it would lose the first's statement, and the node write then states no state of its
 			// own beside them.
 			var stated []graphstore.Tuple

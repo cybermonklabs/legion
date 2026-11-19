@@ -1,6 +1,6 @@
 # This repository's own leak rules, ported one for one from .github/scripts/check-private-names.sh
-# (its patterns are that file's lines 82-106, its labels lines 108-111, and the way they are applied
-# to a line and to a path its `search` and `search_paths`). The four classes are the private
+# (its patterns are that file's lines 148-178, its labels lines 180-183, and the way they are
+# applied to a line and to a path its `search` and `search_paths`). The four classes are the private
 # repository Legion is deployed from, the company that runs it, a private host of its own network,
 # and a Tailscale MagicDNS host. No [extend] section: gitleaks' own default rule set is deliberately
 # never loaded, so these rules are the whole of what this file detects.
@@ -16,7 +16,8 @@
 # brackets.
 #
 # The two case-insensitive flags differ by design, exactly as the script's -i flags do (its lines
-# 206-213): four classes are matched in any case, the proper noun is matched case-sensitively.
+# 525-532): four classes are matched in any case, the proper noun is matched case-sensitively, and
+# so are the two Lean names the host rule allows, whose case is their shape.
 title = "Legion private names"
 
 # 1. The deployment repository: the two letters as a token of their own, with at most one separator
@@ -43,9 +44,10 @@ id = "proper_noun_rule"
 description = "names the company"
 regex = '''(^|[^[:alnum:]])([T]rajectory|[T]RAJECTORY)([^[:alnum:]]|$)'''
 
-# 4. A private host of the company's own network. Two matches name no private host and are allowed:
-#    the reserved example host, and the vendored NATS client's own property of that name, which is
-#    allowed only inside the one bundle that vendors it.
+# 4. A private host of the company's own network. Four matches name no private host and are
+#    allowed: the reserved example host, a namespace, one Lean option, and the vendored NATS
+#    client's own property of that name, which is allowed only inside the one bundle that vendors
+#    it.
 [[rules]]
 id = "private_host_rule"
 description = "names a private internal host"
@@ -57,6 +59,26 @@ regex = '''(?i)[[:alnum:]-]+[.]internal[.][[:alnum:].-]+'''
   description = "the reserved example host names nothing"
   regexTarget = "match"
   regexes = ['''(?i)^[[:alnum:]-]+[.]internal[.]example([.](com|net|org))?[.]*$''']
+
+  # A namespace: a match that starts with a name holding a capital letter, then a segment spelled
+  # exactly Internal, as a Lean module or function or an OCaml value path does (src/lake/Lake/Build
+  # and src/Init/Internal/Order/While.lean of leanprover/lean4, kernel/indTyping.ml of
+  # rocq-prover/rocq). It carries no (?i), since its case is its shape: a host with that label in
+  # any other case is still refused. It is the one shape a host and a namespace share, so a host
+  # written that way is allowed too.
+  [[rules.allowlists]]
+  description = "a namespace with an Internal segment names no host"
+  regexTarget = "match"
+  regexes = ['''^[^[:alnum:]]?[[:alnum:]-]*[[:upper:]][[:alnum:]-]*[.]Internal[.]''']
+
+  # Lean's own option `internal.cmdlineSnapshots` under its Lean namespace, with at most one method
+  # after it, as src/Lean/Elab/Frontend.lean of leanprover/lean4 sets it. Its segment is lowercase,
+  # so the namespace above does not cover it; the whole match must be this name, so a near name
+  # is still refused. No (?i): its case is its shape.
+  [[rules.allowlists]]
+  description = "Lean's own cmdline-snapshots option names no host"
+  regexTarget = "match"
+  regexes = ['''^Lean[.]internal[.]cmdlineSnapshots([.][[:alnum:]]+)?$''']
 
   # The NATS client's own property, in the one bundle that vendors it and nowhere else: both the
   # path and the match must hold, hence condition = "AND".

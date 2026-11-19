@@ -108,6 +108,7 @@ GET /api/v1/issues/{key}/handoffs/{phase}/latest any
 GET /api/v1/issues/{key}/messages any
 POST /api/v1/issues/{key}/messages any
 GET /api/v1/issues/{key}/messages/{id} any
+PUT /api/v1/issues/{key}/plans/{id} any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
@@ -115,6 +116,7 @@ GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
 GET /api/v1/issues/{key}/steps any
 PUT /api/v1/issues/{key}/steps/{id} any
+PUT /api/v1/issues/{key}/steps/{id}/rating any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
@@ -177,6 +179,7 @@ GET /api/v1/projects/{key}/legion/board any
 DELETE /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/legion/daemon any
 PUT /api/v1/projects/{key}/legion/daemon any
+GET /api/v1/projects/{key}/plans any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/reference-targets any
