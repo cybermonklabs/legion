@@ -192,6 +192,9 @@ jobs:
           # The `|| echo` is what keeps a failed kill from ending the step under GitHub's
           # `bash -e`: a proxy that is already gone must not abort it before its verdict is out,
           # and a proxy that died early would have failed the installs.
+          # no-wait: the proxy writes its log only while it answers a request, and none is in
+          # flight once the installs have ended, so every line the grep below prints was written
+          # before this kill; no later step binds its port.
           kill "$PROXY_PID" || echo "the proxy was no longer running when this step stopped it"
           if [ "$refused" != 0 ]; then
             echo "::error::the frozen install reached the old proof-sdk route through the proxy $refused time(s); a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"

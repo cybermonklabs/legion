@@ -15,10 +15,10 @@
 #   .github/scripts/dispatch-browser-samples.sh report <dir> "<title>"
 #
 # `sample` truncates <dir>/memory-samples.txt and <dir>/cpu-samples.txt and then ticks until it
-# is killed, so the caller starts it with `&` and keeps its pid, as both browser steps do:
-# `sampler=$!` and a `trap` that kills it. It runs in the foreground of its own process on
-# purpose - the caller's trap is what stops it, and a script that backgrounded the loop itself
-# would hand the caller a pid it did not start.
+# is sent SIGTERM, so the caller starts it with `&` and keeps its pid, as both browser steps do:
+# `sampler=$!`, then a kill and a wait for it before `report` reads the files, and in a `trap`.
+# It runs in the foreground of its own process on purpose - the caller's kill is what stops it,
+# and a script that backgrounded the loop itself would hand the caller a pid it did not start.
 #
 # `report` prints the two `::notice::` lines, titled with the leg the caller names (`shard 1`,
 # `webkit-alone`), and changes nothing else: the browser steps run it after the suite and before
@@ -78,6 +78,10 @@ case "$mode" in
     # would otherwise have its readings taken over two runs of the suite.
     : > "$memory"
     : > "$cpu"
+    # SIGTERM ends the loop between commands, once the awk, the ps or the sleep under way has
+    # ended, so the files hold only whole lines once this process is gone: the browser steps send
+    # it and wait for it before they read the files.
+    trap 'exit 0' TERM
     while :; do
       awk '/^MemAvailable:/ { print $2 }' /proc/meminfo >> "$memory"
       # One tick of the CPU reading: the machine's own busy total first, then one line per
