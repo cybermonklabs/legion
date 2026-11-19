@@ -132,17 +132,18 @@ func (l *Listener) Output() string { return l.output.String() }
 // Start runs the listener binary against the NATS at natsURL and returns once it reports healthy.
 // It is stopped when t ends.
 //
-// The port is held open here and handed to the listener as a descriptor (ENVOY_LISTEN_FD), as
-// `internal/intake`'s proof does, so no other process of a loaded host takes the port between the
-// kernel choosing it and the listener binding it.
+// The port is reserved for the test's whole run (ReservePort), and held open here and handed to
+// the listener as a descriptor (ENVOY_LISTEN_FD), as `internal/intake`'s proof does, so no other
+// process of a loaded host takes the port between the kernel choosing it and the listener binding
+// it, nor between an exit of the listener and RestartOnExit's start of it again on the same port.
 func Start(t testing.TB, binary, natsURL string, options Options) *Listener {
 	t.Helper()
 
-	held, err := net.Listen("tcp", "127.0.0.1:0")
+	port := ReservePort(t)
+	held, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
-		t.Fatalf("hold a loopback port for the listener: %v", err)
+		t.Fatalf("hold the listener's reserved loopback port %d: %v", port, err)
 	}
-	port := held.Addr().(*net.TCPAddr).Port
 
 	token := options.Token
 	if token == "" {
@@ -280,7 +281,8 @@ func (l *Listener) RestartOnExit(delay time.Duration) {
 	}()
 }
 
-// respawn holds the listener's own port again, which its exit freed, and starts it there.
+// respawn holds the listener's own port again, which its exit closed and Start's reservation kept
+// from every other socket, and starts it there.
 func (l *Listener) respawn() error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {

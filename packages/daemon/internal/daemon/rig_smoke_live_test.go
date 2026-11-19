@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -140,7 +141,9 @@ func (r *rig) lastSeen(session string) int64 {
 }
 
 // smokeNATSRestart stops the nats-server and starts it again on the same ports and store: every
-// client reconnects, the pane's session as members again and the daemon as its own user.
+// client reconnects, the pane's session as members again and the daemon as its own user. While it
+// is down, its ports stay reserved (testenvoy.ReservePort): another socket's bind of them is
+// refused, so no program on the machine can take one before the restart binds it again.
 func (r *rig) smokeNATSRestart(token claim.Token, session string) {
 	var before uint64
 	for _, c := range r.nats.connections() {
@@ -150,6 +153,7 @@ func (r *rig) smokeNATSRestart(token claim.Token, session string) {
 	}
 	r.nats.stop()
 	stopped := time.Now()
+	r.expectHeldWhileDown("the nats-server", r.nats.port, r.nats.monitorPort)
 	r.nats.start()
 	r.note("the nats-server stopped at %s and served again at %s on %s", clockAt(stopped), clockAt(time.Now()), r.nats.url)
 	var after uint64
@@ -167,6 +171,26 @@ func (r *rig) smokeNATSRestart(token claim.Token, session string) {
 		return after != 0 && daemon
 	})
 	r.note("%s's session connected again as members (connection %d, was %d), and the daemon as its own user", token, after, before)
+}
+
+// expectHeldWhileDown fails the step unless a bind of each port on 127.0.0.1 without
+// SO_REUSEADDR, as a program that asked for nothing to share would make it, is refused
+// (EADDRINUSE) while server is down. Before the rig reserved its ports, such a bind took a port
+// the stopped server had freed.
+func (r *rig) expectHeldWhileDown(server string, ports ...int) {
+	r.t.Helper()
+	for _, port := range ports {
+		fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
+		_ = syscall.Close(fd)
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			r.fails("ports-held-while-down", "a bind of 127.0.0.1:%d without SO_REUSEADDR while %s is down = %v, want EADDRINUSE", port, server, err)
+		}
+	}
+	r.note("while %s was down, a bind of each of its ports %v without SO_REUSEADDR was refused with EADDRINUSE", server, ports)
 }
 
 // smokeDaemonRestart restarts the daemon on its own API port and socket: the pane's shim dials

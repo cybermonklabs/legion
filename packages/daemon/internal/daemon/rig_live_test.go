@@ -145,9 +145,16 @@ func startRig(t *testing.T, opts rigOptions) *rig {
 	// it, and its default is 3), and the plugins' contract refuses the state route's settings that
 	// carry it: every `read_state` and `read_record` a rig pane made failed on it.
 	cfg.ReviewRoundCap = 3
+	// The daemon's API port is reserved for the run, as the NATS ports and the listener's are:
+	// restartDaemon and w1's outages start the daemon again, after it closed its port, on the port
+	// every pane was told (testenvoy.ReservePort). holdPortAgain holds it for the first boot; the
+	// port testConfig held is left held, unused.
+	cfg.Port = testenvoy.ReservePort(t)
+	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
 	r.liveAgentProof = liveAgentProof{liveProof: liveProof{
 		t: t, cfg: cfg, board: newLiveDispatch(t, cfg.Project), records: record.NewStore(), js: r.nats.js,
 	}, omp: omp}
+	r.holdPortAgain()
 	r.cfg.DispatchURL = r.board.url
 	r.cfg.EnvoyURL = r.front.url
 	r.cfg.EnvoyTokenFile = r.listener.TokenFile(t)
@@ -383,7 +390,9 @@ func (r *rig) restartDaemon() (stopped, serving time.Time) {
 }
 
 // holdPortAgain holds the daemon's API port again for its next boot (heldListen): a stopped
-// daemon has closed it, and until it is held again it is any process's.
+// daemon has closed it, and startRig's reservation keeps it from every other socket until then. It
+// still waits up to a minute for a bind that fails, which a step's own hold of the port (w1's
+// closed-port outage) can make until that hold ends.
 func (r *rig) holdPortAgain() {
 	r.t.Helper()
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(r.cfg.Port))
