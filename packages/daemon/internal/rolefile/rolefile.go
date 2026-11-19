@@ -89,12 +89,13 @@ func Openat(dirfd int, name string, flag int, perm uint32) (int, error) {
 	}
 }
 
-// directoryOpen is the open OpenDirectory makes, Openat outside tests. It is a seam for one
-// purpose: the kernel Legion's pods run, gVisor, has releases that follow a link under
+// directoryOpen is the open OpenDirectory makes, Openat outside tests. It is a seam with two uses.
+// The kernel Legion's pods run, gVisor, has releases that follow a link under
 // O_DIRECTORY|O_NOFOLLOW, which Linux never does, so a removal that asked for O_DIRECTORY (as
-// os.RemoveAll does) passes every test on Linux and still deletes what a link names in a pod.
+// os.RemoveAll does) passes every test on Linux and still deletes what a link names in a pod:
 // TestRemoveTreeFollowsNoLinkOnAKernelThatWould puts such a kernel here, so that removal fails on
-// Linux too.
+// Linux too. And TestRemoveTreeRemovesNothingAbovePath refuses every open here, so that a lost
+// guard on path's last element cannot have the test walk the machine's root.
 var directoryOpen = Openat
 
 // OpenDirectory is a descriptor of the directory name under dirfd (unix.AT_FDCWD for a path),
@@ -150,16 +151,20 @@ func (path notDirectory) Error() string { return string(path) + " is no director
 
 func (notDirectory) Unwrap() error { return unix.ENOTDIR }
 
-// RemoveTree removes path and everything under it, as os.RemoveAll does, but follows no link and
-// waits on nothing anywhere it walks, for a caller that removes what a role can write or swap.
+// RemoveTree removes path and everything under it, as os.RemoveAll does save for a ".." in path
+// (below), but follows no link and waits on nothing anywhere it walks, for a caller that removes
+// what a role can write or swap.
 //
 //   - A link at path or anywhere below it is unlinked, or the unlink's error answered where the
 //     walk may not write its directory, and what it names is never opened.
-//   - path's parent, cleaned of a trailing separator or "." first, is opened as OpenDirectory
-//     opens a directory: a parent that is a link is refused, and one that is no directory is
-//     refused at once, without a wait (a fifo or a file answers ENOTDIR, a socket "<parent> is a
-//     socket"). A caller whose parent is an operator's directory that may be a link resolves it
-//     first.
+//   - path's parent is cleaned by text (filepath.Clean) and then opened as OpenDirectory opens a
+//     directory: a parent that is a link is refused, however path spells it, and one that is no
+//     directory is refused at once, without a wait (a fifo or a file answers ENOTDIR, a socket
+//     "<parent> is a socket"). The clean takes off repeated and trailing separators and ".", and a
+//     ".." takes off the element before it by text, never through what a link there names; so a
+//     path through a missing entry, a file or a link before ".." names the folded directory, where
+//     os.RemoveAll would go through the kernel's answer for it. No caller passes "..". A caller
+//     whose parent is an operator's directory that may be a link resolves it first.
 //   - Opening the parent needs read on it: a parent its caller cannot read is refused (`open
 //     <parent>: permission denied`), even for a path that is not there.
 //   - A path that is not there answers nil, and so does "", as os.RemoveAll answers. A path whose
@@ -180,14 +185,12 @@ func RemoveTree(path string) error {
 	if path == "" {
 		return nil
 	}
-	parentPath, name := splitPath(path)
+	name := filepath.Base(path)
 	if name == "." || name == ".." || name == string(filepath.Separator) {
 		return &fs.PathError{Op: "RemoveTree", Path: path, Err: unix.EINVAL}
 	}
-	// The last element is read raw, so "." and ".." are refused above; the parent is cleaned, so
-	// that "d//x" or "d/./x" opens "d" with O_NOFOLLOW, which refuses a link there, where "d/" or
-	// "d/." would have the kernel follow it.
-	parentPath = filepath.Clean(parentPath)
+	// The last element is read before the clean, which would fold "." or ".." into a name above.
+	parentPath := filepath.Dir(filepath.Clean(path))
 	parent, err := OpenDirectory(unix.AT_FDCWD, parentPath, parentPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -202,37 +205,10 @@ func RemoveTree(path string) error {
 	return nil
 }
 
-// splitPath is os/path_unix.go's splitPath: path's parent, as path writes it, and its last
-// element, read before any cleaning, so that a last element of "." or ".." is seen as one and not
-// cleaned into the name of a directory above path. A path of no separator has the parent ".".
-func splitPath(path string) (parent, name string) {
-	parent = "."
-	for len(path) > 1 && path[0] == filepath.Separator && path[1] == filepath.Separator {
-		path = path[1:]
-	}
-	i := len(path) - 1
-	for ; i > 0 && path[i] == filepath.Separator; i-- {
-		path = path[:i]
-	}
-	name = path
-	for i--; i >= 0; i-- {
-		if path[i] == filepath.Separator {
-			if i == 0 {
-				parent = path[:1]
-			} else {
-				parent = path[:i]
-			}
-			name = path[i+1:]
-			break
-		}
-	}
-	return parent, name
-}
-
-// node is one directory of RemoveTree's walk: its name under its parent's node, the walk's root
-// being path's cleaned parent. Each level holds its own name and a pointer, so a chain of
-// directories a role nests costs the walk its names and not their whole paths, which grow with the
-// square of the chain's depth.
+// node is the walk's root, path's cleaned parent, or an entry whose unlink failed: a directory the
+// walk opens, or the entry an error names. Each holds its own name and a pointer to its parent's
+// node, so a chain of directories a role nests costs the walk its names and not their whole paths,
+// which grow with the square of the chain's depth.
 type node struct {
 	parent *node
 	name   string

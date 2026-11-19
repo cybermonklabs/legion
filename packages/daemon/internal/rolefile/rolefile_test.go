@@ -139,12 +139,14 @@ func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
 }
 
 // RemoveTree removes a tree as os.RemoveAll does, and follows no link anywhere it walks: a link is
-// removed, and what it names is left as it was. The case that tells the two apart is a link to a
-// directory under a directory the removal cannot unlink it from (mode 0555): the walk opens that
-// entry to remove what is under it, and os.RemoveAll opens it with O_DIRECTORY|O_NOFOLLOW, which
-// a gVisor release can follow a link through (OpenDirectory), so os.RemoveAll deletes what the
-// link names there. Linux, and newer gVisor, refuse that open, so only such a gVisor shows
-// os.RemoveAll's answer apart from RemoveTree's; the row is the test that run reads.
+// removed, and what it names is left as it was. Two rows tell the two apart. The parent-link row
+// does on any kernel: os.RemoveAll opens path's parent with a plain open (os/removeall_at.go),
+// which follows a link there, and deletes under what it names, where RemoveTree refuses the link.
+// The 0555 row does only on some kernels: there the walk opens a link to a directory under a
+// directory it cannot unlink it from, and os.RemoveAll opens that entry with
+// O_DIRECTORY|O_NOFOLLOW, which a gVisor release can follow a link through (OpenDirectory), so
+// os.RemoveAll deletes what the link names there. Linux, and newer gVisor, refuse that open, so
+// only such a gVisor shows that row's answers apart; the row is the test that run reads.
 func TestRemoveTreeFollowsNoLink(t *testing.T) {
 	// victim is a directory holding one file, which every row's tree may name but must not touch.
 	victim := func(t *testing.T) (dir, file string) {
