@@ -655,8 +655,10 @@ check "a merge's message is still read" "$(is "$status" 1)"
 check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
 # A forward merge's message names the pull request's branch, and an issue branch is named after its
 # key: the branch is not read through the message. A key the message names some other way still is.
+# forward_merge <message> [head branch]: a pull request from that branch (legion/<key> by default)
+# whose second commit is a merge with that message.
 forward_merge() {
-  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "legion/$planted_key"
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "${2:-legion/$planted_key}"
   key_rule_on
   opened_at 2026-11-21T00:00:00Z
   commits new-sha 2026-11-21T01:00:00Z "fix: keep the order" merge-sha 2026-11-21T02:00:00Z "$1"
@@ -684,6 +686,15 @@ jq --arg base "legion/$key_project-""77" '.base.ref = $base' "$work/pull" > "$wo
 mv "$work/pull.next" "$work/pull"
 key_run
 check "a stacked pull request's merge of its base issue branch: passes" "$(is "$status" 0)"
+# A ref is replaced only where it stands whole: a longer branch that holds the head branch as its
+# start keeps its own key.
+forward_merge "Merge branch legion/$planted_key into legion/$key_project-""12" "legion/$key_project-""12"
+key_run
+check "head legion/<key>-12, a message naming the branch legion/<key>-123: fails" "$(is "$status" 1)"
+check "names the merge's message" "$(contains "$out" "commit:merge-sha:1: $key_refused")"
+forward_merge "Merge main into legion/$key_project-""12" "legion/$key_project-""12"
+key_run
+check "the same head's own forward merge still passes" "$(is "$status" 0)"
 merge_branch
 pr_files modified docs/notes.md $'@@ -1,0 +2,1 @@\n+clean text' modified docs/big.md -
 jq -c '.[1].additions = 5 | .[1].changes = 5' "$work/pr-files" > "$work/pr-files.next"

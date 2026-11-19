@@ -577,14 +577,23 @@ AWK
   # written <head branch> and <base branch>: the daemon names an issue's branch after its key, and
   # a forward merge's message names both (the worker skill's `Merge <base> into <branch>`, GitHub's
   # "Update branch" `Merge branch 'main' into <branch>`, git's `Merge branch 'x' into <branch>`),
-  # so a branch name, which this rule does not read, is not read through a message either.
+  # so a branch name, which this rule does not read, is not read through a message either. A ref is
+  # replaced only where it stands whole: no letter, digit, `-`, `_` or `.` before it (a `/` may be,
+  # as in `origin/<branch>`), and none of those or a `/` after it, so a longer branch that holds the
+  # ref (legion/<KEY>-123 beside legion/<KEY>-12) keeps its key, and rule 6 reads it. The boundary
+  # characters are captured and put back, since jq builds differ on look-around; each replace runs
+  # twice, for two refs one character apart, whose shared boundary one pass consumes.
   head_ref=$(jq -r '.head.ref // ""' "$live")
   commit_stages=()
   commit_parts=()
   while IFS= read -r sha; do
     short=${sha:0:12}
     jq -r --arg sha "$sha" --arg head "$head_ref" --arg base "$base_ref" '
-        def unbranch($ref; $as): if $ref == "" then . else split($ref) | join($as) end;
+        def literal: gsub("(?<c>[\\[\\].*+?^${}()|\\\\/-])"; "\\\(.c)");
+        def unbranch($ref; $as):
+          if $ref == "" then .
+          else ("(?<pre>^|[^A-Za-z0-9_.-])" + ($ref | literal) + "(?<post>[^A-Za-z0-9_./-]|$)") as $re
+            | gsub($re; "\(.pre)\($as)\(.post)") | gsub($re; "\(.pre)\($as)\(.post)") end;
         .commits[] | select(.sha == $sha) | .commit.message
         | unbranch($head; "<head branch>") | unbranch($base; "<base branch>")' "$compare_json" |
       tr -d '\000' > "$keyed/commit/$short"
