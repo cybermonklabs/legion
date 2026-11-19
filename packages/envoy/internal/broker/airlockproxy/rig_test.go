@@ -350,11 +350,14 @@ func newLogCapture() *logCapture {
 	return &logCapture{written: written, broker: logging.NewCloudHandler(logmask.Writer(written))}
 }
 
+// Handle writes the line the broker writes before it keeps the record: a row waits on the records
+// (linesAtLeast) and then reads written, and a record kept first could be seen by that wait while
+// the proxy's goroutine, held off the CPU on a loaded runner, had not yet written its line.
 func (c *logCapture) Handle(ctx context.Context, record slog.Record) error {
-	if err := c.Recorder.Handle(ctx, record); err != nil {
+	if err := c.broker.Handle(ctx, record); err != nil {
 		return err
 	}
-	return c.broker.Handle(ctx, record)
+	return c.Recorder.Handle(ctx, record)
 }
 
 // The proxy logs with no attribute or group of a logger's own, and Recorder keeps none.
