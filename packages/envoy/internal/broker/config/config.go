@@ -452,11 +452,14 @@ type Config struct {
 	ServicesByAccount map[string]string
 	// BROKER_SERVICE_LOGINS: the ServiceAccounts that log in as a service with their own projected
 	// token (POST /v1/launcher-credentials/token), and that authenticate the routes a service
-	// calls as itself (serviceAuth, today POST /v1/oauth/exchange/pod-sessions, where a
-	// deployment's daemon registers a pod it starts under a session name),
-	// whitespace-separated <service>=<service account>
-	// entries, such as legion-daemon=system:serviceaccount:legion-system:legion-daemon-legion. Each
-	// account (system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard) logs in
+	// calls as itself (serviceAuth: POST /v1/oauth/exchange/pod-sessions, where a deployment's
+	// daemon registers a pod it starts under a session name, and POST
+	// /v1/oauth/exchange/pod-sessions/release, where it releases the names it registered). A
+	// login authenticates the caller of those routes and is not what lets it register a pod:
+	// BROKER_POD_REGISTRARS carries the registration's authority, since a session pod logs in
+	// here too. Whitespace-separated <service>=<service account> entries, such as
+	// legion-daemon=system:serviceaccount:legion-system:legion-daemon-legion. Each account
+	// (system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard) logs in
 	// as the one service its entry names and is given once; one service may have several accounts,
 	// one per machine. A namespace's default account is refused, since every pod there that names
 	// no account runs as it. An account BROKER_SERVICES binds for a service's pods may be listed
@@ -468,6 +471,72 @@ type Config struct {
 	// an account's login issued stops authenticating once its entry is gone. Needs
 	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	ServiceLogins map[string]string
+	// BROKER_POD_REGISTRARS: who may register which pods at POST /v1/oauth/exchange/pod-sessions,
+	// whitespace-separated <registrar account>=<pod account> entries, such as
+	// system:serviceaccount:legion-system:legion-daemon-legion=system:serviceaccount:legion:legion-worker,
+	// one entry per pair. Each account is a ServiceAccount subject
+	// (system:serviceaccount:<namespace>:<name>, named exactly), the rule BROKER_SERVICE_LOGINS
+	// holds its accounts to: the registrar is the account the caller logs in as on that route,
+	// and the pod account the subject of the pod token the registration's body carries. The
+	// route admits a registration only where an entry pairs the two, and refuses every other one
+	// 403 POD_REGISTRAR_NOT_LISTED, naming both accounts. This list, and not BROKER_SERVICE_LOGINS,
+	// is the registration's authority: a session pod logs in as a service too, and must not
+	// register a pod whose token it holds for a session name of its choosing. A registrar may be
+	// paired with several pod accounts and a pod account with several registrars; an account
+	// paired with itself is a daemon registering the sibling pods of its own account, and the
+	// route still refuses it the pod it runs in (403 POD_CALLER_IS_THE_POD). Refused at start,
+	// naming the setting and the entry: an entry without exactly one "=", an account of any other
+	// form (a google: one included), a namespace's default account, which every pod there whose
+	// spec names no account runs as, and a pair given twice; and the list set without
+	// BROKER_K8S_OIDC_ISSUER, whose tokens both accounts present. A registrar BROKER_SERVICE_LOGINS
+	// does not list is not refused, since the list may be derived from another source than the
+	// logins and a refusal would turn that into an outage: it registers nothing, and the boot
+	// logs a WARN line naming it. Unset, the broker starts and the route admits no registration,
+	// so a deployment sets this list before its first daemon sets exchange_audience. The token
+	// exchange does not read it: a registration written while its entry stood is honoured until
+	// it lapses, so taking an entry out stops that registrar's new registrations at once and its
+	// old ones within 24 hours.
+	PodRegistrars api.PodRegistrars
+	// BROKER_POD_REGISTRATION_AUDIENCE: an audience POST /v1/oauth/exchange/pod-sessions accepts
+	// for the pod token a registration's body carries, beside the broker's own
+	// BROKER_K8S_OIDC_AUDIENCE, which a daemon presents today: a token of either audience,
+	// verified against BROKER_K8S_OIDC_ISSUER, which this needs, names the pod, and an expired
+	// one of either is 401 POD_TOKEN_EXPIRED. No other route accepts a token of this audience:
+	// enrolment and every ServiceAccount login verify at the broker's own audience, the token
+	// exchange at BROKER_EXCHANGE_K8S_AUDIENCE and the NATS auth service at
+	// BROKER_NATS_K8S_AUDIENCE, so a registrar may be handed a pod's token that registers the pod
+	// and is spendable nowhere else. Read trimmed. Refused at start, naming it and the other
+	// setting, when it equals any of those three, each compared when it is set, since a token of
+	// it would then be spendable on that setting's routes too. Unset, the route accepts the
+	// broker's own audience alone.
+	PodRegistrationAudience string
+	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
+	// session names, whitespace-separated <account>=<account> entries, each account
+	// system:serviceaccount:<namespace>:<name> as BROKER_SERVICES writes one, such as
+	// system:serviceaccount:example-ns:example-worker=system:serviceaccount:example-ns:example-project-worker.
+	// A session name belongs to the principal that claimed it, and a pod's principal is the
+	// account its projected token proves, so a pod moved to another account is refused the name
+	// its role holds (oauthstore.Store.BindSession). Either account of a pair takes a session name
+	// the other holds, by an enrollment or by a token exchange, and an enrollment under that name
+	// takes what the name carries: the grants, the pending requests and the withheld secrets the
+	// other account's enrollments of it hold that a login of the same account enrolled, since a
+	// pod's grants follow its account and its launcher's (enroll.carryPrincipal), so move the pods'
+	// account and keep the launcher's. A pair works both ways, so moving the pods back needs no
+	// change here. A pair does not chain: with A=B and B=C, C does not take a name A holds. A
+	// name the configuration fixes for a principal, the session an entry of
+	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
+	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An
+	// entry not of that form, a namespace's default account, an account paired with itself and a
+	// pair given twice, in either order, are refused. Each pair is held as its two accounts, in
+	// the order the setting gives them.
+	//
+	// It is for an operator moving a deployment's pods from one account to another, and it must
+	// be live on the broker before the deployment moves its pods to the new account: until then
+	// each live role's new pod is refused its own session name (403 SESSION_HELD), and the role's
+	// grants, pending requests and withheld secrets stay behind. While a pair stands, a pod of
+	// either account can claim any name the other holds, not only its own role's, so remove the
+	// pair once no live pod runs as the old account. Unset, no account is paired.
+	SessionAccountPairs [][2]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
 	K8sOIDCIssuer string
@@ -631,10 +700,11 @@ type Config struct {
 	LeaseSeconds int
 	// BROKER_SESSION_CARRY_SECONDS: how long what a session holds — its grants and its pending
 	// requests — waits on the enrollment of a box the session has left, for the next enrollment of
-	// that session name under the same principal to take it. An enrollment that ends while it
-	// holds either is left dormant instead of having them revoked (enroll.endEnrollment), and the
-	// sweep ends it for good once this long has passed since it went dormant
-	// (enroll.Service.EndCarried).
+	// that session name under the same principal, or under an account BROKER_SESSION_ACCOUNT_PAIRS
+	// pairs with it whose pod a login of the same account enrols, to take it. An enrollment that
+	// ends while it holds either is left dormant instead of having them revoked
+	// (enroll.endEnrollment), and the sweep ends it for good once this long has passed since it
+	// went dormant (enroll.Service.EndCarried).
 	//
 	// 12 hours is requests.DefaultGrantLifetime, the life the broker already gives a grant whose
 	// request named none, so the default carry never outlives the grant it carries; and it is what
@@ -844,7 +914,7 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 			return nil, fmt.Errorf("%s must be <service>=system:serviceaccount:<namespace>:<name> entries, each service lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
 		}
 		if isDefaultServiceAccount(subject) {
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+			return nil, defaultServiceAccountRefusal(setting, text)
 		}
 		if err := bindOnce(seen, setting, subject, service); err != nil {
 			return nil, err
@@ -876,6 +946,14 @@ func isDefaultServiceAccount(subject string) bool {
 	return account == defaultServiceAccount
 }
 
+// defaultServiceAccountRefusal is the refusal of setting's entry text for naming a namespace's
+// default account (isDefaultServiceAccount), whose token any pod of that namespace whose spec
+// names no account can get for the broker's audience. parseServiceAccounts, parsePodRegistrars
+// and ParseAccount share it, so each setting they read refuses such an account in the same words.
+func defaultServiceAccountRefusal(setting, text string) error {
+	return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+}
+
 // bindOnce records in seen that account proves service, refusing an account seen already, since
 // each account proves one service: named for two services, the refusal names both; named twice for
 // the same service, it names the account and that service. parseServiceAccounts and
@@ -889,6 +967,74 @@ func bindOnce(seen map[string]string, setting, account, service string) error {
 	}
 	seen[account] = service
 	return nil
+}
+
+// parsePodRegistrars reads setting's whitespace-separated <registrar account>=<pod account>
+// entries, BROKER_POD_REGISTRARS, as the set of pairs the registration route admits. Both
+// accounts are ServiceAccount subjects held to the rule BROKER_SERVICE_LOGINS holds its accounts
+// to (serviceAccountPattern, isDefaultServiceAccount): the registrar is a login account and the
+// pod account the subject of a pod's projected token. It refuses, naming setting and the entry:
+// one without exactly one "=", an account of any other form (a google: one included), a
+// namespace's default account, and a pair given twice. A registrar with several pod accounts, a
+// pod account with several registrars and an account paired with itself are each allowed. No
+// entries answer nil, as an unset setting does.
+func parsePodRegistrars(setting, value string) (api.PodRegistrars, error) {
+	var registrars api.PodRegistrars
+	for _, text := range strings.Fields(value) {
+		registrar, pod, _ := strings.Cut(text, "=")
+		if strings.Count(text, "=") != 1 || !serviceAccountPattern.MatchString(registrar) || !serviceAccountPattern.MatchString(pod) {
+			return nil, fmt.Errorf("%s must be <registrar account>=<pod account> entries, each account system:serviceaccount:<namespace>:<name>, got %q", setting, text)
+		}
+		if isDefaultServiceAccount(registrar) || isDefaultServiceAccount(pod) {
+			return nil, defaultServiceAccountRefusal(setting, text)
+		}
+		if registrars.Lists(registrar, pod) {
+			return nil, fmt.Errorf("%s names the pair %q twice; name each pair once", setting, text)
+		}
+		if registrars == nil {
+			registrars = api.PodRegistrars{}
+		}
+		registrars[api.PodRegistrar{Registrar: registrar, Pod: pod}] = struct{}{}
+	}
+	return registrars, nil
+}
+
+// parseSessionAccountPairs reads setting's whitespace-separated <account>=<account> entries, the
+// pairs BROKER_SESSION_ACCOUNT_PAIRS lists, in order, each as its two ServiceAccount subjects in
+// the order the entry gives them. It refuses, naming the setting and the entry: one that is not
+// two accounts joined by one "=" (no "=", a second one, or an empty side); an account that is not
+// system:serviceaccount:<namespace>:<name>, or is a namespace's default account
+// (podAccountRefusal), since every pod of that namespace whose spec names no account runs as it
+// and so would take the names the other account holds; an account paired with itself, which
+// pairs nothing and so is a mistake in the setting, most likely the other account mistyped; and
+// a pair given twice, in either order, since a pair works both ways and the second entry says
+// nothing the first did not. An account may be in several pairs, each its own.
+func parseSessionAccountPairs(setting, value string) ([][2]string, error) {
+	var pairs [][2]string
+	// seen answers each pair given so far, keyed by its two accounts in sorted order so that
+	// A=B and B=A are one key, with the entry that gave it.
+	seen := map[[2]string]string{}
+	for _, text := range strings.Fields(value) {
+		a, b, ok := strings.Cut(text, "=")
+		if !ok || a == "" || b == "" || strings.Contains(b, "=") {
+			return nil, fmt.Errorf("%s must be <account>=<account> entries, two system:serviceaccount:<namespace>:<name> accounts joined by one =, got %q", setting, text)
+		}
+		for _, account := range []string{a, b} {
+			if err := podAccountRefusal(setting, text, account); err != nil {
+				return nil, err
+			}
+		}
+		if a == b {
+			return nil, fmt.Errorf("%s pairs an account with itself, got %q: a pair is two accounts, each taking the session names the other holds, so name two", setting, text)
+		}
+		key := [2]string{min(a, b), max(a, b)}
+		if first, twice := seen[key]; twice {
+			return nil, fmt.Errorf("%s gives the pair %q again as %q: a pair works both ways, so give it once", setting, first, text)
+		}
+		seen[key] = text
+		pairs = append(pairs, [2]string{a, b})
+	}
+	return pairs, nil
 }
 
 // parseServiceAccountSecrets reads setting's whitespace-separated <SECRET NAME>=<account email>
@@ -1072,7 +1218,7 @@ func ParseAccount(setting, text, account string) (Account, error) {
 	case !serviceAccountPattern.MatchString(account):
 		return Account{}, ErrAccountForm
 	case isDefaultServiceAccount(account):
-		return Account{}, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+		return Account{}, defaultServiceAccountRefusal(setting, text)
 	}
 	return Account{Address: account}, nil
 }
@@ -1179,9 +1325,9 @@ func exchangeFields(text string, want int) ([]string, bool) {
 }
 
 // podAccountRefusal refuses, naming setting and the entry text, an account no exchange entry for
-// a pod may name: one that is not system:serviceaccount:<namespace>:<name>, and a namespace's
-// default account. It answers nil for an account such an entry may name, and is to a pod's
-// account what vmAccountRefusal is to a VM's.
+// a pod, and no side of a session account pair, may name: one that is not
+// system:serviceaccount:<namespace>:<name>, and a namespace's default account. It answers nil for
+// an account such an entry may name, and is to a pod's account what vmAccountRefusal is to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
 	case !serviceAccountPattern.MatchString(account):
@@ -1843,6 +1989,9 @@ func Load(getenv func(string) string) (Config, error) {
 	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
 	// doc says.
 	cfg.ServiceLogins = servicesByAccount(logins)
+	if cfg.SessionAccountPairs, err = parseSessionAccountPairs("BROKER_SESSION_ACCOUNT_PAIRS", getenv("BROKER_SESSION_ACCOUNT_PAIRS")); err != nil {
+		return Config{}, err
+	}
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}
@@ -2016,6 +2165,32 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
 		return Config{}, err
+	}
+	// The registration route's two settings, read after every other audience of the cluster
+	// issuer's tokens, so the registration audience is compared with each of them.
+	if cfg.PodRegistrars, err = parsePodRegistrars("BROKER_POD_REGISTRARS", getenv("BROKER_POD_REGISTRARS")); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.PodRegistrars) > 0 && cfg.K8sOIDCIssuer == "" {
+		return Config{}, errors.New("BROKER_POD_REGISTRARS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its registrars log in with and its pods' tokens are verified against")
+	}
+	cfg.PodRegistrationAudience = strings.TrimSpace(getenv("BROKER_POD_REGISTRATION_AUDIENCE"))
+	if cfg.PodRegistrationAudience != "" {
+		if cfg.K8sOIDCIssuer == "" {
+			return Config{}, errors.New("BROKER_POD_REGISTRATION_AUDIENCE needs BROKER_K8S_OIDC_ISSUER, the cluster whose pods' tokens carry it")
+		}
+		// Each other audience a token of the cluster's issuer is accepted at, by the route that
+		// accepts it: equal to one of them, a token minted for registering a pod would be
+		// spendable there too, and one minted for there would register a pod.
+		for _, other := range []struct{ setting, audience string }{
+			{"BROKER_K8S_OIDC_AUDIENCE", cfg.K8sOIDCAudience},
+			{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience},
+			{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience},
+		} {
+			if other.audience == cfg.PodRegistrationAudience {
+				return Config{}, fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
+			}
+		}
 	}
 	var sessionSeconds int
 	ints := []struct {

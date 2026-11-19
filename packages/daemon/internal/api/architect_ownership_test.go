@@ -136,7 +136,7 @@ func TestASubArchitectReleasesParksAndRerunsOnlyIssuesUnderItsOwn(t *testing.T) 
 	// The wave is judged whole before anything is written: the sibling refuses the child under C
 	// named beside it too.
 	wave := h.request(http.MethodPost, release.path, map[string]any{"grantId": subArchitect.grant(t), "issues": []string{ownTriage, sibling}}, nil)
-	assertFailure(t, wave, http.StatusForbidden, "ISSUE_NOT_OWNED")
+	refused(t, wave, http.StatusForbidden, "ISSUE_NOT_OWNED")
 	if len(statuses.writes) != 0 || len(facts.recorded()) != 0 {
 		t.Fatalf("a refused wave wrote %#v to Dispatch and applied %#v", statuses.writes, facts.recorded())
 	}

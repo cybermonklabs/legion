@@ -85,8 +85,9 @@ export interface TreeKeyboard {
   readonly rows: readonly DrawnRow[];
   /** The tree the preset left, which the keys that look past the drawn rows walk. */
   readonly root: TreeNode;
-  /** The node the tree is rooted at: the issue itself while the reader has zoomed into
-   *  nothing, and never undefined where the tree is read one node at a time. */
+  /** The node the rows are drawn from where that is not the issue, and undefined where the
+   *  whole tree is drawn from the issue. Where the tree is read one node at a time it is never
+   *  undefined: there the issue's own id stands for the issue. */
   readonly zoom: string | undefined;
   /** Where the reader writes, which `r` and `a` set to reply to the focused row and to answer
    *  the focused open question. It is provided wherever the page's writer provider stands above
@@ -278,13 +279,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
   };
   /** Moves to the row `index`, clamped to the tree's ends (`moveToRow`), and clears whatever a
-   *  key reported. */
-  const moveTo = (index: number): void => {
+   *  key reported. Where that row is the one holding the focus itself, the key that asked for it
+   *  stands at the tree's end and moved nowhere: it says `atTheEnd` at the row instead, and the
+   *  row is still brought on screen. */
+  const moveTo = (index: number, atTheEnd?: string): void => {
     const { elements } = drawn();
     if (elements.length === 0) return;
-    tree.onReport("");
     const target = elements[Math.min(Math.max(index, 0), elements.length - 1)];
-    if (target !== undefined) moveToRow(target);
+    if (target === undefined) return;
+    tree.onReport(atTheEnd !== undefined && target === document.activeElement ? atTheEnd : "");
+    moveToRow(target);
   };
   /** Takes the reader to `id`, unfolding whatever stands between them and it. */
   const goTo = (id: string): void => {
@@ -303,7 +307,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       run: () => {
         const { elements } = drawn();
         const on = at(elements);
-        moveTo(on === -1 ? 0 : on + 1);
+        moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
       },
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
@@ -315,7 +319,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       run: () => {
         const { elements } = drawn();
         const on = at(elements);
-        moveTo(on === -1 ? 0 : on - 1);
+        moveTo(on === -1 ? 0 : on - 1, KEY_REPORTS.first_row);
       },
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
@@ -326,7 +330,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       keys: "Home",
       label: "Move to the first row",
       palette: false,
-      run: () => moveTo(0),
+      run: () => moveTo(0, KEY_REPORTS.first_row),
       when: () => inTheTree() && !scrollsABlock(),
     },
     {
@@ -334,7 +338,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       keys: "End",
       label: "Move to the last row",
       palette: false,
-      run: () => moveTo(END),
+      run: () => moveTo(END, KEY_REPORTS.last_row),
       when: () => inTheTree() && !scrollsABlock(),
     },
     {
@@ -350,24 +354,23 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const row = rows[on];
         if (row === undefined) return;
         tree.onReport("");
-        // The row the tree is zoomed to is the view's own root, drawn open over what it holds:
-        // where the tree is read one node at a time, zooming into it again moved nothing and
-        // said nothing, so the key steps into it as into any open row, and says where it holds
-        // nothing to step into.
-        const zoomRoot = row.node.id === tree.zoom;
-        if (zoomRoot && row.expanded === undefined) {
+        // A row with nothing under it gives the key nowhere to go at every width, the row the
+        // tree is zoomed to as much as any other, and the key says so at the row. Where the tree
+        // is read one node at a time the key zooms into any other row, and steps into the zoom's
+        // own row, drawn open over what it holds, as into any open row: zooming into that row
+        // again moved nothing and said nothing.
+        if (row.expanded === undefined) {
           tree.onReport(KEY_REPORTS.nothing_under);
           return;
         }
-        if (tree.oneNodeAtATime && !zoomRoot) {
-          if (row.expanded !== undefined) tree.onZoom(row.node.id);
+        if (tree.oneNodeAtATime && row.node.id !== tree.zoom) {
+          tree.onZoom(row.node.id);
           return;
         }
         if (row.expanded === false) {
           tree.onFold(row.node.id, true);
           return;
         }
-        if (row.expanded !== true) return;
         // A branch below the drawn levels folds to one line of its own, so the first child is
         // drawn only once this opens it in place.
         if ((rows[on + 1]?.level ?? 0) > row.level) moveTo(on + 1);
@@ -389,7 +392,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (tree.oneNodeAtATime) {
           // A child of the row the tree is zoomed to asked to zoom to that row, which is the
           // zoom already: at 390 px the key moved nothing and said nothing. It says so at the
-          // row, as every key with nowhere to go does, and the zoom's own row zooms out.
+          // row, in the words of `KEY_REPORTS`, and the zoom's own row zooms out.
           const parent = row.trail.at(-1);
           if (parent === undefined) return;
           if (parent === tree.zoom) {
@@ -401,6 +404,13 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           tree.onZoom(parent);
           return;
         }
+        // Where the whole tree is drawn, the row the tree is zoomed to stays open over what it
+        // holds and its parent is above the zoom, which no row draws: the key has nowhere to go,
+        // and says so at the row.
+        if (row.node.id === tree.zoom) {
+          tree.onReport(KEY_REPORTS.already_zoomed);
+          return;
+        }
         if (row.expanded === true) {
           tree.onFold(row.node.id, false);
           return;
@@ -410,6 +420,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
             moveTo(above);
             return;
           }
+        }
+        // A top-level row of the whole tree, with nothing to fold, has the issue for its parent,
+        // which no row draws: the key has nowhere to go, and says so at the row. Where the whole
+        // tree is drawn the zoom is undefined while the rows are drawn from the issue.
+        if (tree.zoom === undefined && row.trail.at(-1) === tree.root.id) {
+          tree.onReport(KEY_REPORTS.whole_tree);
         }
       },
       when: () => !scrollsABlock() && at(drawn().elements) !== -1,
@@ -487,6 +503,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       run: () => {
         const row = focusedRow();
         if (row === undefined) return;
+        // The row the tree is zoomed to already is the zoom the key asks for, so the key moves
+        // nothing there, and says so at the row.
+        if (row.node.id === tree.zoom) {
+          tree.onReport(KEY_REPORTS.already_zoomed);
+          return;
+        }
         tree.onReport("");
         tree.onZoom(row.node.id);
         tree.onReveal(row.node.id);

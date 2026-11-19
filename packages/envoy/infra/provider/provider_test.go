@@ -83,7 +83,7 @@ func TestSchemaTypes(t *testing.T) {
 		"envoy-infra:host:Watchdog", "envoy-infra:host:Adopt",
 		"envoy-infra:aws:Authorization", "envoy-infra:aws:User", "envoy-infra:nats:Rules", "envoy-infra:nats:AuthCallout",
 		"envoy-infra:gcp:NatsUser", "envoy-infra:gcp:Permissions", "envoy-infra:gcp:HubListener", "envoy-infra:gcp:SessionUser",
-		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener",
+		"envoy-infra:gcp:ClusteredHubTailnet", "envoy-infra:gcp:ClusteredHubListener", "envoy-infra:gcp:DispatchCluster",
 	}, slices.Collect(maps.Keys(s.Types)))
 	// One callout type for every NATS component, the AWS one's authorization and the hubs', so a
 	// consumer running both writes it alike; core refuses a callout without its issuer, its xkey or
@@ -217,7 +217,8 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 }
 
 func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
-	dispatch, ok := servedSchema(t).Resources["envoy-infra:gcp:Dispatch"]
+	s := servedSchema(t)
+	dispatch, ok := s.Resources["envoy-infra:gcp:Dispatch"]
 	require.True(t, ok, "the schema lists envoy-infra:gcp:Dispatch")
 	require.True(t, dispatch.IsComponent)
 	require.True(t, dispatch.InputProperties["tailnetAuthKey"].Secret)
@@ -290,6 +291,42 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	require.Equal(t, "boolean", dispatch.InputProperties["clusterOnly"].Type)
 	require.True(t, dispatch.InputProperties["clusterOnly"].Plain)
 	require.False(t, dispatch.InputProperties["clusterOnly"].Secret)
+	// existingCluster, the GKE cluster the component runs Dispatch in rather than one of its own,
+	// is an optional object, not secret: the component looks the cluster up before it registers
+	// anything, so it is a plain Go field, which Construct refuses as another resource's output
+	// (gcp's TestConstructRefusesAnExistingClusterFromAnotherResource). The schema cannot say so:
+	// pulumi-go-provider v1.7.0 serves a struct reference with no plain flag (infer/schema.go,
+	// structReferenceToken), as it serves every object input of this plugin. Generated SDKs append
+	// Args to an object type's name for its input type, so the Go name DispatchClusterArgs would
+	// reach consumers doubled; the type's name and location are both strings, and both required.
+	existingCluster := dispatch.InputProperties["existingCluster"]
+	require.Equal(t, "#/types/envoy-infra:gcp:DispatchCluster", existingCluster.Ref)
+	require.False(t, existingCluster.Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "existingCluster")
+	cluster := s.Types["envoy-infra:gcp:DispatchCluster"]
+	require.ElementsMatch(t, []string{"name", "location"}, slices.Collect(maps.Keys(cluster.Properties)))
+	for _, field := range []string{"name", "location"} {
+		require.Equal(t, "string", cluster.Properties[field].Type, field)
+	}
+	require.ElementsMatch(t, []string{"name", "location"}, cluster.Required)
+	// existingDatabaseInstance, the connection name of a Cloud SQL instance the component does not
+	// make, is an optional string Input, neither plain nor secret: a consumer takes it from another
+	// resource or stack (its replica's connectionName), and the component checks it for a seed
+	// and for its shape once it resolves (gcp's
+	// TestConstructTakesAnExistingDatabaseInstanceFromAnotherResource).
+	existingDatabaseInstance := dispatch.InputProperties["existingDatabaseInstance"]
+	require.Equal(t, "string", existingDatabaseInstance.Type)
+	require.False(t, existingDatabaseInstance.Plain)
+	require.False(t, existingDatabaseInstance.Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "existingDatabaseInstance")
+	// regionalNetwork, false to register no Subnetwork, Router or RouterNat beside existingCluster,
+	// is an optional plain boolean, not secret: it decides which resources register, so it is never
+	// another resource's output, and a stack that sets nothing sends no property, keeping the
+	// regional network it always had.
+	require.Equal(t, "boolean", dispatch.InputProperties["regionalNetwork"].Type)
+	require.True(t, dispatch.InputProperties["regionalNetwork"].Plain)
+	require.False(t, dispatch.InputProperties["regionalNetwork"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "regionalNetwork")
 	// region and hostname, which name every cloud resource, are the only inputs the schema
 	// requires: every other input configures Dispatch itself, which clusterOnly does not build.
 	require.ElementsMatch(t, []string{"region", "hostname"}, dispatch.RequiredInputs)

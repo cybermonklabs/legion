@@ -177,6 +177,13 @@ export function IssueTree({
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
   // second level, then everything.
   const [cycle, setCycle] = useState(0);
+  // The branches the reader folded while the cycle's last state draws every branch. That state
+  // holds the reader's earlier folds apart, so a fold made in it recorded a fold nobody saw: Left
+  // on an open row and the row's fold control did nothing visible, and Left never reached the
+  // parent. Each fold made there is drawn folded at once, every other row still drawn, and joins
+  // the reader's own folds (`unfold`), so the cycle's first state, which the next press brings
+  // back, keeps it.
+  const [foldedInEverything, setFoldedInEverything] = useState<ReadonlySet<string>>(NO_FOLDS);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
   // How many zooms the reader has made, each of which places the crumb line it draws once its
@@ -204,7 +211,13 @@ export function IssueTree({
       return;
     }
     const row = focusedRowIn(body.current)?.dataset.rowKey;
-    setReport({ line, ...(row === undefined ? {} : { row }) });
+    // The same words at the same row keep the report as it is: a key held at the tree's end says
+    // its words at every repeat, and each new report drew the whole tree again for nothing.
+    setReport((held) =>
+      held?.line === line && held.row === row
+        ? held
+        : { line, ...(row === undefined ? {} : { row }) }
+    );
   }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
@@ -227,6 +240,16 @@ export function IssueTree({
       setZoom(undefined);
     }
   }
+  // The branches of the address's path the reader folded since its landing (`landingKey`): each
+  // is let go of the path's hold for that following, and the next following holds it again.
+  const [released, setReleased] = useState<{
+    readonly ids: ReadonlySet<string>;
+    readonly landing: string | undefined;
+  }>({ ids: NO_FOLDS, landing: undefined });
+  // The address's path and following as last drawn, which a fold reads (`unfold`).
+  const pathHold = useRef<{ readonly ids: readonly string[]; readonly landing?: string }>({
+    ids: [],
+  });
   // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
   // on a phone sees the whole issue and can reach any branch of it; an address that names a
   // node opens it on that node's parent, so the node the address named is one of the rows.
@@ -239,6 +262,9 @@ export function IssueTree({
     ? undefined
     : pathTo(root, rootedAt)) ?? [root];
   const rooted = rootedPath.at(-1) ?? root;
+  // The node the rows are drawn from where that is not the issue: the zoom's own row, which is
+  // drawn open by definition. Undefined where the tree is drawn from the issue, which is no row.
+  const zoomRoot = rooted.id === root.id ? undefined : rooted.id;
   // What a filter opens: every branch of the view it left, since the view holds only its
   // matches and the chain above each, so each branch is the path down to a match and the view
   // draws what it matched rather than its context rows alone. It opens them at every depth, as
@@ -252,16 +278,28 @@ export function IssueTree({
   // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
   // that path the reader folded shut is opened again, since the row the address names is
   // drawn nowhere while anything above it is closed - which is the one thing the filter's own
-  // opens do not do.
+  // opens do not do. The hold is there to land the reader: a branch of the path they fold
+  // after it, and every branch below it on the path, is theirs to fold for that following
+  // (`released`), since held open it recorded a fold that drew nothing and Left said nothing.
   const path = reveal ?? [];
+  pathHold.current = { ids: path.map((above) => above.id), landing: landingKey };
+  const releasedHere = released.landing === landingKey ? released.ids : NO_FOLDS;
+  const heldPath =
+    releasedHere.size === 0 ? path : path.filter((above) => !releasedHere.has(above.id));
+  /** `closed` with the address's own path, as it is held, taken out of it. */
+  const openPath = (closed: ReadonlySet<string>): ReadonlySet<string> =>
+    heldPath.length === 0 || closed.size === 0
+      ? closed
+      : withoutIds(
+          closed,
+          heldPath.map((above) => above.id)
+        );
   const shown: OpenedBranches =
-    path.length === 0
+    heldPath.length === 0
       ? filtered
       : {
-          branches: new Set([...filtered.branches, ...path.map((above) => above.id)]),
-          closed: new Set(
-            [...filtered.closed].filter((id) => !path.some((above) => above.id === id))
-          ),
+          branches: new Set([...filtered.branches, ...heldPath.map((above) => above.id)]),
+          closed: openPath(filtered.closed),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
         };
   // The fold is seeded with the path the breadcrumb holds, so a row is keyed by its path from
@@ -269,9 +307,13 @@ export function IssueTree({
   // editing and the tree's one tab stop are held by that key, and a zoom either way leaves
   // them where they are (`rowKeyOf`).
   const rootedAbove = rootedPath.slice(0, -1).map((one) => one.id);
+  // In the cycle's last state the address's own path is opened over the reader's folds there,
+  // as `shown` opens it over their other folds.
   const drawn = treeRows(
     rooted,
-    cycle === EVERYTHING ? everythingOpened(rooted) : shown,
+    cycle === EVERYTHING
+      ? { ...everythingOpened(rooted), closed: openPath(foldedInEverything) }
+      : shown,
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
   );
@@ -354,20 +396,40 @@ export function IssueTree({
   // set and not as the absence of an opened one: the fold draws the reasoning and the path to
   // an open question of its own accord, so a reader folding one of those shut has nothing to
   // delete and their Fold would do nothing (`tree-fold.ts`'s `closed`).
-  const unfold = useCallback((id: string, open: boolean) => {
-    setOpened((held) => {
-      const branches = new Set(held.branches);
-      const closed = new Set(held.closed);
-      if (open) {
-        branches.add(id);
-        closed.delete(id);
-      } else {
-        branches.delete(id);
-        closed.add(id);
+  const unfold = useCallback(
+    (id: string, open: boolean) => {
+      setOpened((held) => {
+        const branches = new Set(held.branches);
+        const closed = new Set(held.closed);
+        if (open) {
+          branches.add(id);
+          closed.delete(id);
+        } else {
+          branches.delete(id);
+          closed.add(id);
+        }
+        return { branches, closed, deeper: held.deeper };
+      });
+      // A fold of a branch the address's path holds open lets that branch, and the path below
+      // it, go of the hold for this following, so the fold is drawn.
+      const { ids, landing } = pathHold.current;
+      const at = open ? -1 : ids.indexOf(id);
+      if (at !== -1) {
+        setReleased((held) => ({
+          ids: new Set([...(held.landing === landing ? held.ids : []), ...ids.slice(at)]),
+          landing,
+        }));
       }
-      return { branches, closed, deeper: held.deeper };
-    });
-  }, []);
+      if (cycle !== EVERYTHING) return;
+      setFoldedInEverything((held) => {
+        const next = new Set(held);
+        if (open) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [cycle]
+  );
   const openDeeper = useCallback((id: string) => {
     setOpened((held) => ({
       branches: held.branches,
@@ -415,9 +477,15 @@ export function IssueTree({
       const above = (pathTo(root, id) ?? []).slice(0, -1).map((node) => node.id);
       setOpened((held) => ({
         branches: new Set([...held.branches, ...above]),
-        closed: new Set([...held.closed].filter((one) => !above.includes(one))),
+        closed: withoutIds(held.closed, above),
         deeper: new Set([...held.deeper, ...above]),
       }));
+      // The cycle's last state draws its own folds and no other, so a branch the reader folded
+      // there is opened again for the node too, or a key or address that goes to a node under
+      // it found no row: nothing moved and nothing was said.
+      setFoldedInEverything((held) =>
+        above.some((one) => held.has(one)) ? withoutIds(held, above) : held
+      );
       setWanted(id);
       return above;
     },
@@ -565,7 +633,12 @@ export function IssueTree({
             navigate(buildIssuePath({ key: root.id, kind: "children" }));
           },
         }),
-    onCycle: () => setCycle((held) => (held + 1) % CYCLE_STATES),
+    // The folds made in the last state are the reader's own folds already (`unfold`), which the
+    // state the key goes to draws, so the set of them starts empty at each press.
+    onCycle: () => {
+      setCycle((held) => (held + 1) % CYCLE_STATES);
+      setFoldedInEverything(NO_FOLDS);
+    },
     onEdit: edit,
     onEditEnd: stopEditing,
     onFold: unfold,
@@ -579,7 +652,11 @@ export function IssueTree({
     rows,
     root,
     writer,
-    zoom: zoomed ? on : zoom,
+    // The node the rows are drawn from, not the zoom asked for (undefined for the issue where the
+    // whole tree is drawn): a filter that leaves the zoomed node out, or a read that drops it,
+    // draws from the issue while the zoom is kept for when the row comes back, and Left and `,`
+    // there moved nothing and said nothing, since they read a zoom no row stood under.
+    zoom: zoomed ? rooted.id : zoomRoot,
   });
 
   // The tree is one tab stop, and it rests where the reader last stood: before they have
@@ -936,22 +1013,31 @@ export function IssueTree({
               // `[data-issue-header]`, `[data-node-row]`), none of which holds the crumb line:
               // `min-h-0!` and `min-w-0!` take the floor off, since a layered utility wins over
               // an unlayered rule only with `!`. A 44 px crumb was a third of the head the first
-              // open question needs on a phone. Its box is 28 px tall instead, its 16 px line and
-              // the 6 px of padding above and below that `dispatch-inline-link` gives it, over
-              // WCAG 2.2's 24 px (2.5.8). Measured in Chromium at 390 by 664 and 1024 by 768 px,
-              // on crumbs of one line of words each: each crumb 28 px tall (a
-              // five-character key's 34 px wide) and the line 28 px, one crumb tall, where the
-              // floor made each crumb at least 44 by 44 px and the line 44 px; on a copy of a long
-              // real issue at 390 by 664 px, the line one zoom draws is 28 px where it was 44, and
-              // the one a second zoom draws 96 px where it was 112. Its display is left to the
-              // floor's `inline-flex`: the line is a flex box, which makes each crumb a block box
+              // open question needs on a phone. Its box is 28 px tall instead below 1280 px, its
+              // 16 px line and the 6 px of padding above and below that `dispatch-inline-link`
+              // gives it there, and 24 px from 1280 px up, where that class gives none and `py-1`
+              // gives 4 px: WCAG 2.2's 24 px (2.5.8) at every width. `py-1` is a layered utility,
+              // so below 1280 px the unlayered 6 px still wins. A crumb is pressed to zoom out, so
+              // it is a target whatever its tab index, and axe's `target-size` rule leaves a
+              // target outside the tab order for review rather than failing it: with no padding
+              // of its own, at 1440 by 900 px each crumb was its 16 px line alone, 34 by 16 and
+              // 125 by 16 px on a zoom two levels deep, which axe left for review with a safe
+              // space 16 px across. Measured in Chromium on that zoom with `py-1`: 34 by 24 and
+              // 125 by 24 px at 1440 by 900 px, and 34 by 28 and 125 by 28 px at 390 by 664 px,
+              // axe passing every crumb at both. Measured at 390 by 664 and 1024 by 768 px, on
+              // crumbs of one line of words each: each crumb 28 px tall (a five-character key's
+              // 34 px wide) and the line 28 px, one crumb tall, where the floor made each crumb
+              // at least 44 by 44 px and the line 44 px; on a copy of a long real issue at 390 by
+              // 664 px, the line one zoom draws is 28 px where it was 44, and the one a second
+              // zoom draws 96 px where it was 112. Its display is left to the floor's
+              // `inline-flex`: the line is a flex box, which makes each crumb a block box
               // whatever its display, and `inline-block`, `inline` and `block` drew the same box.
               // It draws one line for a node, so it is the node's first line (`firstLineOf`),
               // cut at a word from the words every one-line drawing of a node is cut from
               // (`lineWords`), and it wraps rather than being cut again mid-word by its box; the
               // issue is named by its key, since the header above draws its title, and a node
               // with no words by its kind's word, never its id, which is no name a reader reads.
-              className="dispatch-inline-link min-h-0! min-w-0! max-w-full text-left underline [overflow-wrap:anywhere]"
+              className="dispatch-inline-link min-h-0! min-w-0! max-w-full py-1 text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
               onClick={() => zoomTo(above.id)}
@@ -1008,6 +1094,7 @@ export function IssueTree({
             // at each change of its size took the caret off the screen - a new line written deep
             // in the spec moved the page from 3120 px to 89 px.
             unplaced={editing?.row ?? unplaced}
+            zoomRoot={zoomRoot}
           />
         </ChangeDraftsProvider>
       </div>
@@ -1024,6 +1111,14 @@ export function IssueTree({
  *  their newest node where it looked, in milliseconds: the line's send has landed and its read
  *  is a request away, so a read that has not drawn the node by then is not going to. */
 export const LANDING_WAIT_MS = 10_000;
+
+/** No branch folded in the cycle's last state: the state it starts in each time. */
+const NO_FOLDS: ReadonlySet<string> = new Set();
+
+/** `ids` without the ids of `drop`. */
+function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): ReadonlySet<string> {
+  return new Set([...ids].filter((id) => !drop.includes(id)));
+}
 
 /**
  * Holds `row`, which holds the focus on itself or on a control inside it (a chip `f` stopped

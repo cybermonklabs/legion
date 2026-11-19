@@ -38,32 +38,11 @@ type (
 	stepType string
 )
 
-// stepOf is the step a phase runs as a step of the task default: the place its count of starts is
-// kept under (its place in the task from 1 for a step, 0 for a retro or a merge, which no plan
-// names, so the kind tells those two apart), its role and its type ("" for a retro or a merge).
-// A phase that runs no step — admitted, awaiting a person, held, done — answers ok false; a held
-// issue's step is the step of the phase its hold is from (record.StandsAt), which the caller reads.
+// stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps:
+// stepIn over that list. A held issue's step is the step of the phase its hold is from
+// (record.StandsAt), which the caller reads.
 func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
-	at := func(kind string, step int, role stepRole, typ stepType) (record.StepPlace, stepRole, stepType, bool) {
-		return record.StepPlace{Task: defaultTask, Kind: kind, Place: step}, role, typ, true
-	}
-	switch p {
-	case phase.Planning:
-		return at(steprecord.KindStep, 1, "planner", "planning")
-	case phase.Implementing:
-		return at(steprecord.KindStep, 2, "implementer", "implementation")
-	case phase.Testing:
-		return at(steprecord.KindStep, 3, "tester", "testing")
-	case phase.Reviewing:
-		return at(steprecord.KindStep, 4, "reviewer", "review")
-	case phase.Accepting:
-		return at(steprecord.KindStep, 5, "acceptance", "review")
-	case phase.Retro:
-		return at(steprecord.KindRetro, 0, "implementer", "")
-	case phase.Merging:
-		return at(steprecord.KindMerge, 0, "merger", "")
-	}
-	return record.StepPlace{}, "", "", false
+	return stepIn(DefaultSteps(), p)
 }
 
 // standing is the step an issue stands in: its place, its role and its type (stepOf), and the
@@ -92,7 +71,7 @@ func stepAt(issue record.Issue, at phase.Phase) (standing, bool) {
 
 // StepResult is how a run of a step ended: one of the three results Dispatch takes for a step
 // record, each the word contracts gives it (steprecord). Any other text is refused there as
-// 400 STEP_INPUT, which the outbox drops for good (internal/daemon's stepRecordRefused), so every
+// 400 STEP_INPUT, which the outbox drops for good (internal/daemon's recordRefused), so every
 // end names its result by one of the three constants below.
 type StepResult string
 
@@ -103,22 +82,21 @@ const (
 	// ResultFailed is a run a role or a report sent back: the tester's fail, a review's request
 	// for changes, a role's or the architect's backward move.
 	ResultFailed StepResult = steprecord.ResultFailed
-	// ResultStopped is a run that ended under its role with neither: a head that conflicts with
-	// its base, or an end no move of the table wrote (stepStopped).
+	// ResultStopped is a run that ended under its role with neither: an end no move of the table
+	// wrote (stepStopped).
 	ResultStopped StepResult = steprecord.ResultStopped
 )
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role
 // or a report asked for — the tester's fail, a review's request for changes, a role's or the
-// architect's backward move — ends it failed; a move back nobody asked for, a head that conflicts
-// with its base, ends it stopped. Both return the work to the step the issue moves into, which the
-// record names. Every other move ends the step passed and returns nowhere.
+// architect's backward move — ends it failed and returns the work to the step the issue moves
+// into, which the record names. Every other move ends the step passed and returns nowhere. A head
+// that conflicts with its base moves no issue (dispatch://INFRA-4374), so it ends no step: the
+// run goes on through the merge forward.
 func endOf(trigger TriggerKind) (result StepResult, returns bool) {
 	switch trigger {
 	case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward:
 		return ResultFailed, true
-	case TriggerConflict:
-		return ResultStopped, true
 	}
 	return ResultPassed, false
 }

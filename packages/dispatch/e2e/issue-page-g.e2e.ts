@@ -50,7 +50,7 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // What this file's init script keeps on the page's window.
 declare global {
   interface Window {
-    /** The long row in the first view at each frame from the first it was drawn in. */
+    /** The long row in the first view at each frame from the first it drew its words in. */
     __firstViewFrames?: FirstViewFrame[];
   }
 }
@@ -755,8 +755,8 @@ test("a long jump that lands on the reader's own rows keeps the first of them wh
   });
 });
 
-/** What a row read of the long row in the first view at each frame from the first it was drawn
- *  in, from a script that runs before the page's own. */
+/** What a row read of the long row in the first view at each frame from the first it drew its
+ *  words in, from a script that runs before the page's own. */
 interface FirstViewFrame {
   readonly cut: boolean;
   readonly height: number;
@@ -769,8 +769,11 @@ interface FirstViewFrame {
 // before the page's own reads the planner's long statement, the body's first row, which a check
 // nothing proves keeps open in an outline folded to what is open, at each animation frame from
 // the first one it is drawn in: it is cut on that first frame, and its height is the same 60
-// frames later. It carries `@phone` because the phone's first view is another set of rows, laid
-// out at three device pixels to the CSS pixel.
+// frames later. The row is drawn from the spec's blocks before the coverage read brings its
+// words, and a row with no words has nothing to cut, so it is read from the first frame it draws
+// its words in: CI run 44547033390 read it at 390 px with none for two frames, and then whole,
+// 472 px tall, for the 59 after. It carries `@phone` because the phone's first view is another
+// set of rows, laid out at three device pixels to the CSS pixel.
 // SLOW(>=2s): sixty-six long rows seeded, and the page loaded at two widths, each watched over
 // 61 frames.
 test("a long row in the first view is drawn cut on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
@@ -783,7 +786,8 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       window.__firstViewFrames = frames;
       const read = () => {
         const row = document.querySelector(`[data-node-row][data-node-id="${id}"]`);
-        if (row !== null) {
+        const words = row?.querySelector("[data-node-words] [data-author-text]");
+        if (row !== null && (words?.textContent ?? "").trim() !== "") {
           const box = row.getBoundingClientRect();
           frames.push({
             cut: row.querySelector("[data-node-more]") !== null,
@@ -805,7 +809,7 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       // holds 61, so one read holds every frame the checks below read.
       const frames = await page.evaluate(() => window.__firstViewFrames ?? []);
       const [first] = frames;
-      if (first === undefined) throw new Error(`${where} the row was never drawn`);
+      if (first === undefined) throw new Error(`${where} the row never drew its words`);
       expect(first.top, `${where} the row was drawn outside the first view`).toBeLessThan(
         first.view
       );

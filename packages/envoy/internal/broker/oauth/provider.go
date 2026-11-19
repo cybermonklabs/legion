@@ -271,9 +271,14 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		reservations:   reservations,
 	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
-	// broker's route wiring test inspects it, so there is nothing there to give the decision to.
+	// broker's route wiring test inspects it, so there is nothing there to give the decision or the
+	// fixed names to.
 	if store != nil {
 		store.ExchangeSubject = p.decide
+		// The one derivation of the names the configuration fixes: the provider's fixed claim and
+		// ReserveSessions read reservations, and the store's BindSession reads the same map to
+		// refuse a pair any of those names, by an exchange's claim or an enrollment's.
+		store.Reserved = reservations
 	}
 	return p, nil
 }
@@ -489,25 +494,40 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 	p.oauth.WriteRevocationResponse(ctx, w, err)
 }
 
-// RegisterPodSession records that the pod podUID of the service account account may exchange
-// under the session name session, bound to the key whose thumbprint is jkt when jkt is set, as
-// the registrar's write of the given generation, and answers the registration as it stands after
-// this write, with whether the write set it and the key it replaced
-// (oauthstore.Store.RegisterPodSession): a write naming no key keeps the one a live row names,
-// and a write of a lower generation than the row's changes nothing. It is what
-// POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the
-// only way a row the exchange's gate reads is written.
+// RegisterPodSession records that the registrar registrar, the login account of the caller,
+// lets the pod podUID of the service account account exchange under the session name session,
+// bound to the key whose thumbprint is jkt when jkt is set, as the registrar's write of the given
+// generation, and answers the registration as it stands after this write, with whether the write
+// set it and the key it replaced (oauthstore.Store.RegisterPodSession): a write naming no key
+// keeps the one a live row of the registrar's names, a write of a lower generation than such a
+// row's changes nothing, and a name bound to another registrar, the one that first registered it
+// and holds it for good, is refused with an *oauthstore.PodSessionHeldError
+// (oauthstore.ErrPodSessionHeld) naming that registrar. It is what POST
+// /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the only way
+// a row the exchange's gate reads is written.
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
 // that fixes a session are each refused, the last because the name such an entry's tokens carry
 // is the configuration's and its pods need no registration at all. A caller maps those sentinels
-// onto its own refusals; anything else is the store's.
-func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session, jkt string, generation int64) (oauthstore.PodSessionRegistration, error) {
+// and the store's refusal of a held name onto its own refusals; anything else is the store's.
+func (p *Provider) RegisterPodSession(ctx context.Context, registrar, account, podUID, session, jkt string, generation int64) (oauthstore.PodSessionRegistration, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
 		return oauthstore.PodSessionRegistration{}, err
 	}
-	return p.store.RegisterPodSession(ctx, podUID, session, jkt, generation)
+	return p.store.RegisterPodSession(ctx, registrar, podUID, session, jkt, generation)
+}
+
+// ReleasePodSessions marks released every live registration of each of the session names
+// sessions that the registrar registrar, the login account of the caller, wrote, and answers how
+// many of the registrar's live registrations of those names are released after the call
+// (oauthstore.Store.ReleasePodSessions). From its commit the exchange refuses a pod's trade under
+// each such registration, and each name stays bound to the registrar, as it is for good. It is
+// what POST /v1/oauth/exchange/pod-sessions/release does. The policy is not asked: a release
+// admits nothing, and a name no registration could have taken matches no row, so there is nothing
+// the configuration has to refuse.
+func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, sessions []string) (int, error) {
+	return p.store.ReleasePodSessions(ctx, registrar, sessions)
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.
