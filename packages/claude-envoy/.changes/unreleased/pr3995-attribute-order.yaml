@@ -4,6 +4,8 @@ custom:
 body: |-
   `dispatch artifact` no longer refuses a document whose typed blocks write their attributes in
   another order than Dispatch stores. It uploads the text with them in Dispatch's order, and names
-  each such block and that order. A refusal of any other spelling names the first word or
-  attribute that differs, whole. Before, it quoted only the first 200 characters of each line,
+  each such block and that order. A refusal of any other spelling names the first difference: a
+  changed line by the attribute or word that differs, a word of more than 200 characters by a
+  window from its first character that differs, and a line the store adds or drops by a quote cut
+  at 200 characters, each cut named. Before, it quoted only the first 200 characters of each line,
   which could hide the difference.

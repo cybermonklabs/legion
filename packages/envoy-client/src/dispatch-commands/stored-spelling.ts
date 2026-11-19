@@ -28,8 +28,9 @@ const TYPED_OPENER = /^(.*?:{3,}([A-Za-z0-9_-]+)\{)(.*)\}$/;
 const ATTRIBUTE_SPACE = /[\t-\r ]/;
 
 /** `line` read as a typed block's opening line, or undefined for any other line and for one
- *  whose quoted value never closes. A quoted value runs to its closing quote, past a quote a
- *  backslash escapes, so a space inside it splits no attribute. */
+ *  whose quoted value never closes. A quoted value runs to the next quote, so a space inside it
+ *  splits no attribute, and a backslash in it escapes nothing: Dispatch's grammar gives it no
+ *  meaning (pmdoc's parseDirectiveAttributes), so `\"` ends the value. */
 function typedOpener(line: string): TypedOpener | undefined {
   const match = TYPED_OPENER.exec(line);
   if (match === null) return undefined;
@@ -49,9 +50,7 @@ function typedOpener(line: string): TypedOpener | undefined {
         continue;
       }
       at += 1;
-      while (at < inside.length && inside.charAt(at) !== '"') {
-        at += inside.charAt(at) === "\\" ? 2 : 1;
-      }
+      while (at < inside.length && inside.charAt(at) !== '"') at += 1;
       if (at >= inside.length) return undefined;
       at += 1;
     }
@@ -109,46 +108,73 @@ function storedInOtherOrder(wrote: string, held: string): TypedOpener | undefine
   return inStoredOrder(given, stored) === held ? stored : undefined;
 }
 
-/** A typed block whose attributes the upload put in the order Dispatch stores: its opening line
- *  (counted from 1) and that line as Dispatch stores it. */
-export interface ReorderedBlock {
-  readonly line: number;
-  readonly opener: TypedOpener;
+/** The id a typed block's `id` attribute, as Dispatch writes it, names: what follows `#`, or the
+ *  value of `id="…"` with the character references typedBlockIdAttribute (@legion/contracts)
+ *  writes in it decoded, `&amp;` last, so a reference the id holds as text reads as it is. */
+function storedBlockId(attribute: string): string {
+  if (attribute.startsWith("#")) return attribute.slice(1);
+  return attribute
+    .slice('id="'.length, -1)
+    .replaceAll("&#xD;", "\r")
+    .replaceAll("&#xA;", "\n")
+    .replaceAll("&#x22;", '"')
+    .replaceAll("&amp;", "&");
+}
+
+/** What the answer of an upload says of a block whose attributes it put in Dispatch's order, read
+ *  off `opener`, its opening line as Dispatch stores it: the block by its type and id, its line
+ *  (counted from 1), and that order. */
+function reorderedBlockLine(line: number, opener: TypedOpener): string {
+  const id = opener.attributes.find((attribute) => attribute.name === "id")?.text;
+  const named = `${opener.type} block${id === undefined ? "" : ` ${storedBlockId(id)}`}`;
+  const order = opener.attributes.map((attribute) => attribute.name).join(", ");
+  return `This upload put the attributes of ${named} (line ${line}) in the order Dispatch stores: ${order}.`;
 }
 
 /**
- * The typed blocks whose attributes `given` writes in another order than `stored`, the text
- * Dispatch's own round trip (POST /api/v1/markdown/round-trip) answers, when that is the whole
- * difference between the two: `given` with each such opener's attributes put in the stored
- * opener's order is `stored`, but for the final line feed the store adds. Undefined when anything
- * else differs. An attribute's position carries no meaning, so such a text is stored in
- * Dispatch's order rather than refused, and the order is Dispatch's render's, never a copy of it.
+ * What the answer of an upload says of the typed blocks whose attributes `given` writes in another
+ * order than `stored`, the text Dispatch's own round trip (POST /api/v1/markdown/round-trip)
+ * answers, one line for each block (reorderedBlockLine), when that is the whole difference between
+ * the two: `given` with each such opener's attributes put in the stored opener's order is
+ * `stored`, but for the final line feed the store adds. Undefined when anything else differs. An
+ * attribute's position carries no meaning, so such a text is stored in Dispatch's order rather
+ * than refused, and the order is Dispatch's render's, never a copy of it.
  */
-export function attributesReordered(given: string, stored: string): ReorderedBlock[] | undefined {
+export function attributesReordered(given: string, stored: string): string[] | undefined {
   const written = withoutFinalLineFeed(given).split("\n");
   const holds = withoutFinalLineFeed(stored).split("\n");
   if (written.length !== holds.length) return undefined;
-  const reordered: ReorderedBlock[] = [];
+  const lines: string[] = [];
   for (const [index, held] of holds.entries()) {
     const wrote = written[index];
     if (wrote === held) continue;
     const opener = wrote === undefined ? undefined : storedInOtherOrder(wrote, held);
     if (opener === undefined) return undefined;
-    reordered.push({ line: index + 1, opener });
+    lines.push(reorderedBlockLine(index + 1, opener));
   }
-  return reordered;
+  return lines;
 }
 
-/** What the answer of an upload says of a block whose attributes it put in Dispatch's order: the
- *  block by its type and id, its line, and that order. */
-export function reorderedBlockLine({ line, opener }: ReorderedBlock): string {
-  const id = opener.attributes.find((attribute) => attribute.name === "id")?.text;
-  const named =
-    id === undefined
-      ? `${opener.type} block`
-      : `${opener.type} block ${id.startsWith("#") ? id.slice(1) : id.slice('id="'.length, -1)}`;
-  const order = opener.attributes.map((attribute) => attribute.name).join(", ");
-  return `This upload put the attributes of ${named} (line ${line}) in the order Dispatch stores: ${order}.`;
+/**
+ * How much of one line, or of one word of a line, a refusal quotes. A line of a document is
+ * bounded by the document itself, and a word with no space in it (a URL, a data URI, a table's
+ * separator row) by its line, so either can be as long as the whole text, and a quote nobody can
+ * read to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
+ * text below, and the cut is named the same way.
+ */
+const STORED_LINE_QUOTED = 200;
+
+/** The characters (code points) of a line, or of one word of a line, as a refusal quotes them
+ *  from the one at index `from`: the JSON spelling of at most STORED_LINE_QUOTED of them, and
+ *  what is cut before and after them named after it. Quoted from its first character, a text at
+ *  most that long is quoted whole, and a longer one is cut after its first STORED_LINE_QUOTED. */
+function quotedStoredLine(characters: readonly string[], from: number): string {
+  const shown = characters.slice(from, from + STORED_LINE_QUOTED);
+  const quote = JSON.stringify(shown.join(""));
+  const cutAfter = from + shown.length < characters.length;
+  if (from === 0 && !cutAfter) return quote;
+  const cut = from === 0 ? "after" : cutAfter ? "before and after" : "before the last";
+  return `${quote} (cut ${cut} ${shown.length} of its ${characters.length} characters)`;
 }
 
 /** One word of a line as the refusal names it: an attribute of a typed block's opening line, or
@@ -158,11 +184,11 @@ interface LineWord {
   readonly attribute: boolean;
 }
 
-/** `line` cut into its words. The words joined are the line. */
-function lineWords(line: string): LineWord[] {
+/** `line` cut into its words, `opener` being that line read as a typed block's opening line
+ *  (typedOpener), undefined for any other line. The words joined are the line. */
+function lineWords(line: string, opener: TypedOpener | undefined): LineWord[] {
   const plain = (text: string): LineWord[] =>
     (text.match(/\s+|\S+/g) ?? []).map((word) => ({ text: word, attribute: false }));
-  const opener = typedOpener(line);
   if (opener === undefined) return plain(line);
   const words = plain(opener.head);
   for (const [index, gap] of opener.gaps.entries()) {
@@ -174,17 +200,23 @@ function lineWords(line: string): LineWord[] {
   return words;
 }
 
-/** A word as the refusal names it, whole: an attribute as it is written, any other word quoted. */
-function wordText(word: LineWord): string {
+/** A word as the refusal names it: an attribute as it is written, whole, and any other word by
+ *  its `characters` (code points) from the one at index `from`, quoted as quotedStoredLine quotes
+ *  them. */
+function wordText(word: LineWord, from = 0, characters = Array.from(word.text)): string {
   if (word.attribute) return `the attribute ${word.text}`;
-  return `${/\S/.test(word.text) ? "the word" : "the space"} ${JSON.stringify(word.text)}`;
+  return `${/\S/.test(word.text) ? "the word" : "the space"} ${quotedStoredLine(characters, from)}`;
 }
 
-/** Where two different lines first differ, by the word that differs, named whole in each, and
- *  the character it starts at (code points, counted from 1). */
-function wordDifference(wrote: string, held: string): string {
-  const written = lineWords(wrote);
-  const holds = lineWords(held);
+/**
+ * Where two different lines, cut into the words `written` and `holds` (lineWords), first differ:
+ * by the word that differs in each and the character it starts at (code points, counted from 1),
+ * a word at most STORED_LINE_QUOTED characters long named whole. A word longer than that in
+ * either spelling is quoted in each from the first character where the two differ, which is then
+ * the character named, with the cut named. An attribute is named whole however long it is, and a
+ * word beside one is quoted from its start.
+ */
+function wordDifference(written: readonly LineWord[], holds: readonly LineWord[]): string {
   let before = 0;
   for (let index = 0; index < Math.max(written.length, holds.length); index += 1) {
     const given = written[index];
@@ -200,7 +232,17 @@ function wordDifference(wrote: string, held: string): string {
       return `reads ${wordText(given)} at character ${before + 1}, where Dispatch ends the line`;
     }
     if (given !== undefined && stored !== undefined) {
-      return `reads ${wordText(given)} at character ${before + 1}, where Dispatch stores ${wordText(stored)}`;
+      const wrote = Array.from(given.text);
+      const held = Array.from(stored.text);
+      let from = 0;
+      if (
+        !given.attribute &&
+        !stored.attribute &&
+        Math.max(wrote.length, held.length) > STORED_LINE_QUOTED
+      ) {
+        while (from < wrote.length && wrote[from] === held[from]) from += 1;
+      }
+      return `reads ${wordText(given, from, wrote)} at character ${before + from + 1}, where Dispatch stores ${wordText(stored, from, held)}`;
     }
   }
   return "differs from the line Dispatch stores";
@@ -230,28 +272,38 @@ function attributeDifference(
     : `line ${line} holds the attribute ${dropped.text}, which Dispatch drops`;
 }
 
-/** How the line `wrote` and the stored line `held` first differ. A typed block's opening line is
- *  read by its attributes first, then, with its attributes in the stored order, word by word. */
-function lineDifference(line: number, wrote: string, held: string): string {
-  const given = typedOpener(wrote);
-  const stored = typedOpener(held);
+/** How the line `wrote` and the stored line `held` first differ, `given` and `stored` being each
+ *  read as a typed block's opening line (typedOpener), undefined for any other line. A typed
+ *  block's opening line is read by its attributes first, then, with its attributes in the stored
+ *  order, word by word. */
+function lineDifference(
+  line: number,
+  wrote: string,
+  given: TypedOpener | undefined,
+  held: string,
+  stored: TypedOpener | undefined
+): string {
   if (given !== undefined && stored !== undefined) {
     const attribute = attributeDifference(line, given, stored);
     if (attribute !== undefined) return attribute;
     const reordered = inStoredOrder(given, stored);
     if (reordered !== undefined && reordered !== wrote) {
-      return `line ${line}, with its attributes put in the order Dispatch stores, ${wordDifference(reordered, held)}`;
+      const words = lineWords(reordered, typedOpener(reordered));
+      return `line ${line}, with its attributes put in the order Dispatch stores, ${wordDifference(words, lineWords(held, stored))}`;
     }
   }
-  return `line ${line} ${wordDifference(wrote, held)}`;
+  return `line ${line} ${wordDifference(lineWords(wrote, given), lineWords(held, stored))}`;
 }
 
 /**
  * The first line the store would write otherwise, which is the line a reader fixes first: a line
- * the store adds or drops, quoted whole, or a changed line, by the word or the attribute where it
- * first differs, named whole in each spelling. A quote of the line cut at a fixed length would
- * hide a difference past the cut. A line whose attributes alone stand in another order is passed
- * over, since the upload puts them in Dispatch's order once nothing else differs.
+ * the store adds or drops, quoted (quotedStoredLine), or a changed line, by the word or the
+ * attribute where it first differs (lineDifference). The line the store adds or drops is itself
+ * the difference, so its quote cut after STORED_LINE_QUOTED characters hides nothing; a quote of
+ * a changed line cut at a fixed length would hide a difference past the cut. A line whose
+ * attributes alone stand in another order is passed over, since the upload puts them in
+ * Dispatch's order once nothing else differs. Each line of a changed pair is read as a typed
+ * block's opening line once, here.
  */
 function firstStoredDifference(given: string, stored: string): string {
   const written = given.split("\n");
@@ -264,14 +316,22 @@ function firstStoredDifference(given: string, stored: string): string {
     const held = holds[line];
     if (wrote === held) continue;
     if (wrote === undefined && held !== undefined) {
-      return `the store writes a line ${line + 1}, ${JSON.stringify(held)}`;
+      return `the store writes a line ${line + 1}, ${quotedStoredLine(Array.from(held), 0)}`;
     }
     if (held === undefined && wrote !== undefined) {
-      return `the store drops line ${line + 1}, ${JSON.stringify(wrote)}`;
+      return `the store drops line ${line + 1}, ${quotedStoredLine(Array.from(wrote), 0)}`;
     }
     if (wrote !== undefined && held !== undefined) {
-      if (storedInOtherOrder(wrote, held) !== undefined) continue;
-      return lineDifference(line + 1, wrote, held);
+      const givenOpener = typedOpener(wrote);
+      const storedOpener = typedOpener(held);
+      if (
+        givenOpener !== undefined &&
+        storedOpener !== undefined &&
+        inStoredOrder(givenOpener, storedOpener) === held
+      ) {
+        continue;
+      }
+      return lineDifference(line + 1, wrote, givenOpener, held, storedOpener);
     }
   }
   return "the stored text differs from the text given";

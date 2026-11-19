@@ -16,7 +16,9 @@ Every path it cites is in cybermonklabs/legion.
   the change needs something that exists only on the base (a fix for its only red check, a child's
   merged code that a parent's failing check needs, or a sentence it must change), or after the
   pull request is retargeted to a new
-  base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
+  base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI.
+  Outside `implementing`, the merge-forward message is the only trigger: the workspace is the
+  phase's, and the daemon asks for the merge once the next step needs it. Each
   merge is a new head, reruns CI and can void a review. A message that names no conflict is no
   reason to merge: answer it with this rule, and merge nothing. Never merge the base to carry it
   along with a push, at a round's start, or to check what a merge would read. Before you merge,

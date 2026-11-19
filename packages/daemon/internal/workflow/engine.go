@@ -2009,14 +2009,13 @@ const parkRule = "only when a person asked for that move, or when the work is do
 // approval told it before acceptance existed. Outside accepting it changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
-// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
-// that carries its children's merges: accepted first, it would reach retro and the merge
-// with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
-// was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
-// parent's approved pull request then waited outside the merge queue and went stale against its
-// base; under children-first a parent starts its own phases only after its children have left,
-// so by the time it is accepted there is nothing left to wait for, and the refusal is the
-// backstop for a child filed after the parent started.
+// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them, since a parent is accepted only once
+// the work beneath it is done (dispatch://INFRA-980). The acceptance was held this way once before
+// (dispatch://INFRA-229) and the hold was taken off because a parent's approved pull request then
+// waited outside the merge queue and went stale against its base; under children-first a parent
+// starts its own phases only after its children have left, so by the time it is accepted there is
+// nothing left to wait for, and the refusal is the backstop for a child filed after the parent
+// started.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {

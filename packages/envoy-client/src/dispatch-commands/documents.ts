@@ -56,13 +56,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
-import {
-  attributesReordered,
-  type ReorderedBlock,
-  reorderedBlockLine,
-  storedTextProblem,
-  withoutFinalLineFeed,
-} from "./stored-spelling";
+import { attributesReordered, storedTextProblem, withoutFinalLineFeed } from "./stored-spelling";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -795,9 +789,10 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     }
   }
   // The text the upload sends: the text given, or the text Dispatch stores for it when the two
-  // differ only in the order of a typed block's attributes. `reordered` names each such block.
+  // differ only in the order of a typed block's attributes. `reordered` is the answer's line for
+  // each such block.
   let sent = content;
-  let reordered: readonly ReorderedBlock[] = [];
+  let reordered: readonly string[] = [];
   // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
   // text it would write under another spelling is refused here rather than stored changed.
   // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
@@ -871,7 +866,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       path === undefined && content === undefined
         ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
         : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
-      ...reordered.map(reorderedBlockLine),
+      ...reordered,
       ...adviceLines,
     ].join("\n"),
     details:

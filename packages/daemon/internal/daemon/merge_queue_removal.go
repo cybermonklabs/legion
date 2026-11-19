@@ -125,13 +125,11 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // Each attempt first finishes the row undelivered, with one log line naming why, once the issue
 // has left merging at the row's head (mergingAt, the read row's own rule); what follows - a claim
 // that failed or retired, the design gate and the news the merger is owed, the wake and the
-// publish - is deliverHeld's. A released merger is woken only where its start would go on, by the
-// rule that holds that start (mergerWaitsForTheDesignGate): while the root's design gate is
-// closed, or while the merger is owed news of the approved design whose change set is not recorded
-// yet, it is neither woken nor told, and the row waits. A merger the gate holds may not know the
-// gate closed, and woken by this message it could enqueue the pull request again against the
-// gate, which holds the merge; a merger woken before what changed is recorded could enqueue it
-// again before it reads that change.
+// publish - is deliverHeld's.
+//
+// A merger the design gate holds may not know the gate closed, and woken by this message it could
+// enqueue the pull request again against the gate, which holds the merge; a merger woken before
+// what changed is recorded could enqueue it again before it reads that change.
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")

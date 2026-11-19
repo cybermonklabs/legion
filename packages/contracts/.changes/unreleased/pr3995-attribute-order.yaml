@@ -4,5 +4,7 @@ custom:
 body: |-
   The `dispatch_artifact` description, its `content` field and `ARTIFACT_STORED_TEXT_RULE` say that
   a typed block whose attributes differ from Dispatch's only in their order is uploaded with them
-  in Dispatch's order, not refused, and that a refusal names the first word or attribute that
-  differs.
+  in Dispatch's order, not refused, and how a refusal names the first difference: a changed line
+  by the attribute or word that differs, a word of more than 200 characters by a window from its
+  first character that differs, and a line the store adds or drops by a quote cut at 200
+  characters, each cut named.

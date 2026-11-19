@@ -11599,9 +11599,11 @@ describe("executeDispatchTool", () => {
     );
   });
 
-  // One line can be as long as the document, so the refusal never quotes the line that differs:
-  // it names the word that differs, whole, and the character it starts at (review round 2,
-  // finding G; INFRA-4678 R1).
+  // One line can be as long as the document, so the refusal never quotes a line that changed:
+  // it names the word that differs, whole while it is 200 characters or fewer, and the character
+  // it starts at (review round 2, finding G; INFRA-4678 R1). A longer word is named by a window
+  // from its first character that differs, and a line the store adds or drops is quoted, cut at
+  // 200 characters with the cut named (the tests below).
   test("names the word that differs in a long line, not the line", async () => {
     const items = "one two three ".repeat(40);
     const long = `* ${items}`;
@@ -11670,7 +11672,12 @@ describe("executeDispatchTool", () => {
   // differ from Dispatch's spelling only in their order is stored in Dispatch's order, and the
   // answer names the block and that order. The order is the stored line's own, here the one
   // pmdoc's renderTypedAttributes writes for a check (schema/blocks.json): ci_check comes last.
-  test("uploads a block whose attributes differ only in order, in the order Dispatch stores", async () => {
+  // The answer names the block by its id as it reads: an id Dispatch writes `id="…"`, its `&` as
+  // `&amp;` (typedBlockIdAttribute), is named with the `&`.
+  test.each([
+    ["#c-attribute-order", "c-attribute-order"],
+    ['id="R&amp;D"', "R&D"],
+  ])("uploads a block whose attributes differ only in order, in the order Dispatch stores (id %s)", async (id, named) => {
     const serves = 'serves="dispatch://DSP-42/spec#b-r-attribute-order"';
     const control =
       'negative_control="A check block that names ci_check before when is refused, and each spelling is cut after 200 characters."';
@@ -11678,10 +11685,10 @@ describe("executeDispatchTool", () => {
     const document = (opener: string) =>
       `# Verification\n\n${opener}\nThe block is stored with its attributes in Dispatch's order.\n:::\n`;
     const content = document(
-      `:::check{#c-attribute-order ${serves} surface="cli" ${ciCheck} when="before_merge" ${control}}`
+      `:::check{${id} ${serves} surface="cli" ${ciCheck} when="before_merge" ${control}}`
     );
     const stored = document(
-      `:::check{#c-attribute-order ${serves} surface="cli" when="before_merge" ${control} ${ciCheck}}`
+      `:::check{${id} ${serves} surface="cli" when="before_merge" ${control} ${ciCheck}}`
     );
     const posts: Array<Record<string, unknown>> = [];
 
@@ -11701,7 +11708,39 @@ describe("executeDispatchTool", () => {
     const lines = result.text.split("\n");
     expect(lines[0]).toStartWith("Uploaded verification.md as version 1");
     expect(lines[1]).toBe(
-      "This upload put the attributes of check block c-attribute-order (line 3) in the order Dispatch stores: id, serves, surface, when, negative_control, ci_check."
+      `This upload put the attributes of check block ${named} (line 3) in the order Dispatch stores: id, serves, surface, when, negative_control, ci_check.`
+    );
+  });
+
+  // Dispatch's grammar gives a backslash in a quoted value no meaning (pmdoc's
+  // parseDirectiveAttributes), and the store writes it as it is (escapeDirectiveAttribute), so a
+  // value that ends in one ends at the quote after it, and its block is read as any other.
+  test("uploads a reordered block one of whose values ends in a backslash, in the order Dispatch stores", async () => {
+    const serves = 'serves="dispatch://DSP-42/spec#b-r-one"';
+    const run = 'run="C:\\dir\\"';
+    const document = (opener: string) => `# Verification\n\n${opener}\nThe check.\n:::\n`;
+    const content = document(
+      `:::check{#c-backslash ${serves} surface="cli" when="before_merge" ${run}}`
+    );
+    const stored = document(
+      `:::check{#c-backslash ${serves} surface="cli" ${run} when="before_merge"}`
+    );
+    const posts: Array<Record<string, unknown>> = [];
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "verification.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(stored, posts) as typeof fetch,
+    });
+
+    expect(posts.map((body) => body.content)).toEqual([stored]);
+    expect(result.text.split("\n")[1]).toBe(
+      "This upload put the attributes of check block c-backslash (line 3) in the order Dispatch stores: id, serves, surface, run, when."
     );
   });
 
@@ -11770,6 +11809,73 @@ describe("executeDispatchTool", () => {
       'Dispatch stores this text under another spelling: line 7 reads the word "*" at character 1, where Dispatch stores the word "-".'
     );
     expect(failure.problems[0]).toContain(`--- the text Dispatch stores ---\n${stored}`);
+    expect(posts).toEqual([]);
+  });
+
+  // A line the store adds or drops is itself the difference, so a quote of it cut at 200
+  // characters hides nothing, and a refusal nobody can read to the end is one nobody acts on: the
+  // quote is cut and the cut named (review round 2, finding G).
+  test("quotes a long line the store drops cut at 200 characters, and says what it cut", async () => {
+    const line = " ".repeat(5000);
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: `# Notes\n\n${line}\n` },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch("# Notes\n", posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    expect(problem).toStartWith(
+      `Dispatch stores this text under another spelling: the store drops line 3, ${JSON.stringify(" ".repeat(200))} (cut after 200 of its 5000 characters).`
+    );
+    expect(problem.length).toBeLessThan(line.length);
+    expect(posts).toEqual([]);
+  });
+
+  // A word with no space in it (a URL, a data URI, a table's separator row) is bounded only by its
+  // line, so one longer than 200 characters is named by a window of each spelling from the first
+  // character where the two differ, with the cut named. The stored text before it fills the part
+  // of the stored text the refusal prints, so the refusal holds neither spelling whole.
+  test("names a long word by a window from the character where its spellings differ", async () => {
+    const word = (differs: string) => `${"a".repeat(399)}${differs}${"a".repeat(200)}`;
+    const document = (line: string) =>
+      `# Notes\n\n${"A paragraph of the design.\n\n".repeat(100)}${line}\n`;
+    const posts: Array<Record<string, unknown>> = [];
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: document(word("b")) },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: storedSpellingFetch(document(word("c")), posts) as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    const cut = "(cut before and after 200 of its 600 characters)";
+    expect(problem).toStartWith(
+      `Dispatch stores this text under another spelling: line 203 reads the word ${JSON.stringify(`b${"a".repeat(199)}`)} ${cut} at character 400, where Dispatch stores the word ${JSON.stringify(`c${"a".repeat(199)}`)} ${cut}.`
+    );
+    expect(problem).not.toContain(word("b"));
+    expect(problem).not.toContain(word("c"));
     expect(posts).toEqual([]);
   });
 

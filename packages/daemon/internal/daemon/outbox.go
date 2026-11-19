@@ -3463,9 +3463,9 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 // unavailable, and a review history it cannot read is recorded unread (designChangesAttempts), and
 // the start then carries the news (newsForStart).
 //
-// The wake a merge-queue removal makes of a released merger reads this same rule before it wakes
-// it (deliverHeld, for mergeQueueRemoval), so the message that its pull request left the queue
-// brings back no merger that its own start would hold.
+// Every held message to a released merger (deliverHeld: a merge-queue removal, and a merge
+// forward's hold and landed) reads this same rule before it wakes it, so no such message brings
+// back a merger that its own start would hold.
 func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.Issue, role claim.Role) error {
 	if role != claim.RoleMerger {
 		return nil

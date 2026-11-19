@@ -62,8 +62,9 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   whose pull request has merged never moves back, so work the new version asks of it goes to an
   issue of the tree whose pull request is still open; where none is, `dispatch ask` the person on
   the root.
-- `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
-  in `accepting` returns the issue to `implementing` by the daemon's table.
+- `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. A red check in
+  `accepting` moves nothing: read the head's checks, and send a red head back with
+  `request_backward_move`.
 - No `after_merge` result is asked here: the production check records it after the close, where
   the project's `production_check` opens one.
 - A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`
