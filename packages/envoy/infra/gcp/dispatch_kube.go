@@ -484,13 +484,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// waits on the read: Kubernetes refuses every pod naming a class that does not exist, and at
 	// one replica Recreate would already have stopped the old pod, so a missing class fails the
 	// preview or update instead of leaving a workload down.
-	var priorityClass pulumi.Resource
+	var priorityClassName pulumi.StringPtrInput
+	var priorityClassWait []pulumi.ResourceOption
 	if s.disruption.priorityClass != "" {
 		class, err := schedulingv1.GetPriorityClass(ctx, s.hostname+"-priority-class", pulumi.ID(s.disruption.priorityClass), nil, child...)
 		if err != nil {
 			return err
 		}
-		priorityClass = class
+		priorityClassName = pulumi.String(s.disruption.priorityClass)
+		priorityClassWait = []pulumi.ResourceOption{pulumi.DependsOn([]pulumi.Resource{class})}
 	}
 
 	// deployment registers one of the component's three workloads, and its PodDisruptionBudget
@@ -509,10 +511,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if pdbMinAvailable == 0 {
 			annotations[safeToEvictAnnotation] = pulumi.String("false")
 		}
-		if priorityClass != nil {
-			pod.PriorityClassName = pulumi.String(s.disruption.priorityClass)
-			opts = append(opts, pulumi.DependsOn([]pulumi.Resource{priorityClass}))
-		}
+		pod.PriorityClassName = priorityClassName
+		opts = append(opts, priorityClassWait...)
 		workload, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
 			Metadata: metadata(name),
 			Spec: appsv1.DeploymentSpecArgs{
