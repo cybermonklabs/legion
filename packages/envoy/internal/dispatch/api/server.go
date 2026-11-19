@@ -241,7 +241,7 @@ type DepsInput struct {
 	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
 	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
 	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
-	// send for a role (envoy.ErrNoIdentity).
+	// send for a role (envoy.ErrNoListenerIdentity).
 	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.

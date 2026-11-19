@@ -296,6 +296,29 @@ refuses the send: the attempt fails at once, and its recorded error names these 
 
 Messages and mentions to a `session:` route need neither.
 
+With the compose files, `dispatch.compose.yml` refuses `docker compose up` until one of Dispatch's
+two settings is set in `compose/.env`, naming both, and `listener.compose.yml` (or
+`single-node.compose.yml`) passes the listener's verifier and principal from the same file. On a
+Google Cloud VM, whose service account is Dispatch's identity:
+
+```bash
+cd packages/envoy/deploy
+account=$(curl -s -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email)
+cat >>compose/.env <<EOF
+ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
+ENVOY_OIDC_GOOGLE_AUDIENCE=envoy-listener
+ENVOY_OIDC_GOOGLE_ACCOUNTS=$account
+ENVOY_DISPATCH_PRINCIPAL=$account
+EOF
+scripts/up-listener.sh
+scripts/up-dispatch.sh
+```
+
+Elsewhere, set `ENVOY_ACCOUNT_TOKEN_FILE` to the host path of Dispatch's token file (the compose
+file mounts it into the container), and the listener's `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE`
+and `ENVOY_DISPATCH_PRINCIPAL` instead.
+
 ## Backups and restore
 
 The database's nightly logical backup is not this compose's job: the production

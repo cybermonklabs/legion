@@ -1307,6 +1307,8 @@ jobs:
               - '.github/actions/install-claude-code/**'
               # tests/daemon-api-version.test.ts:15 and its neighbours.
               - 'packages/contracts/fixtures/daemon-api/**'
+              # tests/envelope-role-field.test.ts:5 reads the envelope fixture.
+              - 'packages/contracts/fixtures/envelope-without-role.json'
               # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
@@ -3571,8 +3573,10 @@ jobs:
               # dispatch-config.test.ts:5 the second.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
-              # src/__tests__/transport.test.ts:3.
+              # src/__tests__/transport.test.ts:12.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
+              # src/__tests__/transport.test.ts:11 reads the envelope fixture.
+              - 'packages/contracts/fixtures/envelope-without-role.json'
               # src/__tests__/ask-reply-recipients.test.ts renders the copies this fixture holds.
               - 'packages/contracts/fixtures/ask-reply-recipients.json'
               # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts

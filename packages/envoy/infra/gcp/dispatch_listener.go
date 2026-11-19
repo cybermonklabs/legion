@@ -1,7 +1,8 @@
 package gcp
 
-// Dispatch's own identity at its listener: the app's projected token, and the part of the
-// listener's environment that verifies it and takes a send's role mark from it alone.
+// The Dispatch deployment's listener container: its NATS, seed and API-token environment
+// (dispatchListenerEnv), the part of it that verifies Dispatch's own identity and takes a send's
+// role mark from it alone, and the app's projected token for the listener's audience.
 
 import (
 	"errors"

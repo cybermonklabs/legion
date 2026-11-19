@@ -311,10 +311,7 @@ func (rig *roleRouteRig) roleMention(t *testing.T, key, role, body string) (stri
 // session's plugin does, and answers what went wrong, "" when the claim landed. It returns rather
 // than failing the test, since a row also runs it from the listener's own goroutine.
 func (rig *roleRouteRig) claimRoleAs(sessionID, role string) string {
-	recorder := httptest.NewRecorder()
-	roleSetHandler(rig.warm, rigMachineID, rig.warm.delivery.logger).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
-		strings.NewReader(fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role))))
-	if recorder.Code != http.StatusOK {
+	if recorder := postRoleClaim(roleSetHandler(rig.warm, rigMachineID, rig.warm.delivery.logger), sessionID, role, "", false); recorder.Code != http.StatusOK {
 		return fmt.Sprintf("%s claims %s: status %d %s", sessionID, role, recorder.Code, recorder.Body.String())
 	}
 	return ""
@@ -406,9 +403,9 @@ func (rig *roleRouteRig) reply(t *testing.T, kind, id, sessionID string, reply m
 }
 
 // listenerSend is one POST /v1/messages/send made straight to the listener Dispatch calls, as a
-// Dispatch send with role set, presenting authorize.
-func listenerSend(handler http.Handler, target, role, key, authorize string) *httptest.ResponseRecorder {
-	body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"from %s","payload":"{}","idempotency_key":%q,"role":%q}`, target, key, key, role)
+// Dispatch send with role set, presenting authorize; connectedOnly asks for a running session.
+func listenerSend(handler http.Handler, target, role, key, authorize string, connectedOnly bool) *httptest.ResponseRecorder {
+	body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"from %s","payload":"{}","idempotency_key":%q,"role":%q,"connected_only":%t}`, target, key, key, role, connectedOnly)
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body))
 	request.Host = "127.0.0.1:9020"
 	request.Header.Set("Content-Type", "application/json")
@@ -506,17 +503,17 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		fromSession := httptest.NewRecorder()
 		rig.listener.ServeHTTP(fromSession, dpop)
 		refusedForRole(t, "a send with role from a session's broker token", fromSession)
-		refusedForRole(t, "a send with role on the shared token", listenerSend(rig.listener, holder.id, role, "principal-shared", "Bearer "+rigSharedToken))
+		refusedForRole(t, "a send with role on the shared token", listenerSend(rig.listener, holder.id, role, "principal-shared", "Bearer "+rigSharedToken, false))
 		refusedForRole(t, "a send with role from another service's principal",
-			listenerSend(rig.listener, holder.id, role, "principal-other", "Bearer "+rig.issuer.token(t, listenerListedSubject)))
+			listenerSend(rig.listener, holder.id, role, "principal-other", "Bearer "+rig.issuer.token(t, listenerListedSubject), false))
 		open := apiAuth(listenerAPIAuth{logger: listenerRigLogger(t, "open listener")}, v1Routes(t, rig.cold))
-		refusedForRole(t, "a send with role and no credential to an open listener", listenerSend(open, holder.id, role, "principal-none", ""))
+		refusedForRole(t, "a send with role and no credential to an open listener", listenerSend(open, holder.id, role, "principal-none", "", false))
 		unconfigured := *rig.cold
 		useDispatchPrincipal(&unconfigured, "")
 		refusedForRole(t, "a send with role from Dispatch's principal to a listener that names no Dispatch principal",
 			listenerSend(apiAuth(listenerAPIAuth{verifier: rig.issuer.verifier, logger: listenerRigLogger(t, "unconfigured listener auth")}, v1Routes(t, &unconfigured)),
-				holder.id, role, "principal-unconfigured", "Bearer "+rig.issuer.token(t, rigDispatchPrincipal)))
-		if accepted := listenerSend(rig.listener, holder.id, role, "principal-dispatch", "Bearer "+rig.issuer.token(t, rigDispatchPrincipal)); accepted.Code != http.StatusOK {
+				holder.id, role, "principal-unconfigured", "Bearer "+rig.issuer.token(t, rigDispatchPrincipal), false))
+		if accepted := listenerSend(rig.listener, holder.id, role, "principal-dispatch", "Bearer "+rig.issuer.token(t, rigDispatchPrincipal), false); accepted.Code != http.StatusOK {
 			t.Fatalf("a send with role from Dispatch's principal: status %d body %s, want 200", accepted.Code, accepted.Body.String())
 		}
 
@@ -649,22 +646,10 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 		rig.claim(t, next.id, role)
 		kept := func() int {
 			t.Helper()
-			stored, err := readStored(context.Background(), rig.warm.client, bus.KeptRoleSubject(role))
-			if err != nil {
-				t.Fatalf("read role %s's kept lane: %v", role, err)
-			}
-			return len(stored)
+			return len(storedEnvelopes(t, rig.warm.client, bus.KeptRoleSubject(role)))
 		}
 		send := func(key string, connectedOnly bool) *httptest.ResponseRecorder {
-			body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"from %s","payload":"{}","idempotency_key":%q,"role":%q,"connected_only":%t}`,
-				holder.id, key, key, role, connectedOnly)
-			request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body))
-			request.Host = "127.0.0.1:9020"
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("Authorization", "Bearer "+rig.issuer.token(t, rigDispatchPrincipal))
-			recorder := httptest.NewRecorder()
-			rig.listener.ServeHTTP(recorder, request)
-			return recorder
+			return listenerSend(rig.listener, holder.id, role, key, "Bearer "+rig.issuer.token(t, rigDispatchPrincipal), connectedOnly)
 		}
 
 		refused := send("connected-only-moved", true)

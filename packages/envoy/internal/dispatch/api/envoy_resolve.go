@@ -208,9 +208,11 @@ const noLiveSessionPrefix = "no live session"
 const listenerAnsweredPrefix = "envoy listener answered: "
 
 // listenerAccountTokenPrefix begins the failure deliveryErrorText records for a call Dispatch did
-// not make because its own account token could not be presented (dispatchenvoy.ErrAccountToken):
-// the client read the token file twice and found no live token either time. The listener said
-// nothing, and the kubelet rewrites the file in place, so retryableDeliveryFailure tries again.
+// not make because its own identity token could not be presented (dispatchenvoy.ErrAccountToken):
+// the client read its token file twice and found no live token either time, or the metadata
+// server minted no Google identity token for it on either try. The listener said nothing, and
+// the kubelet rewrites the file in place and the metadata server answers again, so
+// retryableDeliveryFailure tries again.
 const listenerAccountTokenPrefix = "envoy listener account token: "
 
 // deliveryErrorText is the failure a delivery records for a listener error. Its prefix keeps a

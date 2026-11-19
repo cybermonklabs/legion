@@ -69,6 +69,15 @@ services:
       NATS_URLS: nats://127.0.0.1:${NATS_PORT:-4222}
       # Optional on loopback: when set, every /v1 caller must send it as a bearer token.
       ENVOY_API_TOKEN: ${ENVOY_API_TOKEN:-}
+      # Dispatch's identity, for a Dispatch that sends role routes through this listener: one
+      # verifier pair and the principal (deploy/README.md, "Dispatch's identity at the Envoy
+      # listener"). Sessions that only reach each other leave them empty.
+      ENVOY_OIDC_ISSUER: ${ENVOY_OIDC_ISSUER:-}
+      ENVOY_OIDC_AUDIENCE: ${ENVOY_OIDC_AUDIENCE:-}
+      ENVOY_OIDC_ACCOUNTS: ${ENVOY_OIDC_ACCOUNTS:-}
+      ENVOY_OIDC_GOOGLE_AUDIENCE: ${ENVOY_OIDC_GOOGLE_AUDIENCE:-}
+      ENVOY_OIDC_GOOGLE_ACCOUNTS: ${ENVOY_OIDC_GOOGLE_ACCOUNTS:-}
+      ENVOY_DISPATCH_PRINCIPAL: ${ENVOY_DISPATCH_PRINCIPAL:-}
 
 volumes:
   nats-data:

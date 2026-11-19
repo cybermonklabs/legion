@@ -247,7 +247,7 @@ type SendInput struct {
 	// role's next holder when the role's claim names another session than the target when the
 	// send arrives (its 202). It takes the mark from Dispatch's own identity alone, so such a send
 	// is made on that identity only (WithAccountTokenFile or WithGoogleIdentity, Send); a client
-	// that presents no identity refuses it (ErrNoIdentity) and logs it at Error.
+	// that presents no identity refuses it (ErrNoListenerIdentity) and logs it at Error.
 	Role string
 }
 
@@ -274,12 +274,10 @@ type SendResult struct {
 type Client struct {
 	baseURL  string
 	apiToken string
-	// accountTokenFile is the file holding Dispatch's own projected service-account token for the
-	// listener's audience (WithAccountTokenFile), read at every call; empty presents apiToken.
-	accountTokenFile string
-	// google is Dispatch's Google Cloud identity (WithGoogleIdentity): the audience its identity
-	// token is minted for and the token last minted; nil where Dispatch presents none.
-	google     *googleIdentity
+	// identity is Dispatch's own identity at the listener (listenerIdentity): the token file
+	// WithAccountTokenFile names, or the Google identity WithGoogleIdentity names; nil presents
+	// apiToken alone. The last of the two options given wins; cmd/dispatch refuses both.
+	identity   listenerIdentity
 	httpClient *http.Client
 	// logger takes the line a call made again on the shared token writes (do); slog.Default()
 	// unless WithLogger names another.
@@ -316,19 +314,19 @@ func WithToken(token string) Option {
 // and whose account token the listener did not take on two tries, and it is what lets a send
 // carry its role mark (SendInput.Role).
 func WithAccountTokenFile(path string) Option {
-	return func(c *Client) { c.accountTokenFile = path }
+	return func(c *Client) { c.identity = tokenFile(path) }
 }
 
 // WithGoogleIdentity makes every listener call present Dispatch's own identity as the service
 // account of the Google Cloud machine it runs on (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE): an
 // identity token for audience, the listener's ENVOY_OIDC_GOOGLE_AUDIENCE, which the metadata server
-// mints (googleidentity.Token) and the client keeps until shortly before its own exp. It fails
-// closed: on a machine no Google metadata server answers for, Dispatch has no identity
-// (ErrNoIdentity), so a send for a role is refused and never made unmarked; a call with no role
-// mark is made on the shared token, as after a 401 (do). It and WithAccountTokenFile are one
-// identity each; cmd/dispatch refuses both at once.
+// mints (googleidentity.Token) and the client keeps until shortly before its own exp, and drops
+// when the listener refuses it (do). A mint that failed is that call's failure (ErrAccountToken),
+// which the delivery tries again; whether the machine has a metadata server at all is decided at
+// Dispatch's start (CheckGoogleIdentity). It and WithAccountTokenFile are one identity each;
+// cmd/dispatch refuses both at once.
 func WithGoogleIdentity(audience string) Option {
-	return func(c *Client) { c.google = &googleIdentity{audience: audience} }
+	return func(c *Client) { c.identity = &googleIdentity{audience: audience} }
 }
 
 // WithLogger names the logger the client writes its lines to, slog.Default() when none is named.
@@ -354,23 +352,23 @@ func New(baseURL string, options ...Option) *Client {
 }
 
 // do makes one listener call, the request build makes, and returns the listener's answer or the
-// error that kept it from answering: build's own, an account token that could not be presented
+// error that kept it from answering: build's own, an identity token that could not be presented
 // (ErrAccountToken), or a failure of the transport, which transport classifies (each caller's
 // ErrUnavailable, and ErrUnreachable where nothing answered).
 //
-// A client that presents Dispatch's identity (WithAccountTokenFile) makes the call on the account
-// token, read from the file at each try. A try whose token could not be read, or that the listener
-// answered 401, is made once more on what the file holds then: the kubelet rewrites a projected
-// token in place, so the second read can give the new token. A call that still has no token the
-// listener takes is made on the shared token (WithToken), with a WARN line, when the client holds
-// one and the call carries no role mark (marked unset): a listener that does not verify Dispatch's
-// identity yet - one of the release before, still serving while a deploy rolls - takes the shared
-// token, and nothing of such a call needs Dispatch's identity. A marked call - a send for a role
-// (Send) - is never made on the shared token, since the listener takes the role mark from
-// Dispatch's identity alone and a send without it is not copied when the role moves: it ends with
-// the second try's answer, logged at Error, and the delivery records that failure. A 401 is
-// answered before the listener's route runs (cmd/listener, apiAuth), so a try it answered did
-// nothing and the next is no repeat.
+// A client that presents Dispatch's identity (WithAccountTokenFile or WithGoogleIdentity) makes
+// the call on its identity token. A try whose token could not be presented, or that the listener
+// answered 401, is made once more on a fresh token: the token file read again, where the kubelet
+// rewrites a projected token in place, or a Google token minted again, the refused one dropped
+// (listenerIdentity.forget). A call that still has no token the listener takes is made on the
+// shared token (WithToken), with a WARN line, when the client holds one and the call carries no
+// role mark (marked unset): a listener that does not verify Dispatch's identity yet - one of the
+// release before, still serving while a deploy rolls - takes the shared token, and nothing of such
+// a call needs Dispatch's identity. A marked call - a send for a role (Send) - is never made on the
+// shared token, since the listener takes the role mark from Dispatch's identity alone and a send
+// without it is not copied when the role moves: it ends with the second try's answer, logged at
+// Error, and the delivery records that failure. A 401 is answered before the listener's route runs
+// (cmd/listener, apiAuth), so a try it answered did nothing and the next is no repeat.
 func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
 	try := func(shared bool) (*http.Response, error) {
 		request, err := build()
@@ -391,25 +389,25 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		return response, err
 	}
 	closeBody(response)
+	c.identity.forget()
 	if response, err = try(false); !identityNotTaken(response, err) {
 		return response, err
 	}
 	if marked || c.apiToken == "" {
-		c.logger.Error("dispatch: the Envoy listener did not take Dispatch's account token on two tries, so the call is not made on any other credential",
+		c.logger.Error("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential",
 			"route", route, "role_mark", marked, "refusal", identityRefusal(response, err))
 		return response, err
 	}
 	closeBody(response)
-	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's account token on two tries, so the call is made again on the shared token",
+	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token",
 		"route", route, "refusal", identityRefusal(response, err))
 	return try(true)
 }
 
 // identityNotTaken reports whether a try on Dispatch's identity ended without the listener taking
-// that identity: its token could not be presented (ErrAccountToken), no Google metadata server
-// answered for it (ErrNoIdentity), or the listener answered 401.
+// that identity: its token could not be presented (ErrAccountToken), or the listener answered 401.
 func identityNotTaken(response *http.Response, err error) bool {
-	return errors.Is(err, ErrAccountToken) || errors.Is(err, ErrNoIdentity) || (err == nil && response.StatusCode == http.StatusUnauthorized)
+	return errors.Is(err, ErrAccountToken) || (err == nil && response.StatusCode == http.StatusUnauthorized)
 }
 
 // identityRefusal is what a log line says of a try identityNotTaken reports: the error, which
@@ -824,7 +822,7 @@ func (input SendInput) EnvelopeMessage() contracts.Message {
 // alone, so it is made on that identity and never on the shared token (do, marked): a send the
 // listener's authentication refused on two tries fails here, naming the role, and the delivery
 // records it. A client that presents no identity (neither WithAccountTokenFile nor
-// WithGoogleIdentity) cannot mark the send, so it refuses it (ErrNoIdentity, logged at Error)
+// WithGoogleIdentity) cannot mark the send, so it refuses it (ErrNoListenerIdentity, logged at Error)
 // rather than make it unmarked: the session that takes the role from the target would not
 // receive an unmarked one.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
@@ -851,7 +849,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}
 	marked := input.Role != ""
 	if marked && !c.presentsIdentity() {
-		err := fmt.Errorf("%w (a send for role %s to %s)", ErrNoIdentity, input.Role, input.TargetSession)
+		err := fmt.Errorf("%w (a send for role %s to %s)", ErrNoListenerIdentity, input.Role, input.TargetSession)
 		c.logger.Error("dispatch: a send for a role is refused: this Dispatch presents no identity to the Envoy listener",
 			"role", input.Role, "target_session", input.TargetSession, "error", err.Error())
 		return SendResult{}, err
@@ -889,7 +887,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	case response.StatusCode == http.StatusAccepted:
 		return keptSend(response)
 	case marked && response.StatusCode == http.StatusUnauthorized:
-		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send for role %s: the listener refused Dispatch's account token on two tries, and a send for a role is made on that identity alone: %w",
+		return SendResult{}, fmt.Errorf("%w: POST /v1/messages/send for role %s: the listener refused Dispatch's identity token (ENVOY_ACCOUNT_TOKEN_FILE or ENVOY_ACCOUNT_GOOGLE_AUDIENCE) on two tries, and a send for a role is made on that identity alone; the listener verifies it with its ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE or ENVOY_OIDC_GOOGLE_AUDIENCE/ENVOY_OIDC_GOOGLE_ACCOUNTS and takes the role mark from ENVOY_DISPATCH_PRINCIPAL alone: %w",
 			ErrUnavailable, input.Role, listenerResponseError(response))
 	case response.StatusCode != http.StatusOK:
 		return SendResult{}, listenerResponseError(response)

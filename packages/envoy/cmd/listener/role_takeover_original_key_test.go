@@ -28,3 +28,25 @@ func TestAnExceptionAboutATakeoverCopyNamesTheMessagesOwnKey(t *testing.T) {
 		t.Fatalf("control: a copy whose message id names no frame names %q, want the copy's own key %q", got.DedupeKey, copied.DedupeKey)
 	}
 }
+
+// A takeover's copy is judged an outbox copy or the listener's by the message's own key: a copy of a
+// frame the publish route forwarded for source dispatch, whose key the route made under
+// publishDedupePrefix, is the listener's, as the frame was; the control is a copy of a frame
+// Dispatch's outbox forwarded under its own key, which is the outbox's.
+func TestATakeoverCopyIsJudgedAnOutboxCopyByTheMessagesOwnKey(t *testing.T) {
+	const role = "architect"
+	for _, row := range []struct {
+		name, key string
+		outbox    bool
+	}{
+		{"a copy of a publish-route frame for source dispatch is the listener's", publishDedupePrefix + "dispatch.0123456789abcdef", false},
+		{"control: a copy of an outbox frame is the outbox's", "dispatch-0123456789abcdef", true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			copied := contracts.Envelope{EventID: "evt", Source: "dispatch", Topic: contracts.RoleTopicPrefix + role, DedupeKey: takenFrameDedupeKey(row.key, 7)}
+			if got := isOutboxCopy(copied, takenFrameMsgID(row.key, role, 7), role); got != row.outbox {
+				t.Fatalf("isOutboxCopy of a takeover copy of key %q = %v, want %v", row.key, got, row.outbox)
+			}
+		})
+	}
+}

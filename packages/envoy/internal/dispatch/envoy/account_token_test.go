@@ -123,7 +123,7 @@ func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing
 // The listener takes a send's role mark from Dispatch's own identity alone and refuses it from
 // every other credential (cmd/listener, sendHandler). So a client that presents that identity
 // marks a send for a role with the role, and a client that presents the shared token, or none,
-// refuses a send for a role (ErrNoIdentity) rather than make it unmarked, since the session that
+// refuses a send for a role (ErrNoListenerIdentity) rather than make it unmarked, since the session that
 // takes the role from the target would not receive an unmarked one: the refusal makes no listener
 // call, names the setting that gives Dispatch an identity and the README section, and writes one
 // Error line naming the role. The control is each client's send with no role, which every client
@@ -151,9 +151,9 @@ func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 		_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"})
 		if identity := i == 0; identity && err != nil {
 			t.Fatalf("the identity client's send for a role: %v", err)
-		} else if !identity && (!errors.Is(err, ErrNoIdentity) || errors.Is(err, ErrUnavailable) ||
+		} else if !identity && (!errors.Is(err, ErrNoListenerIdentity) || errors.Is(err, ErrUnavailable) ||
 			!strings.Contains(err.Error(), "ENVOY_ACCOUNT_TOKEN_FILE") || !strings.Contains(err.Error(), "Dispatch's identity at the Envoy listener")) {
-			t.Fatalf("client %d's send for a role with no identity = %v, want ErrNoIdentity naming ENVOY_ACCOUNT_TOKEN_FILE and the README section, and not ErrUnavailable", i, err)
+			t.Fatalf("client %d's send for a role with no identity = %v, want ErrNoListenerIdentity naming ENVOY_ACCOUNT_TOKEN_FILE and the README section, and not ErrUnavailable", i, err)
 		}
 		if _, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"}); err != nil {
 			t.Fatalf("control: client %d's send with no role: %v", i, err)
@@ -276,8 +276,8 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 	defer listener.Close()
 	marked := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
 	unmarked := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"}
-	const sharedLine = "dispatch: the Envoy listener did not take Dispatch's account token on two tries, so the call is made again on the shared token"
-	const refusedLine = "dispatch: the Envoy listener did not take Dispatch's account token on two tries, so the call is not made on any other credential"
+	const sharedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token"
+	const refusedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential"
 	client := func(logs *bytes.Buffer, options ...Option) *Client {
 		return New(listener.URL, append(options, WithAccountTokenFile(path), WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))...)
 	}

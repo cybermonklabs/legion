@@ -304,7 +304,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyURL:         options.envoyURL,
 		EnvoyTimeout:     options.envoyTimeout,
 		// Dispatch presents an identity of its own to the listener, as a deployment does: without
-		// one it refuses every send for a role (envoy.ErrNoIdentity). The tests' stand-in listeners
+		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
 		// check no bearer.
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),

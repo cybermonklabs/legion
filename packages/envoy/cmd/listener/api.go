@@ -312,11 +312,12 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
 		return http.StatusForbidden
 	}
+	stored, full := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull)
 	prefix := busUnansweredPrefix
-	if errors.Is(err, bus.ErrStreamFull) {
+	if full {
 		prefix = streamFullPrefix
 	}
-	if !mayHaveStored(err) && !errors.Is(err, bus.ErrStreamFull) {
+	if !stored && !full {
 		if !errors.Is(err, bus.ErrRefused) {
 			w.Header().Set("Retry-After", "1")
 		}
@@ -324,7 +325,7 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	}
 	w.Header().Set("Retry-After", "1")
 	answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", prefix, err)}
-	if mayHaveStored(err) {
+	if stored {
 		answer.Code = listenerwire.CodeMaybeStored
 	}
 	writeJSON(w, http.StatusServiceUnavailable, answer)
@@ -335,7 +336,8 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 // a send of it went out and nothing answered (bus.ErrUnacknowledged), whatever answer ended the
 // publish after it - a full stream, or a refusal of a later send, since the first may have landed.
 // It is the one rule the bus-unavailable answer (writeBusUnavailable), the sender's charge
-// (senderCharge.published) and a keep's failure (storeKeptRoleCopy) read.
+// (senderCharge.published), a keep's failure (storeKeptRoleCopy) and a publish past an in-process
+// refusal (publishPastInProcess) read.
 func mayHaveStored(err error) bool {
 	return errors.Is(err, bus.ErrUnacknowledged)
 }
@@ -2140,6 +2142,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// Neither wrote a claim, and both are the client's to make again: every try met a
 			// conflict until the deadline, or a try's takeover record did not store.
 			if errors.Is(err, store.ErrRoleClaimContended) || errors.Is(err, errTakeoverUnrecorded) {
+				if errors.Is(err, errTakeoverUnrecorded) {
+					warnTakeoverUnrecorded(logger, body.Role, body.SessionID, err)
+				}
 				w.Header().Set("Retry-After", "1")
 				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
 				return

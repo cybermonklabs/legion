@@ -257,7 +257,7 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 		}
 		next = stored.Sequence + 1
 		var item contracts.Envelope
-		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) {
+		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item, stored.MsgID, role) {
 			return true, nil
 		}
 	}

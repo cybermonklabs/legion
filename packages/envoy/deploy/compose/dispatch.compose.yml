@@ -1,8 +1,9 @@
-# Role routes need Dispatch's identity at the Envoy listener. Dispatch sends a message or mention
-# for a role: route only on that identity: on Google Cloud set ENVOY_ACCOUNT_GOOGLE_AUDIENCE (the
-# listener's ENVOY_OIDC_GOOGLE_AUDIENCE); elsewhere set ENVOY_ACCOUNT_TOKEN_FILE to a service-account
-# token for the listener's audience, mounted into this container. With neither, every such send is
-# refused and its attempt says why (../README.md, "Dispatch's identity at the Envoy listener").
+# Role routes need Dispatch's identity at the Envoy listener, so this file refuses to start without
+# one, naming both settings: on Google Cloud set ENVOY_ACCOUNT_GOOGLE_AUDIENCE (the listener's
+# ENVOY_OIDC_GOOGLE_AUDIENCE); elsewhere set ENVOY_ACCOUNT_TOKEN_FILE to the host path of a
+# service-account token for the listener's audience, which is mounted into the container. The
+# listener's side is in listener.compose.yml (../README.md, "Dispatch's identity at the Envoy
+# listener").
 services:
   dispatch:
     image: ghcr.io/cybermonklabs/legion/envoy:${ENVOY_IMAGE_TAG:?set ENVOY_IMAGE_TAG (see deploy/README.md)}
@@ -11,6 +12,10 @@ services:
       dockerfile: packages/envoy/docker/Dockerfile
     network_mode: host
     entrypoint: ["/usr/local/bin/envoy-dispatch"]
+    labels:
+      # Refuses `docker compose up` when neither identity is set, naming both: a Dispatch with
+      # none would refuse every message and mention for a role: route.
+      legion.dispatch-identity: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-${ENVOY_ACCOUNT_TOKEN_FILE:?set ENVOY_ACCOUNT_GOOGLE_AUDIENCE (on Google Cloud) or ENVOY_ACCOUNT_TOKEN_FILE (a token file's host path) - role routes need Dispatch's identity at the Envoy listener, see deploy/README.md}}
     restart: unless-stopped
     # A SIGTERM runs Dispatch's ordered shutdown: the requests in flight drain first, the document
     # service settles what is owed within 14 s of its own (starting 11 s after the signal at the
@@ -54,12 +59,10 @@ services:
       DISPATCH_NATS_DISABLED: ${DISPATCH_NATS_DISABLED:-}
       ENVOY_URL: ${ENVOY_URL:-http://127.0.0.1:9020}
       ENVOY_TOKEN: ${ENVOY_TOKEN:-}
-      # Role routes need Dispatch's own identity at the listener: on Google Cloud the listener's
-      # ENVOY_OIDC_GOOGLE_AUDIENCE here, elsewhere a service-account token file mounted below and
-      # named here. With neither, every message or mention for a role: route is refused, its
-      # attempt naming these settings (deploy/README.md, "Dispatch's identity at the Envoy listener").
+      # Dispatch's own identity at the listener (the label above requires one): the Google audience,
+      # or the token file mounted below at /run/envoy-listener/token.
       ENVOY_ACCOUNT_GOOGLE_AUDIENCE: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}
-      ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:-}
+      ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:+/run/envoy-listener/token}
       # Optional boot seed for mappings absent from the dashboard. Stored
       # repository mappings are authoritative; DISPATCH_DEFAULT_PROJECT catches
       # external repositories with no stored mapping.
@@ -71,6 +74,9 @@ services:
     volumes:
       # Signing key and optional app.json credentials.
       - dispatch-data:/home/envoy/.local/share/dispatch
+      # The token file ENVOY_ACCOUNT_TOKEN_FILE names on the host, when set; /dev/null otherwise,
+      # which Dispatch does not read.
+      - ${ENVOY_ACCOUNT_TOKEN_FILE:-/dev/null}:/run/envoy-listener/token:ro
 
 
 volumes:

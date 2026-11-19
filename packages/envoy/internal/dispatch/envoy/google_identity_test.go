@@ -82,7 +82,7 @@ func closedHost(t *testing.T) string {
 // metadata server mints an identity token for the listener's audience, which Dispatch keeps until
 // shortly before its own exp, and a send for a role is made on it, marked. A metadata server that
 // does not answer at a call fails that call as ErrAccountToken, which the delivery tries again,
-// never as ErrNoIdentity and never on the shared token; a send with no role mark - the control -
+// never as ErrNoListenerIdentity and never on the shared token; a send with no role mark - the control -
 // is made on the shared token. Whether the machine has a metadata server at all is decided at
 // Dispatch's start (CheckGoogleIdentity): a machine with none refuses to start, naming the
 // setting, and one with a metadata server starts.
@@ -121,8 +121,8 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 		var logs bytes.Buffer
 		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithToken("shared"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 		_, err := client.Send(context.Background(), marked)
-		if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoIdentity) {
-			t.Fatalf("a send for a role while the metadata server does not answer = %v, want ErrAccountToken (retried), not ErrNoIdentity", err)
+		if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoListenerIdentity) {
+			t.Fatalf("a send for a role while the metadata server does not answer = %v, want ErrAccountToken (retried), not ErrNoListenerIdentity", err)
 		}
 		if got := stand.taken(); len(got) != 0 {
 			t.Fatalf("the listener was called %+v for a send for a role with no token minted, want no call", got)
@@ -140,6 +140,90 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 		err := CheckGoogleIdentity(context.Background())
 		if !errors.Is(err, googleidentity.ErrNoMetadataServer) || !strings.Contains(err.Error(), "ENVOY_ACCOUNT_GOOGLE_AUDIENCE") {
 			t.Fatalf("the start-time check with no metadata server = %v, want ErrNoMetadataServer naming ENVOY_ACCOUNT_GOOGLE_AUDIENCE", err)
+		}
+	})
+}
+
+// A Google identity token the listener refused (401) is dropped, and the second try presents one
+// the metadata server mints again, so a token the listener stopped taking - its key rotated, say -
+// is not presented twice. Concurrent callers that find no live token share one mint
+// (googleIdentity.token), each waiting on its own context: one whose context ends early gets
+// ErrAccountToken without waiting out the mint, and the others get the minted token.
+func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t *testing.T) {
+	t.Run("a token refused 401 is dropped and a fresh one is presented on the second try", func(t *testing.T) {
+		first := accountToken(t, "dispatch@example-project.iam.gserviceaccount.com", time.Now().Add(time.Hour))
+		second := accountToken(t, "dispatch@example-project.iam.gserviceaccount.com", time.Now().Add(2*time.Hour))
+		var minted atomic.Int32
+		metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Metadata-Flavor", "Google")
+			if minted.Add(1) == 1 {
+				_, _ = w.Write([]byte(first))
+				return
+			}
+			_, _ = w.Write([]byte(second))
+		}))
+		defer metadata.Close()
+		t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
+		var seen []string
+		var mu sync.Mutex
+		listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			seen = append(seen, r.Header.Get("Authorization"))
+			mu.Unlock()
+			if r.Header.Get("Authorization") != "Bearer "+second {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1","state":"connected"}`))
+		}))
+		defer listener.Close()
+		client := New(listener.URL, WithGoogleIdentity("envoy-listener"))
+		if _, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}); err != nil {
+			t.Fatalf("a send whose first Google token the listener refused: %v", err)
+		}
+		if len(seen) != 2 || seen[0] != "Bearer "+first || seen[1] != "Bearer "+second {
+			t.Fatalf("the listener saw %d tries, want the first token then a freshly minted one", len(seen))
+		}
+	})
+
+	t.Run("concurrent callers share one mint, and a caller whose context ends stops waiting", func(t *testing.T) {
+		token := accountToken(t, "dispatch@example-project.iam.gserviceaccount.com", time.Now().Add(time.Hour))
+		release := make(chan struct{})
+		var minted atomic.Int32
+		metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			minted.Add(1)
+			<-release
+			w.Header().Set("Metadata-Flavor", "Google")
+			_, _ = w.Write([]byte(token))
+		}))
+		defer metadata.Close()
+		t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
+		identity := &googleIdentity{audience: "envoy-listener"}
+		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		if _, err := identity.token(short, time.Now()); !errors.Is(err, ErrAccountToken) {
+			t.Fatalf("a caller whose context ended during the mint = %v, want ErrAccountToken", err)
+		}
+		results := make(chan string, 3)
+		for range 3 {
+			go func() {
+				got, err := identity.token(context.Background(), time.Now())
+				if err != nil {
+					got = "error: " + err.Error()
+				}
+				results <- got
+			}()
+		}
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+		for range 3 {
+			if got := <-results; got != token {
+				t.Fatalf("a caller waiting on the shared mint got %q, want the minted token", got)
+			}
+		}
+		if n := minted.Load(); n != 1 {
+			t.Fatalf("the metadata server was asked %d times by four callers, want once", n)
 		}
 	})
 }

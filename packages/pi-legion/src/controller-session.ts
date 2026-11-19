@@ -8,6 +8,7 @@ import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import { claimRoleAgainOnBusy } from "@legion/pi-shared/legion-claim-core";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import {
@@ -335,7 +336,15 @@ export function createControllerSession(deps: {
       }
       startMessageSent = true;
     }
-    await claimEnvoyRole(sessionID, registration.claimToken, envoyContext);
+    // A claim the listener answered 503 wrote nothing - every try met a conflict, or the takeover
+    // record a claim writes first did not store - and is made again after a growing wait, as the
+    // claim boot makes it (claimRoleAgainOnBusy), rather than exiting the daemon-launched
+    // controller for a relaunch that would meet the same 503.
+    await claimRoleAgainOnBusy(
+      () => claimEnvoyRole(sessionID, registration.claimToken, envoyContext),
+      registration.claimToken,
+      { log: (line) => logger.warn(`[legion] ${line}`) }
+    );
     await subscribeLegionNotice(
       sessionID,
       legionControllerNoticeSubject(project),

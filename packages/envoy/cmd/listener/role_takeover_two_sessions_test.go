@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -83,37 +85,55 @@ func crashTakenBackBeforeItsRelayRan(t *testing.T) {
 }
 
 // (15) A comes back on a listener of the release before this change, whose relay sends every frame
-// whoever holds its role (relayOfReleaseBefore): A receives the frame though B holds the role, and
-// B has the copy, so the role message reaches both, each once (R4; a roll that runs both releases
-// at once). The control is the same return on this release's relay, which copies the frame, a
-// duplicate, and acknowledges it, so A does not receive it.
+// whoever holds its role: the row stands in for that relay as it was, pulling A's session consumer
+// and taking and acknowledging each frame (bus.SessionConsumers.Pull), with no code of this
+// release's relay. A receives the frame though B holds the role, and B has the copy, so the role
+// message reaches both, each once (R4; a roll that runs both releases at once). The control is the
+// same return on this release's relay, which copies the frame, a duplicate, and acknowledges it, so
+// A does not receive it.
 func crashRelayOfTheReleaseBefore(t *testing.T) {
-	for _, row := range []struct {
-		name          string
-		suffix        string
-		releaseBefore bool
-		wantA         int
-	}{
-		{"case: A's relay of the release before sends the frame: A and B each receive it once", "15", true, 1},
-		{"control: A's relay of this release copies the frame and A does not receive it", "15c", false, 0},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			rig, event, toB := twoSessionStart(t, row.suffix)
-			a := "ses_cr" + row.suffix + "_a"
-			if row.releaseBefore {
-				setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayOfReleaseBefore: func(sessionID string) bool { return sessionID == a }})
+	t.Run("case: A's relay of the release before sends the frame: A and B each receive it once", func(t *testing.T) {
+		rig, event, toB := twoSessionStart(t, "15")
+		const a = "ses_cr15_a"
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		pull, err := rig.consumers.Pull(ctx, a)
+		if err != nil {
+			t.Fatalf("pull %s's session consumer as the release before's relay does: %v", a, err)
+		}
+		defer pull.Stop()
+		got := 0
+		for got == 0 {
+			message, err := pull.Next(ctx)
+			if err != nil {
+				t.Fatalf("%s's consumer handed no frame of %s to the release before's relay: %v", a, event, err)
 			}
-			back := startSessionStandIn(t, rig.url, a, answerDone)
-			rig.register(rig.mux, a, "epoch-2")
-			awaitAcked(t, rig.consumers, a, rig.seqOn(contracts.LegacyAgentSubject(a), event))
-			if got := twoSessionReceived(back, event, nil); got != row.wantA {
-				t.Fatalf("%s received %s %d times, want %d", a, event, got, row.wantA)
+			var item contracts.Envelope
+			if json.Unmarshal(message.Data, &item) == nil && item.EventID == event {
+				got++
 			}
-			if got := twoSessionReceived(toB, event, nil); got != 0 {
-				t.Fatalf("B received %s %d more times after the copy, want none", event, got)
+			if err := message.Ack(); err != nil {
+				t.Fatalf("acknowledge %s's frame: %v", a, err)
 			}
-		})
-	}
+		}
+		awaitAcked(t, rig.consumers, a, rig.seqOn(contracts.LegacyAgentSubject(a), event))
+		if got := twoSessionReceived(toB, event, nil); got != 0 {
+			t.Fatalf("B received %s %d more times after the copy, want none", event, got)
+		}
+	})
+	t.Run("control: A's relay of this release copies the frame and A does not receive it", func(t *testing.T) {
+		rig, event, toB := twoSessionStart(t, "15c")
+		const a = "ses_cr15c_a"
+		back := startSessionStandIn(t, rig.url, a, answerDone)
+		rig.register(rig.mux, a, "epoch-2")
+		awaitAcked(t, rig.consumers, a, rig.seqOn(contracts.LegacyAgentSubject(a), event))
+		if got := twoSessionReceived(back, event, nil); got != 0 {
+			t.Fatalf("%s received %s %d times, want none", a, event, got)
+		}
+		if got := twoSessionReceived(toB, event, nil); got != 0 {
+			t.Fatalf("B received %s %d more times after the copy, want none", event, got)
+		}
+	})
 }
 
 // takeBack is rows 16 and 17's run: A takes the role and is sent two role-lane messages; it reads

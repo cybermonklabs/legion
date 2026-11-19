@@ -692,7 +692,9 @@ func newRelayBench(b *testing.B) *relayBench {
 		}
 	}
 	serve("/v1/interests/subscribe", consumerRegistration(relayBenchSession, "epoch-1"))
-	serve("/v1/roles/set", `{"session_id":"`+relayBenchSession+`","role":"`+relayBenchRole+`"}`)
+	if recorder := postRoleClaim(mux, relayBenchSession, relayBenchRole, "", false); recorder.Code != http.StatusOK {
+		b.Fatalf("claim %s: status %d, body %s; want 200", relayBenchRole, recorder.Code, recorder.Body.String())
+	}
 	return bench
 }
 

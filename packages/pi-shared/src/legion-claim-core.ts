@@ -59,6 +59,8 @@ export interface LegionClaimHost {
    * doubled at each retry up to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`. Unset, `ROLE_CLAIM_RETRY_FIRST_DELAY_MS`;
    * a test sets it short. */
   readonly roleClaimRetryFirstDelayMs?: number;
+  /** Aborts when the host stops: a claim the listener answered 503 is not made again after it. */
+  readonly signal?: AbortSignal;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
    * holder, with why it did (`reclaimed`, `reregistered`). */
   readonly onRoleRegained: (listener: (role: string, reason: string) => Promise<void>) => void;
@@ -233,24 +235,14 @@ function claimRoleAtFirstTurn(
     ran = true;
     clearTimeout(bound);
     void (async () => {
-      let wait = host.roleClaimRetryFirstDelayMs ?? ROLE_CLAIM_RETRY_FIRST_DELAY_MS;
-      for (;;) {
-        try {
-          await host.claimRole(role);
-          break;
-        } catch (error) {
-          if (!listenerAskedToClaimAgain(error)) {
-            stopAfterRegistration(host, role, error);
-            break;
-          }
-          host.log(
-            `claim of Envoy role ${role} was answered 503, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
-          );
-          const waited = Promise.withResolvers<void>();
-          setTimeout(waited.resolve, wait);
-          await waited.promise;
-          wait = Math.min(wait * 2, ROLE_CLAIM_RETRY_MAX_DELAY_MS);
-        }
+      try {
+        await claimRoleAgainOnBusy(() => host.claimRole(role), role, {
+          log: host.log,
+          firstDelayMs: host.roleClaimRetryFirstDelayMs,
+          signal: host.signal,
+        });
+      } catch (error) {
+        if (!host.signal?.aborted) stopAfterRegistration(host, role, error);
       }
       done.resolve();
     })();
@@ -264,6 +256,51 @@ function claimRoleAtFirstTurn(
 /** The first wait before a claim the listener answered 503 is made again, and the longest. */
 const ROLE_CLAIM_RETRY_FIRST_DELAY_MS = 1_000;
 const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
+
+/**
+ * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
+ * 503 (`listenerAskedToClaimAgain`): the listener wrote no claim - every try of its write met a
+ * conflict, or the takeover record a claim writes first did not store - and asks for the claim
+ * again. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
+ * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait; the timer is unref'd, so it
+ * holds no process open. Any other failure is thrown at once, for the caller to stop on. An aborted
+ * `signal` - the host stopping - ends the waiting with the last 503 thrown and claims no more, so
+ * no claim after a stop makes a session the host ended live again.
+ */
+export async function claimRoleAgainOnBusy(
+  claim: () => Promise<void>,
+  role: string,
+  options: {
+    readonly log: (line: string) => void;
+    readonly firstDelayMs?: number | undefined;
+    readonly signal?: AbortSignal | undefined;
+  }
+): Promise<void> {
+  let wait = options.firstDelayMs ?? ROLE_CLAIM_RETRY_FIRST_DELAY_MS;
+  for (;;) {
+    try {
+      await claim();
+      return;
+    } catch (error) {
+      if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
+      options.log(
+        `claim of Envoy role ${role} was answered 503, so nothing was claimed; claiming it again in ${wait} ms: ${messageFor(error)}`
+      );
+      const waited = Promise.withResolvers<void>();
+      const timer = setTimeout(waited.resolve, wait);
+      timer.unref?.();
+      const abort = (): void => {
+        clearTimeout(timer);
+        waited.resolve();
+      };
+      options.signal?.addEventListener("abort", abort, { once: true });
+      await waited.promise;
+      options.signal?.removeEventListener("abort", abort);
+      if (options.signal?.aborted) throw error;
+      wait = Math.min(wait * 2, ROLE_CLAIM_RETRY_MAX_DELAY_MS);
+    }
+  }
+}
 
 /**
  * Whether `error` is the listener's 503 to a role claim: an `EnvoyApiError` whose status is 503.
