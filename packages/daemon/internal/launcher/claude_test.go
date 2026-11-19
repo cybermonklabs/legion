@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -709,4 +710,137 @@ func TestAClaudeSaveTakesEverySaveThatMayHaveLandedAsSavedWhenTheRowMovedToIt(t 
 			t.Errorf("the keeper logged %q, want it to say it stops saving %s", c.log.String(), c.record)
 		}
 	})
+}
+
+// A Claude Code session's files are the role's, and the keeper that restores and saves them runs
+// in the launcher, its container's PID 1, so it never waits on what a role put at their paths and
+// never reads more of them than it needs. A fifo where a resume restores the transcript, or where a
+// save opens it, is refused at once in words naming it and left a fifo, where a plain open would
+// wait for a writer for as long as none comes. A file longer than its row, here the row, one more
+// line and a 64 MiB hole, is taken as an extension of the row and left as it is, with no more of it
+// read than one byte past the row: the restore allocates a small fraction of what a read of the
+// whole file would hold in memory.
+func TestAClaudeRestoreAndSaveRefuseAFifoAndReadNoFurtherThanTheRow(t *testing.T) {
+	ctx := context.Background()
+	_, dsnFile := testdb.DSNFile(t, "legion_launcher_keeper_test")
+	conn, err := ompsessions.Connect(ctx, dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	if err := ompsessions.CreateTables(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	k := &claudeKeeper{log: io.Discard, session: claudeSession, conn: conn,
+		appendRow: ompsessions.Append, replaceRow: ompsessions.Replace}
+	row := "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
+	// transcript is a transcript at a path of the subtest's own, nothing saved of it yet, whose
+	// row the table holds as row when seeded.
+	transcript := func(t *testing.T, seeded bool) *keptFile {
+		t.Helper()
+		f := &keptFile{path: filepath.Join(t.TempDir(), claudeSession+".jsonl"), lines: true, keptState: keptState{saved: ompsessions.Absent}}
+		if seeded {
+			if err := ompsessions.Replace(ctx, conn, f.path, ompsessions.Absent, []byte(row), time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return f
+	}
+
+	t.Run("a fifo where the transcript should be", func(t *testing.T) {
+		f := transcript(t, true)
+		refusesFifo(t, f.path, "the restore", func() error { return k.restore(ctx, f) })
+	})
+
+	t.Run("a fifo the save opens", func(t *testing.T) {
+		// No row: the save meets the file before it asks the table anything.
+		f := transcript(t, false)
+		refusesFifo(t, f.path, "the save", func() error { return k.saveChanges(ctx, f) })
+	})
+
+	t.Run("a file longer than the row", func(t *testing.T) {
+		f := transcript(t, true)
+		head := row + "{\"n\":4}\n"
+		write(t, f.path, head, time.Now())
+		// A hole costs the disk nothing, and a whole read of the file 64 MiB of memory.
+		size := int64(len(head)) + 64<<20
+		if err := os.Truncate(f.path, size); err != nil {
+			t.Fatal(err)
+		}
+		allocated := func() uint64 {
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			return stats.TotalAlloc
+		}
+		before := allocated()
+		err := k.restore(ctx, f)
+		spent := allocated() - before
+		t.Logf("the restore over a file of %d bytes and a row of %d allocated %d bytes", size, len(row), spent)
+		if err != nil {
+			t.Fatalf("the restore over a file longer than its row: %v", err)
+		}
+		if !f.extends || f.saved != int64(len(row)) {
+			t.Errorf("the restore left extends %t and %d bytes saved, want the file taken as an extension of the row's %d", f.extends, f.saved, len(row))
+		}
+		file, err := os.Open(f.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := make([]byte, len(head))
+		if _, err := io.ReadFull(file, first); err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != size || string(first) != head {
+			t.Errorf("after the restore the file is %d bytes beginning %q, want it left at %d bytes beginning %q", info.Size(), first, size, head)
+		}
+		if spent >= 1<<20 {
+			t.Errorf("the restore allocated %d bytes over a file of %d and a row of %d: it read the file further than one byte past the row", spent, size, len(row))
+		}
+	})
+}
+
+// refusesFifo makes a fifo at path and fails the test unless call, the keeper's step that opens
+// path (what names it in the failures), refuses it at once in words naming it and leaves it a
+// fifo. A call that has not answered in ten seconds, as a plain open of a fifo waits for a writer,
+// fails the test rather than hold its binary: the fifo is then opened read-write, which releases
+// such an open, and the call is let end before the test's directory is removed.
+func refusesFifo(t *testing.T, path, what string, call func() error) {
+	t.Helper()
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	answer := make(chan error, 1)
+	go func() { answer <- call() }()
+	var err error
+	select {
+	case err = <-answer:
+	case <-time.After(10 * time.Second):
+		t.Cleanup(func() {
+			// Read-write and without blocking, so this open needs no reader waiting on it.
+			if fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0); err == nil {
+				_ = syscall.Close(fd)
+			}
+			select {
+			case <-answer:
+			case <-time.After(10 * time.Second):
+				t.Errorf("%s still waits on %s after the fifo was opened", what, path)
+			}
+		})
+		t.Fatalf("%s has not answered in 10s: it waits on the fifo %s", what, path)
+	}
+	if want := path + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("%s answered %v, want a refusal saying %q", what, err, want)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("after %s %s is %v, want the fifo it was", what, path, info.Mode())
+	}
 }
