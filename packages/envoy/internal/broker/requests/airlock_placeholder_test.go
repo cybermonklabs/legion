@@ -87,7 +87,7 @@ func wellFormed(t *testing.T, what, placeholder string) {
 	t.Helper()
 	rest, ok := strings.CutPrefix(placeholder, PlaceholderPrefix)
 	if !ok || len(rest) != placeholderLength || strings.ContainsFunc(rest, func(r rune) bool { return !strings.ContainsRune(placeholderAlphabet, r) }) {
-		t.Errorf("%s = %q; want %s and %d characters of %s", what, placeholder, PlaceholderPrefix, placeholderLength, placeholderAlphabet)
+		t.Errorf("%s = %q; want %s and %d bytes of %s", what, placeholder, PlaceholderPrefix, placeholderLength, placeholderAlphabet)
 	}
 }
 

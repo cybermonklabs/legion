@@ -56,12 +56,12 @@ func TestHeavyDocumentWriteVerdicts(t *testing.T) {
 		}, "alice")
 		if stored {
 			if response.Code != http.StatusCreated {
-				t.Fatalf("%s (%d characters): status=%d body=%s, want 201", name, len(body), response.Code, response.Body.String())
+				t.Fatalf("%s (%d bytes): status=%d body=%s, want 201", name, len(body), response.Code, response.Body.String())
 			}
 			return
 		}
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_MARKDOWN"`) {
-			t.Fatalf("%s (%d characters): status=%d body=%s, want 400 INVALID_MARKDOWN", name, len(body), response.Code, response.Body.String())
+			t.Fatalf("%s (%d bytes): status=%d body=%s, want 400 INVALID_MARKDOWN", name, len(body), response.Code, response.Body.String())
 		}
 	}
 	for index, heavy := range heavyWrites() {

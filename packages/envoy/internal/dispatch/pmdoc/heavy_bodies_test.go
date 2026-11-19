@@ -70,7 +70,7 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime(t *testing.T) {
 		t.Run(shape.Name, func(t *testing.T) {
 			body := shape.Grow()
 			if len(body) > heavybodies.BlockCap {
-				t.Fatalf("%s is %d characters, past the %d one block may hold", shape.Name, len(body), heavybodies.BlockCap)
+				t.Fatalf("%s is %d bytes, past the %d one block may hold", shape.Name, len(body), heavybodies.BlockCap)
 			}
 			var err error
 			took := timedWithDeadline(t, "parsing "+shape.Name, perCallDeadline(t), func() (time.Duration, error) {
@@ -83,9 +83,9 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime(t *testing.T) {
 			} else if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), shape.Refusal) {
 				t.Fatalf("%s: %v, want ErrSchema saying %q", shape.Name, err, shape.Refusal)
 			}
-			t.Logf("%s: %d characters in %s of CPU time", shape.Name, len(body), took.Round(time.Millisecond))
+			t.Logf("%s: %d bytes in %s of CPU time", shape.Name, len(body), took.Round(time.Millisecond))
 			if took > heavyBodyCPUBudget {
-				t.Fatalf("%s took %s of CPU time, past the %s a body of %d characters may spend",
+				t.Fatalf("%s took %s of CPU time, past the %s a body of %d bytes may spend",
 					shape.Name, took.Round(time.Millisecond), heavyBodyCPUBudget, len(body))
 			}
 		})
@@ -108,7 +108,7 @@ func TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength(t *testing
 				var err error
 				took, measureErr := cpuTimeOf(again(func() { _, err = ParseForWrite(body, nil) }))
 				if err != nil {
-					return 0, fmt.Errorf("parsing %d characters of %s: %w", size, shape.Name, err)
+					return 0, fmt.Errorf("parsing %s at size %d: %w", shape.Name, size, err)
 				}
 				return took, measureErr
 			})
@@ -158,10 +158,10 @@ func TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength(t 
 					}
 				})
 				if err != nil {
-					return 0, fmt.Errorf("writing %d characters of %s: %w", size, shape.Name, err)
+					return 0, fmt.Errorf("writing %s at size %d: %w", shape.Name, size, err)
 				}
 				if len(update) == 0 {
-					return 0, fmt.Errorf("writing %d characters of %s encoded no update", size, shape.Name)
+					return 0, fmt.Errorf("writing %s at size %d encoded no update", shape.Name, size)
 				}
 				return took, measureErr
 			})

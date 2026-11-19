@@ -282,7 +282,7 @@ func TestADocumentWhoseReferenceKeyLeavesNoRoomForABlockIDIsStillWritten(t *test
 		"name": name, "content": "A paragraph of the long-named document.\n",
 	}, "alice")
 	if uploaded.Code != http.StatusCreated {
-		t.Fatalf("upload a document named with 2680 characters: status=%d body=%.400s, want 201 as main answers", uploaded.Code, uploaded.Body.String())
+		t.Fatalf("upload a document named with 2680 hex characters: status=%d body=%.400s, want 201 as main answers", uploaded.Code, uploaded.Body.String())
 	}
 	artifact := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
@@ -315,7 +315,7 @@ func TestTextCitingABlockOfALongNamedDocumentIsStillWritten(t *testing.T) {
 		"name": name, "content": boundCallout("x"),
 	}, "alice")
 	if uploaded.Code != http.StatusCreated {
-		t.Fatalf("upload a document named with 2680 characters: status=%d body=%.400s", uploaded.Code, uploaded.Body.String())
+		t.Fatalf("upload a document named with 2680 hex characters: status=%d body=%.400s", uploaded.Code, uploaded.Body.String())
 	}
 	cited := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
@@ -350,7 +350,7 @@ func TestACommentCitingATargetPastTheBoundPosts(t *testing.T) {
 				"body": "See " + test.cited + " and dispatch://" + issue.Key + ".",
 			}, "alice")
 			if created.Code != http.StatusCreated {
-				t.Fatalf("post a comment citing %s of 3200 characters: status=%d body=%.400s", test.name, created.Code, created.Body.String())
+				t.Fatalf("post a comment citing %s of 3200 hex characters: status=%d body=%.400s", test.name, created.Code, created.Body.String())
 			}
 			comment := decodeBody[model.Comment](t, created)
 			var targets []string
@@ -457,7 +457,7 @@ func TestAnAnchorInsideABlockWhoseIDIsPastTheBoundIsWritten(t *testing.T) {
 			write.field: write.text, "anchor": map[string]string{"artifact": "spec", "quote": write.quote},
 		}, "alice")
 		if created.Code != http.StatusCreated {
-			t.Errorf("anchor a %s inside the block of a 3200-character id: status=%d body=%.400s log=%.600s", write.name, created.Code, created.Body.String(), logs.Lines("SQLSTATE"))
+			t.Errorf("anchor a %s inside the block of an id of 3200 hex characters: status=%d body=%.400s log=%.600s", write.name, created.Code, created.Body.String(), logs.Lines("SQLSTATE"))
 			continue
 		}
 		if anchored := decodeBody[anchoredRecord](t, created); anchored.Anchor.BlockID != long {

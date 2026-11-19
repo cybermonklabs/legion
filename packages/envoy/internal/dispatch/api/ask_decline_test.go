@@ -249,7 +249,7 @@ func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
 		t.Fatalf("decline with a note at the bound: status=%d body=%.200s", declined.Code, declined.Body.String())
 	}
 	if stored := storedAskResolution(t, database, atTheBound); stored.Reason != longest {
-		t.Fatalf("the note at the bound was stored as %d characters, want all %d", len(stored.Reason), len(longest))
+		t.Fatalf("the note at the bound was stored as %d bytes, want all %d", len(stored.Reason), len(longest))
 	}
 	overTheBound := openAskAs(t, handler, issue.Key, "session-asking", "Which transport, declined over the bound?")
 	over := longest + "a"

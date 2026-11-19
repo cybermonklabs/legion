@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -497,9 +498,9 @@ func TestCrossProjectRelatedOffersAnAskMatchedThroughTwoPartsOnce(t *testing.T) 
 		strings.Repeat("The page cache holds the rendered pages a reader asks for most often. ", 20)
 	answer := "Drop the page cache first. " +
 		strings.Repeat("The index cache is dearer to rebuild, since every shard is read again. ", 20)
-	if len(question) < itemblocks.WindowTextChars || len(answer) < itemblocks.WindowTextChars {
+	if utf8.RuneCountInString(question) < itemblocks.WindowTextChars || utf8.RuneCountInString(answer) < itemblocks.WindowTextChars {
 		t.Fatalf("the seeded question (%d chars) and answer (%d chars) must each be longer than a window of %d",
-			len(question), len(answer), itemblocks.WindowTextChars)
+			utf8.RuneCountInString(question), utf8.RuneCountInString(answer), itemblocks.WindowTextChars)
 	}
 	offered := seedAnsweredQuestion(t, handler, database, embedder, owner, question, answer, 0.9, 2)
 	refreshTermStats(t, database, "XTWO")

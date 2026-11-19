@@ -95,7 +95,7 @@ func TestAProberBuildsTheProbeSandboxTheDaemonBuilds(t *testing.T) {
 	daemonName := probeName(full.project, testDigestHex, full.probeRun)
 	proberName := probeName(prober.r.project, testDigestHex, prober.r.probeRun)
 	if proberName != daemonName+"-"+prober.r.probeRun || len(proberName) > maxNameLength {
-		t.Fatalf("the Prober's probe Sandbox is %q, want the daemon's %q and its run, within %d characters", proberName, daemonName, maxNameLength)
+		t.Fatalf("the Prober's probe Sandbox is %q, want the daemon's %q and its run, within %d bytes", proberName, daemonName, maxNameLength)
 	}
 	shutdown := time.Date(2026, 10, 12, 21, 0, 0, 0, time.UTC)
 	want, err := encodeProbe(full.probeManifest(daemonName, probeOptions(t), shutdown))

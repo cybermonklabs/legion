@@ -42,7 +42,7 @@ func TestNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 			err:  []string{`hostname "a"`, "^[a-z][a-z0-9-]{0,24}[a-z0-9]$"},
 		},
 		{
-			name: "a 27-character hostname",
+			name: "a hostname of 27 ASCII letters",
 			edit: func(a *gcp.NatsHubArgs) { a.Hostname = "a" + strings.Repeat("b", 26) },
 			err:  []string{`hostname "a` + strings.Repeat("b", 26) + `"`},
 		},

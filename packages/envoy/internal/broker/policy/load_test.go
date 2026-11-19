@@ -716,10 +716,10 @@ func TestLoadOneMakesNoCallForAnIDPastSecretsManagersNameLimit(t *testing.T) {
 
 	atLimit := "A" + strings.Repeat("B", 512-len(policytest.Prefix)-1)
 	if lk, err := loader.LoadOne(ctx, atLimit); err != nil || lk.Served || lk.Reason != policy.ReasonAbsent || count.Calls.Load() != 1 {
-		t.Fatalf("LoadOne(a name whose id is 512 characters) = %+v, %v after %d DescribeSecret calls; want absent after one", lk, err, count.Calls.Load())
+		t.Fatalf("LoadOne(a name whose id is 512 ASCII characters) = %+v, %v after %d DescribeSecret calls; want absent after one", lk, err, count.Calls.Load())
 	}
 	if lk, err := loader.LoadOne(ctx, atLimit+"C"); !errors.Is(err, policy.ErrNameInvalid) || count.Calls.Load() != 1 {
-		t.Fatalf("LoadOne(a name whose id is 513 characters) = %+v, %v after %d DescribeSecret calls; want ErrNameInvalid with no further call", lk, err, count.Calls.Load())
+		t.Fatalf("LoadOne(a name whose id is 513 ASCII characters) = %+v, %v after %d DescribeSecret calls; want ErrNameInvalid with no further call", lk, err, count.Calls.Load())
 	}
 }
 

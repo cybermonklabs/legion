@@ -544,7 +544,7 @@ func TestNatsHubDerivedNamesFitGCPForTheShortestAndLongestHostname(t *testing.T)
 	dnsLabel := regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
 	for _, hostname := range []string{"ab", "a" + strings.Repeat("b0", 12) + "c"} {
-		t.Run(fmt.Sprintf("%d characters", len(hostname)), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%d bytes", len(hostname)), func(t *testing.T) {
 			args := exampleArgs()
 			args.Hostname = hostname
 			var natsURL string

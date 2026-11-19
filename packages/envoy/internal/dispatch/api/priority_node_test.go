@@ -477,7 +477,7 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 	atLimit := strings.Repeat("a", contracts.IssueTitleMax)
 	made := createTestPriority(t, handler, map[string]any{"id": "long-title", "title": "  " + atLimit + "  "}, "alice")
 	if made.Title != atLimit {
-		t.Fatalf("the created title is %d characters, want the %d it was sent without its spaces", len(made.Title), contracts.IssueTitleMax)
+		t.Fatalf("the created title is %d bytes, want the %d it was sent without its spaces", len(made.Title), contracts.IssueTitleMax)
 	}
 	overTitle := atLimit + "a"
 	refuse("a create whose title is past the bound", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
@@ -485,14 +485,14 @@ func TestPriorityTitleAndIDAreBounded(t *testing.T) {
 	refuse("a rename past the bound", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/long-title",
 		map[string]any{"title": overTitle}, "alice"), contracts.IssueTitleMax)
 	if got := readTestPriority(t, handler, "long-title"); got.Title != atLimit {
-		t.Fatalf("the refused rename left a title of %d characters, want the %d it had", len(got.Title), contracts.IssueTitleMax)
+		t.Fatalf("the refused rename left a title of %d bytes, want the %d it had", len(got.Title), contracts.IssueTitleMax)
 	}
 
 	// An id at the bound is written. One past it, one far past the btree's own bound, and one
 	// derived from a title past it are each refused, and none is a 500.
 	if atBound := strings.Repeat("b", priorityIDMax); createTestPriority(t, handler,
 		map[string]any{"id": atBound, "title": "At the bound"}, "alice").ID != atBound {
-		t.Fatalf("the id of %d characters was not written as it was sent", priorityIDMax)
+		t.Fatalf("the id of %d code points was not written as it was sent", priorityIDMax)
 	}
 	refuse("a create whose id is one past the bound", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
 		map[string]any{"id": strings.Repeat("c", priorityIDMax+1), "title": "One past"}, "alice"), priorityIDMax)

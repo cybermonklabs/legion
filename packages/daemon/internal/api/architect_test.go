@@ -1207,7 +1207,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 		t.Fatalf("close with a reason of six blocks = %d: %s", closedLong.Code, closedLong.Body)
 	}
 	if got := facts.recorded(); len(got) != 2 || got[1] != (intake.CloseRoot{Issue: "LEGION-208", Reason: long}) {
-		t.Fatalf("close facts = %#v, want the 40,000-character reason applied whole", got)
+		t.Fatalf("close facts = %#v, want the reason of 40,000 ASCII characters applied whole", got)
 	}
 }
 

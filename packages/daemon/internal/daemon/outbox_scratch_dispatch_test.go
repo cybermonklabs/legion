@@ -124,12 +124,12 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
 	if want := packet.Posted(id); len(bodies) != 1 || bodies[0] != want {
-		t.Fatalf("Dispatch messages = %d of %d characters, want the 40,000-character packet posted once, whole, under row %d's marker",
+		t.Fatalf("Dispatch messages = %d of %d bytes, want the 40,000-byte packet posted once, whole, under row %d's marker",
 			len(bodies), len(strings.Join(bodies, "")), id)
 	}
 	cut, truncated := messageCreatedEvent(t, baseURL, token, issue)
 	if !truncated || strings.Contains(cut, record.MessageMarker(id)) {
-		t.Fatalf("the message.created event carries %d characters (truncated=%v), want a cut body with no marker in it", len(cut), truncated)
+		t.Fatalf("the message.created event carries %d bytes (truncated=%v), want a cut body with no marker in it", len(cut), truncated)
 	}
 }
 

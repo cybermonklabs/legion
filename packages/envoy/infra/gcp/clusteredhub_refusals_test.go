@@ -72,10 +72,10 @@ func TestClusteredNatsHubResolverRefusesInvalidInputs(t *testing.T) {
 
 		{"no namespace", func(a *A) { a.Namespace = "" }, "namespace", []string{`namespace ""`}},
 		{"a namespace with an underscore", func(a *A) { a.Namespace = "en_voy" }, "namespace", []string{`namespace "en_voy"`}},
-		{"a 64-character namespace", func(a *A) { a.Namespace = strings.Repeat("a", 64) }, "namespace", []string{"DNS label"}},
+		{"a 64-byte namespace", func(a *A) { a.Namespace = strings.Repeat("a", 64) }, "namespace", []string{"DNS label"}},
 
 		{"a service name starting with a digit", func(a *A) { a.ServiceName = "1nats" }, "serviceName", []string{`serviceName "1nats"`, "DNS-1035"}},
-		{"a 64-character service name", func(a *A) { a.ServiceName = strings.Repeat("a", 64) }, "serviceName", []string{"DNS-1035"}},
+		{"a 64-byte service name", func(a *A) { a.ServiceName = strings.Repeat("a", 64) }, "serviceName", []string{"DNS-1035"}},
 
 		{"a NATS image without a digest", func(a *A) { a.NatsImage = "example.invalid/nats:2.15.1" }, "natsImage", []string{`natsImage "example.invalid/nats:2.15.1"`, "@sha256:"}},
 		{"a reloader image without a digest", func(a *A) { a.ReloaderImage = "example.invalid/reloader:0.24.0" }, "reloaderImage", []string{"@sha256:"}},

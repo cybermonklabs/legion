@@ -181,7 +181,7 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: "projects.DEMO.experiments must be a mapping of an experiment's name to its block"},
 		{name: "an experiment name outside the pattern", block: "{Alpha: {variants: [{name: only}]}}",
 			want: `projects.DEMO.experiments key "Alpha" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
-		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("a", 33) + ": {variants: [{name: only}]}}",
+		{name: "an experiment name of 33 ASCII letters", block: "{" + strings.Repeat("a", 33) + ": {variants: [{name: only}]}}",
 			want: `projects.DEMO.experiments key "` + strings.Repeat("a", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
 		{name: "an empty experiment name", block: `{"": {variants: [{name: only}]}}`,
 			want: `projects.DEMO.experiments key "" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
@@ -307,8 +307,9 @@ func TestProjectExperimentsHoldTheirArmsToTheTelemetryBound(t *testing.T) {
 		return experimentsFile(block.String()+strings.Repeat("d", 21)+": {variants: [{name: "+strings.Repeat("e", arm)+"}]}}", "")
 	}
 	if _, err := Load(writeConfigFile(t, file(21)), noEnv); err != nil {
-		t.Fatalf("Load of experiments whose longest arms make 255 characters: %v", err)
+		t.Fatalf("Load of experiments whose longest arms make 255 ASCII characters: %v", err)
 	}
+	// characters: ASCII alone, experimentNamePattern admits a-z, 0-9 and '-' in every name, and SpendArmsValue joins them with ':' and ','.
 	want := "projects.DEMO declares experiments whose arms one launch could name in legion.arms in 256 characters, over the 255 the agent's telemetry takes: shorten the experiments' or their variants' names, or declare fewer experiments"
 	if _, err := Load(writeConfigFile(t, file(22)), noEnv); err == nil || err.Error() != want {
 		t.Fatalf("Load error = %v, want %q", err, want)

@@ -271,7 +271,7 @@ func TestAnEscapeWeighsAnElement(t *testing.T) {
 		t.Fatalf("plain text of %d underscores: %v, want it taken", MaxDocumentElements, err)
 	}
 	if err := NewWriteBudget().RefusePlainText(strings.Repeat(")_", MaxDocumentElements/2), strings.Repeat("~a", MaxDocumentElements/2+1)); !errors.Is(err, ErrTooManyElements) {
-		t.Fatalf("plain text of %d syntax characters: %v, want ErrTooManyElements", MaxDocumentElements+1, err)
+		t.Fatalf("plain text of %d underscores and tildes: %v, want ErrTooManyElements", MaxDocumentElements+1, err)
 	}
 	if err := NewWriteBudget().RefusePlainText(strings.Repeat("a\n", MaxDocumentElements/2+1)); !errors.Is(err, ErrTooManyElements) {
 		t.Fatalf("plain text of %d line feeds: %v, want ErrTooManyElements", MaxDocumentElements/2+1, err)
