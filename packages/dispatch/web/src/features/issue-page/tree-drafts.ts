@@ -10,6 +10,7 @@ import type {
   Decision,
   DisplayTree,
   IssueChild,
+  IssueCoverage,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
@@ -98,9 +99,7 @@ export interface Draft {
   answer?: NodeAnswer;
   chips: NodeChip[];
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
-   *  every other draft, a statement of the spec drawn before that read answers among them, which
-   *  is how the review list tells a requirement the coverage read holds from every other
-   *  (`treeDrafts`). */
+   *  every other draft, a statement of the spec drawn before that read answers among them. */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -222,6 +221,33 @@ export function nodeIdOf(
       return route.id;
     }
     return route.kind === "issue" ? key : undefined;
+  };
+}
+
+/**
+ * Whether a reference names a statement of `issue` as the review list reads one (R35): a
+ * requirement the coverage read `coverage` holds, each compared as the tree addresses it - the
+ * requirement by the node `addRequirements` draws for it, the reference by `nodeIdOf` - so the
+ * spec's block written short (`spec#b-…`) and by the spec's own slug name the same requirement,
+ * and another issue's address names none. Nothing is one while that read has not answered, and
+ * no other block is one: not a `requirement` block of the spec that read does not hold, which
+ * its row draws as a statement all the same (`Draft.statement`), nor a block of any other
+ * document. It is the one rule both readers of the list read, the tree's `waiting`
+ * (`addDecisions`) and the header's count, whose caller hands it to `waitingOnReader`, so the
+ * count counts the very decisions the tree marks.
+ */
+export function coverageStatements(
+  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,
+  coverage: IssueCoverage | undefined
+): (reference: string) => boolean {
+  const specSlug = primarySpec(issue)?.slug ?? "";
+  const statements = new Set(
+    (coverage?.requirements ?? []).map((requirement) => blockNodeId(specSlug, requirement.block_id))
+  );
+  const nodeIdOfReference = nodeIdOf(issue);
+  return (reference: string): boolean => {
+    const id = nodeIdOfReference(reference);
+    return id !== undefined && statements.has(id);
   };
 }
 
@@ -511,27 +537,6 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addDecisions(drafts, reads, context, asks, changes);
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
-  // What waits for the reader's review is the review list's one rule (R35): the tie to a
-  // statement decides it, and a decision the reader asked to change waits on its agent, not on
-  // the reader (`decision-review.ts`). The list reads a statement as a requirement the coverage
-  // read holds - a draft `addRequirements` gave that read's counts - as the header's count is
-  // handed the coverage read's statements (`waitingOnReader`'s `isStatement`), and not as the
-  // rows read one (`Draft.statement`): a spec's `requirement` block drawn before that read
-  // answers is a statement on its row, and a tie to it still puts no decision on the list until
-  // the read holds it; one of another document is a block and nothing more either way. It is
-  // read once every statement has its draft. Nothing waits on a reader whose login has not
-  // resolved, as `waiting.ts` counts it.
-  for (const decision of reads.decisions?.decisions ?? []) {
-    const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
-    if (draft === undefined) continue;
-    draft.waiting =
-      context.viewer !== undefined &&
-      inReviewList(
-        decision,
-        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined,
-        changes.has(decision.ref)
-      );
-  }
   servePlacements(drafts, context);
   addDocumentChips(drafts, reads, context);
   return drafts;
@@ -942,6 +947,12 @@ function addDecisions(
     "artifact",
     decisionsDocumentId(reads.issue.artifacts, reads.decisions)
   );
+  // A decision waits for the reader's review where it is on their review list (R35), which
+  // reads a statement as a requirement the coverage read holds (`coverageStatements`), the rule
+  // the header's count is handed too (`waitingOnReader`), and not as the rows read one
+  // (`Draft.statement`): a spec's `requirement` block that read does not hold - each one, before
+  // it answers - is a statement on its row, and a tie to it puts no decision on the list.
+  const isCoverageStatement = coverageStatements(reads.issue, reads.coverage);
   (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);
     if (id === undefined) return;
@@ -979,9 +990,14 @@ function addDecisions(
     draft.text = decision.text;
     draft.tree = decision.text_tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape
-    // the way every other state is (R21). Whether it waits for the reader's review is the
-    // review list's rule, read once every statement has its draft (`treeDrafts`).
+    // the way every other state is (R21).
     draft.state = decisionState(decision, changes.has(decision.ref));
+    // The tie to a statement decides whether it waits on the reader, and a decision the reader
+    // asked to change waits on its agent, not on the reader (`decision-review.ts`). Nothing
+    // waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+    draft.waiting =
+      context.viewer !== undefined &&
+      inReviewList(decision, isCoverageStatement, changes.has(decision.ref));
     if (decision.kept !== null && !decision.waiting_review) {
       draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
     }
