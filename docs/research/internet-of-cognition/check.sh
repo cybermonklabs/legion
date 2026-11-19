@@ -347,7 +347,7 @@
 # scratch (github_headers): each is made with umask 077 before a byte of it is written, so
 # its owner alone reads it, and holds Authorization: Bearer and the token git credential
 # fill gives for that repository, or nothing when it gives none. It exports each file's path
-# as the variable the table names, IOC_GITHUB_AUTH_LEGION and IOC_GITHUB_AUTH_AGENT_INFRA,
+# as the variable the table names, IOC_GITHUB_AUTH_LEGION and IOC_GITHUB_AUTH_PRIVATE,
 # and env.sh's read of the review corpus, the read of GitHub's budget (github_budget) and
 # every recorded curl of GitHub's REST API send the file of the repository they read with
 # -H @"$<variable>". The files are written again while the run goes on: before each row,

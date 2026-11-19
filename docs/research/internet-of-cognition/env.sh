@@ -63,7 +63,7 @@
 #                   API, sending the header file IOC_GITHUB_AUTH_LEGION names. A review a
 #                   reader may not see is not in it: a PENDING review is visible to its
 #                   author alone, and the row counts only the bodies submitted by its instant.
-#   IOC_GITHUB_AUTH_LEGION IOC_GITHUB_AUTH_AGENT_INFRA  the header files of the token the
+#   IOC_GITHUB_AUTH_LEGION IOC_GITHUB_AUTH_PRIVATE  the header files of the token the
 #                   machine's git credential helper gives for cybermonklabs/legion and for
 #                   theorem-labs/agent-infra, each empty when it gives none
 #                   (ioc_env_github_table); every recorded curl of GitHub's REST API sends
@@ -234,7 +234,7 @@ ioc_env_clone_private() {
 ioc_env_github_table() {
     cat <<'TABLE'
 IOC_GITHUB_AUTH_LEGION|cybermonklabs/legion
-IOC_GITHUB_AUTH_AGENT_INFRA|theorem-labs/agent-infra
+IOC_GITHUB_AUTH_PRIVATE|theorem-labs/agent-infra
 TABLE
 }
 

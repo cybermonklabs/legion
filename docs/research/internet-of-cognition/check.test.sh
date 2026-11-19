@@ -3269,7 +3269,7 @@ jq -c 'select((.command // "") | test("IOC_GITHUB_AUTH_"))' "$HERE/claims.jsonl"
     exit 1
 }
 cat "$TOKEN_CASE/rows" >>"$claims_copy"
-jq -cn '{id: "f-header-size", requirement: "r7", source: "the case", kind: "behaviour", claim: "Each GitHub header file holds one header line.", mark: "verified", evidence: {surface: "cli"}, command: "wc -c \"$IOC_GITHUB_AUTH_LEGION\" \"$IOC_GITHUB_AUTH_AGENT_INFRA\"", expect: {exit: 0}, output: "", note: "planted by case 117"}' >>"$claims_copy"
+jq -cn '{id: "f-header-size", requirement: "r7", source: "the case", kind: "behaviour", claim: "Each GitHub header file holds one header line.", mark: "verified", evidence: {surface: "cli"}, command: "wc -c \"$IOC_GITHUB_AUTH_LEGION\" \"$IOC_GITHUB_AUTH_PRIVATE\"", expect: {exit: 0}, output: "", note: "planted by case 117"}' >>"$claims_copy"
 jq -cn --arg to "$TOKEN_CASE/outputs/replay" '{id: "f-copy-outputs", requirement: "r7", source: "the case", kind: "behaviour", claim: "The recorded files of the rows before it are copied.", mark: "verified", evidence: {surface: "cli"}, command: ("cp -r \"$TMPDIR/..\" " + $to), expect: {exit: 0}, output: "", note: "planted by case 117"}' >>"$claims_copy"
 out="$(PATH="$TOKEN_CASE/bin:$PATH" TMPDIR="$TOKEN_CASE/tmp" IOC_CLONES="$TOKEN_CASE/clones" fixture_run "$dir" --replay)"
 token_case="a replay of the rows that send a GitHub header file prints the token in no line and no recorded output, and leaves no header file behind"
