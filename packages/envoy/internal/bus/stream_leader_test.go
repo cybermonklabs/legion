@@ -173,8 +173,17 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // a moment before waits for that stream's leader: the other start's count is not this one's, and
 // its create may have been answered before its stream's first election ended. The other start's
 // create is abandoned the moment a listener on its subject sees it go out, so it lands with its
-// answer lost and its stream still in that election; the cut is made on the create itself, so the
-// account read nats.go makes before it is answered first however slow the machine is.
+// answer lost; the cut is made on the create itself, so the account read nats.go makes before it
+// is answered first however slow the machine is.
+//
+// A create that has gone out has not landed. The meta leader hands each JetStream API request to
+// one of a pool of GOMAXPROCS workers (nats-server v2.15.1 server/jetstream_api.go:1029 and
+// :1111), so this start's create, sent after the other's, can take the meta leader's lock first
+// (jetstream_cluster.go:11045) and make the bucket at one copy; the other's is then answered
+// "stream name already in use with a different configuration". Run 44543481925 failed this way
+// (job 135627934452). So the row waits until the meta leader lists the other start's stream, which
+// it reads from the same assignments the create checks (jetstream_api.go:1828 and
+// jetstream_cluster.go:11053), before this start looks for the bucket.
 func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -203,6 +212,13 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
 	}
 	<-abandoned
+	testwait.Eventually(t, "the meta leader to list the other start's stream", func() bool {
+		listed := false
+		for name := range js.StreamNames() {
+			listed = listed || name == "KV_"+bucket
+		}
+		return listed
+	})
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy whose create met another start's: %v", err)
@@ -212,9 +228,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("read the bucket's stream: %v", err)
 	}
 	if info.Config.Replicas != 3 {
-		// A wait of a millisecond can cut the account read nats.go makes before the create, and
-		// then the other start's create never goes out and this start creates the bucket itself.
-		t.Fatalf("the bucket's stream has %d copies, want the other start's 3: its create never landed, so this row holds nothing", info.Config.Replicas)
+		t.Fatalf("the bucket's stream has %d copies, want the other start's 3: this start's create made the bucket, so this row holds nothing", info.Config.Replicas)
 	}
 	if info.Cluster == nil || info.Cluster.Leader == "" {
 		t.Fatal("the start at one copy answered while the other start's stream had no leader")
