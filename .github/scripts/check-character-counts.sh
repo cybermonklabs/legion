@@ -1101,8 +1101,9 @@ def passes(text: str, match: re.Match, prose: bool) -> str:
 def exempt(lines: list[str], first: int, last: int) -> str:
     for line in lines[max(0, first - 2) : last + 1]:
         marker = EXEMPT.search(line)
-        if marker and marker.group(2):
-            return f"exempt, {marker.group(1)}: {marker.group(2).strip().removesuffix('-->').strip()}"
+        reason = ((marker.group(2) or "") if marker else "").strip().removesuffix("-->").strip()
+        if marker and reason:
+            return f"exempt, {marker.group(1)}: {reason}"
     return ""
 
 
@@ -1305,7 +1306,12 @@ CONTROLS = [
      "packages/envoy/scripts/planted-substitution.sh",
      "#!/usr/bin/env bash\ncheck \"names it\" \"$(contains \"$out\" \"the gate's refusal\")\"\n"
      "echo \"name: $(printf '%s' \"$1\" | wc -c) characters\"\n# keep a 40-character note\n",
-     ["instance"]),
+     ["instance | wc -c counts bytes"]),
+    ("a count beside a word chosen in a template's expression fires", "packages/envoy-client/src/plural.ts",
+     'export const left = (n: number) => `${n} ${n === 1 ? "character" : "characters"} left`;\n', ["instance"]),
+    ("a single-quoted TypeScript string is read", "packages/envoy-client/src/single.ts",
+     "export const said = (text: string) => 'cut at ' + text.length + ' characters';\n",
+     ["instance | .length counts"]),
     ("in a, b := x, y each name takes its own value", "packages/envoy/internal/planted/pair.go",
      'package planted\n\nfunc p(x, y string) string {\n\tsent, held := utf8.RuneCountInString(x), len(y)\n'
      '\treturn fmt.Sprintf("sent %d characters, held %d characters", sent, held)\n}\n',
@@ -1331,9 +1337,10 @@ CONTROLS = [
     ("a count and the word in literals a + joins across lines fire, in Go", "packages/envoy/internal/planted/split.go",
      'package planted\n\nfunc s(body string) error {\n\treturn fmt.Errorf("each block holds at most %d "+\n'
      '\t\t"characters", len(body))\n}\n', ["instance"]),
-    ("a shell here-document's text is read", "packages/envoy/scripts/planted-usage.sh",
-     "#!/usr/bin/env bash\nusage() {\n  cat >&2 <<'USAGE'\nusage: planted-usage.sh <title>   a title of at most 200 characters\n"
-     "USAGE\n}\nif (($(printf '%s' \"${1:-}\" | wc -c) > 200)); then usage; exit 2; fi\n", ["instance"]),
+    ("a shell here-document's text is read, and an apostrophe in it closes nothing", "packages/envoy/scripts/planted-usage.sh",
+     "#!/usr/bin/env bash\nusage() {\n  cat >&2 <<'USAGE'\nusage: planted-usage.sh <title>   the gate's title, at most 200 characters\n"
+     "USAGE\n}\nn=$(printf '%s' \"${1:-}\" | wc -c)\necho \"the title is $n characters\"\n",
+     ["instance | cannot judge: a bound", "instance | wc -c counts bytes"]),
     ("a shell count in a UTF-8 locale the script sets itself is code points", "packages/envoy/scripts/planted-locale.sh",
      "#!/usr/bin/env bash\nexport LC_ALL=C.UTF-8\nname=$1\nprintf 'name: %d characters\\n' \"${#name}\"\n",
      ["code points"]),
@@ -1391,9 +1398,12 @@ def counter_controls() -> list[tuple[str, str | None]]:
 
 
 def control(name, path, content, want) -> str | None:
+    """A planted file's hits against want: each item a verdict, or `<verdict> | <start of its why>`."""
     if path is not None:
-        got = [hit.verdict for hit in scan(path, content)]
-        return None if got == want else f"{name}: answered {got}, want {want}"
+        got = [(hit.verdict, hit.why) for hit in scan(path, content)]
+        wanted = [(item.split(" | ", 1) + [""])[:2] for item in want]
+        ok = len(got) == len(wanted) and all(v == w[0] and why.startswith(w[1]) for (v, why), w in zip(got, wanted))
+        return None if ok else f"{name}: answered {got}, want {want}"
     path = "packages/envoy/internal/planted/exempt.go"
     readings = {
         "\t// characters: code points, the caller counts n with utf8.RuneCountInString\n": "exempt, code points",
