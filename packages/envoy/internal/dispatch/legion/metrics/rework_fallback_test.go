@@ -93,10 +93,12 @@ func TestASendBackIsCountedFromTheStatusHistoryBeforeObservations(t *testing.T) 
 
 // TestARetroSendBackCountsAsOneAndMarksImplementing: `retro` is the third status a send-back
 // moves out of (the spec's "Review rounds and send-backs before observations"), because the
-// daemon writes `in_progress` over a retro when the head starts conflicting with its base (the
-// daemon workflow's TriggerConflict), exactly as it does over testing and needs_review. Before
-// observations that write is read off the status history, so it counts the issue as sent back and
-// marks the hours after it as implementing rather than as more of retro.
+// daemon writes `in_progress` over a retro when a backward move (`request_backward_move`, the
+// daemon workflow's TriggerBackward rows) sends the issue back from retro or merging, as it did
+// when the head started conflicting with its base before cybermonklabs/legion#4464, exactly as it
+// does over testing and needs_review. Before observations that write is read off the status
+// history, so it counts the issue as sent back and marks the hours after it as implementing rather
+// than as more of retro.
 func TestARetroSendBackCountsAsOneAndMarksImplementing(t *testing.T) {
 	fromRetro := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(9)).
 		statusAt(hour(0), "in_progress").

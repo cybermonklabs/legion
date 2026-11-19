@@ -302,7 +302,7 @@ func (m *Machine) stopForSuspension(ctx context.Context, by SuspendSource, clean
 		return err
 	}
 	if !cleanStopSent {
-		m.sessionGone()
+		m.sessionGone(ctx)
 	}
 	return nil
 }
@@ -452,7 +452,7 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))
-	m.sessionGone()
+	m.sessionGone(ctx)
 	return m.letProcessGoFor(ctx, request, stopSent)
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
@@ -339,11 +340,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	}
 	omp.Stdin, omp.Stdout, omp.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := omp.Run(); err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			if code := exit.ExitCode(); code > 0 {
-				return code, nil
-			}
+		switch end := procgroup.Ended(err); {
+		case end.Exited != nil:
+			return end.Exited.ExitCode(), nil
+		case end.Signal != "":
 			return 1, nil // killed by a signal
 		}
 		return 0, fmt.Errorf("run Oh My Pi: %w", err)
@@ -486,7 +486,8 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // An empty or all-refused mapping is never a refusal: this route cannot tell a daemon with no
 // workflow (which always serves that shape) from a workflow whose mapping a refresh emptied, and
 // refusing either would block the operator action that recovers the project (admitting work,
-// AGENTS.md "Handover"). It refuses only an unusable read: a body without a `repositories` object
+// docs/site/src/content/docs/legion/concepts.md, "Admission and the `legion` label"). It refuses
+// only an unusable read: a body without a `repositories` object
 // (absent or null, a shape no conforming daemon serves) and a mapped entry that is not
 // `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {

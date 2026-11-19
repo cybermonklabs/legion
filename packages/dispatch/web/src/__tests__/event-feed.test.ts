@@ -17,6 +17,7 @@ import {
   inboxQuery,
   inboxThreadsQuery,
   issueQuery,
+  issueStepsQuery,
   myRepliesCountQuery,
   prioritiesQuery,
   priorityHistoryQuery,
@@ -149,6 +150,8 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-outro").queryKey,
   },
+  // Another issue's step records, which the Steps tab of CORE-9 reads.
+  otherSteps: { key: issueStepsQuery("CORE-9").queryKey },
   parent: { key: issueQuery("CORE-0").queryKey },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
@@ -194,6 +197,8 @@ const READS = {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
+  // The Steps tab's read of CORE-1's step records.
+  steps: { key: issueStepsQuery("CORE-1").queryKey },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
   // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
   // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an
@@ -460,6 +465,9 @@ const rules: Record<string, Rule> = {
         "priorities",
         "prioritySummary",
         "advancesWork",
+        // The Legion daemon moves the status as an issue's phase moves, and the step records of
+        // the phase it left and the phase it entered come with that move.
+        "steps",
       ],
       spares: [
         "inbox",
@@ -470,6 +478,7 @@ const rules: Record<string, Rule> = {
         "parentPanel",
         "referencesTab",
         "parentSummary",
+        "otherSteps",
       ],
     },
   "a reopen refreshes the whole Inbox and the project counts, since its open asks come back": {
@@ -512,8 +521,9 @@ const rules: Record<string, Rule> = {
       })
     ),
     page: { inboxHolds: false },
-    refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker"],
-    spares: ["inbox", "projectInbox", "unrelatedDetail"],
+    // The close is the merge's end, which the merge step's record comes with.
+    refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker", "steps"],
+    spares: ["inbox", "projectInbox", "unrelatedDetail", "otherSteps"],
   },
   "a close that moves someone else's Replies leaves the viewer's alone": {
     event: event(
@@ -589,6 +599,7 @@ const rules: Record<string, Rule> = {
         "referencePicker",
         "agentsPicker",
         "components",
+        "steps",
       ],
     },
   "a write of any field refreshes every ancestor's children, which show the subtree's newest activity":
@@ -605,6 +616,11 @@ const rules: Record<string, Rule> = {
     event: event("issue.updated", issue({ changed: ["priority"] })),
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
+  },
+  "a route move refreshes the issue's steps, since the role that holds it changed": {
+    event: event("issue.updated", issue({ ancestors: ["CORE-0"], changed: ["route"] })),
+    refreshes: ["detail", "steps"],
+    spares: ["otherSteps", "summary"],
   },
   // An assignee write moves the questions nobody has handed on from one person to another, and
   // every reader's Inbox read holds every open question of the issue, so a test against the rows
@@ -706,15 +722,25 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue, its collaborators and its project list only": {
+  "a claim refreshes the issue, its collaborators, its steps and its project list only": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["collaborators", "detail", "log", "projectList"],
+    refreshes: ["collaborators", "detail", "log", "projectList", "steps"],
     spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+  },
+  "a release refreshes the issue's steps, since a role's run ended": {
+    event: event("issue.released", { claim: null, key: "CORE-1" }),
+    refreshes: ["detail", "steps"],
+    spares: ["otherSteps", "summary", "pinned"],
+  },
+  "a deploy leaves the issue's steps alone": {
+    event: event("issue.deployed", { number: 1, repo: "acme/widgets" }),
+    refreshes: ["detail", "log"],
+    spares: ["steps", "collaborators"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
@@ -726,11 +752,12 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "log", "projectList"],
       spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
     },
-  "a recorded handoff refreshes the issue's handoff list and its log, and no rollup": {
+  "a recorded handoff refreshes the issue's handoff list, its steps and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
-    refreshes: ["handoffs", "detail", "log", "projectList"],
+    refreshes: ["handoffs", "detail", "log", "projectList", "steps"],
     spares: [
       "otherHandoffs",
+      "otherSteps",
       "parent",
       "grandparent",
       "unrelatedDetail",
@@ -775,7 +802,7 @@ const rules: Record<string, Rule> = {
       thread_logins: [],
     }),
     refreshes: ["comment", "rootComment", "comments"],
-    spares: ["inbox", "projectInbox", "ask", "asks", "answers", "replies"],
+    spares: ["inbox", "projectInbox", "ask", "asks", "answers", "replies", "steps"],
   },
   "a reply on an ask refreshes the ask, its Inbox row and the answers page": {
     event: event("comment.created", { anchor: null, ask_id: "ask-1", id: "comment-2" }),

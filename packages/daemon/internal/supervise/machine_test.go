@@ -955,8 +955,8 @@ func TestTerminalCallbackRunsOnlyAfterReadyAndFailurePersist(t *testing.T) {
 }
 
 // A turn's start is reported to the daemon as a durable state of its own. It is the one
-// observation that a woken pod's role came back and took work: a wake for a notice or a
-// phase-ended message gives the role no delivery to confirm, so without this its resume would
+// observation that a woken pod's role came back and took work: a wake for a notice or a hook
+// prompt gives the role no delivery to confirm, so without this its resume would
 // never reach a first turn and the daemon would call the pod stuck and then strand its claim
 // (INFRA-945 R5). The state is reported after the claim's write, as ready and failed are.
 func TestATurnStartReportsTheWorkingClaim(t *testing.T) {

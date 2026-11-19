@@ -47,13 +47,18 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 	service := flags.String("service", "", "--pod: the broker-side service this pod's service account is bound to")
 	// PrintDefaults appends the default itself, so neither usage names it twice.
 	podTokenFile := flags.String("pod-token-file", defaultPodTokenFile, "--pod: a pod's projected service-account token file")
-	out := flags.String("out", os.Getenv("AGENT_SECRETS_KEY_DIR"), "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
+	// --out's default, AGENT_SECRETS_KEY_DIR, is read after Parse rather than given to the flag:
+	// PrintDefaults, which -h and every usage error print, would print it, and it is the
+	// directory of key.pem, a file that holds a credential.
+	out := flags.String("out", "", "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
+	if !flagGiven(flags, "out") {
+		*out = os.Getenv("AGENT_SECRETS_KEY_DIR")
+	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets enroll: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "enroll")
 	}
 	if *podFlag && *helperFlag {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --pod and --helper are mutually exclusive: a pod proves who it is with its own projected token, and needs no machine login")
@@ -106,8 +111,11 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 		fmt.Fprintln(stderr, "agent-secrets enroll: AGENT_SECRETS_KEY_DIR is required")
 		return exitUsageError
 	}
+	// The directory holds key.pem, so it is named by its variable, never by its path, and its
+	// errors print the system's reason alone (redact.File).
+	const keyDirNamed = "the directory AGENT_SECRETS_KEY_DIR names"
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
+		fmt.Fprintf(stderr, "agent-secrets enroll: make %s: %v\n", keyDirNamed, redact.File(err))
 		return 1
 	}
 	sock, _ := helperSocket()
@@ -130,9 +138,13 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 	}
 	path := filepath.Join(dir, enrollmentFile)
 	// The file keeps the id as the broker made it, and the lines print it on one line
-	// (redact.OneLine), as every broker-answer value this CLI prints does.
+	// (redact.OneLine), as every broker-answer value this CLI prints does. A write that fails
+	// exits 1 and names the enrollment, the file and the directory by its setting, never the
+	// path, and the system's reason alone (redact.File): "the broker made enrollment <id>, but
+	// this command could not write its id to enrollment in the directory AGENT_SECRETS_KEY_DIR
+	// names: <operation>: <reason>".
 	if err := writeFileAtomic(path, []byte(resp.EnrollmentID+"\n"), 0o600); err != nil {
-		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s: %v\n", redact.OneLine(resp.EnrollmentID), path, err)
+		fmt.Fprintf(stderr, "agent-secrets enroll: the broker made enrollment %s, but this command could not write its id to %s in %s: %v\n", redact.OneLine(resp.EnrollmentID), enrollmentFile, keyDirNamed, redact.File(err))
 		return 1
 	}
 	fmt.Fprintln(stdout, redact.OneLine(resp.EnrollmentID))
@@ -164,8 +176,7 @@ func enrollRetryingDrain(sock string, req helper.Request) (helper.Response, erro
 func cmdUnenroll(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"enrollment": true})
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets unenroll: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "unenroll")
 	}
 	flags := newFlagSet("unenroll", stderr)
 	enrollmentID := flags.String("enrollment", "", "the enrollment id to revoke")

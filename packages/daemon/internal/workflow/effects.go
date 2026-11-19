@@ -250,43 +250,19 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
-// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
-// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
-// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
-// architect's send-back from accepting showed a bare status change, with its reason only in the
-// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
-// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
-// review's whole body, which does not go on the issue a second time.
-// A person reads this text on the issue, so a conflict's is built from the pull request, not from
-// the conflict handler's sentence to the implementer, and a backward move's names the role that
-// asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
-	switch trigger {
-	case TriggerConflict:
-	case TriggerBackward:
-		return backwardMoveReason(from, to, reason)
-	default:
+// moveReason is what a move's status write posts on the issue, for the one move nothing else on
+// Dispatch explains: a worker's backward move (TriggerBackward, request_backward_move). The request
+// reaches the daemon's API and no Dispatch record, so an architect's send-back from accepting
+// showed a bare status change, with its reason only in the notice and the next role's task over
+// Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
+// reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
+// does not go on the issue a second time. A person reads this text on the issue, so a backward
+// move's names the role that asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+	if trigger != TriggerBackward {
 		return ""
 	}
-	what, base := "its pull request", "its base"
-	if pr != nil {
-		if pr.Number != 0 {
-			what = fmt.Sprintf("pull request #%d", pr.Number)
-			if head := pr.HeadSHA; head != "" {
-				if len(head) > 12 {
-					head = head[:12]
-				}
-				what += " at head " + head
-			}
-		}
-		if pr.Base != "" {
-			base = pr.Base
-		}
-	}
-	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
-		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
-		from, to, what, base, base)
+	return backwardMoveReason(from, to, reason)
 }
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
@@ -488,35 +464,19 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // (record.Store.RoleRuns), each admission pass of the issue among them. So the start is the plain
 // one (childArchitectStart), with no phase, task, entry, slot mark or kept decisions. The read is
 // stable: a failed claim stays failed until something starts it, and a start already queued with
-// no phase or with the phase issue now stands in is that start — the one the child's first phase
-// start queues whatever the claim's state (gateOpened), or an earlier phase start's the outbox has
-// not run yet — so no second start is queued beside it. The read is queuedStartActs, the one
-// StartFor, unpromptedPhaseWorker and queuedRowCovers make of a queued start, with no stop weighed
-// against it (a stop of 0): every queued start of no phase or of the issue's phase counts,
-// whatever stop is queued beside it. A queued start of another phase does not count: re-admission
-// brings a mid-phase child's failed architect back with a start that names the phase the child
-// stood in (admit's startMidPhaseMembers), and the outbox finishes, without acting, a start of a
-// phase the issue has left. An issue whose key makes no claim token has no claim to revive.
+// no phase or with the phase issue now stands in is that start (architectStartQueued) — the one
+// the child's first phase start queues whatever the claim's state (gateOpened), or an earlier
+// phase start's the outbox has not run yet — so no second start is queued beside it. An issue
+// whose key makes no claim token has no claim to revive (ownArchitectRun).
 func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if claim.IsTreeRoot(issue.Key, issue.Tree) {
-		return nil
-	}
-	project, err := claim.ProjectToken(e.cfg.Project)
-	if err != nil {
-		return err
-	}
-	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
-	if err != nil {
-		return nil
-	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
-	if err != nil {
+	run, child, err := e.ownArchitectRun(ctx, tx, issue)
+	if err != nil || !child {
 		return err
 	}
 	if run.Claim == nil || run.Claim.State != supervise.StateFailed {
 		return nil
 	}
-	if queuedStartActs(run, 0, "") || queuedStartActs(run, 0, issue.Phase) {
+	if architectStartQueued(run, issue.Phase) {
 		return nil
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
@@ -524,6 +484,37 @@ func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	e.logOnCommit(ctx, "workflow: a child's phase start starts its failed architect again", "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase)
 	return nil
+}
+
+// ownArchitectRun is the run of issue's own architect at issue's generation, its queued rows and
+// its claim (record.Store.RoleRun), and false for an issue with no architect of its own to start:
+// a tree root, whose architect is admission's, started with its tree, and an issue whose key makes
+// no claim token. reviveArchitect and ownArchitectStarting read it.
+func (e *Engine) ownArchitectRun(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.RoleRun, bool, error) {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return record.RoleRun{}, false, nil
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return record.RoleRun{}, false, err
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return record.RoleRun{}, false, nil
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
+	return run, err == nil, err
+}
+
+// architectStartQueued is whether run, a child's own architect's, holds a queued start the outbox
+// will act on for the child standing in current: one of no phase, as a phase start queues
+// (childArchitectStart), or of current, as a re-admission brings a mid-phase child's architect
+// back (admit's startMidPhaseMembers). The outbox finishes, without acting, a start of a phase the
+// issue has left, so a start of another phase does not count. It is queuedStartActs with no stop
+// weighed against it (a stop of 0, which every row's id is above): every such start counts,
+// whatever stop is queued beside it.
+func architectStartQueued(run record.RoleRun, current phase.Phase) bool {
+	return queuedStartActs(run, 0, "") || queuedStartActs(run, 0, current)
 }
 
 // childArchitectStart is the plain start of a child's own architect, issue's, with no phase, task,
@@ -960,6 +951,18 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, "", err
 	}
+	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
+	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
+	// entry is no step of the issue's task.
+	if step, ok := standingStep(issue); ok && role != claim.RoleArchitect {
+		agent, err := stepClaim(issue, issue.Key, role)
+		if err != nil {
+			return 0, "", err
+		}
+		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
+			return 0, "", err
+		}
+	}
 	return row.Entry, row.EntryTask, nil
 }
 
@@ -998,6 +1001,14 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
+//
+// A merger started in merging at the head a merge forward landed past the review, while the
+// review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
+// to merge that head only once the reviewer's approval of it is on the pull request: the daemon
+// records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
+// merger's task is built at retro's completion, the one move into merging, and at the retry of a
+// held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
+// the record holds.
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -1012,6 +1023,10 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
+	}
+	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
+		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
+			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
 	}
 	if reason != "" {
 		text += " Reason: " + reason + "."

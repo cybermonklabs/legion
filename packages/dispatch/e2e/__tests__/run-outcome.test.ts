@@ -11,18 +11,36 @@
  *  before the first row is the same silence from the other end.
  *
  *  The three cases of the first test are the whole of the decision a run's ROWS make, and they
- *  run in one function on purpose: the module holds ONE tally per process, which is what lets a
- *  reporter in the runner and a hook in the runner agree, so a case that wanted a fresh tally
- *  would be testing some other module. Each step only ever adds to what the one before it
- *  recorded. The error that belongs to no row is the second test, because a tally this one has
- *  already failed could not show that the error is what failed it.
+ *  run in one function on purpose: the module holds ONE tally per instance, and the runner loads
+ *  one instance per process, which is what lets a reporter in the runner and a hook in the runner
+ *  agree, so a case that wanted a fresh tally would be testing some other module. Each step only
+ *  ever adds to what the one before it recorded. The error that belongs to no row is the second
+ *  test, because a tally this one has already failed could not show that the error is what
+ *  failed it.
+ *
+ *  Each test takes its tally from an import under a query of its own, and every query carries a
+ *  key drawn once per evaluation of this file. Bun keeps one instance per specifier for the life
+ *  of the process, and `bun test --rerun-each` evaluates this file again in that same process: a
+ *  static import, or a fixed query, hands the second run the tally the first run left failed.
  */
 import { expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 
 import type * as RunOutcome from "../run-outcome";
-import { recordRow, runPassed } from "../run-outcome";
 
-test("a run has passed only once a row was recorded and no recorded row failed", () => {
+/** This evaluation of the file's key, so that a second run of it names instances of its own. */
+const evaluation = randomUUID();
+
+/** An instance of the module that no other test and no earlier run of this file has recorded
+ *  into. The specifier is built rather than written because nothing static can name a second
+ *  instance of one module, which is the whole of what this function is for. */
+async function tally(name: string): Promise<typeof RunOutcome> {
+  return (await import(`../run-outcome?${name}-${evaluation}`)) as typeof RunOutcome;
+}
+
+test("a run has passed only once a row was recorded and no recorded row failed", async () => {
+  const { recordRow, runPassed } = await tally("the-first-tally");
+
   // No row recorded. The reporter never loaded, or the run died in `globalSetup`: the logs are
   // the only account of what happened, so this is NOT a pass.
   expect(
@@ -43,13 +61,12 @@ test("a run has passed only once a row was recorded and no recorded row failed",
 });
 
 test("an error that belongs to no row fails a run whose every row passed", async () => {
-  // A tally of its own, because the test above has failed this process's for good: the module
-  // is imported a second time under a query, which Bun answers with a second instance of it.
-  // The green assertion below is also the check that it IS a second instance - the first reads
-  // red from here on, so a shared one would fail that line rather than pass this test vacuously.
-  // The specifier is built rather than written because nothing static can name a second
-  // instance of one module, which is the whole of what this line is for.
-  const fresh = (await import(`../run-outcome?${"a-second-tally"}`)) as typeof RunOutcome;
+  // A tally of its own, because the test above leaves its own failed for good: the module is
+  // imported under a second query, which Bun answers with a second instance of it. The rows run
+  // in random order, and in either order a shared instance fails one of them rather than passing
+  // this test vacuously: after the test above it reads red at the green assertion below, and
+  // before it the error this test records leaves it red at the test above's second assertion.
+  const fresh = await tally("a-second-tally");
   fresh.recordRow(false);
   expect(fresh.runPassed(), "the import under a query answered with the first tally").toBe(true);
 

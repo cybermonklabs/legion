@@ -8,7 +8,10 @@
 # addresses from --targets) and asks each address, and the name itself, for /healthz and
 # GET /v1/sessions; with --send-to it also sends a direct message, and with --dispatch-* it posts a
 # Dispatch message every N ticks. It prints one tab-separated line per target per tick and a summary
-# on exit, Ctrl-C included.
+# on exit, a signal's exit too: one sent to the probe's whole process group, as Ctrl-C at a terminal
+# and timeout -s TERM send one, also kills the child the probe is running at that moment. When that
+# child is a target's request, that target and each one after it print no line for that tick and
+# are not counted.
 #
 # Needs bash, curl, getent and sed only (no jq), so it also runs inside a listener task.
 #
@@ -290,6 +293,19 @@ post_dispatch() {
   printf '%s%s' "${state:-unknown}" "${attempt_error:+:${attempt_error}}"
 }
 
+# stopped STATUS answers a child that failed with STATUS: a command substitution of a tick (a
+# request, a Dispatch post, or a read of a field or of curl's exit code, each in a subshell) or the
+# sleep between ticks. A signal sent to the probe's whole process group, as Ctrl-C at a terminal
+# and timeout -s TERM send one, reaches that child as well as the probe, and kills it: bash resets
+# a subshell's traps, so the subshell dies of the signal, as sleep and curl do. bash runs the
+# probe's trap once the child has ended, before the next command, so with stop set the failure was
+# the signal and stopped returns: probe_tick then ends the tick before it records the target in
+# flight, or the loop ends after the sleep, and finish reports every target recorded before it.
+# Any other failure exits with STATUS, as set -e would.
+stopped() {
+  ((stop)) || exit "$1"
+}
+
 probe_tick() {
   local tick="$1" ts send_key="" dispatch_state="-" addresses=() target label healthz_code
   local healthz_status v1_code v1_error send_code dispatch_column
@@ -298,27 +314,30 @@ probe_tick() {
     addresses=("${targets[@]}")
   else
     mapfile -t addresses < <(getent ahostsv4 "$host" 2>/dev/null | sed -n 's/^\([0-9.]*\)[[:space:]][[:space:]]*STREAM.*/\1/p')
+    # A signal during the lookup can cut the list short, and mapfile does not fail.
+    ((!stop)) || return 0
   fi
   [[ -z "$send_to" ]] || send_key="probe-${ts}"
   if ((dispatching)) && (((tick - 1) % dispatch_every == 0)); then
-    dispatch_state="$(post_dispatch "$ts")"
+    dispatch_state="$(post_dispatch "$ts")" || { stopped $?; return 0; }
     count dispatch_outcomes "$dispatch_state"
   fi
   for target in "${addresses[@]}" ""; do
     label="${target:-$host}"
-    healthz_code="$(request "$url" "$target" GET /healthz "$envoy_header")"
-    healthz_status="$(field status)"
-    v1_code="$(request "$url" "$target" GET /v1/sessions "$envoy_header")"
+    healthz_code="$(request "$url" "$target" GET /healthz "$envoy_header")" || { stopped $?; return 0; }
+    healthz_status="$(field status)" || { stopped $?; return 0; }
+    v1_code="$(request "$url" "$target" GET /v1/sessions "$envoy_header")" || { stopped $?; return 0; }
     v1_error=""
     if [[ "$v1_code" == 000 ]]; then
-      v1_error="$(no_answer)"
+      v1_error="$(no_answer)" || { stopped $?; return 0; }
     elif [[ "$v1_code" != 200 ]]; then
-      v1_error="$(field error)"
+      v1_error="$(field error)" || { stopped $?; return 0; }
     fi
     send_code="-"
     if [[ -n "$send_to" ]]; then
       send_code="$(request "$url" "$target" POST /v1/messages/send "$envoy_header" \
-        "{\"target_session\":\"${send_to}\",\"message\":\"deploy probe ${ts}\",\"idempotency_key\":\"${send_key}\"}")"
+        "{\"target_session\":\"${send_to}\",\"message\":\"deploy probe ${ts}\",\"idempotency_key\":\"${send_key}\"}")" ||
+        { stopped $?; return 0; }
       count send_outcomes "$send_code"
     fi
     record "$label" "$ts" "$healthz_code" "$v1_code" "$v1_error"
@@ -417,8 +436,9 @@ started=$SECONDS
 while ((!stop)); do
   tick=$((tick + 1))
   probe_tick "$tick"
+  ((!stop)) || break
   ((ticks == 0 || tick < ticks)) || break
   next=$((started + tick * interval))
-  ((SECONDS >= next)) || sleep $((next - SECONDS))
+  ((SECONDS >= next)) || sleep $((next - SECONDS)) || stopped $?
 done
 finish

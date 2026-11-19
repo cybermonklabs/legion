@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -92,7 +95,8 @@ type workflowRuntime struct {
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built
 	// at open, before the outbox exists, and the facts the boot applies before attach write rows
 	// through them, so the wake forwards to whatever attach has stored, and to nothing before
-	// then — the outbox's boot sweep finds every row written before it ran.
+	// then — the outbox's boot sweep finds every row written before it ran. The engine's read of a
+	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
 	// limits are where the deployment's claim budgets run out (supervise.Limits, built once at
 	// daemon.go's Deps), taken from the supervisor at attach: a failed claim's fact carries them
@@ -260,16 +264,24 @@ type workflowRuntime struct {
 	// readHandedOff has not read the pull request of yet, which is what makes a second completion
 	// of the same issue, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[string]
-	// mergeStates is each issue a fact left waiting on GitHub's merge state (queueMergeState,
-	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
-	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
-	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
-	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
-	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
+	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
+	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
+	// testing through merging), each the start read found GitHub still computing
+	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
+	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
+	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
+	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
+	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
+	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
+	// long the outbox's merge-queue read and second conflict read wait before they read again
+	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
+	// shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateRunning map[string]bool
+	mergeStateQueued  map[string]string
+	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 }
 
@@ -425,7 +437,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]bool{},
+		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI,
 		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos,
 		defaultBranches:         newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
@@ -481,6 +493,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
@@ -668,6 +681,79 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 	if r := w.outboxWake.Load(); r != nil {
 		r.wake(issue, kind)
 	}
+}
+
+// stepAgent is the engine's read of the agent of a step where it writes the step's end, the one
+// write of the record that names a session or a model (workflow.Config.StepAgent): the session the
+// claim's machine published (supervise.Machine.View) and the model that answered last in that
+// session (supervise.Machine.LastAnswer). It reaches the supervisor through the outbox attach
+// stored, so a fact the boot applies before attach reads nothing, as does a claim this daemon does
+// not supervise. It finds the machine without the supervisor's lock (supervisedMachine), since the
+// engine reads here inside a fact's transaction, which holds the fact lock that a Create holding
+// that lock waits on. Neither read of the machine waits on a decision in flight, so the engine's
+// transaction may make them. The session is read on both sides of the model, and a model read while
+// the session changed is left out, so the pair never names a model with a session it did not serve;
+// the end is the record's one write of either, so that record then names no model.
+//
+// Both come from the agent's own frames, so each is held here to the form Dispatch holds a step's
+// agent text to (steprecord.AgentTextHolds), and one outside it is left out of the record rather
+// than sent: Dispatch would refuse the whole record over it, and a space or a newline in it would
+// shift the columns of `dispatch steps` or forge a line of it.
+//
+// The session is named only while the claim holds it (plan E's t-e-54): a claim the boot could not
+// suspend can record another claim's session, or one no claim holds, and its step's record would
+// show that session as the one at work, as the role-holder publication would (LiveRoleHolders,
+// which leaves it out). The check only reads. It asks the machine first (Machine.Admits: no lock,
+// no store call), and where the machine has not seen the answer, as after a restart, it reads
+// claim_sessions in the fact's own transaction (record.SessionHeld), one select under a
+// savepoint on the connection that already holds the fact lock: no store write, and no wait on
+// another connection while that lock is held, where the store's hold (HoldSessions) would write
+// through the pool. A read that fails names no session, and the record's end then names none.
+func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.Token) workflow.StepAgent {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return workflow.StepAgent{}
+	}
+	machine, ok := r.supervisor.supervisedMachine(token)
+	if !ok {
+		return workflow.StepAgent{}
+	}
+	view := machine.View()
+	session := view.Session
+	model := machine.LastAnswer().Model
+	if machine.View().Session != session {
+		model = ""
+	}
+	if session != "" && !machine.Admits(session, view.SessionFile) && !w.sessionHeld(ctx, tx, view.Claim) {
+		session = ""
+	}
+	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
+}
+
+// sessionHeld is stepAgent's read of whether c holds the session it records, in the fact's
+// transaction tx (record.SessionHeld); false for no transaction and for a read that failed, which
+// is logged.
+func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervise.Claim) bool {
+	if tx == nil {
+		return false
+	}
+	held, err := record.SessionHeld(ctx, tx, c.Project, c.Token, c.Session, c.SessionFile)
+	if err != nil {
+		w.log.Warn("legion step record names no session: the read of whether its claim holds it failed", "claim", string(c.Token), "error", err)
+	}
+	return held
+}
+
+// agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
+// "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
+// what the record leaves out without the log carrying text of any length.
+func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
+	if text == "" || steprecord.AgentTextHolds(text) {
+		return text
+	}
+	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
+		"bytes", len(text), "text", strconv.Quote(text[:min(len(text), 256)]))
+	return ""
 }
 
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
@@ -1063,8 +1149,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
 	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
-	// is recording an issue on.
+	// is recording an issue on. It settles the runs its writes end as a fact does
+	// (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
+	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -1087,7 +1175,10 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		return w.admission.Reconcile(scoped, tx, listed, target, position)
+		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		return settle(scoped, tx)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
@@ -1219,21 +1310,22 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
-// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
-// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake).
+// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// request, the merge-queue read and the second read of a conflicting head, read GitHub through
+// this runtime's own read of a pull request, apply its answer as every read of this runtime does,
+// the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
+// read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
+// attempt read no answer hands the head to this runtime's merge-state reader to follow
+// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
-		w.repositories, supervision.plan.tools, w.log)
-	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
-		_, pull, err := w.readPullRequest(ctx, pr)
-		return pull, err
-	}
-	w.outbox.mergeStateWait = w.mergeStateWait
+		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
+	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
@@ -1373,6 +1465,31 @@ func (w *workflowRuntime) repairCutoverMergers(ctx context.Context) error {
 	return nil
 }
 
+// openUncountedRuns gives each run no start of this release counted, which an issue of the
+// project stands in at the boot, an open row in step_starts (workflow's OpenUncountedRuns), in one
+// transaction of its own under the lock every fact applies under. run runs it before the listing's
+// reconcile, the boot's first admission pass, and before any fact, so each fact's settle ends such
+// a run as an open run, and a fact its agent's request applies waits for that agent's stream
+// first. It queues nothing, and a boot that runs again opens nothing; it logs how many runs it
+// opened when it opened any.
+func (w *workflowRuntime) openUncountedRuns(ctx context.Context) error {
+	var opened int
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("serialize the open of the uncounted runs with every fact: %w", err)
+		}
+		var err error
+		opened, err = w.engine.OpenUncountedRuns(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("open the runs of %s no start of this release counted: %w", w.dispatchProject, err)
+	}
+	if opened != 0 {
+		w.log.Info("opened the runs a start of an earlier release began", "count", opened)
+	}
+	return nil
+}
+
 // terminal applies a claim's ready or failure as it happens, on a context the daemon's stop does
 // not end: the fact is the supervisor's observation of a claim that has already reached that
 // state, so it is worth landing even while the daemon is going down, and nothing of the stop can
@@ -1454,7 +1571,12 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		}
 		fact = ready
 	case supervise.StateFailed:
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
+		// Everything the claim persists about its end: the sentence the supervisor wrote when it
+		// gave up (Claim.Failure), what the runtime last said of the death and of the start that
+		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
+		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
+		// a daemon restart still names the cause the role never chose — an eviction above all.
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:

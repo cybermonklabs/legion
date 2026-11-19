@@ -135,6 +135,21 @@ Every client reaches the listener through a recording proxy of its own
 (`role-takeover/listener-proxy.ts`), so each request and the listener's answer to it is read from
 a log rather than inferred.
 
+[`scripts/e2e/nats-callout-sessions.sh`](../../../scripts/e2e/README.md#nats-callout-sessionssh)
+drives the same two clients as the sessions of its stack behind the NATS auth service, with no
+proxy, since a broker token's proof names the listener's own origin: `omp-client.ts` answers
+`{"op":"deliveries"}` with what the extension handed the host, and `claude-client.ts` takes
+`--env-file` (the variables a broker trade reads, added to the server's environment) and
+`--inbox` (it plays the Legion inbox the server writes each delivery to, which
+`{"op":"deliveries"}` then answers). Beside them it drives a third, `role-takeover/codex-client.ts`,
+which the script compiles into a binary named `codex`: the `codex` process of one Codex CLI session,
+which starts the installed Codex plugin's MCP server with only its manifest's `env_vars` and the
+variables Codex hands every MCP server, runs the plugin's hooks (`{"op":"start"}` and
+`{"op":"new"}` run `SessionStart`), keeps the transcript the plugin reads, and answers the
+plugin's `codex queue`, whose messages `{"op":"deliveries"}` then answers. `role-takeover/codex-probe.ts`
+runs `natsprobe` for the script's Codex probe rows in the environment a Codex plugin server got
+(its `/proc/<pid>/environ`), presenting the credential the plugin's own settings resolve there.
+
 The listener runs with windows of its own, because every row turns on whether a claim's holder is
 still answering for it: `ENVOY_SESSION_LIVE_WINDOW=10s`, which is how long a claim stands renewed
 after its holder's last registration, and `ENVOY_ROLE_CLAIM_REAP_INTERVAL=2s`, so every row is

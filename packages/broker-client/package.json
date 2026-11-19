@@ -13,6 +13,10 @@
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
     },
+    "./error-text": {
+      "types": "./src/error-text.ts",
+      "bun": "./src/error-text.ts"
+    },
     "./metadata-identity": {
       "types": "./src/metadata-identity.ts",
       "bun": "./src/metadata-identity.ts"
@@ -28,6 +32,10 @@
     "./projected-token": {
       "types": "./src/projected-token.ts",
       "bun": "./src/projected-token.ts"
+    },
+    "./refusal-text": {
+      "types": "./src/refusal-text.ts",
+      "bun": "./src/refusal-text.ts"
     },
     "./signins": {
       "types": "./src/signins.ts",
@@ -45,6 +53,10 @@
       "types": "./src/token-client.ts",
       "bun": "./src/token-client.ts"
     },
+    "./token-errors": {
+      "types": "./src/token-errors.ts",
+      "bun": "./src/token-errors.ts"
+    },
     "./wire": {
       "types": "./src/wire.ts",
       "bun": "./src/wire.ts"
@@ -53,7 +65,7 @@
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
-    "lint": "bunx biome check src/ test/"
+    "lint": "bunx biome check src/ test/ scripts/"
   },
   "dependencies": {
     "@legion/contracts": "workspace:*",

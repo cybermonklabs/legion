@@ -9,14 +9,15 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 )
 
 // dispatchClusterOnlyArgs are every input the cluster-only mode takes: clusterOnly itself and the
-// region and hostname that name the cloud resources. deletionProtection is the fourth input the
-// mode keeps live and is left to its default here; every other input is refused by name
-// (TestDispatchClusterOnlyRefusesEveryDispatchInput).
+// region and hostname that name the cloud resources. deletionProtection and regionalNetwork are the
+// fourth and fifth inputs the mode keeps live and are left to their defaults here; every other
+// input is refused by name (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func dispatchClusterOnlyArgs() *gcp.DispatchArgs {
 	return &gcp.DispatchArgs{Region: "us-central1", Hostname: "example-dispatch", ClusterOnly: pulumi.BoolRef(true)}
 }
@@ -58,6 +59,27 @@ func dispatchClusterOnlyGolden(t *testing.T) string {
 	return strings.Join(lines, "")
 }
 
+// dispatchGoldenWithout is the whole declaration of a mode that registers what the default mode
+// registers less the resources dropped names, each a child of the component by its type and name:
+// the default mode's registration golden less the one line of each. Reading it from the golden
+// rather than writing it out again holds the two to one declaration: a resource the default
+// renames or reparents moves this expectation with it. The golden must hold exactly one line for
+// each resource dropped names.
+func dispatchGoldenWithout(t *testing.T, dropped ...dispatchResourceName) string {
+	t.Helper()
+	var kept strings.Builder
+	count := 0
+	for _, line := range strings.SplitAfter(readGolden(t, "dispatch-registrations.golden"), "\n") {
+		if slices.ContainsFunc(dropped, func(r dispatchResourceName) bool { return strings.HasPrefix(line, r.typ+" "+r.name+" ") }) {
+			count++
+			continue
+		}
+		kept.WriteString(line)
+	}
+	require.Equal(t, len(dropped), count, "the golden holds one line for each of %v", dropped)
+	return kept.String()
+}
+
 // With clusterOnly the component declares the cluster and what the cluster is made of, and nothing
 // else: no private services range or peering, no Cloud SQL instance, database or user, no
 // generated password, no Secret Manager grant, no Kubernetes provider and no Kubernetes object.
@@ -77,7 +99,7 @@ func TestDispatchClusterOnlyRegistersTheClusterAlone(t *testing.T) {
 	require.Equal(t, dispatchClusterOnlyGolden(t), dispatchRegistrations(m))
 }
 
-// deletionProtection is one of the four inputs the mode keeps live, and it guards the cluster as
+// deletionProtection is one of the five inputs the mode keeps live, and it guards the cluster as
 // well as the database the mode does not build: it reaches the cluster's own deletionProtection
 // rather than being ignored, and is true when the consumer sets nothing.
 func TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster(t *testing.T) {
@@ -101,6 +123,33 @@ func TestDispatchClusterOnlyPassesDeletionProtectionToTheCluster(t *testing.T) {
 	}
 }
 
+// regionalNetwork is one of the five inputs the mode keeps live, since it shapes the network half
+// both modes build, but the mode always makes its own cluster on the regional subnetwork and
+// refuses existingCluster, the one input beside which false is taken. So false is refused, by the
+// resolver and before anything registers, as a core.InputError naming regionalNetwork, rather than
+// leaving the cluster no subnetwork; and true, the value it has when unset, changes nothing: it
+// resolves, and the mode registers exactly the cluster-only declaration.
+func TestDispatchClusterOnlyTakesRegionalNetworkTrueAndRefusesFalse(t *testing.T) {
+	const refusal = "regionalNetwork false leaves the cluster clusterOnly builds no subnetwork: unset regionalNetwork"
+	args := dispatchClusterOnlyArgs()
+	args.RegionalNetwork = pulumi.BoolRef(false)
+	_, err := gcp.ResolveDispatch(args)
+	require.EqualError(t, err, refusal)
+	var refused *core.InputError
+	require.ErrorAs(t, err, &refused)
+	require.Equal(t, "regionalNetwork", refused.Input)
+	m, err := runDispatchClusterOnly(t, args)
+	require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+refusal)
+	require.Equal(t, []string{gcpProviderType}, m.Types(), "the program's own gcp provider registered and nothing of the component's")
+
+	args.RegionalNetwork = pulumi.BoolRef(true)
+	_, err = gcp.ResolveDispatch(args)
+	require.NoError(t, err)
+	m, err = runDispatchClusterOnly(t, args)
+	require.NoError(t, err)
+	require.Equal(t, dispatchClusterOnlyGolden(t), dispatchRegistrations(m))
+}
+
 // dispatchInput is one row of an input table: the input's schema name, and what sets that input,
 // and nothing else, to a value a consumer would plausibly send. A row is applied to whatever
 // DispatchArgs a test hands it, alone on a cluster-only fixture here and on top of other inputs
@@ -121,6 +170,10 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
 		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
+		{"publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = dispatchPublicOrigin }},
+		{"iapAudience", func(a *gcp.DispatchArgs) { a.IapAudience = pulumi.String(dispatchIAPAudience) }},
+		{"loadBalancerSourceRanges", func(a *gcp.DispatchArgs) { a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges }},
+		{"networkEndpointGroupName", func(a *gcp.DispatchArgs) { a.NetworkEndpointGroupName = dispatchNEGName }},
 		{"envoyImage", func(a *gcp.DispatchArgs) { a.EnvoyImage = dispatchEnvoyImage }},
 		{"cloudSqlProxyImage", func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = dispatchProxyImage }},
 		{"natsUrl", func(a *gcp.DispatchArgs) { a.NatsUrl = pulumi.String("nats://example-hub.example-tailnet.ts.net:4222") }},
@@ -141,6 +194,8 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"databaseWaitsFor", func(a *gcp.DispatchArgs) { a.DatabaseWaitsFor = pulumi.String("example-ordering-value") }},
 		{"namespace", func(a *gcp.DispatchArgs) { a.Namespace = pulumi.StringRef("example-namespace") }},
 		{"existingNamespace", func(a *gcp.DispatchArgs) { a.ExistingNamespace = pulumi.BoolRef(true) }},
+		{"existingCluster", func(a *gcp.DispatchArgs) { a.ExistingCluster = exampleExistingCluster() }},
+		{"existingDatabaseInstance", func(a *gcp.DispatchArgs) { a.ExistingDatabaseInstance = pulumi.String(replicaConnectionName) }},
 		{"replicas", func(a *gcp.DispatchArgs) { a.Replicas = pulumi.IntRef(2) }},
 		{"frontDoorReplicas", func(a *gcp.DispatchArgs) { a.FrontDoorReplicas = pulumi.IntRef(2) }},
 		{"listenerReplicas", func(a *gcp.DispatchArgs) { a.ListenerReplicas = pulumi.IntRef(1) }},
@@ -202,7 +257,7 @@ func TestDispatchClusterOnlyRefusesEveryDispatchInput(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// The refusal table above is exactly DispatchArgs' inputs less the four the mode keeps live, so an
+// The refusal table above is exactly DispatchArgs' inputs less the five the mode keeps live, so an
 // input added later is either refused or deliberately live and cannot be dropped in silence: it
 // would otherwise reach a cluster-only component that builds nothing it configures. Shaped as
 // aws/seeds_test.go's TestEveryStringInputHasASeedRow, which holds the seed tables complete.
@@ -215,9 +270,11 @@ func TestDispatchEveryInputIsLiveOrRefusedUnderClusterOnly(t *testing.T) {
 		require.NotEmpty(t, name, "%s carries a pulumi tag", field.Name)
 		inputs = append(inputs, name)
 	}
-	// The four inputs both modes use: clusterOnly itself, region and hostname, which name every
-	// cloud resource, and deletionProtection, which guards the cluster as well as the database.
-	covered := []string{"clusterOnly", "region", "hostname", "deletionProtection"}
+	// The five inputs both modes use: clusterOnly itself, region and hostname, which name every
+	// cloud resource, deletionProtection, which guards the cluster as well as the database, and
+	// regionalNetwork, which shapes the network half both modes build (false is refused here by a
+	// rule of its own, TestDispatchClusterOnlyTakesRegionalNetworkTrueAndRefusesFalse).
+	covered := []string{"clusterOnly", "region", "hostname", "deletionProtection", "regionalNetwork"}
 	for _, row := range dispatchClusterOnlyRefusals() {
 		covered = append(covered, row.input)
 	}

@@ -310,8 +310,8 @@ func New(cfg Config) (*Client, error) {
 	case cfg.Subject == nil:
 		return nil, errors.New("brokerclient: no subject token source: nothing names the identity to trade")
 	}
-	if err := oauthwire.ValidProjects(cfg.Projects); err != nil {
-		return nil, fmt.Errorf("brokerclient: the projects to trade for: %w", err)
+	if oauthwire.ValidProjects(cfg.Projects) != nil {
+		return nil, fmt.Errorf("brokerclient: the projects to trade for are not at most %d project keys, sorted and each named once", oauthwire.MaxProjects)
 	}
 	client := &Client{
 		wake:                 make(chan struct{}, 1),
@@ -407,6 +407,11 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Unlock()
 		switch {
 		case err == nil:
+			if !since.IsZero() {
+				// The wait was said; so is its end, once, as the TypeScript client says it.
+				c.logf(ctx, "the secrets broker answered this pod's session once it was registered",
+					"session", c.session, "waited", c.now().Sub(since))
+			}
 			wait = defaultRetryWait
 			since, logged = time.Time{}, time.Time{}
 			if err := onToken(ctx, token); err != nil {
@@ -447,6 +452,13 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	}
 }
 
+// RenewalAt is when Run trades again once token lands: RenewBefore ahead of its expiry, and
+// halfway to that expiry for a token that lives less than RenewBefore (untilRenewal). A caller
+// that holds an older token beside it reads from this whether the older one outlives the wait.
+func (c *Client) RenewalAt(token *Token) time.Time {
+	return c.renewalAt(token, c.now())
+}
+
 func retriedTrade(err error) (string, []any) {
 	var refused *RefusedError
 	if errors.As(err, &refused) {
@@ -463,13 +475,19 @@ func retriedTrade(err error) (string, []any) {
 // again the instant each token lands, which would spend the broker's per-address token bucket
 // in a loop and end in a 429.
 func (c *Client) untilRenewal(token *Token) time.Duration {
-	if wait := token.Expiry.Add(-c.renewBefore).Sub(c.now()); wait > 0 {
-		return wait
+	now := c.now()
+	return c.renewalAt(token, now).Sub(now)
+}
+
+// renewalAt is RenewalAt as of now.
+func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
+	if at := token.Expiry.Add(-c.renewBefore); at.After(now) {
+		return at
 	}
-	if left := token.Expiry.Sub(c.now()); left > 0 {
-		return left / 2
+	if left := token.Expiry.Sub(now); left > 0 {
+		return now.Add(left / 2)
 	}
-	return 0
+	return now
 }
 
 // sleep waits d, reporting false when ctx ended first. A Wake cuts the wait short, so the

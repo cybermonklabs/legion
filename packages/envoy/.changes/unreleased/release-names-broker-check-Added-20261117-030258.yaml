@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  `POST /v1/enrollments/carried` tells a Legion daemon which of the pod enrollments its own login
+  launched still carry something for the session ids it names, so the daemon frees a session id
+  only when the broker carries nothing for it. The body is `{"session_ids": [...]}`, 1 to 4096
+  ids of 1 to 255 bytes each (else `400 INVALID_SESSION_IDS`), and the answer is `{"carried":
+  [{"session_id", "enrollment_id", "state", "ends_at"}]}`, sorted by session id and then by
+  enrollment id, and `[]` when nothing carries. A live enrollment counts whatever it holds and
+  ends at its lease end; a dormant one counts while it holds a live grant or a pending request
+  and ends at the end of its carry window (`BROKER_SESSION_CARRY_SECONDS`). Another login's
+  enrollments are never answered, so another daemon's pod of the same session id never keeps a
+  daemon from freeing that id. A credential whose login names no account, one a person approved
+  through a code, is `403 SERVICE_LOGIN_REQUIRED`; any other launcher credential is answered with
+  the rows its own login launched. The route takes a body of up to about 6 MiB, the longest list its
+  bounds allow.
+time: 2026-11-17T03:02:58Z
+custom:
+    Issue: release-names-broker-check

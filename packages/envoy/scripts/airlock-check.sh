@@ -1101,9 +1101,10 @@ check_k5() {
 ###############################################################################################
 #
 # k6 drives real clients: the Azure CLI through sjawhar/dotfiles' scripts/az-broker, and the AWS
-# CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has neither az nor
-# boto3, so the check installs them with scripts/airlock-clients.sh, which pins a version and
-# checks its SHA-256 before anything of it runs, and reads that script's exports.
+# CLI and boto3 against the stack's stand-in AWS service. A Legion issue pod has no boto3, and a
+# pod on a worker image from before dispatch://INFRA-3257 has no az, so the check installs both
+# with scripts/airlock-clients.sh, which pins a version and checks its SHA-256 before anything of
+# it runs, and reads that script's exports, whose PATH puts its az ahead of any az the image has.
 #
 # The stack's stand-ins play the two clouds whole, so both clients run as they do in anger: the
 # Microsoft stand answers the tenant's OpenID configuration document and the token endpoint,
@@ -1409,14 +1410,15 @@ check_k6() {
 # One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
 # manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
-# The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
-# the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
-# not hold. That is one broker process of this check's own, on the stack's own database, store,
-# certificate authority and stand-ins, with its rules file, its own two ports and its own public
-# URL changed - the same device k4's control uses for one setting, with the public URL changed
-# too because this broker must serve the release as well as the proxy, and a session's proof is
-# verified against the public URL it was signed for. Its whole environment is the first stack
-# broker's own, read out of /proc/<pid>/environ, so nothing of the stack's settings is left out.
+# The names are the consumers' own - GITHUB_ADMIN_PAT, the gcloud login k7_names lists,
+# GWS_THEOREM_READ_OAUTH and the rest - and the hosts are the real ones, so this check needs a
+# rules file the stack's does not hold. That is one broker process of this check's own, on the
+# stack's own database, store, certificate authority and stand-ins, with its rules file, its own
+# two ports and its own public URL changed - the same device k4's control uses for one setting,
+# with the public URL changed too because this broker must serve the release as well as the proxy,
+# and a session's proof is verified against the public URL it was signed for. Its whole
+# environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing of the
+# stack's settings is left out.
 #
 # The pod sets NO_PROXY=* and GIT_CONFIG_COUNT=5 with a GitHub credential helper. NO_PROXY=* is
 # left exactly as it is: the CLI must drop it, and that it does is part of what this check
@@ -1560,8 +1562,9 @@ say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFIL
 say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
 say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'printf "Authorization: Bearer %s" "\$GWS_THEOREM_READ_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
 
-# The google-workspace skill's Bearer call to admin.googleapis.com.
-say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
+# The google-workspace skill's Bearer call to admin.googleapis.com. Its domain is a placeholder:
+# Google refuses the fake token (401) before it reads the query, which is the answer k7 reads.
+say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for

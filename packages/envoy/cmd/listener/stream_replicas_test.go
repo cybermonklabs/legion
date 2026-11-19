@@ -60,9 +60,7 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 			cluster := testnats.StartCluster(t, 3)
 			js := cluster.JetStream(t)
 			deployed := bustest.DeployedThreeCopyStream(drift.Change)
-			if _, err := js.AddStream(&deployed); err != nil {
-				t.Fatalf("deploy the stream: %v", err)
-			}
+			cluster.CreateStream(t, deployed)
 			before := testnats.AwaitSettledStream(t, js, bus.Stream).Config
 
 			startListenerStream(t, listenerSettings(t, cluster.URL(), map[string]string{

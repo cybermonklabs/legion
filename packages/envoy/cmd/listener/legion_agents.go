@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // legionAgentRegistry is the Legion agent registry the /v1/legion/agents routes serve: its store
@@ -201,26 +202,6 @@ func (r *legionAgentRegistry) serving(w http.ResponseWriter) (*legionagents.Stor
 // legionAgentBodyLimit bounds the body of a Legion agent registry write, one entry or a batch.
 const legionAgentBodyLimit = 1 << 20
 
-// legionAgentAnswer is one Legion agent registry entry as a read answers it: the entry, the session
-// that replaced it within its role token (legionagents.Agent), and whether its session is answering
-// now. Both are derived at the read and neither is stored.
-//
-// Live is the session's own registration state, as every reader of the session registry judges it
-// (session.StateOf through SessionRegistry.Lookup, sessionIsLive): true only while that
-// registration is within the live window, never membership alone, of the session cache or of the
-// registry. So live false does not say the agent has ended: a session past the live window is
-// unresponsive and keeps everything of its own (dispatch://INFRA-392), and only a session the
-// registry calls gone has stopped.
-type legionAgentAnswer struct {
-	legionagents.Agent
-	Live bool `json:"live"`
-}
-
-// legionAgentList is a listing's answer, `[]` when the registry holds no entry.
-type legionAgentList struct {
-	Entries []legionAgentAnswer `json:"entries"`
-}
-
 // legionAgentBatchFailure is a batch write that failed after some entries may have been written
 // (legionagents.PartialWriteError): written counts those, and every write is idempotent, so the
 // caller sends the batch again once the failure is one to retry.
@@ -229,17 +210,21 @@ type legionAgentBatchFailure struct {
 	Written int    `json:"written"`
 }
 
-func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) legionAgentAnswer {
+// answerLegionAgent is one registry entry as a read answers it (listenerwire.LegionAgentAnswer):
+// its live is the session's own registration state, as every reader of the session registry
+// judges it (session.StateOf through SessionRegistry.Lookup, sessionIsLive), never membership of
+// the session cache or of the registry.
+func answerLegionAgent(sessions *session.SessionRegistry, agent legionagents.Agent) listenerwire.LegionAgentAnswer {
 	_, state := sessions.Lookup(agent.SessionID)
-	return legionAgentAnswer{Agent: agent, Live: sessionIsLive(state)}
+	return listenerwire.LegionAgentAnswer{LegionAgent: agent, Live: sessionIsLive(state)}
 }
 
-func answerLegionAgents(sessions *session.SessionRegistry, agents []legionagents.Agent) legionAgentList {
-	entries := make([]legionAgentAnswer, len(agents))
+func answerLegionAgents(sessions *session.SessionRegistry, agents []legionagents.Agent) listenerwire.LegionAgentList {
+	entries := make([]listenerwire.LegionAgentAnswer, len(agents))
 	for i, agent := range agents {
 		entries[i] = answerLegionAgent(sessions, agent)
 	}
-	return legionAgentList{Entries: entries}
+	return listenerwire.LegionAgentList{Entries: entries}
 }
 
 // legionAgentReadContext bounds a whole registry read, a session key and its role token's listing

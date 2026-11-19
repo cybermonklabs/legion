@@ -421,8 +421,9 @@ describe("checkout_commit", () => {
   });
 });
 
-// cmd_live_read reads every path skill_reads prints. asd-ste100 holds examples/ beside
-// references/, and a read of SKILL.md and references/ alone left examples/ unread.
+// cmd_live_read reads every path skill_reads prints. A skill can hold examples/ beside
+// references/ (asd-ste100 holds examples/), and a read of SKILL.md and references/ alone left
+// examples/ unread.
 describe("skill_reads", () => {
   function checkout() {
     const co = freshDir("skills-checkout");
@@ -784,10 +785,19 @@ echo done
     );
     expect(existsSync(path.join(skills, "writing-plans/SKILL.md"))).toBe(true);
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
-    const env = readFileSync(path.join(bin, "env.txt"), "utf8");
-    expect(env).toContain("ENVOY_URL=http://127.0.0.1:1\n");
-    expect(env).toContain("OMP_PROFILE=skills-s1\n");
-    expect(env).toContain(`HOME=${label}/home\n`);
+    // Each variable is read whole, by name: a substring would also match a longer name such as
+    // X_OMP_PROFILE, and env can print any variable first.
+    const env = new Map(
+      readFileSync(path.join(bin, "env.txt"), "utf8")
+        .split("\n")
+        .flatMap((line): [string, string][] => {
+          const eq = line.indexOf("=");
+          return eq > 0 ? [[line.slice(0, eq), line.slice(eq + 1)]] : [];
+        })
+    );
+    expect(env.get("ENVOY_URL")).toBe("http://127.0.0.1:1");
+    expect(env.get("OMP_PROFILE")).toBe("skills-s1");
+    expect(env.get("HOME")).toBe(`${label}/home`);
     expect(readFileSync(path.join(label, "built-from"), "utf8")).toContain(
       "superpowers-skill writing-plans "
     );
@@ -856,7 +866,7 @@ fi
 {
   printf 'argv %s\\n' "$0" "$@"
   printf 'env %s\\n' "PWD=$PWD" "HOME=$HOME" "OMP_PROFILE=$OMP_PROFILE"
-  env | grep -q LEGION_E2E && echo "env LEGION_E2E set"
+  compgen -e | grep -q '^LEGION_E2E' && echo "env LEGION_E2E set"
   probe read-outside cat "$OUTSIDE"
   probe read-home-ssh ls "$OPERATOR_HOME/.ssh"
   probe list-work ls "$WORK/runs"

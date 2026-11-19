@@ -18,8 +18,8 @@
 //     observe, which is never a pass.
 //
 // Every record belongs to a named set: session id ses_refill_<set>_<index>, title
-// "refill <set> <index> v<variant>" and interest topic notifications.refill.<set>.v<variant>, so a
-// poll tells which set a row is from and which version of it the listener answered. A set is
+// "refill <set> <index> v<variant>" and interest topic notifications.team.refill.<set>.v<variant>, so
+// a poll tells which set a row is from and which version of it the listener answered. A set is
 // written on the command line as name=count[:variant] (variant 1 by default), several separated by
 // commas.
 //

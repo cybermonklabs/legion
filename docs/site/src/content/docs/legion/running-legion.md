@@ -120,8 +120,8 @@ decide what they may do there:
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages, statuses, attestations |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts, attestations |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -129,18 +129,36 @@ change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accou
 account granted it. The mint reads that second set before each token and asks for the role's
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
-permission. The daemon itself reads
-GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts,
-which covers what arrived while the daemon was down, and once an agent's handoff has been recorded,
-the moment the daemon next decides on that pull request's state. It runs on no timer, and it reads
-one issue's own pull request rather than a listing of every open one, so a handoff costs the reads
-of its own pull request alone.
-It reads no repository ruleset, no branch protection and no check run: whether CI is red at a head
-reaches the daemon as Envoy's settled observation of that head's checks, and the checks a base
-branch requires the daemon never reads at all, so it names no required check that has never run.
+permission. An App registered before a permission joined its manifest lacks that permission
+until you add it in the App's settings on GitHub and each account that installed the App
+approves it. The controller, which works no repository, holds a read lease of the review App on
+each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
+commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
+itself reads GitHub with the implement App too, at these moments and at no other: as the workflow
+runtime starts, which covers what arrived while the daemon was down, and a start read that finds
+GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
+been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
+ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
+for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
+the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
+state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
+answers a state, the head moves or the pull request is no longer open, each
+read logged with its wait; a minute after a read found the head conflicting with its base, to
+read it once more before it acts on the conflict; and once after GitHub reports the pull request
+out of the merge queue. Nothing else runs on a timer, and it reads one issue's own pull request
+rather than a listing of every open one. A read that finds the head
+conflicting also reads the base branch's rules, its rulesets and its classic branch protection,
+for the checks the base requires and whether it requires a current branch, since that decides
+whether the conflict needs the implementer's merge forward now. It reads no check run and no
+commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
+that head's check runs and commit statuses, which is also where it reads whether a required check
+is green on a conflicting head. Dispatch's CI reconcile reads the
+commit statuses of each open head from GitHub where the Envoy App's token holds the Commit statuses
+permission, and the settlement names each one with its state.
 Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+The read as the workflow runtime starts and the read after a handoff are each the backstop for a webhook that never arrived — GitHub can fail to
 deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
 lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
 the next of them:
@@ -298,8 +316,8 @@ Dispatch read them, delete the files, then install every App from
   [Issue sizing](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#issue-sizing-one-reservation-per-pod)
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
-  250m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time and runs no lane or browser, and a larger probe could keep the daemon from
+  500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
+  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
   booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
@@ -354,8 +372,10 @@ Dispatch read them, delete the files, then install every App from
 
 Every agent runs from `ghcr.io/cybermonklabs/legion-worker`, which carries Oh My Pi, Legion's two plugins
 (`@sjawhar/pi-envoy` and `@sjawhar/pi-legion`), the `legion` CLI, a general toolchain (git, jj, gh,
-Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, kubectl, yq, unzip) and the
-client tools a role's own work needs (`psql`, `redis-cli`, `sqlite3`, `nc`, `dig`): `apt` cannot write a system
+mise, Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, the Google Cloud SDK's
+gcloud and bq, azure-cli's az, kubectl, yq, unzip, tmux, busybox, and the host libraries
+Playwright's WebKit needs) and the client tools a role's own work needs (`psql`, `redis-cli`,
+`sqlite3`, `nc`, `dig`): `apt` cannot write a system
 prefix in an unprivileged container, unpacking
 one by hand works for some tools and not others, and what rules out a client a role unpacks onto
 its own `PATH` is the withheld `operator-setup` capability, not the unpacking itself.

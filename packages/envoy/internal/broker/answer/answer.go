@@ -14,7 +14,7 @@
 //     the request named (SecretNames: the first of them, up to 32 KiB of names as the line writes
 //     them, and how many it named), and the caller's X-Correlation-Id when it sent one. Those
 //     fields are RefusalLine's, which the airlock's proxy port writes its refusal line by too, and
-//     each text field of them is cut to fieldBytes (ClipFields), so whatever the caller sends,
+//     each text field of them is cut to FieldBytes (ClipFields), so whatever the caller sends,
 //     the line stays one Cloud Logging entry.
 //
 // A refusal is an answer with a status from 400 to 499. Three of them are counted and write no
@@ -68,22 +68,24 @@ const RefusalMessage = "broker: answer refused"
 const Header = "X-Broker-Answer-Id"
 
 // correlationHeader is the header a caller names its own request id in, which the refusal line
-// carries as correlation_id, at most fieldBytes of it.
+// carries as correlation_id, at most FieldBytes of it.
 const correlationHeader = "X-Correlation-Id"
 
-// fieldBytes bounds each text field of a line the broker writes about a request (clip,
+// FieldBytes bounds each text field of a line the broker writes about a request (Clip,
 // ClipFields): whatever the caller wrote into it - the method, the path, the host, a reason or
 // an error that quotes the host or its address, the correlation id, each secret name, a form
-// field or an approver a relay names - is at most this many bytes of it.
-const fieldBytes = 256
+// field or an approver a relay names - is at most this many bytes of it. It is exported for a
+// line that builds a field out of whole parts, such as airlockproxy's list of the addresses a
+// dial tried, which keeps only as many whole parts as fit rather than have the cut split one.
+const FieldBytes = 256
 
 // secretNamesBytes bounds the secret names a refusal's line lists (SecretNames), counted as the
-// bytes the line writes for them (listedBytes): each name, already cut to fieldBytes, as a JSON
+// bytes the line writes for them (listedBytes): each name, already cut to FieldBytes, as a JSON
 // string, its escapes and its two quotes included. Cloud Logging refuses an entry over 262,144
 // bytes, and a request may name thousands of names; this count alone keeps the line below that.
 // The list is at most 32 KiB of written names and one comma between each two, and a name is
 // written as at least its two quotes, so it has at most 16,384 names and fewer commas: some 48 KiB
-// in all, which leaves the rest of the line, each caller-written field of it cut to fieldBytes,
+// in all, which leaves the rest of the line, each caller-written field of it cut to FieldBytes,
 // far below the limit. Counted by the names' own bytes, 32,768 names of one control byte, each
 // written as 8, would make a line of about 288 KiB.
 const secretNamesBytes = 32 << 10
@@ -287,7 +289,7 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 }
 
 // SecretNames is the secret names a request named as a refusal's line lists them: the first of
-// them, in the request's order and each cut by clip, up to secretNamesBytes of names as the line
+// them, in the request's order and each cut by Clip, up to secretNamesBytes of names as the line
 // writes them (listedBytes), and a count of the names after them. The first name that would pass
 // the bound ends the list, so the list is always a prefix of what the request named, and the
 // names it leaves out are counted, never kept. Middleware's Recorder notes the API port's names on
@@ -305,7 +307,7 @@ type SecretNames struct {
 func (n *SecretNames) Note(names ...string) {
 	for _, name := range names {
 		if n.omitted == 0 {
-			name = clip(name)
+			name = Clip(name)
 			if written := listedBytes(name); n.bytes+written <= secretNamesBytes {
 				n.listed = append(n.listed, name)
 				n.bytes += written
@@ -396,7 +398,7 @@ type RefusalLine struct {
 // either; the airlock's proxy port names its host, reason and path as extras, and its issue and
 // slot as trailing.
 //
-// Every text field of the line, extras and trailing included, is cut by clip here (ClipFields),
+// Every text field of the line, extras and trailing included, is cut by Clip here (ClipFields),
 // where it enters the line, rather than by each writer: the method, the host and the path are
 // the caller's own text, and a reason may quote the host, so a field a writer adds later is cut
 // with them. The secret names are a list, which SecretNames bounds.
@@ -716,12 +718,12 @@ func NewID() string {
 }
 
 // CorrelationID is the caller's X-Correlation-Id as a refusal's line keeps it: its printable
-// ASCII, at most fieldBytes of it. Middleware reads it for the API port, and the airlock's proxy
+// ASCII, at most FieldBytes of it. Middleware reads it for the API port, and the airlock's proxy
 // port for its own refusals.
 func CorrelationID(r *http.Request) string {
 	sent := r.Header.Get(correlationHeader)
-	kept := make([]byte, 0, min(len(sent), fieldBytes))
-	for i := 0; i < len(sent) && len(kept) < fieldBytes; i++ {
+	kept := make([]byte, 0, min(len(sent), FieldBytes))
+	for i := 0; i < len(sent) && len(kept) < FieldBytes; i++ {
 		if sent[i] >= ' ' && sent[i] <= '~' {
 			kept = append(kept, sent[i])
 		}
@@ -729,25 +731,26 @@ func CorrelationID(r *http.Request) string {
 	return string(kept)
 }
 
-// clip keeps caller-written text of at most fieldBytes as it came, and cuts longer text to its
-// first fieldBytes, dropping every invalid UTF-8 run in the bytes it keeps (strings.ToValidUTF8),
+// Clip keeps caller-written text of at most FieldBytes as it came, and cuts longer text to its
+// first FieldBytes, dropping every invalid UTF-8 run in the bytes it keeps (strings.ToValidUTF8),
 // a rune the cut splits among them: what a line written for an answer keeps of each text field
-// (ClipFields), and a refusal's line of each secret name (SecretNames).
-func clip(text string) string {
-	if len(text) <= fieldBytes {
+// (ClipFields), a refusal's line of each secret name (SecretNames), and the broker's standard
+// logger of the first line of each write to it (logmask.StandardLog).
+func Clip(text string) string {
+	if len(text) <= FieldBytes {
 		return text
 	}
-	return strings.ToValidUTF8(text[:fieldBytes], "")
+	return strings.ToValidUTF8(text[:FieldBytes], "")
 }
 
-// ClipFields cuts each text value of fields, a line's attributes as slog takes them, by clip, in
+// ClipFields cuts each text value of fields, a line's attributes as slog takes them, by Clip, in
 // place, and answers fields. It is where the caller's text enters a line the broker writes about
 // a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line, its
 // joined connection's line, its upstream failure line and the line net/http writes through its
 // ErrorLog, and the API port's and the approval page's lines that name a form field, an approver
 // or a provider's error pass their whole list through it. So each text field - the method, the
 // path, the host, a reason or an error that quotes the host or its address, the correlation id,
-// and any field a line adds later - is at most fieldBytes, and the line stays under the 262,144
+// and any field a line adds later - is at most FieldBytes, and the line stays under the 262,144
 // bytes of one Cloud Logging entry whatever the caller sends. The net/http line passes only its
 // error through it; the stack of a recovered panic, the server's own text, is added after the cut
 // and kept whole (airlockproxy's slogWriter).
@@ -766,32 +769,32 @@ func ClipFields(fields []any) []any {
 	return fields
 }
 
-// clipValue is one value of a line as the line writes it, cut to fieldBytes: a string, an error,
+// clipValue is one value of a line as the line writes it, cut to FieldBytes: a string, an error,
 // whose text a longer one is written as once cut, and a slog.Attr holding either. A value of any
 // other kind, such as the secret names' list, is itself: a list is bounded where it is built
 // (SecretNames), and a number or a time is no caller's text.
 func clipValue(value any) any {
 	switch held := value.(type) {
 	case string:
-		if len(held) > fieldBytes {
-			return clip(held)
+		if len(held) > FieldBytes {
+			return Clip(held)
 		}
 	case error:
-		if text := held.Error(); len(text) > fieldBytes {
-			return clip(text)
+		if text := held.Error(); len(text) > FieldBytes {
+			return Clip(text)
 		}
 	case slog.Attr:
 		// An Attr's error is a KindAny the handler writes as its text, as it writes the error
 		// above, so both are cut to a string of that text.
 		switch held.Value.Kind() {
 		case slog.KindString:
-			if text := held.Value.String(); len(text) > fieldBytes {
-				return slog.String(held.Key, clip(text))
+			if text := held.Value.String(); len(text) > FieldBytes {
+				return slog.String(held.Key, Clip(text))
 			}
 		case slog.KindAny:
 			if err, ok := held.Value.Any().(error); ok {
-				if text := err.Error(); len(text) > fieldBytes {
-					return slog.String(held.Key, clip(text))
+				if text := err.Error(); len(text) > FieldBytes {
+					return slog.String(held.Key, Clip(text))
 				}
 			}
 		}

@@ -116,6 +116,7 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 
@@ -167,6 +168,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   session.onRoleRegained(async (role, reason) => {
@@ -191,6 +193,9 @@ test("the role read's 404 still means no live holder: the kept lane changed only
   const stateDirectory = scratchState()
   const regains: string[] = []
   const regained = Promise.withResolvers<void>()
+  // The listener names no holder once, and this session once its soft claim takes the role back,
+  // so the regain happens once however many heartbeats run before the hook's first call is read.
+  let unclaimed = true
   const client: FakeClient = {
     subscribe: async () => registered(),
     getInterest: async () => interest(),
@@ -198,6 +203,10 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     unregisterSession: async () => undefined,
     setRole: async () => ({ claimed: true, interest: interest() }),
     getRole: async () => {
+      if (!unclaimed) {
+        return { role: "legion-claim", holder: "ses_current", last_seen: 1, state: "live" } as const
+      }
+      unclaimed = false
       throw new EnvoyApiError({
         method: "GET",
         url: "http://listener.test/v1/roles/legion-claim",
@@ -219,6 +228,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   session.onRoleRegained(async (role, reason) => {
@@ -274,6 +284,7 @@ test("a soft claim a different live session refuses removes the role record, whi
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -334,6 +345,7 @@ test("a refusal naming this session under another process keeps the record, asks
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -416,6 +428,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -480,6 +493,7 @@ test("the age sweep does not reach the record of a process still pressing its re
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 
