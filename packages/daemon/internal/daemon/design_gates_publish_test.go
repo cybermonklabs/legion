@@ -53,6 +53,14 @@ func (d *gatePublishDispatch) PutStep(context.Context, string, string, dispatch.
 	return nil
 }
 
+func (d *gatePublishDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+
+func (d *gatePublishDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
+
 func (d *gatePublishDispatch) PutDesignGates(_ context.Context, key string, gates []dispatch.DesignGateDocument) error {
 	d.puts = append(d.puts, gatePublished{Issue: key, Gates: append(make([]dispatch.DesignGateDocument, 0, len(gates)), gates...)})
 	if len(d.answers) == 0 {
@@ -487,11 +495,13 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 // row is decided by Dispatch's answer alone (the outbox's publishDesignGates, permanentRefusal).
 //
 // Only the route's own 404 ISSUE_NOT_FOUND ends the row: an issue Dispatch does not know is one it
-// will not know on the retry either. Every other answer is an outage the row rides out, and the
-// 404 a Dispatch whose release has no design-gates route answers is the one that matters most:
-// its router writes that refusal under the code NOT_FOUND, so a rule reading the status alone, or
+// will not know on the retry either. Every other answer is one the row rides out, and the 404 a
+// Dispatch whose release has no design-gates route answers is the one that matters most: its
+// router writes that refusal under the code NOT_FOUND, so a rule reading the status alone, or
 // reading every coded 4xx as final, would drop every publication of a deployment whose daemon came
-// up first, which is exactly what the retry lets happen in either order.
+// up first, which is exactly what the retry lets happen in either order. The route's own 400
+// INVALID_ISSUE, a coded refusal the shared rule calls final (dispatch.PermanentRefusal), keeps
+// the row too: an operator repairs it by changing the gate whose document is missing.
 func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 	const issue = "LEGION-208"
 	r := newGatePublishRig(t, 1)
@@ -503,6 +513,7 @@ func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 		fmt.Errorf("publish the design gates of %s: %w", issue, errors.New("Dispatch is down")),
 		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/" + issue + "/design-gates"},
 		&dispatch.Error{Status: http.StatusNotFound, Message: "<html>404 Not Found</html>"},
+		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ISSUE", Message: `"spec" names no document: artifact_id is the document that step's gate recorded`},
 		&dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "issue not found"},
 	}
 	r.inTx(func(ctx context.Context, tx pgx.Tx) error {
@@ -518,6 +529,7 @@ func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 		{what: "a Dispatch that is down", rows: 1},
 		{what: "the router's 404 NOT_FOUND of a Dispatch with no such route", rows: 1, after: time.Minute},
 		{what: "a 404 with no code at all, from whatever stands in front of Dispatch", rows: 1, after: time.Minute},
+		{what: "the route's own 400 INVALID_ISSUE, which an operator repairs by changing the gate", rows: 1, after: time.Minute},
 		{what: "the 404 that names the issue as unknown", rows: 0, after: time.Minute},
 	} {
 		r.ahead += step.after

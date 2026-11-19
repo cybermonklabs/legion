@@ -896,6 +896,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 		row.LastHandoff = fact.HandoffRecord
 	}
+	// The rating of the plan is judged here (planRatingRefusal), past every refusal above, so a
+	// held issue's, a stale run's or a lingering tree's completion is told that first, and before
+	// anything is written. It reads the issue this transaction read under the fact's lock, which is
+	// the read the retro ends on below (TriggerRetroCompleted): the route's read came before that
+	// lock, and the issue can move between the two, as a retried hold does. Its refusal writes
+	// nothing and leaves the fact unspent, so the same completion, corrected, applies under its key.
+	if refusal := planRatingRefusal(fact, current && issue.Phase == phase.Retro, reported); refusal != nil {
+		return intake.Result{Refusal: refusal, Unspent: true}, nil
+	}
 	// The round as the completion found it is what a notice is deduped against (settleRound): a
 	// round already stuck at this head before the completion was told then, and the completion
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
@@ -938,7 +947,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, "")
+		// The completion that ends the retro carries the rating its agent gave the plan, which
+		// planRatingRefusal above took on no other completion, and a plugin before the rating
+		// sends none, so its retro writes no rating.
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{}, e.rateRetro(ctx, tx, *issue, *fact.PlanRating)
 	}
 	return intake.Result{}, nil
 }
@@ -2072,6 +2087,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
+	}
+	// The move out of admitted is where the run's work starts, and so where the plan it carries
+	// out is written (WritePlan): the default plan, the steps whose first is the start below.
+	if trigger == TriggerGateOpened {
+		if err := e.WritePlan(ctx, tx, issue); err != nil {
+			return err
+		}
 	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
 	// session until its issue closes (leave), and its phase entry ends here, not its process. The

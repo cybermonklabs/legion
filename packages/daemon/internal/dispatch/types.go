@@ -54,6 +54,13 @@ type Client interface {
 	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
 	// steps. Dispatch writes each field once and keeps every field the write leaves out.
 	PutStep(ctx context.Context, key, id string, write StepWrite) error
+	// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the
+	// issue, with the record's identity in write, on the record's rating route. Dispatch writes
+	// each field once, so a rating sent again changes nothing.
+	PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error
+	// PutPlan writes the plan one run of the issue carries out onto Dispatch's plan id of the
+	// issue. Dispatch writes each field once, so a plan sent again changes nothing.
+	PutPlan(ctx context.Context, key, id string, plan PlanWrite) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -81,7 +88,7 @@ type RoleHolder struct {
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
 // leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
 // because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
-// StepRecord, because this package imports no record of the daemon's.
+// StepRecord, the rating aside, because this package imports no record of the daemon's.
 type StepWrite struct {
 	Task       string     `json:"task"`
 	Step       int        `json:"step"`
@@ -97,6 +104,44 @@ type StepWrite struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
+}
+
+// PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
+// route takes them beside the step write (HTTPClient.PutStepRating). It mirrors the record's own
+// PlanRating, which the outbox converts to it, because this package imports no record of the
+// daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the
+// same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
+}
+
+// PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
+// the plan is of, its source (default or owner), the owner's document with its version, which a
+// plan of the source default leaves out because Dispatch refuses either on one, and each task with
+// its steps in order. It mirrors the record's own PlanRecord, because this package imports no
+// record of the daemon's.
+type PlanWrite struct {
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	*PlanDocument
+	Tasks []PlanTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from, as the plan
+// route takes it: embedded in PlanWrite, its artifact_id and version are members of the body, both
+// written or neither. It mirrors the record's own PlanDocument, which publishPlanRecord converts
+// to it, because this package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
+}
+
+// PlanTask is one task of a plan's write: its id and its steps in order, each a role or
+// `role:key`.
+type PlanTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -402,8 +447,8 @@ const (
 // an operator restores it and the same body is taken — so reading one as permanent would drop the
 // write for good. PARENT_CONTENDED is an issue PATCH that found its parent moved by a concurrent
 // reparent at every attempt to lock it, so nothing was applied and the same body is taken once the
-// reparents stop. So is an older Dispatch's refusal of a field this daemon added (newerFields): it
-// ends when Dispatch is upgraded, so the two deploy in either order.
+// reparents stop. So is the refusal of a field this daemon added (newerFields) by a Dispatch from
+// before #2461: it ends when that Dispatch is upgraded, so the two deploy in either order.
 func PermanentRefusal(err error) (*Error, bool) {
 	var refusal *Error
 	if !errors.As(err, &refusal) {
@@ -424,9 +469,12 @@ func PermanentRefusal(err error) (*Error, bool) {
 	return refusal, true
 }
 
-// newerFields are the request fields this daemon sends that a Dispatch one release older does not
-// know: a hand-over's labels_add and expected_sequence. That Dispatch's decoder refuses an unknown
-// field by name; any other malformed body stays a permanent refusal.
+// newerFields are the request fields this daemon sends that a Dispatch from before #2461 refused by
+// name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
+// it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
+// serves only a Dispatch from before that change; a field whose loss would change a write ships as
+// a route of its own instead (the record's rating route, HTTPClient.PutStepRating). Any other malformed
+// body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
 func unknownNewerField(message string) bool {

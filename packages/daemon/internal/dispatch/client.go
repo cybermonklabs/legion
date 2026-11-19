@@ -152,9 +152,9 @@ func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
 // /api/v1/projects/{key}/gated-steps, as the daemon's own session, the actor every write of this
 // client carries. The list is always sent, empty for a deployment that gates nothing: Dispatch
 // refuses a body that names no list rather than read it as the empty one, so a nil slice would
-// be refused where it means the same thing. A Dispatch older than the route answers 404, which
-// the caller retries: the route arrives with the next server release, and nothing is lost by
-// waiting for it.
+// be refused where it means the same thing. A Dispatch older than the route answers its router's
+// 404 (NoRoute), which the outbox's row waits on: the route arrives with the next server release,
+// and nothing is lost by waiting for it.
 func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []string) error {
 	if steps == nil {
 		steps = []string{}
@@ -172,8 +172,8 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers its router's 404 under the code NOT_FOUND, which the caller
-// retries until the server release that has it.
+// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until the
+// server release that has it.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}
@@ -190,8 +190,8 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 // The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
 // body that names no list, and the empty list is the publication that removes every holder.
 // Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
-// an issue it does not know; a Dispatch older than the route answers its router's 404 under the
-// code NOT_FOUND, which the caller retries until the server release that has it.
+// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}
@@ -207,11 +207,42 @@ func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []R
 // route takes a record of the issue from. The write appends no event and notifies nobody. Dispatch
 // answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
 // ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a
-// record of another issue; a Dispatch older than the route answers its router's 404 under the
-// code NOT_FOUND, which the caller retries until the server release that has it.
+// record of another issue; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{
 		StepWrite: write,
+		Actor:     daemonActor(key),
+	}, nil)
+}
+
+// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the issue
+// key, through the record's rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, as the
+// daemon's own session. The body is the step write's, with the identity of the retro's run, which
+// makes the record where its start and end have not landed yet, and the rating and its reason. The
+// rating has a route of its own because the step route ignores a member it does not declare, so a
+// rating sent there would be answered 200 and lost. Dispatch answers the step route's refusals,
+// and 400 STEP_INPUT for a rating off its rule or on a record that is no retro; a Dispatch older
+// than the route answers its router's 404 (NoRoute), which the outbox's row waits on.
+func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/rating", stepRatingWrite{
+		StepWrite:  write,
+		PlanRating: rating,
+		Actor:      daemonActor(key),
+	}, nil)
+}
+
+// PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
+// issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
+// the route takes a plan of the issue from. The write appends no event and notifies nobody, and
+// Dispatch sets each field once, so a plan sent again changes nothing. Dispatch answers 400
+// PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other writer, 404
+// ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id that is a plan
+// of another issue; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on until the server release that has it.
+func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
+		PlanWrite: plan,
 		Actor:     daemonActor(key),
 	}, nil)
 }
@@ -713,5 +744,19 @@ type roleHoldersWrite struct {
 // stepWrite is the body of a step record's write: the record's fields and the daemon's actor.
 type stepWrite struct {
 	StepWrite
+	Actor actor `json:"actor"`
+}
+
+// stepRatingWrite is the body of a rating's write: the record's fields, the rating and its reason,
+// and the daemon's actor.
+type stepRatingWrite struct {
+	StepWrite
+	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// planWrite is the body of a plan's write: the plan's fields and the daemon's actor.
+type planWrite struct {
+	PlanWrite
 	Actor actor `json:"actor"`
 }
