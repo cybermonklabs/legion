@@ -2,7 +2,7 @@ package leakguard
 
 import (
 	"errors"
-	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,31 +39,6 @@ const (
 	refusalMarker = "LEAK CHECK: refusing"
 )
 
-// wrapsTypeNamed is whether err, or an error err wraps (each error errors.Unwrap reaches, and each
-// branch of a join), is of the type %T prints as name: errors.As, for a type named by the name %T
-// prints. These tests name NotFound and notFoundError that way rather than by the types, so that
-// the package's tests build whether or not the package declares them, and a package that does
-// not fails these tests and no other.
-func wrapsTypeNamed(err error, name string) bool {
-	if err == nil {
-		return false
-	}
-	if fmt.Sprintf("%T", err) == name {
-		return true
-	}
-	switch wrapper := err.(type) {
-	case interface{ Unwrap() error }:
-		return wrapsTypeNamed(wrapper.Unwrap(), name)
-	case interface{ Unwrap() []error }:
-		for _, wrapped := range wrapper.Unwrap() {
-			if wrapsTypeNamed(wrapped, name) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // patchCall is the gh call the rows that check one make: a write to theRepo, which the guard
 // checks whole, the visibility read included.
 var patchCall = []string{"api", "-X", "PATCH", "repos/" + theRepo + "/pulls/1", "-f", "title=x"}
@@ -85,9 +60,9 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 		// the read through guard and answers its error.
 		rest, curl string
 		read       func(t *testing.T, guard *Guard) error
-		// typeName is the type the answer is or wraps, as %T prints it; words is the whole of
+		// target points at the type the answer is or wraps, for errors.As; words is the whole of
 		// its text, where it is set; curlRuns is how often curl ran.
-		typeName string
+		target   any
 		words    string
 		curlRuns int
 	}{
@@ -97,7 +72,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 				_, err := guard.GhCall(bound(t), GhRequest{Args: patchCall, Repo: theRepo})
 				return err
 			},
-			typeName: "*leakguard.NotFound", words: notFoundWords(whatGhCall),
+			target: new(*NotFound), words: notFoundWords(whatGhCall),
 		},
 		{
 			name: "a push", rest: ghNotFound, curl: curlAnswers("private"),
@@ -112,7 +87,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 					Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
 				})
 			},
-			typeName: "*leakguard.NotFound", words: notFoundWords(PushName("origin")),
+			target: new(*NotFound), words: notFoundWords(PushName("origin")),
 		},
 		{
 			name: "the curl read after gh could not reach GitHub", rest: ghTLSTimeout, curl: curlNotFound,
@@ -120,7 +95,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 				_, err := guard.GhCall(bound(t), GhRequest{Args: patchCall, Repo: theRepo})
 				return err
 			},
-			typeName: "*leakguard.NotFound", words: notFoundWords(whatGhCall), curlRuns: 1,
+			target: new(*NotFound), words: notFoundWords(whatGhCall), curlRuns: 1,
 		},
 		{
 			name: "the shared check's own read", rest: ghNotFound, curl: curlAnswers("private"),
@@ -131,7 +106,7 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 				}
 				return err
 			},
-			typeName: "*leakguard.notFoundError",
+			target: new(*notFoundError),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,8 +116,8 @@ func TestAVisibilityRead404IsToldAsNotFound(t *testing.T) {
 			if err == nil {
 				t.Fatal("the write was cleared, want it refused")
 			}
-			if !wrapsTypeNamed(err, tc.typeName) {
-				t.Errorf("the answer %q is a %T, want a %s", err, err, tc.typeName)
+			if !errors.As(err, tc.target) {
+				t.Errorf("the answer %q is a %T, want a %s", err, err, reflect.TypeOf(tc.target).Elem())
 			}
 			if errors.As(err, new(*SetupFailure)) || errors.As(err, new(*Refusal)) {
 				t.Errorf("the answer %q is a setup failure or a refusal, want GitHub's 404 told as such", err)

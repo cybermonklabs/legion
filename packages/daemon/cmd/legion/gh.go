@@ -89,7 +89,9 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // through the credential helper gh names after its own executable, GH_PATH: runGh sets it to the
 // `gh` wrapper first on PATH, so that helper is `legion gh auth git-credential`, which answers as
 // `legion git-credential` does, from the directory of the owner in git's path (useHttpPath set
-// for github.com through GIT_CONFIG_COUNT), never with GH_CONFIG_DIR's token; when PATH's first gh
+// for github.com through GIT_CONFIG_COUNT), or, for a fork whose owner has no directory, from the
+// directory of its parent's or else its source's owner (forkUpstreamDir), and never with
+// GH_CONFIG_DIR's token merely because it is the default; when PATH's first gh
 // is no such wrapper it refuses. That git reads no configuration file but the repository's own
 // (ghChildForced), takes of the caller's GIT_CONFIG pairs only the runtime's own
 // (ghChildGitConfig), and gets http.sslVerify on; a repository whose own configuration names a
@@ -272,11 +274,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// line says checked-only; under any other it runs whole. Every other call is guarded whole,
 	// the visibility read and the private-name pass included.
 	//
-	// A *leakguard.Refusal and a *leakguard.SetupFailure each refuse the call: a check that did
-	// not run has cleared nothing. Both exit 2, this command's status for a refusal made before
-	// gh runs, which is what an unreadable command and an unset variable already exit with, and
-	// both print the guard's own message, which names the record and the class and never the
-	// text it refused.
+	// A *leakguard.Refusal, a *leakguard.SetupFailure and a *leakguard.NotFound each refuse the
+	// call: a check that did not run has cleared nothing, and neither has a visibility read GitHub
+	// answered 404. All three exit 2, this command's status for a refusal made before gh runs,
+	// which is what an unreadable command and an unset variable already exit with, and all three
+	// print the guard's own message, which never holds the text it refused.
 	//
 	// The files the call would send go with it, read out of the parse above, which knew each
 	// option's arity from the leaf's own help (ghSentFiles): the guard reads the text of each,

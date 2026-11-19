@@ -110,14 +110,15 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write
 // prints nothing. A refusal prints the guard's own report, which names the record and the class
 // and never the text that matched; a setup failure prints the guard's own line, which says it is
-// one, so a person reading a log tells a broken pod from a write that names something private.
+// one, so a person reading a log tells a broken pod from a write that names something private; and
+// a not-found prints the guard's line for a destination GitHub answers 404 for, which is neither.
 //
 // The statuses are the shared public leak check's own vocabulary, which is what a pre-push hook
 // needs, and they are the guard's exported constants rather than a second copy of the three
 // numbers: 0 for a write it cleared, 3 for one it refused, and 2 for a check that could not be
-// made to run. A usage error above is 2 as well — a call nobody could read is a call nobody has
-// checked — and so is an error of neither of the guard's two kinds, which is the fail-closed
-// half of the pair.
+// made to run and for a destination GitHub answers 404 for. A usage error above is 2 as well — a
+// call nobody could read is a call nobody has checked — and so is an error of none of the guard's
+// three kinds, which fails closed.
 //
 // what renames the write where the caller has a better word for it than the guard's own — the
 // text shape's kind — and leaves the guard's wording alone when it is empty, which is what the
@@ -144,6 +145,12 @@ func leakCheckReport(ctx context.Context, stderr io.Writer, what string, err err
 	if errors.As(err, &setup) {
 		setup.What = cmp.Or(what, setup.What)
 		fmt.Fprintln(stderr, setup.Error())
+		return leakguard.StatusSetupFailure
+	}
+	var notFound *leakguard.NotFound
+	if errors.As(err, &notFound) {
+		notFound.What = cmp.Or(what, notFound.What)
+		fmt.Fprintln(stderr, notFound.Error())
 		return leakguard.StatusSetupFailure
 	}
 	fmt.Fprintln(stderr, (&leakguard.SetupFailure{

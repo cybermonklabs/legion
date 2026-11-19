@@ -24,10 +24,11 @@ import (
 // check exits with as well — `legion leak-check`, which a pre-push hook runs — and a second copy
 // of the three numbers is one an edit here would silently part from. StatusWantsStdin stays
 // unexported: it is a step of the gh shape's own handshake (Guard.askAgain), never a status this
-// package answers a caller with.
+// package answers a caller with. `legion leak-check` also exits StatusSetupFailure for a
+// destination GitHub answers 404 for (a *NotFound), a write it has not cleared either.
 const (
 	StatusClean        = 0 // the write is clean
-	StatusSetupFailure = 2 // the check could not be made to run, or could not finish
+	StatusSetupFailure = 2 // a check could not run or finish, or a 404 for the destination
 	StatusRefused      = 3 // the write names something private
 	checkWantsStdin    = 4 // the gh call reads standard input; buffer it and ask again
 )

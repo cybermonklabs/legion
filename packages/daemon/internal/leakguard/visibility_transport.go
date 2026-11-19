@@ -175,9 +175,10 @@ var errNoTimeForCurl = errors.New("too little of the caller's bound is left for 
 // cannot be made (errNoCurlRead), or where curl fails on its connection too (a *transportError),
 // the visibility is read with git's ls-remote and no credential (Guard.lsRemote), which answers
 // public and nothing else. Every other outcome refuses the call, naming gh's failure and what each
-// read said. A read that the caller's bound stops refuses the call too, because no bound is left
-// for another read, and so does too little time left for curl (errNoTimeForCurl), which leaves
-// none for ls-remote either.
+// read said, GitHub's 404 to curl among them, which the refusal wraps as the *notFoundError it is.
+// A read that the caller's bound stops refuses the call too, because no bound is left for another
+// read, and so does too little time left for curl (errNoTimeForCurl), which leaves none for
+// ls-remote either.
 func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *transportError) (Visibility, VisibilitySource, error) {
 	visibility, err := g.curlVisibility(ctx, slug)
 	var limited *rateLimitError
@@ -427,8 +428,9 @@ func curlUnreached(exit, httpStatus int) bool {
 // them), and stderr its standard error, which only a failure quotes. An exit status of
 // curlTransportExits with no status line printed is a *transportError; a curl that printed one
 // heard GitHub, so its failure is refused, not read with ls-remote. A rate limit, read as
-// rateLimitFrom reads gh's answer, is a *rateLimitError. A 200 whose body's visibility is public,
-// private or internal, read as gh's is, is the answer. Anything else is an error.
+// rateLimitFrom reads gh's answer, is a *rateLimitError. GitHub's 404 is a *notFoundError. A 200
+// whose body's visibility is public, private or internal, read as gh's is, is the answer. Anything
+// else is an error.
 func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 	masked := maskPath(slug)
 	body := visibilityBody(stdout)
@@ -441,6 +443,9 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 	}
 	if limited := rateLimitFrom(stdout); limited != nil {
 		return "", limited
+	}
+	if httpStatus == http.StatusNotFound {
+		return "", &notFoundError{slug: slug}
 	}
 	if httpStatus != http.StatusOK {
 		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", masked, httpStatus, said(body, stderr, slug))

@@ -74,8 +74,8 @@ const (
 // another way (readWithoutREST). A gh read that failed on its connection to GitHub, with no answer
 // from GitHub (ghTransportFailure), is read without gh (readWithoutGh). A read `legion gh` refuses
 // because the project's gh bundle holds no directory for the repository's owner
-// (Guard.unservedOwner) is read with no credential (readUnservedOwner). The answer is kept as gh's
-// is.
+// (Guard.unservedOwner) is read with no credential (readUnservedOwner). A read GitHub answered 404
+// (notFoundError) is read no other way. The answer is kept as gh's is.
 //
 // The header-bearing read is:
 //
@@ -390,7 +390,8 @@ func ghReadEnv(slug string) []string {
 // bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
 // to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
 // or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
-// that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
+// that exited non-zero after GitHub's status line 404, and was no rate limit, is a *notFoundError.
+// A gh that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
 // another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	bounded, cancel := ghReadContext(ctx)
@@ -414,6 +415,9 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 	if status != 0 {
 		if unserved := g.unservedOwner(status, printed, slug); unserved != nil {
 			return "", unserved
+		}
+		if httpStatus, _ := responseHeaders(printed); httpStatus == http.StatusNotFound {
+			return "", &notFoundError{slug: slug}
 		}
 		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, strings.TrimSpace(printed))
 	}
@@ -487,6 +491,18 @@ type unservedOwnerError struct {
 
 func (e *unservedOwnerError) Error() string {
 	return fmt.Sprintf("gh api repos/%s exited 2: %s", maskPath(e.slug), ownerNotServedLine(maskPath(e.owner), e.ownersDir))
+}
+
+// notFoundError is the guard's REST read of slug that GitHub answered 404, through gh
+// (Guard.ghVisibility) or through curl (curlAnswer): no repository of that name exists, or the
+// read's credential cannot see it. GitHub answered, so no other read follows it, and a write it
+// refuses is a *NotFound (Guard.scanThrough). It says what GitHub answered, the repository masked.
+type notFoundError struct {
+	slug string
+}
+
+func (e *notFoundError) Error() string {
+	return notFoundText(maskPath(e.slug))
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
