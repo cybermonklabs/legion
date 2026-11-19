@@ -41,7 +41,7 @@ import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
-import { repoControlName } from "../issue/RepoControl";
+import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
@@ -60,7 +60,7 @@ import {
 } from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
-import { narrowIssue } from "./issue-fixtures";
+import { narrowIssue, patchAnswer } from "./issue-fixtures";
 import {
   DETAILS_ATTRIBUTE,
   FilledMarginSlot,
@@ -181,27 +181,8 @@ function stubIssueApi() {
     comments: spyOn(api, "listComments").mockResolvedValue([]),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
   };
-  // A null `status` or `title` in the body means "leave it as it is", which is what the server
-  // does with it; every other field the body names is written through.
-  const patchIssue = answerIssuePatches().mockImplementation(
-    async (
-      _key,
-      {
-        rank: _rank,
-        components: _components,
-        advances: _advances,
-        advances_revision: _advancesRevision,
-        status,
-        title,
-        ...update
-      }
-    ) =>
-      narrowIssue({
-        ...issue,
-        ...update,
-        status: status ?? issue.status,
-        title: title ?? issue.title,
-      })
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+    patchAnswer(issue, input)
   );
 
   return {
@@ -516,7 +497,7 @@ test("closing Development hides its rows and keeps the repository box's refused 
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
       })
     );
     const typed = await screen.findByRole("combobox", { name: repoControlName("CORE-1") });
@@ -549,14 +530,16 @@ test("closing Development hides its rows and keeps the repository box's refused 
   }
 });
 
-// A closed section keeps its rows on the page, hidden (`PropertySection`), and each link reads
-// GitHub as it is drawn (`GitHubLink`), so a Details opened with Development closed read GitHub
-// for links its reader could not see. The links are drawn, and read, once Development opens.
-test("Details open with Development closed reads no GitHub link, and opening Development reads each", async () => {
+// A closed section keeps its rows on the page, hidden (`PropertySection`), so a Details opened
+// with Development closed read what that section's rows draw, for rows its reader could not see:
+// GitHub for each link, which reads it as it is drawn (`GitHubLink`), the titles of the issues
+// this one waits on, and what waits on it. Each is read once Development opens.
+test("Details open with Development closed reads no GitHub link, title or Blocks, and opening Development reads each", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({
     ...issue,
+    blocked_by: ["CORE-3"],
     external_links: [
       { kind: "github_pr", url: "https://github.com/acme/web/pull/7" },
       { url: "https://github.com/acme/web/issues/8" },
@@ -569,12 +552,19 @@ test("Details open with Development closed reads no GitHub link, and opening Dev
         headers: { "Content-Type": "application/json" },
       })
   );
-  // What this issue blocks, which Details reads once it is open.
+  // The titles of the issues this one waits on, and what waits on it.
+  const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const titles = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
+  const titleReads = () => titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
+  const blocksReads = () =>
+    getReferences.mock.calls.filter(
+      ([to, options]) => to === reference && options?.kind === "blocked_by"
+    ).length;
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
   window.localStorage.setItem(kept, "development");
   const shut: MarginDrawer = { open: false, setOpen: () => undefined, setPage: () => undefined };
@@ -586,12 +576,17 @@ test("Details open with Development closed reads no GitHub link, and opening Dev
     });
     await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
     redraw({ ...shut, open: true });
-    // The open drawer's reads start in the commit that opens it, a link's with them.
-    await waitFor(() => expect(getReferences).toHaveBeenCalled());
+    // The open drawer's reads start in the commit that opens it: its effects run here.
+    await act(async () => {});
     expect(
       githubRest,
       "Details read GitHub for the links of a closed Development"
     ).not.toHaveBeenCalled();
+    expect(
+      titleReads(),
+      "Details read the titles of the issues a closed Development's Blocked by waits on"
+    ).toBe(0);
+    expect(blocksReads(), "Details read what waits on the issue for a closed Development").toBe(0);
 
     await user.click(development);
     await waitFor(() =>
@@ -600,8 +595,19 @@ test("Details open with Development closed reads no GitHub link, and opening Dev
         "opening Development did not read each of its links"
       ).toEqual(["repos/acme/web/issues/8", "repos/acme/web/pulls/7"])
     );
+    await waitFor(() => {
+      expect(
+        titleReads(),
+        "opening Development did not read the titles of the issues it waits on"
+      ).toBeGreaterThan(0);
+      expect(
+        blocksReads(),
+        "opening Development did not read what waits on the issue"
+      ).toBeGreaterThan(0);
+    });
   } finally {
     unmount();
+    titles.mockRestore();
     getReferences.mockRestore();
     githubRest.mockRestore();
     restore();
@@ -799,6 +805,44 @@ test("leaving the blocked-by editor gives the focus back to its Add or Edit", as
         "a save of the blocked-by list that landed left the focus on the page"
       ).toBe(screen.queryByRole("button", { name: blockedByControlName("CORE-1", 1) }))
     );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// On a closed issue the Blocked by row draws no control, so leaving its editor once the issue had
+// closed under it gave the focus to no control that takes it, and it stayed on the page's body.
+// It goes to the first issue the row waits on, and where the row waits on none, to Development's
+// heading, the button that opens and closes the section the row is in.
+test("on a closed issue, leaving the blocked-by editor hands the focus to the first issue it waits on, else to Development's heading", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await screen.findByLabelText("Issues CORE-1 waits on");
+    drawIssue(getIssue, queryClient, closedIssue);
+    await user.keyboard("{Escape}");
+    expect(
+      document.activeElement,
+      "Escape in the blocked-by editor of a closed issue that waits on none did not give the focus to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
+
+    drawIssue(getIssue, queryClient, { ...issue, blocked_by: ["CORE-3"] });
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 1) })
+    );
+    await screen.findByLabelText("Issues CORE-1 waits on");
+    drawIssue(getIssue, queryClient, { ...closedIssue, blocked_by: ["CORE-3"] });
+    await user.keyboard("{Escape}");
+    expect(
+      document.activeElement,
+      "Escape in the blocked-by editor of a closed issue did not give the focus to the first issue it waits on"
+    ).toBe(within(detailsRow(PROPERTY_LABELS.blocked_by)).getByRole("link", { name: "CORE-3" }));
   } finally {
     unmount();
     restore();
@@ -1601,6 +1645,51 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
     unmount();
     getReferences.mockRestore();
     restore();
+  }
+});
+
+// A closed section keeps its rows on the page, hidden (`PropertySection`), so a Referenced by
+// list opened before References closed stayed drawn under it, its read live and read again on
+// each event about the issue's references, for a list its reader could not see. The list is
+// drawn only while References is open, and is drawn again, still open, once References opens.
+test("closing References takes an open Referenced by list, and its read, off the page", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, referenced_by_count: 3 });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const { queryClient, unmount } = renderDetails();
+  // What observes the list's read (`ReferencedBy`'s `referencesQuery`).
+  const listReaders = () =>
+    queryClient
+      .getQueryCache()
+      .find({ exact: true, queryKey: ["references", "to", reference] })
+      ?.getObserversCount() ?? 0;
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Referenced by (3)" }));
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
+
+    const references = screen.getByRole("button", { name: MARGIN_SECTION_NAMES.references });
+    await user.click(references);
+    expect(references).toHaveAttribute("aria-expanded", "false");
+    expect(list, "a closed References still draws the Referenced by list").not.toBeInTheDocument();
+    expect(listReaders(), "a closed References still reads what references the issue").toBe(0);
+
+    await user.click(references);
+    expect(
+      await screen.findByRole("region", { name: "Referenced by" }),
+      "References opened again without the Referenced by list the reader left open"
+    ).toBeInTheDocument();
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    restore();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
   }
 });
 
@@ -2533,7 +2622,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     );
     expect(listRepoProjects).toHaveBeenCalled();
     const none = within(detailsRow(PROPERTY_LABELS.repository)).getByRole("button", {
-      name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+      name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
     });
     expect(none, "the empty Repository row does not read None").toHaveTextContent(
       CONTROL_LABELS.none
@@ -2603,7 +2692,7 @@ test("Add lists Repository on a row that inherits its repository and presses its
     await screen.findByRole("link", { name: "CORE-3" });
     await waitFor(() => expect(priorities).toHaveBeenCalled());
     const text = await within(detailsRow(PROPERTY_LABELS.repository)).findByRole("button", {
-      name: `acme/web, ${repoControlName("CORE-1")}`,
+      name: repoTextControlName("acme/web", "CORE-1"),
     });
     expect(text, "the Repository row does not draw the repository it inherits").toHaveTextContent(
       "acme/web"
@@ -2699,7 +2788,7 @@ test("a repository Dispatch refuses is said in the page's colours, with Retry", 
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
@@ -2787,7 +2876,7 @@ test("the mappings' Retry keeps the focus while the read is out, and hands it to
       "the mappings answered, and the focus fell to the page rather than to the row's control"
     ).toBe(
       within(row).getByRole("button", {
-        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
       })
     );
   } finally {
@@ -2814,7 +2903,7 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
   try {
     await user.click(
       await screen.findByRole("button", {
-        name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
@@ -2853,6 +2942,51 @@ test("a refused repository's Retry hands the focus to the row's box as its line 
     ).toBe(true);
   } finally {
     stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// A repository still out as the issue closes is refused (`ISSUE_CLOSED`): Dispatch writes no
+// repository of a closed issue, so the refusal is said with no Retry, which Dispatch would refuse
+// again.
+test("a repository refused because the issue closed is said without Retry", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const reason = "CORE-1 is closed; reopen it first";
+  const saving = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", {
+        name: repoTextControlName(CONTROL_LABELS.none, "CORE-1"),
+      })
+    );
+    await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
+    await user.paste("acme/web");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/web" }, keyedAttempt)
+    );
+
+    // The issue closes while the write is out, and Dispatch refuses the write for it.
+    drawIssue(getIssue, queryClient, closedIssue);
+    saving.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: reason }));
+
+    const row = detailsRow(PROPERTY_LABELS.repository);
+    await waitFor(() =>
+      expect(
+        within(row).queryByRole("alert")?.textContent,
+        "the Repository row does not say why Dispatch refused the repository"
+      ).toBe(reason)
+    );
+    expect(
+      within(row).queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the refusal of a repository on a closed issue offers a Retry Dispatch would refuse again"
+    ).not.toBeInTheDocument();
+  } finally {
     unmount();
     restore();
   }
@@ -3135,16 +3269,14 @@ test("the Labels row of an issue with no label draws its name one time", async (
   try {
     const row = await waitFor(() => rowAt("labels"));
     expect(row).toHaveTextContent(CONTROL_LABELS.none);
-    expect(
-      within(row).getByRole("button", {
-        name: labelsControlName("CORE-1", {
-          labels: [],
-          saving: false,
-          words: CONTROL_NAME_WORDS,
-        }),
-      }),
-      "the Labels row of an issue with no label draws no Edit labels"
-    ).toBeEnabled();
+    const control = within(row).getByRole("button", {
+      name: labelsControlName("CORE-1", { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
+    });
+    expect(control, "the Labels row of an issue with no label draws no Edit labels").toBeEnabled();
+    expect(control, "the Labels row's control is busy, and takes no press").not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
     expect(
       (row.textContent ?? "").split(PROPERTY_LABELS.labels).length - 1,
       "the Labels row draws its name two times on an issue with no label"
@@ -3319,12 +3451,14 @@ test("with Details closed, l is on for the labels control, and off while its row
       row.closest(`aside[${DETAILS_ATTRIBUTE}]`),
       "the Labels row is not in the closed drawer"
     ).toHaveAttribute("hidden");
-    expect(
-      row.querySelector(
-        `button[aria-label="${labelsControlName("CORE-1", { labels: [], saving: false, words: CONTROL_NAME_WORDS })}"]`
-      ),
-      "the Labels row draws no enabled labels control"
-    ).toBeEnabled();
+    const control = row.querySelector(
+      `button[aria-label="${labelsControlName("CORE-1", { labels: [], saving: false, words: CONTROL_NAME_WORDS })}"]`
+    );
+    expect(control, "the Labels row draws no enabled labels control").toBeEnabled();
+    expect(control, "the Labels row's control is busy, and takes no press").not.toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
     expect(labelsKey(), "l is off while Details is closed, though it opens Details first").toBe(
       true
     );
@@ -3816,8 +3950,7 @@ test("leaving the parent's or the route's editor gives the focus back to its row
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
   const { unmount } = renderDetails();
-  const control = (row: DetailsRow) =>
-    rowAt(row).querySelector("input, textarea, select, button:not(:disabled), a[href]");
+  const control = (row: DetailsRow) => rowAt(row).querySelector(ROW_CONTROL_SELECTOR);
 
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.set_parent }));

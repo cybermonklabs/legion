@@ -254,17 +254,19 @@ export function IssueMarginPanel({
     )
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
-  // What Details reads beyond the issue - the titles of the issues around this one, and its
-  // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
-  // request for it.
+  // What Details reads beyond the issue - the titles of the issues this one waits on, what waits
+  // on it, and its links on GitHub - only while the drawer is open, so a load that leaves it shut
+  // costs no request for it.
   const reading = useMarginDrawer()?.open === true;
-  // A closed section keeps its rows, hidden (`PropertySection`), so the links, which read GitHub
-  // as they are drawn, are drawn only while Development is open too.
-  const readingLinks = reading && sections.isOpen("development");
+  // A closed section keeps its rows, hidden (`PropertySection`), and each of those reads is of a
+  // row in Development - a link reads GitHub as it is drawn - so each is made only while
+  // Development is open too: a reader who keeps the section closed costs no request, nor any read
+  // again on an event, for rows they cannot see.
+  const readingDevelopment = reading && sections.isOpen("development");
   const blockers = issue.blocked_by ?? [];
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
-    enabled: reading && blockers.length > 0,
+    enabled: readingDevelopment && blockers.length > 0,
   });
   const titleOf = (key: string) => {
     const reference = buildDispatchReference({ key, kind: "issue" });
@@ -276,7 +278,7 @@ export function IssueMarginPanel({
   // `["references", "to", <reference>]`, so the event that starts or stops an issue waiting on
   // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`).
   const blocking = useQuery({
-    enabled: reading,
+    enabled: readingDevelopment,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
     queryKey: ["references", "to", issueReference, "blocked_by"],
   });
@@ -290,16 +292,20 @@ export function IssueMarginPanel({
   // its name as the add menu finds it (`blockedByControlName`); where the row draws none - on a
   // closed issue, or while its editor is open - to the first issue the row waits on; and where
   // it waits on none while the editor is open, as another session's write can leave it, to the
-  // editor's box. In Blocks, which has no control, it goes to the first issue the answer drew,
-  // or else to the None it says.
+  // editor's box. Each passes over a control that takes no press (`usableControl`), and where the
+  // row holds none that takes it, the focus goes to Development's heading, the button that opens
+  // and closes the section the row is in. In Blocks, which has no control, it goes to the first
+  // issue the answer drew, or else to the None it says.
   const blockedByValue = useRef<HTMLDivElement>(null);
-  const titlesRetryLeft = useFocusHandOff(
-    () =>
+  const titlesRetryLeft = useFocusHandOff(() =>
+    firstUsable(
       blockedByValue.current?.querySelector<HTMLElement>(
         `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
-      ) ??
-      blockedByValue.current?.querySelector<HTMLElement>("a[href]") ??
-      blockedByValue.current?.querySelector<HTMLElement>(`#${BLOCKED_BY_INPUT_ID}`)
+      ),
+      blockedByValue.current?.querySelector<HTMLElement>("a[href]"),
+      blockedByValue.current?.querySelector<HTMLElement>(`#${BLOCKED_BY_INPUT_ID}`),
+      developmentHeading.current
+    )
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
@@ -344,7 +350,9 @@ export function IssueMarginPanel({
   // reader's focus on its Retry - a write's at the press of that Retry, a read's once the
   // mappings answer - the focus goes on to the row's own control: the box, drawn while a write is
   // out, else the text or None the row draws in its place; and where the row holds nothing that
-  // takes it, on a closed issue, to Development's heading.
+  // takes it, on a closed issue, to Development's heading. On a closed issue a write's line has no
+  // Retry: Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick sent
+  // again would be refused again.
   const repoValue = useRef<HTMLDivElement>(null);
   const repoRetryLeft = useFocusHandOff(() =>
     firstUsable(
@@ -357,7 +365,7 @@ export function IssueMarginPanel({
     failure.kind === "write" ? (
       <DetailsErrorLine
         message={failure.message}
-        onRetry={failure.retry}
+        onRetry={isClosed ? undefined : failure.retry}
         retryRef={repoRetryLeft}
       />
     ) : readFailed(failure.read) ? (
@@ -515,6 +523,7 @@ export function IssueMarginPanel({
           <BlockedByControl
             draft={blockedByDraft}
             editing={blockedByEditing}
+            focusFallback={developmentHeading}
             issue={issue}
             onDraft={setBlockedByDraft}
             onEditing={setBlockedByEditing}
@@ -576,13 +585,13 @@ export function IssueMarginPanel({
             while the reader can see them: Details open, and Development with it. */}
         <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
           {pullRequests.length === 0 ? none : null}
-          {readingLinks
+          {readingDevelopment
             ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)
             : null}
         </Row>
         {otherLinks.length === 0 ? null : (
           <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {readingLinks
+            {readingDevelopment
               ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />)
               : null}
           </Row>
@@ -716,7 +725,11 @@ export function IssueMarginPanel({
               {`Referenced by (${issue.referenced_by_count})`}
             </button>
           )}
-          {referencesOpen ? (
+          {/* The list reads what references the issue, and reads it again on each event about
+              those references, so it is drawn only while the reader can see it: open, in an open
+              References. A closed section keeps its rows on the page, hidden (`PropertySection`),
+              and would keep the list's read live with them. */}
+          {referencesOpen && sections.isOpen("references") ? (
             <ReferencedBy
               className="w-full"
               reference={issueReference}

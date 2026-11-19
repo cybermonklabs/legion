@@ -13,7 +13,7 @@ import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
-import { repoControlName } from "../issue/RepoControl";
+import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
 import { blockedByControlName } from "./BlockedByControl";
@@ -33,13 +33,13 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * the labels, the issues this one waits on, the repository, the components and the priorities
  * it advances), so the menu presses those rather than holding a second copy of them. It finds
  * each by the name that control exports - `assigneeControlName`, `labelsControlName`,
- * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
- * so the two sides cannot drift apart, and lists one only while that control takes a press
- * (`usableControl`). A press on an entry opens that property's control, and a control that
- * takes no press opens nothing: while the priorities' save was out, Add listed Advances beside
- * the disabled "Add a priority to CORE-1", and a press on it left the form shut and the focus on
- * the body (the tester, on 8a8f3f6b). A control of Details still takes a press while Details is
- * closed, since the reach opens Details first.
+ * `blockedByControlName`, `repoControlName` and `repoTextControlName`, `componentsControlName`,
+ * `addPriorityControlName` - so the two sides cannot drift apart, and lists one only while that
+ * control takes a press (`usableControl`). A press on an entry opens that property's control, and
+ * a control that takes no press opens nothing: while the priorities' save was out, Add listed
+ * Advances beside the disabled "Add a priority to CORE-1", and a press on it left the form shut
+ * and the focus on the body (the tester, on 8a8f3f6b). A control of Details still takes a press
+ * while Details is closed, since the reach opens Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
@@ -337,7 +337,7 @@ export function IssueAddMenu({
       const text = details.resolved_repo ?? CONTROL_LABELS.none;
       fields.push({
         label: PROPERTY_LABELS.repository,
-        ...atControl(`${text}, ${repoControlName(details.key)}`, repoControlName(details.key)),
+        ...atControl(repoTextControlName(text, details.key), repoControlName(details.key)),
       });
     }
     if ((details.components.ids ?? []).length === 0) {

@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
+import { type FormEvent, type ReactNode, type RefObject, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
@@ -15,6 +15,7 @@ import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, pageChrome } from "./page-structure";
 import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { firstUsable } from "./usable-control";
 import type { BlockedByWrite } from "./useIssueBlockedBy";
 
 /** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
@@ -69,6 +70,7 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
 export function BlockedByControl({
   draft,
   editing,
+  focusFallback,
   issue,
   onDraft,
   onEditing,
@@ -79,6 +81,9 @@ export function BlockedByControl({
   draft: string;
   /** Whether the editor is open. */
   editing: boolean;
+  /** Where the focus goes as the editor closes when the row holds nothing that takes it: on a
+   *  closed issue that waits on none, the row draws no control and no issue. */
+  focusFallback?: RefObject<HTMLElement | null>;
   issue: IssueDetails;
   onDraft: (draft: string) => void;
   onEditing: (editing: boolean) => void;
@@ -90,6 +95,7 @@ export function BlockedByControl({
   const blockers = issue.blocked_by ?? [];
   const input = useRef<HTMLInputElement>(null);
   const control = useRef<HTMLButtonElement>(null);
+  const row = useRef<HTMLDivElement>(null);
   // Whether the editor was open at the last commit, so that its close - by Cancel, by Escape or
   // by a save that lands - is told apart from the row's first draw, with the editor closed.
   const wasEditing = useRef(editing);
@@ -98,15 +104,24 @@ export function BlockedByControl({
   // that opened it is still on the page, so a reader on the keyboard would otherwise have to
   // find the box themselves. It closes with the focus back on that control, where the focus
   // fell to the document with the box, the one focus the page takes back (`shell/roving.ts`).
+  // It passes over a control that takes no press (`usableControl`): on a closed issue the row
+  // draws no control, so the focus goes to the first issue the row waits on, and where it waits
+  // on none, to `focusFallback`.
   useEffect(() => {
     const closed = wasEditing.current && !editing;
     wasEditing.current = editing;
     if (closed) {
-      if (focusOnDocument()) control.current?.focus();
+      if (focusOnDocument()) {
+        firstUsable(
+          control.current,
+          row.current?.querySelector<HTMLElement>("a[href]"),
+          focusFallback?.current
+        )?.focus();
+      }
       return;
     }
     if (editing) input.current?.focus();
-  }, [editing]);
+  }, [editing, focusFallback]);
   const open = () => {
     write.forgetRefusal();
     onDraft(blockers.join(" "));
@@ -122,7 +137,7 @@ export function BlockedByControl({
     write.save(issueKeysIn(draft));
   };
   return (
-    <div className={`flex w-full min-w-0 flex-col gap-1 text-sm ${pageInkText}`}>
+    <div className={`flex w-full min-w-0 flex-col gap-1 text-sm ${pageInkText}`} ref={row}>
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {blockers.length === 0 ? (
           <span className={pageQuietText} {...pageChrome}>

@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
-import { repoControlName } from "../web/src/features/issue/RepoControl";
+import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -27,6 +27,7 @@ import {
   openDetails,
   openMenu,
   phase,
+  viewportAt,
 } from "./issue-page";
 import {
   addControl,
@@ -95,11 +96,6 @@ const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 const INK = "rgb(28, 25, 23)";
 const UNDERLINE = "rgb(168, 162, 158)";
 const QUIET = "rgb(120, 113, 108)";
-
-/** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
-function viewportAt(width: number): { height: number; width: number } {
-  return { height: width >= 768 ? 900 : 844, width };
-}
 
 /** The page's reads of Dispatch from now on: every URL it asked for, decoded, and whether none
  *  is still out. Only `fetch` and `xhr` count, so the live socket never holds a read open. */
@@ -639,7 +635,7 @@ test("every property with a value is visible in Details at every width @phone", 
       // button whose press opens the box, named by the repository it shows and what it sets.
       const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: `${REPOSITORY}, ${repoControlName(one)}`,
+        name: repoTextControlName(REPOSITORY, one),
       });
       const values: readonly (readonly [string, Locator])[] = [
         ["the repository", repository],
@@ -1198,7 +1194,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(
       detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: `${CONTROL_LABELS.none}, ${repoControlName(two)}`,
+        name: repoTextControlName(CONTROL_LABELS.none, two),
       }),
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);

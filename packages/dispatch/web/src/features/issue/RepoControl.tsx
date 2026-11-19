@@ -75,6 +75,11 @@ export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
 
+/** The name of the button drawn in the box's place: the text it shows, then the box's name. */
+export function repoTextControlName(text: string, issueKey: string): string {
+  return `${text}, ${repoControlName(issueKey)}`;
+}
+
 /** A failed read or write of the repository control, as the control hands it to a host that says
  *  it in a line of its own (`sayFailure`). */
 export type RepoControlFailure =
@@ -378,7 +383,7 @@ export function RepoControl({
       )}
       {showsNone ? (
         <button
-          aria-label={`${page.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`}
+          aria-label={repoTextControlName(page.CONTROL_LABELS.none, issueKey)}
           className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
           ref={noneControl}
@@ -425,7 +430,7 @@ export function RepoControl({
             // the text did, breaking anywhere so that a name with no space in it wraps too.
             <button
               aria-describedby={descriptionId}
-              aria-label={`${resolvedRepo}, ${repoControlName(issueKey)}`}
+              aria-label={repoTextControlName(resolvedRepo, issueKey)}
               className={`min-h-11 min-w-0 max-w-full rounded-sm text-left font-mono text-xs [overflow-wrap:anywhere] outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? ON_PAGE.inherited : ON_PAGE.own} ${focusVisibleRing}`}
               disabled={disabled}
               ref={textControl}
