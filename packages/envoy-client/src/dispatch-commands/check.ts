@@ -25,10 +25,10 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
+import { dispatchRefFromUrl } from "./links";
 import {
   askIdProblem,
   commentIdProblem,
-  dispatchRefFromUrl,
   innerRefProblem,
   itemRefProblem,
   messageIdOf,

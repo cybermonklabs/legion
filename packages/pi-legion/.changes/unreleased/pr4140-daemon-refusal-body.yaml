@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A daemon answer that is not the daemon's refusal (a proxy's page in its place) is named in one
+  line with any `Authorization` or `Bearer` value redacted, as the Dispatch client names a
+  gateway's page (`a body that is not the daemon's refusal shape ("…")`), where the refusal
+  quoted the whole body. A daemon answer that is not JSON no longer carries the parser's message,
+  which quotes the word it stopped at. Both come from pi-shared's daemon client, which keeps no
+  changelog of its own; claude-envoy's Legion claim and tools read the same client.
+time: 2026-11-18T07:40:25Z
+custom:
+  Issue: pr4140

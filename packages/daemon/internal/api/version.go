@@ -2383,7 +2383,7 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 168: dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
+// 167: dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
 // which moves the two launcher shapes contract 144 added. The daemon's answer to the hello of that
 // pod's launcher, `shimwire.LauncherHelloAck`, now carries `memoryGuard` too, from a block of its
 // own, `runtime.kubernetes.memory_guard.controller_pod`, beside `issue_pods` (sandbox's
@@ -2418,14 +2418,16 @@ package api
 // keeps every member of both: an issue pod's acknowledgement carries `memoryGuard` and
 // `volumeTrim`, and the controller pod's `memoryGuard` alone, since that pod's launcher runs no
 // trimmer.
-// (This change took 155 before #3519 merged, and takes 168 at the forward merge of 2026-11-19
-// that brings main in at a573bac20ad2, whose 160 is the entry right above. A reading of
-// `const DaemonAPIVersion` at the head of each of the 236 open pull requests of this repository,
-// made on 2026-11-19, gave above main's 160: 161 (#4173, #4180, #4193 and #4259), 162 (#2230 and
-// #3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432) and 167 (#4030, #4485, #4488 and
-// #4493), so 168 was the lowest free number above main's 160 at that reading. That is a reading
-// and never the rule: read main's own number and every open head again at the next forward merge
-// rather than from this line, as
+// (This change took 155 before #3519 merged, and 168 at the forward merge of 2026-11-19 that
+// brings main in at a573bac20ad2, whose 160 is the entry right above. It takes 167 at the forward
+// merge of 2026-11-19 that brings main in at e5e4900fe7, which still declares 160: a reading of
+// `const DaemonAPIVersion` at the head of each of the 232 open pull requests of this repository,
+// made on 2026-11-19 after 11:00Z, gave above main's 160: 161 (#4173, #4180, #4193 and #4259), 162
+// (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 168 (#2230, #3659, #3993, #4175 and
+// #4488, besides this change), 169 (#3831, #4065, #4485 and #4493) and 170 (#4030), so 167 was the
+// lowest free number above main's 160 at that reading. That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 168
+const DaemonAPIVersion = 167

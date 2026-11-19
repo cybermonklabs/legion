@@ -348,10 +348,10 @@ func Host(machineID string) Permissions {
 	}
 }
 
-// Measure is the grant of Envoy's measurement job, which agent-infra deploys as a static user of
-// both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It reads the
-// account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one test
-// stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
+// Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
+// static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
+// reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
+// test stream, ENVOY_MEASURE, on subjects of its own. It subscribes only its own inbox prefix,
 // _INBOX_envoy_measure., never _INBOX.>, where the listener's and Dispatch's push consumer
 // deliveries and request replies arrive, so it reads no message of another client.
 func Measure() Permissions {

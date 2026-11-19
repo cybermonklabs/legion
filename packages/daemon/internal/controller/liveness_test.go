@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -55,6 +56,26 @@ func newTestProber(url, token string, log *bytes.Buffer) *Prober {
 	return NewProber(ProberOptions{
 		EnvoyURL: url, EnvoyToken: token, Project: "demo", Log: slog.New(slog.NewTextHandler(log, nil)),
 	})
+}
+
+// cutAnswer serves status with half of body under a Content-Length for the whole of it, then
+// closes the connection, as a reset mid-body reads to the client: the headers, part of the body,
+// then an unexpected end.
+func cutAnswer(t *testing.T, status int, body string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, out, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack the connection: %v", err)
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(out, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+			status, http.StatusText(status), len(body), body[:len(body)/2])
+		_ = out.Flush()
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
 }
 
 // Live while the listener names the registered session as the controller role's holder, which it
@@ -131,6 +152,20 @@ func TestProbeIsUnknownForAnUnresponsiveHolder(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "unresponsive, not gone") {
 		t.Errorf("log %q does not say the holder is unresponsive rather than gone", log.String())
+	}
+}
+
+// A 404 whose body could not be read to its end is no death verdict (review round 19 of #4220): it
+// may have named an unresponsive holder, which is not gone. The control (the pull request records
+// the run): the probe reading the cut body as an empty refusal answers gone.
+func TestProbeIsUnknownForA404ItCouldNotRead(t *testing.T) {
+	var log bytes.Buffer
+	url := cutAnswer(t, http.StatusNotFound, lapsed("unresponsive"))
+	if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Unknown {
+		t.Fatalf("Probe = %s, want unknown: the 404's body was cut off, and it named an unresponsive holder; log %s", got, log.String())
+	}
+	if !strings.Contains(log.String(), "could not be read to its end") {
+		t.Errorf("log %q does not say the 404 could not be read", log.String())
 	}
 }
 

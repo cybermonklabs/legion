@@ -78,12 +78,12 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }
 
-// Measure is the measurement job's grant as agent-infra deploys it today (envoy-cluster/hub.go,
-// hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there goes when the job moves to
-// the auth service, and this test with it.
+// Measure is the measurement job's grant as the deployment repository deploys it today
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there
+// goes when the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
-	readJSON(t, "testdata/agent-infra-measure-grant.json", &deployed)
+	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
 	requireSet(t, deployed, natsgrant.Measure(), "Measure()")
 }
 

@@ -21,7 +21,7 @@ describe("natsConnectionOptions without a credential the auth service decides (R
     const options = natsConnectionOptions({
       servers: ["nats://127.0.0.1:4222"],
       name: "test",
-      seed,
+      credential: { kind: "seed", seed },
     });
     expect(options.ignoreAuthErrorAbort).not.toBe(true);
   });
@@ -30,7 +30,7 @@ describe("natsConnectionOptions without a credential the auth service decides (R
     const options = natsConnectionOptions({
       servers: ["nats://127.0.0.1:4222"],
       name: "test",
-      seed: undefined,
+      credential: { kind: "none" },
     });
     expect(options.ignoreAuthErrorAbort).not.toBe(true);
   });

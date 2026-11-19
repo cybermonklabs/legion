@@ -38,6 +38,7 @@ func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 		claimsCommand("retry", "retry a failed claim, or every failed claim", claimsRetry, stdout, stderr),
 		claimsCommand("compact", "compact a claim's Oh My Pi session and send it the task it owes again", claimsCompact, stdout, stderr),
 		claimsCommand("forget-session", "clear a stopped claim's recorded session", claimsForgetSession, stdout, stderr),
+		claimsCommand("release-names", "free the names of a claim's other sessions once the secrets broker carries nothing of them", claimsReleaseNames, stdout, stderr),
 		claimsCommand("close", "close a tree no workflow issue backs, through its root claim", claimRequest("close"), stdout, stderr),
 		claimsCommand("list", "print every claim the daemon supervises, one line each", claimsList, stdout, stderr),
 	)
@@ -364,6 +365,39 @@ func claimsForgetSession(c *claimsCall) action {
 		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/forget-session",
 			api.ForgetSessionRequest{Session: *session}, printClaim)
 	}
+}
+
+// claimsReleaseNames frees the names of --claim's other sessions once the secrets broker carries
+// nothing of them (api's releaseNames): what a claim refused a new session at the most names one
+// claim may hold needs, often right after a forget-session. A refusal names each enrollment the
+// broker still carries and when it ends; nothing is freed then, and the operator runs it again.
+func claimsReleaseNames(c *claimsCall) action {
+	token := c.flags.String("claim", "", "the claim's token (required)")
+	return func(ctx context.Context, _ []string) int {
+		if code, ok := c.check("claim"); !ok {
+			return code
+		}
+		op, ok := c.connect()
+		if !ok {
+			return 1
+		}
+		return c.send(ctx, op, http.MethodPost, "/"+url.PathEscape(*token)+"/release-names", nil, printReleasedNames)
+	}
+}
+
+// printReleasedNames is a release's answer as one line: how many names it freed, how it knew no
+// grant follows one, and the abandoned session it freed, if any.
+func printReleasedNames(w io.Writer, answer []byte) error {
+	var released api.ReleasedNames
+	if err := decodeAnswer(answer, &released); err != nil {
+		return err
+	}
+	line := fmt.Sprintf("%s: freed %d names of its other sessions; %s", released.Claim, len(released.Freed), released.Checked)
+	if released.Abandoned != "" {
+		line += "; the abandoned session " + released.Abandoned + " is marked released"
+	}
+	_, err := fmt.Fprintln(w, line)
+	return err
 }
 
 // claimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim whatever
