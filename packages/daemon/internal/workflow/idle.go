@@ -283,10 +283,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 		if !c.Live() {
 			continue
 		}
-		if !c.Reported() {
+		switch claim.ReadSessionWork(c.ActivityAt, c.LastTurnAt, c.ActivityBackground) {
+		case claim.WorkUnreported:
 			return IdleDecision{Hold: IdleHoldUnreported}
-		}
-		if c.ActivityBackground {
+		case claim.WorkRunning:
 			return IdleDecision{Hold: IdleHoldBackgroundWork, HoldKinds: c.ActivityKinds}
 		}
 	}

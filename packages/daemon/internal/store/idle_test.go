@@ -82,7 +82,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !got.LastTurnAt.Equal(now.Add(-45 * time.Minute)) {
 		t.Fatalf("last turn = %s, want the delivery's confirmation %s", got.LastTurnAt, now.Add(-45*time.Minute))
 	}
-	if !got.Reported() {
+	if claim.ReadSessionWork(got.ActivityAt, got.LastTurnAt, got.ActivityBackground) == claim.WorkUnreported {
 		t.Fatalf("claim %+v reads as unreported, though its report is newer than its turn", got)
 	}
 	if since, ok := got.ActivityAt, got.UpdatedAt.IsZero(); ok || got.UpdatedAt.Before(since) {
