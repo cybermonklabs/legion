@@ -277,7 +277,8 @@ require (
 // queue holds of content now (noteQueued); DocContainsUpdateV1Limit and HeldStructsDifferV1Limit
 // stop a decode outside an apply at the apply's value limit (roomHolds, refusedDuplicate);
 // Server.ReadOnlySyncStep2MaxBytes answers a read-only browser's sync step 2 past
-// unslottedApplyBytes without a decode; under AnswerOnceStored a frame that commits nothing waits
+// unslottedApplyBytes without a decode, and Server.ReadOnlySyncStep2MaxValues stops the decode of
+// one at or under it at the apply's value limit; under AnswerOnceStored a frame that commits nothing waits
 // for the stores in flight, and a room instance one commit of which was not stored answers
 // nothing applied again; and under RelayIntegratedOnly a frame whose drain landed anything is
 // relayed to its own sender too (ApplyOutcome.Drained).

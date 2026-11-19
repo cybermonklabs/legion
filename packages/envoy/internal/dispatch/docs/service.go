@@ -1088,9 +1088,13 @@ func New(deps Deps) *Service {
 	// slot, and any signed-in person can open a read-only socket. One past unslottedApplyBytes,
 	// what a browser's apply decodes outside a slot, is answered not applied without a decode, so
 	// the page keeps its saved rows as it does for any answer not applied. One at or under it is
-	// still decoded whole, and under no value limit: ygo's read-only answer takes none
-	// (TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode).
+	// decoded under the apply's own value limit (maxDecodedValuesPerApply): its decode stops past
+	// that many values and it is answered not applied, so a frame of up to 2 MiB dense in values
+	// costs no more than a browser's unslotted apply may
+	// (TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode; the value limit's own test is the
+	// fork's TestInteg_ReadOnlySyncStep2MaxValues_AStep2PastItIsAnsweredZeroAndDecodedNoFurther).
 	srv.ReadOnlySyncStep2MaxBytes = unslottedApplyBytes
+	srv.ReadOnlySyncStep2MaxValues = maxDecodedValuesPerApply
 	srv.OnLoadDocument = service.onLoadDocument
 	// ygo calls it as a room's first browser joins it, after the browser is in the room.
 	srv.OnFirstPeer = service.takeUpSettlementRoom

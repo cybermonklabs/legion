@@ -78,8 +78,9 @@ body: |-
     own, and an edit of its own that waits on the lost one is held by the room, answered not
     applied, and lands once the other person's browser sends the lost edit again. A socket given an
     id carries presence only under that id, and a read-only socket's presence, which ygo discards,
-    is not read at all; its sync step 2 over 2 MiB is answered not applied without being decoded. A
-    page admitted read-only stores no id: it is sent one
+    is not read at all; its sync step 2 over 2 MiB is answered not applied without being decoded,
+    and one under it stops decoding at the apply's value limit. A page admitted read-only stores no
+    id: it is sent one
     that no row names, and takes a fresh one once it is admitted writable. A person holds at most 64
     ids in a document that no edit has landed under; past that a new page's admission gives back the
     one presented longest ago, never one an open page holds, and where every one is held it is

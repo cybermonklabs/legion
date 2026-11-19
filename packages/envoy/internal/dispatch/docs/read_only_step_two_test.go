@@ -9,6 +9,7 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
+	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
@@ -119,5 +120,80 @@ func TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// A read-only step 2 at or under unslottedApplyBytes is still decoded to answer it, and its
+// decode stops at the apply's own value limit (Server.ReadOnlySyncStep2MaxValues,
+// maxDecodedValuesPerApply), so a frame dense in values costs a read-only socket no more than a
+// browser's unslotted apply may. Bob's read-only page sends a 2,000,016-byte step 2 of one struct
+// holding 2,000,000 null values: it is answered not applied, and the process allocates a few
+// mebibytes from its first byte to the answer. With the limit unset the same frame allocated
+// 68,640,080 bytes (4,627,528 with it, measured 2026-11-19 in a scratch test that set the field
+// both ways on the same build).
+func TestAReadOnlySocketsStepTwoDenseInValuesDecodesNoFurtherThanTheApplysValueLimit(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	setIssueClosed(t, service, true)
+	connection, _, err := gws.DefaultDialer.Dial(socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"=", pageHeader("bob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if _, named, _, err := docstest.ReadGivenClient(connection); err != nil || !named {
+		t.Fatalf("bob's read-only socket was given no client id in its first frame: %v", err)
+	}
+
+	values := 2_000_000
+	doc := crdt.New()
+	array := doc.GetArray("a")
+	doc.Transact(func(txn *crdt.Transaction) { array.Insert(txn, 0, make([]any, values)) })
+	stepTwo := crdt.EncodeStateAsUpdateV1(doc, nil)
+	if len(stepTwo) > unslottedApplyBytes || values <= maxDecodedValuesPerApply {
+		t.Fatalf("the step 2 is %d bytes of %d values; want it at or under the %d bytes a read-only step 2 is decoded at, and past the %d-value limit",
+			len(stepTwo), values, unslottedApplyBytes, maxDecodedValuesPerApply)
+	}
+	message := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(artifactID)
+		encoder.WriteVarUint(0)
+		encoder.WriteVarUint(ygsync.MsgSyncStep2)
+		encoder.WriteVarBytes(stepTwo)
+	})
+	runtime.GC()
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	sent := stats.TotalAlloc
+	if err := connection.WriteMessage(gws.BinaryMessage, message); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	answer := -1
+	for answer < 0 {
+		_, read, err := connection.ReadMessage()
+		if err != nil {
+			t.Fatalf("bob's read-only socket ended before its step 2 was answered: %v", err)
+		}
+		decoder := encoding.NewDecoder(read)
+		if _, err := decoder.ReadVarString(); err != nil {
+			continue
+		}
+		if kind, err := decoder.ReadVarUint(); err != nil || kind != 8 { // Hocuspocus's SyncStatus
+			continue
+		}
+		if applied, err := decoder.ReadVarUint(); err == nil {
+			answer = int(applied)
+		}
+	}
+	runtime.ReadMemStats(&stats)
+	allocated := stats.TotalAlloc - sent
+	t.Logf("a %d-byte step 2 of %d values on a read-only socket was answered %d; the process allocated %d bytes from its first byte to the answer",
+		len(stepTwo), values, answer, allocated)
+	if answer != 0 {
+		t.Fatalf("bob's read-only step 2 was answered %d, want not applied", answer)
+	}
+	// The read of the message is 2 MB; a decode of its 2,000,000 values allocates past 60 MB.
+	if bound := uint64(16 << 20); allocated > bound {
+		t.Fatalf("the process allocated %d bytes to answer bob's read-only step 2, past %d: its decode passed the value limit", allocated, bound)
 	}
 }
