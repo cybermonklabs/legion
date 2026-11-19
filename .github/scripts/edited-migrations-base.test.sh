@@ -143,6 +143,19 @@ pick() {
 # holds <checkout> <sha>: true when the commit is in the checkout, for the check to read.
 holds() { git -C "$1" cat-file -e "$2^{commit}" 2> /dev/null && echo true || echo false; }
 
+# has_lines <text> <lines>: true/false for check; true when each line of <lines> is a whole line
+# of <text>, compared as a fixed string.
+has_lines() {
+  local line
+  while IFS= read -r line; do
+    grep -qxF -- "$line" <<< "$1" || {
+      echo false
+      return
+    }
+  done <<< "$2"
+  echo true
+}
+
 echo "fixture: the feature's fork point is past the script's first fetch, 64 commits deep"
 check "100 commits of main are above the fork point" \
   "$(is "$(git_fixture -C "$origin" rev-list --count "$fork..$main_tip")" 100)"
@@ -192,8 +205,9 @@ dir=$(checkout feature)
 # A reference-transaction hook: when the script's first fetch has written main's ref, it points
 # a replace ref for main's tip at an object that does not exist. The fetch has already checked
 # what it received and succeeds; every later read of main's tip, git merge-base's first, fails
-# with exit 128 and `fatal: replacement <id> not found for <tip>`, as a missing or unreadable
-# object would.
+# with exit 128 and a message that names the missing replacement, as a missing or unreadable
+# object would. Git 2.43 words it `fatal: replacement <id> not found for <tip>`; other versions
+# word it otherwise.
 cat > "$dir/.git/hooks/reference-transaction" <<'HOOK'
 #!/bin/sh
 [ "$1" = committed ] || exit 0
@@ -210,8 +224,20 @@ pick "$dir" workflow_dispatch refs/heads/feature "$feature" ''
 check "it exits 2, a check that could not be taken" "$(is "$status" 2)"
 check "it names git merge-base, both arguments and the code" \
   "$(contains "$err" "^::error::git merge-base HEAD $main_tip exited 128, not 0 (a base) or 1 (no base), so this workflow_dispatch run on refs/heads/feature could not tell its base; git's message is above\$")"
-check "it prints git's own message" \
-  "$(contains "$err" "^fatal: replacement 1111111111111111111111111111111111111111 not found for $main_tip\$")"
+# git's message is what the git on this machine writes, so the check takes it from git merge-base
+# itself, run in the checkout the script left, where the replace ref still stands, and looks for
+# each of its lines in the script's stderr. With no message, or with git's 0 or 1, it would pass
+# on nothing, so either fails it.
+set +e
+git_err=$(cd "$dir" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+  git merge-base HEAD "$main_tip" 2>&1 > /dev/null)
+git_status=$?
+set -e
+passed_through=false
+if [ -n "$git_err" ] && [ "$git_status" -ne 0 ] && [ "$git_status" -ne 1 ]; then
+  passed_through=$(has_lines "$err" "$git_err")
+fi
+check "it prints git's own message, each line git merge-base writes in that checkout" "$passed_through"
 check "it does not call the fault a history that shares no commit" "$(is "$(contains "$err" 'share no commit')" false)"
 check "it prints no base" "$(is "$out" "")"
 check "it fetches no deeper: HEAD's history is still the first fetch's 64 commits" \
