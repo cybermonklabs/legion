@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -968,6 +969,9 @@ func storePullRequestFacts(
 		}
 		logging.FromContext(ctx).Debug("dispatch delivery: the commit messages of a pull request are not read, so its answer is not known until a later read",
 			"repo", canonical, "number", payload.Number, "error", readErr)
+		// The attempt that ctx carries notes this failed read (githubreads). Only the leased reconcile
+		// pass carries an attempt, so the intakes and the results routes note nothing.
+		githubreads.NoteFailuref(ctx, "read the commit messages of %s PR #%d: %w", canonical, payload.Number, readErr)
 		return answer(), nil
 	}
 	if messages == nil {

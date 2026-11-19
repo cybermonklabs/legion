@@ -92,6 +92,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the four counts a failed claim failed with, read against the limits in `settings`; served inside the failure record, which is where a reader acts on them"},
 	{Field: "Failure", Column: ColumnAgents, Keys: []string{"failure.detail"},
 		Reason: "the sentence the site that failed the claim wrote, which names what no one word can"},
+	{Field: "PodEnd", Column: ColumnWithheld,
+		Reason: "the pod end the claim's process was last observed to have died of, which the workflow reads off the claim to name the cluster's cause in a worker-died notice's reason; no claim view carries it under a key"},
 	{Field: "FailureCause", Column: ColumnAgents, Keys: []string{"failure.cause"},
 		Reason: "the one word for what failed the claim, which a retry, an escalation or a re-admission turns on"},
 	{Field: "FailedAt", Column: ColumnAgents, Keys: []string{"failure.at"},
@@ -161,7 +163,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
-		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in a root architect's catch-up, and no surface"},
+		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in an architect's catch-up, and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }

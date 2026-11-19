@@ -106,7 +106,7 @@ func (s State) String() string {
 	return fmt.Sprintf("probe-image: capability %s: %s (%s)", s.Name, s.Status, s.Detail)
 }
 
-// OpenLine is the sentence an open row is logged with (Log) and `legion start --check-config`
+// OpenLine is the sentence an open row is logged with (Log) and `legion config check`
 // prints: the gap and, on a deployment row, the line that records a decision. A live row has no
 // such line: a session's failing check is a fact to fix, not a gap an operator decides.
 func (s State) OpenLine() string {
@@ -139,7 +139,7 @@ func (d Deployment) Open() []Name {
 }
 
 // OpenFromConfiguration is the open rows whose Source is SourceConfiguration, in Table order: the
-// configuration's own gaps, whatever row they fall on, which `legion start --check-config` prints.
+// configuration's own gaps, whatever row they fall on, which `legion config check` prints.
 // Boot's measurements are not its to say — a configured broker's login, model fallback, which the
 // probe or the plugin gate reads, and pool capacity, which the probe's run measures.
 func (d Deployment) OpenFromConfiguration() []State {
@@ -325,7 +325,7 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		case d.ProbeCapacityWaits == 0:
 			return true, SourceBoot, "the image probe pod scheduled at its first attempt"
 		default:
-			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 250m / 1Gi reservation",
+			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 500m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
 	}
@@ -345,8 +345,8 @@ const (
 )
 
 // BurstableLine names the Burstable pods and says every other pod is Guaranteed; "" when no pod
-// requests less than its limit. The resource-limits row's detail carries it, and `legion start
-// --check-config` prints it after Config OK.
+// requests less than its limit. The resource-limits row's detail carries it, and `legion config
+// check` prints it after Config OK.
 func (d Deployment) BurstableLine() string {
 	if len(d.BurstablePods) == 0 {
 		return ""

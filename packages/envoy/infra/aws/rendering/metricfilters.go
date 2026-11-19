@@ -135,19 +135,21 @@ var ListenerLogSignals = []LogSignal{
 			"reconcile the subject lists across the deployments.",
 	},
 	{
-		// A start that refused its durable consumer and exits (cmd/listener/main.go).
+		// A start that refused its durable consumer, or whose grant NATS refused a request of the
+		// durable, and exits (cmd/listener/main.go, durableRefused).
 		alarm:  "durable-refused",
 		metric: "DurableRefusals",
 		filters: []struct{ name, pattern string }{
 			{"durable-refused-filter", `{ $.level = "ERROR" && $.msg = "subscribe refused, shutting down" }`},
 		},
 		description: "An Envoy listener start refused its durable consumer (`subscribe refused, shutting " +
-			"down`): the durable carries an idle heartbeat or an ack policy other than explicit, " +
-			"which NATS cannot change in place, so every replacement task exits 1 while the old task " +
-			"keeps serving, until the circuit breaker rolls the deployment back and the apply fails. " +
-			"Read %s for the " +
-			"durable and the setting, then recreate the durable by the recipe in cybermonklabs/legion " +
-			"packages/envoy/AGENTS.md (Operational notes), which keeps its cursor.",
+			"down`), so every replacement task exits 1 while the old task keeps serving, until the " +
+			"circuit breaker rolls the deployment back and the apply fails. Read the line's `error` in " +
+			"%s: a durable carrying an idle heartbeat or an ack policy other than explicit, which NATS " +
+			"cannot change in place, is recreated by the recipe in cybermonklabs/legion " +
+			"packages/envoy/AGENTS.md (Operational notes), which keeps its cursor; `bus: NATS denied " +
+			"the publish to \"<subject>\"` is the listener's NATS grant refusing the durable's read, " +
+			"create or update, which the grant must allow.",
 	},
 	{
 		// A start that gave up binding its durable subscription and exits (cmd/listener/main.go,

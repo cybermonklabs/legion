@@ -76,6 +76,7 @@ import {
   type ReviewSeed,
   railInboxLink,
   shotRoutes,
+  topBarInboxBadge,
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
@@ -97,7 +98,7 @@ const SKIP_REASON =
 
 // The live registry, put back after Playwright's own `globalSetup` cleared it. The host's seed
 // runs before Playwright starts (`e2e/visual-run.sh`), and `e2e/global-setup.ts:198` resets the
-// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace()` wrote are gone by the
+// fake Envoy when its sentinel check ends, so the sessions `seedWorkspace` wrote are gone by the
 // time the first row opens a page: the Agents page then draws "No agents are connected." and
 // every shot of it would be a baseline of an empty registry. The database half of the corpus is
 // untouched by that reset, which is why only this half is written again here. `./agents` and
@@ -188,8 +189,12 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         // the number's pill, for the reason the header above is: the pill's width can move
         // with the digit, and the link is a full-width row of the rail whose box holds still.
         // The cost is the rail's "Inbox" label, which is in no baseline. The phone rows draw
-        // no rail, so on them this matches nothing. The number itself is proven by its own
-        // tests, not by these pixels.
+        // no rail; they draw the same number in the compact top bar's badge, which is masked
+        // for the same reason. That badge is a pill in a row, so its own box is what the mask
+        // paints: a one-digit count holds that box still, and a count of 10 or more would
+        // widen it and move the badge beside it. CI run 44308307388 read 6 on `issue-spec`'s
+        // phone row against the baseline's 5, with nothing else moved in that badge. The
+        // number itself is proven by its own tests, not by these pixels.
         //
         // Why it is not waited for instead: the number CI draws after the broadcast row's
         // read mark is not the number this seed gives anywhere else. The baselines read 7 on
@@ -225,6 +230,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
             .last(),
           page.getByText(/, as of /),
           railInboxLink(page),
+          topBarInboxBadge(page),
         ],
         // MEASURED, both numbers, by starting at zero.
         // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with

@@ -52,14 +52,17 @@ const (
 	siteBoundDecision    = "bound.go serveBound: a request the decision refuses"
 	siteAWSSignature     = "bound.go serveBound: an AWS call the airlock will not sign"
 	siteBoundCut         = "bound.go serveBound: a call whose grant ended before its service answered"
+	siteFederatedSwap    = "bound.go serveBound: the federated token outside an exchange"
 	siteAzureAssertion   = "azure.go exchangeToken: a token request that is not this grant's"
+	siteAzureBound       = "azure.go exchangeToken: a token request as an application the document does not name"
 )
 
 // refusalSites is every site above, in the order the table names them.
 var refusalSites = []string{
 	siteNotAProxyRequest, siteCredential, siteGrantRefused, siteConnectTarget, siteConnectAddress,
 	sitePlainBound, sitePlainAddress, siteBoundConnection, siteProtocolSwitch, siteBoundValues,
-	siteBoundDecision, siteAWSSignature, siteBoundCut, siteAzureAssertion,
+	siteBoundDecision, siteAWSSignature, siteBoundCut, siteFederatedSwap, siteAzureAssertion,
+	siteAzureBound,
 }
 
 // answerIDPattern is an answer id: 16 random bytes, in hex (answer.NewID).
@@ -334,6 +337,19 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, secrets: []string{workerName}, host: boundHost, path: "/v1/poll",
 		},
 		{
+			site: siteFederatedSwap, name: "a GET carrying the federated token's placeholder",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				return answeredBy(r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+azureFederatedPlaceholder))
+			},
+			status: http.StatusForbidden, code: codeFederatedSwap,
+			reason: "refusing to swap " + azureName + "'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: "/v1/subscriptions",
+		},
+		{
 			site: siteAzureAssertion, name: "a token request carrying an assertion of its own",
 			rig: func(t *testing.T) *rig {
 				r, _ := newAzureRig(t, Options{Answers: answers})
@@ -344,6 +360,21 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			},
 			status: http.StatusForbidden, code: codeTokenAssertion,
 			reason: "refusing a token request whose client_assertion is not this grant's placeholder",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
+		},
+		{
+			site: siteAzureBound, name: "a token request naming another client_id",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				form := tokenForm(azureFederatedPlaceholder)
+				form.Set("client_id", azureOtherClientID)
+				return answeredBy(tokenRequestAt(t, r, r.client(azureFederatedPlaceholder), azureTokenPath, form))
+			},
+			status: http.StatusForbidden, code: codeTokenApplication,
+			reason: "refusing an exchange of " + azureName + "'s federated token whose client_id is not the application " + azureName + "'s secret names",
 			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
 		},
 	} {
@@ -506,6 +537,11 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //   - of a cut call's line (watchCarried, through callFields), the method and the path of a call
 //     whose answer streams, under the same two entries, each cut by a grant that stopped
 //     carrying it;
+//   - of a tunnel's line (logTunnel, through dialFields), the host of a CONNECT whose name
+//     resolves to an address the proxy may dial and a service answers on, so the tunnel opens;
+//   - of a failed dial's line (logDialFailure, through dialFields), the host and the reason of a
+//     CONNECT to a name that resolves nowhere, the reason being the proxy's own words around that
+//     host;
 //   - of the upstream failure's line (badGateway), the path and the host of a plain proxy request
 //     whose service cannot be reached, and the error of one whose name answers the check and
 //     nothing to the transport's own lookup, which quotes that host;
@@ -630,6 +666,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		callMessage:           {"method", "path"},
 		joinMessage:           {"method", "path"},
 		cutMessage:            {"method", "path"},
+		tunnelMessage:         {"host"},
+		dialFailedMessage:     {"host", "reason"},
 		upstreamMessage:       {"path", "host", "error"},
 		netHTTPMessage:        {"error"},
 	}
@@ -694,6 +732,20 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			options: Options{Watch: watchFast, Rules: anyMethod}, send: cut(sent, "/v1/stream")},
 		{name: "a cut call's path", message: cutMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
 			options: Options{Watch: watchFast}, send: cut(http.MethodGet, "/v1/"+sent)},
+		{name: "a tunnel's host: a CONNECT to a name the proxy may dial that a service answers", message: tunnelMessage, field: "host",
+			held: sent, status: http.StatusOK,
+			send: func(_ *testing.T, r *rig) *http.Response {
+				// The name resolves to a public address wired to the echo service, so the
+				// CONNECT opens a tunnel and the proxy writes that tunnel's one line.
+				r.addresses[sent] = []netip.Addr{public}
+				r.dialTo[net.JoinHostPort(public.String(), "443")] = r.dialTo[net.JoinHostPort(echoHost, "443")]
+				response, _, _ := r.connectRaw(sent+":443", basic(workerPlaceholder))
+				return response
+			}},
+		{name: "a failed dial's host: a CONNECT to a name that resolves nowhere", message: dialFailedMessage, field: "host",
+			held: sent, status: http.StatusForbidden, send: connect(sent + ":443")},
+		{name: "a failed dial's reason: a CONNECT to a name that resolves nowhere", message: dialFailedMessage, field: "reason",
+			held: "cannot resolve " + sent + ": no such host", status: http.StatusForbidden, send: connect(sent + ":443")},
 		{name: "an upstream failure's path: a plain proxy request whose service cannot be reached", message: upstreamMessage, field: "path",
 			held: "/" + sent, status: http.StatusBadGateway,
 			send: func(_ *testing.T, r *rig) *http.Response {
@@ -825,8 +877,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 		}
 	}
-	if driven != 18 || len(missing) != 0 {
-		t.Fatalf("the table drove %d rows, want 18; it never drove %v", driven, missing)
+	if driven != 21 || len(missing) != 0 {
+		t.Fatalf("the table drove %d rows, want 21; it never drove %v", driven, missing)
 	}
 }
 

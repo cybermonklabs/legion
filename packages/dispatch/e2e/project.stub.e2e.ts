@@ -127,6 +127,8 @@ filterTest(
     await expect(search).toHaveValue(scene.query);
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await assertPageFits(page);
+    await expect(search).toBeVisible();
+    // The wait above drew the search box, and a drawn element has a box, so the box is there.
     const box = await search.boundingBox();
     const viewport = page.viewportSize();
     if (!box || !viewport) throw new Error("The search box or viewport could not be measured");
@@ -169,11 +171,12 @@ referencesTest(
     await expect(references).toContainText("depth 1");
     await expect(references).toContainText("depth 2");
     const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(9);
+    await expect(tabs).toHaveCount(10);
     for (const [index, name] of [
       "Spec",
       "Verification",
       "Plan",
+      "Steps",
       "Conversation",
       "Children",
       "Artifacts 2",
@@ -235,6 +238,8 @@ bandsTest(
       range.selectNodeContents(node);
       return range.getBoundingClientRect().right;
     });
+    await expect(pill).toBeVisible();
+    // The wait above drew the key pill, and a drawn element has a box, so the box is there.
     const pillBox = await pill.boundingBox();
     if (pillBox === null) {
       throw new Error("project header is not visible");

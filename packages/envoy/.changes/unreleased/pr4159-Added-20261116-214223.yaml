@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    The running helper answers the op `version` with its own release, and `agent-secrets identity
+    --source` ends each `helper: <socket>` line with it, `(agent-secrets-helper <release>)`, so a
+    reader names the helper that serves the socket and not the binary an upgrade put on disk. A
+    helper from before the op is named as older, with the path of the binary of the process on the
+    socket, `/proc/<pid>/exe`.
+time: 2026-11-16T21:42:23.80874312Z
+custom:
+    Issue: pr4159

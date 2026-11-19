@@ -101,23 +101,32 @@ function aliceWrite(
   attempts: string[],
   refuse = false
 ): Promise<unknown> {
-  return writesOf(queryClient)
-    .run({
-      detail: null,
-      kind: plainWrite,
-      label: refuse ? "CORE-2 set to done" : "CORE-1 set to done",
-      presentation: "indicator",
-      write: (bounds) => {
-        attempts.push(bounds.login ?? "nobody");
-        bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
-        return Promise.reject(
-          refuse
-            ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
-            : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
-        );
-      },
-    })
-    .catch((error: unknown) => error);
+  // The press is the person's: what it starts on the page lands inside `act`, as a press does.
+  let pressed: Promise<unknown> = Promise.resolve();
+  act(() => {
+    pressed = writesOf(queryClient)
+      .run({
+        detail: null,
+        kind: plainWrite,
+        label: refuse ? "CORE-2 set to done" : "CORE-1 set to done",
+        presentation: "indicator",
+        write: (bounds) => {
+          attempts.push(bounds.login ?? "nobody");
+          bounds.sent?.({
+            body: { status: "done" },
+            method: "PATCH",
+            path: "/api/v1/issues/CORE-1",
+          });
+          return Promise.reject(
+            refuse
+              ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
+              : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+          );
+        },
+      })
+      .catch((error: unknown) => error);
+  });
+  return pressed;
 }
 
 /** The names of the writes this tab keeps across a reload. */
@@ -253,18 +262,25 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     await screen.findByText("Signed in as alice");
     const keys: string[] = [];
     let up = false;
-    const out = writesOf(queryClient).run({
-      detail: null,
-      kind: plainWrite,
-      label: "CORE-1 set to done",
-      presentation: "indicator",
-      write: (bounds) => {
-        keys.push(bounds.key);
-        bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
-        return up
-          ? Promise.resolve({ key: "CORE-1" })
-          : Promise.reject(new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed")));
-      },
+    let out: Promise<{ key: string } | null> = Promise.resolve(null);
+    act(() => {
+      out = writesOf(queryClient).run({
+        detail: null,
+        kind: plainWrite,
+        label: "CORE-1 set to done",
+        presentation: "indicator",
+        write: (bounds) => {
+          keys.push(bounds.key);
+          bounds.sent?.({
+            body: { status: "done" },
+            method: "PATCH",
+            path: "/api/v1/issues/CORE-1",
+          });
+          return up
+            ? Promise.resolve({ key: "CORE-1" })
+            : Promise.reject(new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed")));
+        },
+      });
     });
     const attempts: string[] = [];
     void aliceWrite(queryClient, attempts, true);

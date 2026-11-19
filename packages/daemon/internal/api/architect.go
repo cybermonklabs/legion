@@ -94,9 +94,9 @@ func (wr WaveReleaseResponse) MarshalJSON() ([]byte, error) {
 // keeps `blockedBy` an array here too, empty rather than `null`.
 type HeldChild = record.BlockedIssue
 
-// PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or the
-// tree's architect to return an issue it owns from accepting. An architect's grant serves its
-// whole tree, so it names the issue; a phase worker's names its own, so issue may be left out and,
+// PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or an
+// architect to return an issue it owns from accepting. An architect may own more issues than its
+// own, so it names the issue; a phase worker's grant names its own, so issue may be left out and,
 // when given, must be the grant's.
 type PhaseBackwardRequest struct {
 	GrantID string      `json:"grantId"`
@@ -108,7 +108,7 @@ type PhaseBackwardRequest struct {
 // PhaseBackwardResponse confirms the phase-backward fact committed.
 type PhaseBackwardResponse struct{}
 
-// PhaseRetryRequest records the tree architect's retry-or-escalate choice for a held issue.
+// PhaseRetryRequest records the retry-or-escalate choice of the architect that owns a held issue.
 // Reason is why the architect made it, and both decisions carry it: a retry writes it into the
 // task the restarted role is given and into the daemon's own log line for the release, and an
 // escalation sends it to the controller in the held notice, beside the cause that hold already
@@ -264,7 +264,7 @@ func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID strin
 		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, fact, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, fact)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
 		return
@@ -446,21 +446,64 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 	return approval, true
 }
 
-// releasableChild accepts an issue of the architect's tree that has not entered the workflow: a
-// triage, backlog, or icebox issue whose Dispatch parent chain reaches tree. The record cannot
-// answer, since it holds a child only once the child is todo, and a root that queued in admission
-// before a person made it a child of tree is recorded in a tree of its own until the release adopts
-// it (adoptReleasedChildren); the shipped daemon checks the same membership over its mirrored issue
+// releasableChild accepts an issue of the architect's tree that has not entered the workflow and
+// that the architect owns: a triage, backlog, or icebox issue whose Dispatch parent chain reaches
+// the grant's tree, through the grant's own issue for a sub-architect. The record cannot answer,
+// since it holds a child only once the child is todo, and a root that queued in admission before a
+// person made it a child of the tree is recorded in a tree of its own until the release adopts it
+// (adoptReleasedChildren); the shipped daemon checks the same membership over its mirrored issue
 // graph. An issue already in the workflow is refused, since writing todo would move an in-progress
 // child back.
+//
+// A sub-architect releases only issues under its own, as it parks and runs again only those
+// (architectOwnsUnder): the tree root, its own issue, a sibling of it and an issue under a sibling
+// are another architect's, and are refused ISSUE_NOT_OWNED. That is judged before the status, so a
+// sub-architect that names the running root or a running sibling is told the issue is not its own,
+// not that it already runs; a chain that never reaches the tree is outside it, whoever asks. The
+// tree root's architect owns every issue of its tree, and its answers come in this order: the
+// status, then the tree.
 //
 // A child already todo is neither: todo is what this call writes, so it needs no write. It is
 // accepted, which is what makes the architect's retry of a wave Dispatch failed part way through
 // finish it, and waveRelease records it if nothing has (enterTodoChild).
-func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, tree, key string, read issueReader) (child dispatch.Issue, write bool, ok bool) {
+func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, grant credential.Grant, key string, read issueReader) (child dispatch.Issue, write bool, ok bool) {
 	child, found := read(w, r, key)
 	if !found {
 		return dispatch.Issue{}, false, false
+	}
+	// inTree walks the child's Dispatch parent chain up to the tree root and answers a chain that
+	// never reaches it; throughGrant says whether the chain passed the grant's own issue on the way.
+	inTree := func() (throughGrant, ok bool) {
+		seen := map[string]bool{key: true}
+		for parent := child.Parent; parent != nil && !seen[*parent]; {
+			if *parent == grant.Tree {
+				return throughGrant, true
+			}
+			throughGrant = throughGrant || *parent == grant.Issue
+			seen[*parent] = true
+			ancestor, found := read(w, r, *parent)
+			if !found {
+				return false, false
+			}
+			parent = ancestor.Parent
+		}
+		writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, grant.Tree))
+		return false, false
+	}
+	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
+	if !byRoot {
+		// The tree root is in the tree and under no issue of it; any other issue is in the tree
+		// when its chain reaches the root.
+		under := false
+		if key != grant.Tree {
+			if under, ok = inTree(); !ok {
+				return dispatch.Issue{}, false, false
+			}
+		}
+		if !under {
+			notUnder(w, "release_children", key, grant)
+			return dispatch.Issue{}, false, false
+		}
 	}
 	write = true
 	switch child.Status {
@@ -471,20 +514,12 @@ func (s *server) releasableChild(w http.ResponseWriter, r *http.Request, tree, k
 		writeFailure(w, http.StatusConflict, "ISSUE_ALREADY_RELEASED", fmt.Sprintf("%s is %s; release_children releases only a triage, backlog, or icebox child", key, child.Status))
 		return dispatch.Issue{}, false, false
 	}
-	seen := map[string]bool{key: true}
-	for parent := child.Parent; parent != nil && !seen[*parent]; {
-		if *parent == tree {
-			return child, write, true
-		}
-		seen[*parent] = true
-		ancestor, found := read(w, r, *parent)
-		if !found {
+	if byRoot {
+		if _, ok = inTree(); !ok {
 			return dispatch.Issue{}, false, false
 		}
-		parent = ancestor.Parent
 	}
-	writeFailure(w, http.StatusForbidden, "ISSUE_OUTSIDE_TREE", fmt.Sprintf("%s is outside the architect tree %s", key, tree))
-	return dispatch.Issue{}, false, false
+	return child, write, true
 }
 
 // maxChildReleaseAttempts and childReleaseBackoff bound release_children's retries of a todo child
@@ -503,18 +538,19 @@ const (
 // would, recorded under the live tree and started once its gate is open, and a live event of it
 // from before the read stops at the sequence fence. The view applies only while the child stays
 // unrecorded (intake.DispatchIssue.Observed): an event that recorded it meanwhile has the record
-// carried on by the child's own events, each with its actor. A child already recorded in tree —
-// by the earlier attempt of a wave this call retries, or by the release's adoption of a root that
-// queued in admission (adoptReleasedChildren) — has had that observation. One recorded in any
-// other tree is not tree's, and is answered CHILD_IN_OTHER_TREE; the adoption leaves none.
+// carried on by the child's own events, each with its actor. A child already recorded in the
+// grant's tree — by the earlier attempt of a wave this call retries, or by the release's adoption
+// of a root that queued in admission (adoptReleasedChildren) — has had that observation. One
+// recorded in any other tree is not that tree's, and is answered CHILD_IN_OTHER_TREE; the adoption
+// leaves none.
 //
 // The workflow records a child only under a recorded parent. A parent this same wave writes todo is
 // recorded by its own write first (waveRelease, releaseOrder); one outside the wave, or one the
 // record could not take, may still be unrecorded. A child the observation did not record is
 // answered CHILD_NOT_RECORDED, retryable: each attempt is its own fact (requestFactID), so the
 // retry applies the observation again once the parent is recorded. Its durable retry record bounds
-// attempts with exponential backoff; after the limit, it queues one notice to the tree architect
-// instead of asking an architect to retry forever.
+// attempts with exponential backoff; after the limit, it queues one notice to the architect that
+// released the child (scheduleChildReleaseRetry) instead of asking an architect to retry forever.
 //
 // A child the apply did not record while it, or an unrecorded issue of its parent chain up to the
 // first recorded one, resolves to a repository left out because GitHub did not answer its read of
@@ -526,21 +562,22 @@ const (
 // by those issues' own events (one on a served repository whose event the consumer has not
 // applied yet, or one on another unread repository that recovers later): the child stands
 // released, neither started nor held, with nothing to retry, and the recovery tells the architect
-// if it did not record it after all. Otherwise the chain stops at a parent that is not todo (one
-// in backlog, say), which nothing will record: the child stands released too, and the architect is
-// told at once that it waits for that parent's release. Either way the wave goes on: the answer is
-// the unread repository
-// (the child pending), and ok is false only when the answer was written (a read failed).
+// that owns the child's parent, else the tree root's architect, if it did not record it after all.
+// Otherwise the chain stops at a parent that is not todo (one in backlog, say), which nothing will
+// record: the child stands released too, and the architect that released it is told at once that
+// it waits for that parent's release. Either way the wave goes on: the answer is the unread
+// repository (the child pending), and ok is false only when the answer was written (a read
+// failed).
 // CHILD_NOT_RECORDED's few quick retries would run out in seconds of an outage and say the parent
 // never reached the daemon, and an error would leave the rest of the wave unreleased.
-func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, read issueReader, todoNow func(string) bool) (string, bool) {
+func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, read issueReader, todoNow func(string) bool) (string, bool) {
 	recorded, err := s.recordedIssue(r.Context(), child.Key)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
 		return "", false
 	}
-	if recorded != nil && recorded.Tree != tree {
-		refusal := intake.ChildInOtherTree(child.Key, recorded.Tree, tree)
+	if recorded != nil && recorded.Tree != grant.Tree {
+		refusal := intake.ChildInOtherTree(child.Key, recorded.Tree, grant.Tree)
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return "", false
 	}
@@ -561,7 +598,7 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree str
 		}
 		observed = prepared
 	}
-	if _, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("waves/release"), observed, s.handlers...); err != nil {
+	if _, err := s.apply(r.Context(), "api", requestFactID("waves/release"), observed); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record %s", child.Key))
 		return "", false
 	}
@@ -574,12 +611,12 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree str
 	}
 	parent := observed.Parent
 	if s.unread != nil {
-		repo, ok, handled := s.enterOnUnreadRepository(w, r, tree, child, observed.ResolvedRepo, read, todoNow)
+		repo, ok, handled := s.enterOnUnreadRepository(w, r, grant, child, observed.ResolvedRepo, read, todoNow)
 		if handled {
 			return repo, ok
 		}
 	}
-	return "", s.scheduleChildReleaseRetry(w, r, tree, child, parent)
+	return "", s.scheduleChildReleaseRetry(w, r, grant, child, parent)
 }
 
 // enterOnUnreadRepository is enterTodoChild's answer for a todo child its apply did not record,
@@ -587,7 +624,7 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree str
 // is on is not its to answer. It walks the chain up from the child's parent to the first recorded
 // issue, reading each from Dispatch (read), and answers as enterTodoChild says: the unread
 // repository, and whether the wave goes on (false once a read failed and its answer is written).
-func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, resolved string, read issueReader, todoNow func(string) bool) (repo string, ok, handled bool) {
+func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, resolved string, read issueReader, todoNow func(string) bool) (repo string, ok, handled bool) {
 	if s.unread(resolved) {
 		repo = resolved
 	}
@@ -630,29 +667,46 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	// later), record the chain under the recorded one, parents first. Nothing is told now: a child
 	// still unrecorded when the repository's recovery has run is named then (tellReleaseWaits).
 	if stop == nil {
-		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
-			"issue", child.Key, "tree", tree, "repo", repo)
 		if !s.clearChildReleaseRetry(w, r, child.Key) {
 			return "", false, true
 		}
-		return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, ""), true
+		ok := s.tellReleaseWait(w, r, grant, child, parent, repo, "")
+		if ok {
+			s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
+				"issue", child.Key, "tree", grant.Tree, "repo", repo)
+		}
+		return repo, ok, true
 	}
 	blocker := *stop
 	if !s.clearChildReleaseRetry(w, r, child.Key) {
 		return "", false, true
 	}
-	return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, fmt.Sprintf(
+	return repo, s.tellReleaseWait(w, r, grant, child, parent, repo, fmt.Sprintf(
 		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit) will not record %s either. Release %s first, then release %s again.",
 		child.Key, blocker.Key, blocker.Status, repo, child.Key, blocker.Key, child.Key)), true
 }
 
-// tellReleaseWait leaves child, released in tree under parent, to the recovery of the unread
-// repo (Options.AwaitRecovery), which tells the architect if it is still unrecorded then, and,
-// when reason is given, tells the architect at once in a child-release-stalled notice. It reports
-// whether the wave goes on: false once the notice's write failed and its answer is written.
-func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree, child, parent, repo, reason string) bool {
-	if s.await != nil {
-		s.await(repo, tree, child, parent)
+// tellReleaseWait leaves child, released in grant's tree under parent, to the recovery of the
+// unread repo (Options.AwaitRecovery), which tells an architect if it is still unrecorded then,
+// and, when reason is given, tells the architect that released it at once in a
+// child-release-stalled notice. The notice answers that architect's own release, so it is queued
+// on that architect's own issue (grant.Issue): the owner walk takes it to that architect while it
+// holds its role, and on up the tree once it does not, where a notice queued on the tree root
+// would reach the root's architect even for a sub-architect's release. It reports whether the
+// wave goes on: false once an answer is written, the notice's write having failed or the retry
+// scheduled.
+//
+// The daemon may refuse the wait: repo was unread when this request read it, and its recovery has
+// stopped waiting on GitHub for it since (Options.AwaitRecovery answering false). A child left to
+// that recovery would be read by no pass and named to no architect, while this route had answered
+// it released, so it is answered as a child on no unread repository is, with the child-release
+// retry (scheduleChildReleaseRetry), and the notice is not written: its reason says the
+// repository is left out, which the daemon has just said it no longer is.
+func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, parent, repo, reason string) bool {
+	if s.await != nil && !s.await(repo, grant.Tree, child.Key, parent) {
+		s.log.Info("api: release_children's child was on a repository the daemon no longer holds unread, so its release is retried rather than left to a recovery",
+			"issue", child.Key, "tree", grant.Tree, "repo", repo)
+		return s.scheduleChildReleaseRetry(w, r, grant, child, parent)
 	}
 	if reason == "" {
 		return true
@@ -661,13 +715,13 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree, c
 	// daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
 	scoped, committed := intake.WithCommitHooks(r.Context())
 	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
+		row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
 		if err != nil {
 			return err
 		}
 		return s.records.Enqueue(scoped, tx, row)
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child))
+		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
 	committed()
@@ -703,10 +757,18 @@ func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, 
 	return true
 }
 
-func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, parent string) bool {
+// scheduleChildReleaseRetry answers a todo child the release could not record because its parent
+// has not reached the daemon: CHILD_NOT_RECORDED with the backoff before the next attempt, the
+// backoff itself while one runs, and after maxChildReleaseAttempts CHILD_RELEASE_STALLED, with one
+// child-release-stalled notice queued on the releasing architect's own issue (grant.Issue), as
+// tellReleaseWait queues its own. The retry is the child's, and every architect that may release
+// the child shares it, so only the call that runs out the attempts queues the notice, and only its
+// answer names the architect it told. A later call is told the notice was queued when the attempts
+// ran out, naming no issue: the retry does not record whose call that was.
+func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, parent string) bool {
 	now := time.Now().UTC()
 	var retry record.ReleaseRetry
-	var exhausted, backoff bool
+	var exhausted, told, backoff bool
 	// The retry is its own transaction, so it owns the commit hook the stalled notice's write
 	// registers (the daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
 	scoped, committed := intake.WithCommitHooks(r.Context())
@@ -731,7 +793,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 		retry.NextAt = now.Add(childReleaseBackoff << (retry.Attempts - 1))
 		retry.Exhausted = retry.Attempts >= maxChildReleaseAttempts
 		if retry.Exhausted {
-			row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
+			row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
 				Reason: fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d releases; inspect the tree before trying again", child.Key, parent, retry.Attempts)}, now)
 			if err != nil {
 				return err
@@ -739,7 +801,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 			if err := s.records.Enqueue(scoped, tx, row); err != nil {
 				return err
 			}
-			exhausted = true
+			exhausted, told = true, true
 		}
 		return s.records.PutReleaseRetry(scoped, tx, retry)
 	}); err != nil {
@@ -748,7 +810,11 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 	}
 	committed()
 	if exhausted {
-		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; the tree architect was notified", child.Key, parent, retry.Attempts))
+		notified := "a child-release-stalled notice was queued when the attempts ran out"
+		if told {
+			notified = fmt.Sprintf("the architect of %s was notified", grant.Issue)
+		}
+		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; %s", child.Key, parent, retry.Attempts, notified))
 		return false
 	}
 	if backoff {
@@ -822,8 +888,10 @@ func (s *server) listedIssues(ctx context.Context) (map[string]dispatch.IssueSum
 }
 
 // waveRelease releases children of the architect's tree into its run. Every child is checked
-// (releasableChild) before anything is written; then a child recorded outside the tree joins it
-// (adoptReleasedChildren), or the release answers why it cannot and writes nothing; then each
+// (releasableChild: in the tree, owned by the calling architect, which for a sub-architect means
+// under its own issue, and not yet in the workflow) before anything is written, so a wave that names
+// one issue the architect does not own releases none; then a child recorded outside the tree joins
+// it (adoptReleasedChildren), or the release answers why it cannot and writes nothing; then each
 // triage, backlog or icebox child is written todo in Dispatch and recorded from its own write
 // (recordOwnStatusWrite), and each child already todo is recorded (enterTodoChild). So a child is in
 // the tree when the release answers it released, except a written child the record could not take
@@ -863,7 +931,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issues must contain issue keys")
 			return
 		}
-		child, write, ok := s.releasableChild(w, r, grant.Tree, issue, read)
+		child, write, ok := s.releasableChild(w, r, grant, issue, read)
 		if !ok {
 			return
 		}
@@ -945,9 +1013,10 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	// A todo child left unrecorded because a repository it or its parent chain resolves to is
 	// unread (Options.RepositoryUnread) ends nothing: enterTodoChild answers it as the recovery will
 	// leave it and the wave goes on (pending, by key, with the unread repository). A child to write
-	// under one of those is not written, since its parent is not recorded, and its architect is told
-	// to release it again; the recovery of that repository tells the architect again of each child
-	// it left unrecorded.
+	// under one of those is not written, since its parent is not recorded, and the architect that
+	// released it is told to release it again; the recovery of that repository tells the architect
+	// that owns each such child's parent, else the tree root's architect, of each child it left
+	// unrecorded (the daemon's tellReleaseWaits).
 	byKey := make(map[string]releasedChild, len(children))
 	for _, child := range children {
 		byKey[child.view.Key] = child
@@ -963,7 +1032,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	for _, child := range ordered {
 		switch {
 		case !child.write:
-			repo, ok := s.enterTodoChild(w, r, grant.Tree, child.view, read, todoNow)
+			repo, ok := s.enterTodoChild(w, r, grant, child.view, read, todoNow)
 			if !ok {
 				return
 			}
@@ -974,9 +1043,9 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			if above, repo := pendingAncestor(child.view, byKey, pending); above != "" {
 				pending[child.view.Key] = repo
 				parent := intake.ObservedIssue(child.view).Parent
-				if !s.tellReleaseWait(w, r, grant.Tree, child.view.Key, parent, repo, fmt.Sprintf(
-					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
-					child.view.Key, above, repo, child.view.Key, above, repo)) {
+				if !s.tellReleaseWait(w, r, grant, child.view, parent, repo, fmt.Sprintf(
+					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded. If %s is still not recorded when the daemon recovers %s, the daemon tells the architect that owns %s, or the tree root's architect if %s is not recorded in this tree then.",
+					child.view.Key, above, repo, child.view.Key, above, child.view.Key, repo, parent, parent)) {
 					return
 				}
 				continue
@@ -1173,7 +1242,7 @@ func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, t
 	if len(outside) == 0 {
 		return true
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not adopt the released children")
 		return false
@@ -1203,9 +1272,11 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 	return outside
 }
 
-// phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or the
-// tree architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
-// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED).
+// phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or an
+// architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
+// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
+// move it applies ends the requester's own step — the worker's phase, or accepting, the owning
+// architect's — which apply waits for the requester's stream before.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -1371,7 +1442,9 @@ func (s *server) rootArchitectOf(w http.ResponseWriter, r *http.Request, grant c
 }
 
 // architectOwns says whether grant's architect owns recorded, an issue of its tree, for the
-// operation op, writing a 403 ISSUE_NOT_OWNED when it does not (owns).
+// operation op, writing a 403 ISSUE_NOT_OWNED when it does not (owns). An operation that moves an
+// issue into or out of the workflow, which a sub-architect does only below its own issue, takes
+// architectOwnsUnder instead.
 func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
 	owns, err := s.owns(r.Context(), grant, recorded)
 	if err != nil {
@@ -1384,6 +1457,39 @@ func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant cre
 	return owns
 }
 
+// architectOwnsUnder is architectOwns for an operation that moves recorded into or out of the
+// workflow, park_child or rerun_child, which an architect takes only on an issue under its own:
+// recorded lies under the grant's issue through its recorded parents (owns), and a sub-architect's
+// own issue is refused too, as are the tree root, a sibling of it and an issue under a sibling. An
+// issue's run is moved by an architect above it, as one released it (releasableChild). The tree
+// root's architect owns every issue of its tree, so nothing is read for it, and the root it names
+// is childOfTree's to refuse. It writes a 403 ISSUE_NOT_OWNED naming op when the architect does
+// not own recorded.
+func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
+	if claim.IsTreeRoot(grant.Issue, grant.Tree) {
+		return true
+	}
+	under := recorded.Key != grant.Issue
+	if under {
+		var err error
+		if under, err = s.owns(r.Context(), grant, recorded); err != nil {
+			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+			return false
+		}
+	}
+	if !under {
+		notUnder(w, op, recorded.Key, grant)
+	}
+	return under
+}
+
+// notUnder refuses grant's sub-architect op on key, an issue of its tree that is not under the
+// grant's own issue (architectOwnsUnder, releasableChild), with architectOwns' status and code
+// (403 ISSUE_NOT_OWNED), naming op, in a message of its own.
+func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
+	writeFailure(w, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s is refused: the architect of %s takes it only on an issue under %s", op, key, grant.Issue, grant.Issue))
+}
+
 // owns says whether grant's architect owns recorded, an issue of its tree: recorded is the grant's
 // own issue or lies under it, through its recorded parents. So the tree root's architect owns every
 // issue of its tree, and a sub-architect its own issue and those under it, never the root or a
@@ -1393,9 +1499,9 @@ func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant cre
 // issue: a human's re-parent in Dispatch leaves an issue's tree as it was (admit's
 // recordObservation), except a root that never ran, which joins its parent's live tree
 // (workflow/adopt.go), and the notice router ends the same walk at the same place
-// (owningArchitect, internal/daemon/notice_routing.go), so the architect the reviewer's
-// phase-finished notice reaches is the one that may accept the issue. The walk reads every parent
-// in one read-only transaction, opened only when it has a parent to read.
+// (record.OwningArchitect), so the architect the reviewer's phase-finished notice reaches is the
+// one that may accept the issue. The walk reads every parent in one read-only transaction, opened
+// only when it has a parent to read.
 func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
 	var tx pgx.Tx
 	defer func() {
@@ -1433,17 +1539,18 @@ func (s *server) owns(ctx context.Context, grant credential.Grant, recorded reco
 	}
 }
 
-// parkChild takes a running child of the architect's tree out of the workflow by moving it to
-// backlog in Dispatch, the move a human would make, and applies that move to the record before it
-// answers (applyOwnStatusWrite), as the move's event would: the child is parked as any child leaving
-// the workflow is (the workflow's leave), its workers suspended and its phase parked, and the
-// architect is told. The record does not wait for the event to come back through the Dispatch
-// consumer, which can run far behind: until then the workflow would keep running the child, start
-// its next phase's worker on a completion, and refuse rerun_child. The event, once delivered, finds
-// the record at its sequence and changes nothing. rerun_child, or release_children on the backlog
-// child, runs it again.
+// parkChild takes a running child the architect owns (childOfTree: for a sub-architect, an issue
+// under its own) out of the workflow by moving it to backlog in Dispatch, the move a human would
+// make, and applies that move to the record before it answers (applyOwnStatusWrite), as the move's
+// event would: the child is parked as any child leaving the workflow is (the workflow's leave).
+// Every claim of the child, its own architect's included, is suspended with its session kept, its
+// phase is parked, and the architect above it is told (child-status). The record does not wait for
+// the event to come back through the Dispatch consumer, which can run far behind: until then the
+// workflow would keep running the child, start its next phase's worker on a completion, and refuse
+// rerun_child. The event, once delivered, finds the record at its sequence and changes nothing.
+// rerun_child, or release_children on the backlog child, runs it again.
 func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
-	child, ok := s.childOfTree(w, r)
+	child, ok := s.childOfTree(w, r, "park_child")
 	if !ok {
 		return
 	}
@@ -1456,12 +1563,13 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// rerunChild runs a child of the architect's tree again once it is out of the workflow, parked or
-// signed off, by moving it to todo in Dispatch, the move a human would make, and applies that move to
-// the record before it answers (applyOwnStatusWrite), as the move's event would: the child's next
-// run starts under the tree from planning (the workflow's reenterChild), and the event, once
-// delivered, changes nothing. A running child is parked first, and a lingering tree runs nothing
-// more; a todo it reached anyway would admit the child as an orphan root of its own.
+// rerunChild runs a child the architect owns (childOfTree: for a sub-architect, an issue under its
+// own) again once it is out of the workflow, parked or signed off, by moving it to todo in Dispatch,
+// the move a human would make, and applies that move to the record before it answers
+// (applyOwnStatusWrite), as the move's event would: the child's next run starts under the tree from
+// planning (the workflow's reenterChild), and the event, once delivered, changes nothing. A running
+// child is parked first, and a lingering tree runs nothing more; a todo it reached anyway would
+// admit the child as an orphan root of its own.
 //
 // It is refused while an ancestor of the child has already been accepted
 // (CHILD_UNDER_ACCEPTED_PARENT): work entering the workflow beneath such an ancestor would let
@@ -1474,7 +1582,7 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 // rerun is among them, and the chain the ancestor is found on is walked over them
 // (record.AcceptedAncestorIn).
 func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
-	child, ok := s.childOfTree(w, r)
+	child, ok := s.childOfTree(w, r, "rerun_child")
 	if !ok {
 		return
 	}
@@ -1505,9 +1613,13 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// childOfTree reads a ChildRequest and authorizes it: an architect's grant, and an issue of its tree
-// other than the tree root, which leaves the workflow only with the whole tree.
-func (s *server) childOfTree(w http.ResponseWriter, r *http.Request) (record.Issue, bool) {
+// childOfTree reads a ChildRequest for op, park_child or rerun_child, and authorizes it: an
+// architect's grant, and an issue of its tree that the architect owns for op (architectOwnsUnder)
+// other than the tree root, which leaves the workflow only with the whole tree. Ownership is judged
+// first, so a sub-architect that names an issue not under its own is told only that, whatever the
+// issue's run. The tree root's architect owns every issue of its tree, so it gets each route's
+// answers, CHILD_REQUIRED for the root included.
+func (s *server) childOfTree(w http.ResponseWriter, r *http.Request, op string) (record.Issue, bool) {
 	var req ChildRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {
 		return record.Issue{}, false
@@ -1516,8 +1628,8 @@ func (s *server) childOfTree(w http.ResponseWriter, r *http.Request) (record.Iss
 		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return record.Issue{}, false
 	}
-	_, child, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
-	if !ok {
+	grant, child, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
+	if !ok || !s.architectOwnsUnder(w, r, grant, child, op) {
 		return record.Issue{}, false
 	}
 	if claim.IsTreeRoot(child.Key, child.Tree) {

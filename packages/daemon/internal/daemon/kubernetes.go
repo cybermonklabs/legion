@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -103,8 +105,8 @@ const (
 // from it (cmd/legion's piLegionVersion/piEnvoyVersion, PluginsFromBinary field true; PluginsFromBinary
 // source), else nil pair and "" source — the daemon knows no plugin versions, and every stale claim is
 // recorded and reported, never relaunched or refused (supervise.Deps.PluginRelaunchable false). Nil
-// under tmux, whose pane always resumes on the plugin installed on the daemon's host. legion start
-// --check-config and the boot log both read this.
+// under tmux, whose pane always resumes on the plugin installed on the daemon's host. `legion
+// config check` and the boot log both read this.
 func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.Plugins == nil {
@@ -137,7 +139,7 @@ func ProbeBudget(cfg config.Config) (budget time.Duration, derived bool) {
 	return cfg.SlowCommandTimeout, false
 }
 
-// ProbeBudgetLine is the plain line `legion start --check-config` prints under
+// ProbeBudgetLine is the plain line `legion config check` prints under
 // `runtime: kubernetes` when ProbeBudget's bound exceeds slow_command_timeout_seconds: how long
 // each attempt now waits, and which keys pushed it there. "", false when the bound is
 // slow_command_timeout_seconds itself.
@@ -191,7 +193,13 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// The memory guards' kill holder (memoryGuardKills), on the plan by pointer, so the plan's own
 	// copy carries the one holder the factory closed over, as plan.repositories does.
 	p.memoryGuardKills = &memoryGuardKills{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI, p.memoryGuardKills)
+	// The holder the pods' cache trimmers report through, made here and filled once the workflow
+	// is open: the factory is built before the workflow exists, and the fact path does not
+	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
+	// carries the one holder the factory closed over, as plan.repositories does.
+	p.volumeReports = &volumeTrimReports{}
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
+		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -246,15 +254,22 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, navigates headless Chromium to the two compromised chains and its
-// control, and exits. Five fresh runs at 250m / 1Gi took 57.68–77.43 s, so those limits hold the
-// browser probe while the smaller reservation still fits a pool that cannot place a controller or
-// issue pod. It has a 5Gi bound on node disk and a 1Gi disk request. The probe runs at every boot,
-// before anything is served, and a probe that reserved a pod's share — the controller's 1 CPU and
-// 4Gi, or an issue pod's 3 CPU and 19Gi — could leave the daemon unable to boot on a pool full
-// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
-// controller reservation no node can hold, met exactly that).
-var probeReservation = config.Reservation{CPU: "250m", CPURequest: "250m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
+// setting), runs no lane, holds its TLS clients and headless Chromium to the two compromised
+// chains and a control site, and exits. It reserves 500m so the probe ends at least 60 s inside
+// its 240 s command budget at the defaults. Five runs of `legion probe-image --skip-agent-models`
+// at 1 CPU under gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at
+// 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
+// short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
+// because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
+// Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
+// kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
+// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
+// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
+// reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
+// could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
+// 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
+// exactly that).
+var probeReservation = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
 
 // imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts
 // every pod is handed — this daemon's, inlined at each launch, so the probe resolves what they name
@@ -352,9 +367,22 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 			WaitSeconds: g.WaitSeconds, IntervalMilliseconds: g.IntervalMilliseconds,
 		}
 	}
+	// The trimmer's settings reach an accepted issue-pod launcher on the answer to its hello
+	// (sandbox Runtime.LauncherResolver). Nil is what the launcher reads as "no settings", on
+	// which its trimmer reads and deletes nothing, so a deployment that turned
+	// `runtime.kubernetes.volume_trim` off and a daemon built before this work write the same ack
+	// (shimwire.LauncherHelloAck.VolumeTrim, INFRA-2009).
+	var volumeTrim *shimwire.LauncherVolumeTrim
+	if t := k.VolumeTrim; t.Enabled {
+		volumeTrim = &shimwire.LauncherVolumeTrim{
+			HighPercent: t.HighPercent, LowPercent: t.LowPercent,
+			MinAgeMinutes: t.MinAgeMinutes, IntervalSeconds: t.IntervalSeconds,
+		}
+	}
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
+		Sandbox:    sandboxConfig(k.Sandbox),
 		Resources:  sandbox.PodResources{Issue: issue, Controller: controller},
 		DaemonURL:  cfg.DaemonURL, EnvoyURL: cfg.EnvoyURL, DispatchURL: cfg.DispatchURL, DispatchToken: dispatchToken,
 		NATSURLs: cfg.NatsURLs,
@@ -369,7 +397,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ProvidersSecrets:        providersSecrets(cfg, lookup),
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
-		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
 		MemoryGuard:             memoryGuard,
 		BootTimeout:             cfg.WorkerBootTimeout,
@@ -380,10 +407,24 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		AdoptTimeout:            cfg.SlowCommandTimeout,
 		AgentSecrets:            agentSecrets,
 		RepositoryCache:         cache,
+		VolumeTrim:              volumeTrim,
 		Log:                     log,
 	}
 	opts.ExperimentVariants = experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	return opts, nil
+}
+
+// sandboxConfig is runtime.kubernetes.sandbox as the runtime takes it: the settled block, member
+// for member, the microVM storage class already defaulted to runtime.kubernetes.storage_class.
+func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
+	settled := sandbox.SandboxConfig{Type: sandbox.SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
+	if m := c.MicroVM; m != nil {
+		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		if endpoint := m.Metadata; endpoint != nil {
+			settled.MicroVM.Metadata = &sandbox.MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
+		}
+	}
+	return settled
 }
 
 // repositoryCache is runtime.kubernetes.repository_cache as the runtime takes it: the volume as a
@@ -430,7 +471,16 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	// Every call this client makes to the broker carries a Proof header of its own, so a 3xx
+	// answered for the broker - by the broker, or by anyone who can answer for it - must not
+	// hand that proof to a host this deployment never named. The refusal is written here as
+	// internal/modeltoken writes it, since envoy's redirects package is internal to that
+	// module; its comment is where the whole reason is.
+	broker := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
@@ -442,7 +492,7 @@ type brokerEnroller struct{ client *agentsecrets.Client }
 
 func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
 	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
-		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session,
+		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session, Claim: e.Claim,
 	})
 	if err != nil {
 		return "", err
@@ -451,6 +501,18 @@ func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (
 }
 
 func (b brokerEnroller) Revoke(ctx context.Context, id string) error { return b.client.Revoke(ctx, id) }
+
+func (b brokerEnroller) Carried(ctx context.Context, sessionIDs []string) ([]supervise.CarriedEnrollment, error) {
+	carried, err := b.client.Carried(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]supervise.CarriedEnrollment, len(carried))
+	for i, c := range carried {
+		out[i] = supervise.CarriedEnrollment(c)
+	}
+	return out, nil
+}
 
 // providerSecretKeys are provider_keys as the runtime takes them: each variable Oh My Pi reads,
 // to the key of the providers Secret that holds it; nil when the file names none.
@@ -499,25 +561,27 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, a directory for each owner of repos, one for each owner a configured
-// rename moved a repository away from while repos holds the name it moved to, and one for each
-// repository the pod's recorded owner and the owner whose installation serves its repository
-// serve beside the one it writes to), with the
+// bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
+// GitHub at every bundle, and one for each owner a configured rename moved a repository away
+// from while repos holds the name it moved to), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
-// and the directory set those directories are compared with (appauth.GitHubDirs), whose owner
-// directories the runtime reads a running pod's gh projection against — a pod lacking an owner's
-// directory holds no token of that owner, where one lacking a `<owner>/<repo>` directory reads
-// that repository through its owner's and is left where it is (sandbox's movedGhDirs) — the
-// three over one record of what the mints found GitHub refuses (appauth.NewLeftOut), so the set
+// and the directory set those directories are compared with (appauth.GitHubDirs), which the
+// runtime reads a running pod's gh projection against — a pod lacking an owner's directory
+// holds no token of that owner (sandbox's movedGhDirs) — the three over two records of what
+// the bundles found, both the plan's own (plan.installed, plan.left): the owners each App's
+// last bundle read installed (appauth.Installed),
+// which is what the drift check may honestly compare a pod against without a call to GitHub of
+// its own, and the directories the mints found GitHub refuses (appauth.LeftOut), so the set
 // a pod is compared against is the set a mint produces and an owner left out of every bundle of
 // the Apps that pod runs is named by no comparison of it — the roles the runtime asks for being
 // its pod's own, so the implement App's refusal of an owner costs the controller's pod, which
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
 // (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the workflow's mapping as the repositories
-// its repository caches follow (mapped), with the store's own workspace bundles as what a
+// whose installation holds the repository now), with the repositories the project works as the
+// ones its repository caches follow (mapped: the mapping's and those of its live issue records,
+// workflowRuntime.cacheRepositories), with the store's own workspace bundles as what a
 // replacement pod's launcher is sent and what its restore drops, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
@@ -527,9 +591,15 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (leakCheckSource).
 //
 // kills is the memory guards' kill holder (memoryGuardKills).
+//
+// reports is the holder the launchers' volume reports reach the workflow's fact path through
+// (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
+// it has (plan.volumeReports). One that is never filled refuses every report it is given with
+// errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string, kills *memoryGuardKills) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
+	reports *volumeTrimReports) runtimeFactory {
+	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
@@ -541,6 +611,13 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
+		// left the volume above its low mark, or of the trimmer switching itself off — reaches
+		// the daemon through this, and the daemon turns it into the one fact that can tell the
+		// issue's architect (volumeTrimReports.report). The workflow is what applies that fact,
+		// and it opens after this factory is built, so the pair the apply needs is held in
+		// reports and filled when it does (plan.volumeReports).
+		opts.VolumeReported = reports.report
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
 		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
 		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
@@ -550,15 +627,19 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// holder (memoryGuardKills).
 		opts.MemoryGuardKilled = kills.killed
 		if apps != nil {
-			// One record per project, written by the two credentials and read by the directory
-			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
-			// no mint of its own Apps can produce (appauth.LeftOut).
-			left := appauth.NewLeftOut()
+			// Two records per project, written by the two credentials and read by the directory
+			// set for the Apps of the pod it answers for: the owners each App's last bundle read
+			// installed (appauth.Installed), which is all the drift check may say about a pod
+			// without calling GitHub per pod per sweep, and the directories a mint found GitHub
+			// refuses, so no pod is replaced for a directory no mint of its own Apps can produce
+			// (appauth.LeftOut). Both are the daemon's own (plan.installed, plan.left), which
+			// every launch's addressing reads its role's App's owners out of beside the drift
+			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, left, opts.Log)
-			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, repos, renames, installed, left, opts.Log)
+			opts.ControllerCredential = appauth.ControllerCredential(apps, repos, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-				return appauth.GitHubDirs(repos, renames, left, roles, repo)
+				return appauth.GitHubDirs(repos, renames, installed, left, roles, repo)
 			}
 		}
 		rt, err := sandbox.New(ctx, rc, opts)
@@ -638,11 +719,106 @@ func memoryGuardKillEventID(report shimwire.LauncherMemoryKill) string {
 	return fmt.Sprintf("memory-guard-kill:%s:%d", report.Guard, report.Sequence)
 }
 
+// volumeTrimReports turns one issue pod's volume sweep, as its launcher's cache trimmer reported
+// it, into the fact the workflow applies (intake.VolumeNearFull). It is the seam between the
+// Kubernetes runtime, which is built before the workflow opens, and the fact path, which exists
+// only after it: prepareSandbox makes one and hands it to the factory, and the boot fills it the
+// moment the workflow is open (plan.volumeReports, daemon.Run). A holder nobody filled refuses
+// every report with errVolumeReportsUnbound, which the launcher session logs with the report it
+// drops.
+//
+// It is filled once, in the boot's own goroutine, before the runtime is built and so before any
+// launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
+type volumeTrimReports struct {
+	pool     *store.Pool
+	handlers []intake.Handler
+}
+
+// errVolumeReportsUnbound is what a holder the boot never filled answers every report with. Its
+// text names the line that fills it, since a log line is the only place the drop shows: no
+// architect is told, and the trimmer goes on sweeping.
+var errVolumeReportsUnbound = errors.New("the daemon's volume report holder was never bound to the workflow " +
+	"(daemon.go, plan.volumeReports.bind), so this report and every later one is dropped")
+
+// bind gives the holder the daemon's guarded pool (store.Pool) and the handlers a fact applies
+// through, which is what the workflow has and the factory does not.
+func (v *volumeTrimReports) bind(pool *store.Pool, handlers []intake.Handler) {
+	v.pool, v.handlers = pool, handlers
+}
+
+// report applies one sweep of issue's pod as one intake fact (runtime.VolumeReported). It runs on
+// the launcher's own frame loop under that loop's bounded context, so an apply that cannot be
+// made is returned to the launcher session, which logs it and drops the report; the trimmer's
+// next sweep that ends above the low mark reports the volume again, and a dropped report of a
+// trimmer that switched itself off is not sent again. Every launcher's frame loop runs beside
+// the others and beside the daemon's own loops, so each report applies under a hold mark of its
+// own (store.ForConcurrentWorker): this is a fact source, and a fact source marks its context
+// where it starts (store.ErrNestedAcquire).
+//
+// The event id is unique per report and never per sweep: nothing in the frame numbers a report,
+// and ApplyFact applies one id exactly once — an id built from the report's own contents would
+// silently drop the second report of an episode whose numbers had not moved, which is precisely
+// the pod that is full and not changing. So the id carries the daemon's own receipt — the issue,
+// the pod, the trimmer and the episode — with a random tail, as api.requestFactID gives each of
+// the API's own requests, which is unique across processes as well as within one.
+func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error {
+	if v.pool == nil || len(v.handlers) == 0 {
+		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
+		// through. That is a boot that skipped plan.volumeReports.bind, and every report of every
+		// pod meets it, so it is returned rather than swallowed: the launcher session logs it with
+		// the report it dropped (sandbox's volumeReported), which is what makes the drop findable.
+		return errVolumeReportsUnbound
+	}
+	fact := intake.VolumeNearFull{Issue: issue, PodUID: podUID, Report: record.VolumeNearFull{
+		Trimmer: report.Trimmer, Episode: report.Episode, RaisedBy: report.RaisedBy,
+		UsedBytes: report.UsedBytes, FreeBytes: report.FreeBytes, FreedBytes: report.FreedBytes,
+		StopReason: report.StopReason, RefusedReads: report.RefusedReads, RefusedReadsOmitted: report.RefusedReadsOmitted,
+		Sizes: volumeSizes(report.Sizes), SizesOmitted: report.SizesOmitted,
+		SizesAt: report.SizesAt, SizesPartial: report.SizesPartial,
+		SizesMissing: volumeMissing(report.SizesMissing), SizesMissingOmitted: report.SizesMissingOmitted,
+		Faults: report.Faults, FaultsOmitted: report.FaultsOmitted, SwitchedOff: report.SwitchedOff,
+	}}
+	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%s", issue, podUID, report.Trimmer, report.Episode, rand.Text())
+	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), v.pool, "launcher", eventID, fact, v.handlers...); err != nil {
+		return fmt.Errorf("apply the volume report of %s's pod %s: %w", issue, podUID, err)
+	}
+	return nil
+}
+
+// volumeSizes and volumeMissing are the wire's size walk as the record keeps it. The two shapes
+// are the same members by design — the record's is durable and the wire's is not — and these are
+// the one place they are copied across.
+func volumeSizes(sizes []shimwire.LauncherVolumeSize) []record.VolumeSize {
+	if len(sizes) == 0 {
+		return nil
+	}
+	kept := make([]record.VolumeSize, 0, len(sizes))
+	for _, size := range sizes {
+		kept = append(kept, record.VolumeSize{Path: size.Path, Bytes: size.Bytes,
+			BytesOverHour: size.BytesOverHour, BytesOverDay: size.BytesOverDay,
+			Refused: size.Refused, Refusals: size.Refusals})
+	}
+	return kept
+}
+
+// volumeMissing is the walk's unmeasured targets, and the volume root or an immediate child of
+// it where the walk did not list one in full, each with its reason, as volumeSizes says.
+func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMissing {
+	if len(missing) == 0 {
+		return nil
+	}
+	kept := make([]record.VolumeMissing, 0, len(missing))
+	for _, one := range missing {
+		kept = append(kept, record.VolumeMissing{Path: one.Path, Reason: one.Reason})
+	}
+	return kept
+}
+
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
 // pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (contents, pull requests, issues, Actions and metadata at
-// read, appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache could write
-// with. Every refusal is returned as it came, with no second mint: GitHub's trouble
+// it fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
+// permission at read: appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache
+// could write with. Every refusal is returned as it came, with no second mint: GitHub's trouble
 // (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
 // owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
 // lease asks for (appauth.ErrNarrowingRefused) alike.
@@ -682,7 +858,7 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 	if t.serving != nil {
 		repo = t.serving(repo)
 	}
-	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner(), []string{repo.Name()})
+	lease, err := t.apps.ReadToken(ctx, appauth.Implement, repo.Owner())
 	if err != nil {
 		return "", err
 	}
@@ -692,9 +868,9 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 // leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
 // (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
 // https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
-// of the pod starts (sandbox.Options.LeakCheck). Where apps drops a read scope
-// (appauth.ReadScopeForgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so
-// the next read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
+// of the pod starts (sandbox.Options.LeakCheck). Where apps drops an owner's leases
+// (appauth.Forgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so the next
+// read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
 // the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
 // nil reads the daemon as holding no credential.
 func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
@@ -702,10 +878,8 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 		return nil
 	}
 	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
-	if forgetter, ok := apps.(appauth.ReadScopeForgetter); ok {
-		source.Forget = func() {
-			forgetter.ForgetReadScope(appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
-		}
+	if forgetter, ok := apps.(appauth.Forgetter); ok {
+		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
 	}
 	return source
 }
@@ -725,7 +899,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // owner.
 func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner())
 		switch {
 		case err == nil:
 			return lease.Token, nil

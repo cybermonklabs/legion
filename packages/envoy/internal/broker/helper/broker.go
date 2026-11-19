@@ -5,6 +5,7 @@ package helper
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
@@ -23,23 +24,30 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
-// noCredentialMsg is the exact instruction returned whenever the helper has no machine
-// credential to authenticate the launcher routes with: never having logged in, and having dropped
-// its credential (drop), because the broker refused it with 401 LAUNCHER_INVALID (clearOnInvalid),
-// refused its refresh (refresh), or it reached its expiry without a refresh (watchExpiry). It
-// never auto-relogins; a login is a human ceremony.
-const noCredentialMsg = "no machine credential; run: agent-secrets machine login"
+var errNoCredential = errors.New("no machine credential")
 
-var errNoCredential = errors.New(noCredentialMsg)
+func (b *Broker) noCredentialFailure() brokerclient.Failure {
+	return modeFailure(b.Identity != nil, b.identityStopped.Load())
+}
+
+func (b *Broker) noCredential() error {
+	return brokerclient.WithHint(errNoCredential, b.noCredentialFailure())
+}
+
+func (b *Broker) noCredentialText() string {
+	return b.noCredential().Error()
+}
 
 // The refresh loop's defaults: a refresh a day at most; after a refresh the broker did not answer
 // (any transport error: a refused, unanswered or unresolved dial, a timeout, a lost answer, a
@@ -122,7 +130,10 @@ type loginState struct {
 // sign-in of its own user, and the rule a session acts under is the spec's — a session acts for
 // a person only after that person's own sign-in on the box.
 type Broker struct {
-	URL          string
+	// URL is the broker's base URL (AGENT_SECRETS_URL), held as a brokeraddr.Address so that no
+	// log line or error of the helper prints a credential it carries. Its Raw builds each
+	// request and the audience and htu each proof names; nothing else reads it.
+	URL          brokeraddr.Address
 	OperatorFile string // login_hint source; read per login, as before
 	// MachineFile is where the helper keeps its machine login across restarts (AGENT_SECRETS_MACHINE_FILE).
 	MachineFile string
@@ -152,9 +163,10 @@ type Broker struct {
 	// never a proof, a token, a request object or key material. Nil logs nothing.
 	Log *slog.Logger
 
-	cred    atomic.Pointer[machineCredential]
-	loginMu sync.Mutex                 // one login at a time
-	login   atomic.Pointer[loginState] // most recent login: code, state
+	cred            atomic.Pointer[machineCredential]
+	identityStopped atomic.Bool
+	loginMu         sync.Mutex                 // one login at a time
+	login           atomic.Pointer[loginState] // most recent login: code, state
 	// credMu is held by whatever changes the held login and its machine file together: a login's
 	// save and install, a start's install, and a refresh from its request to its save and swap, so
 	// a refresh never races a login's install. Every save of the machine file runs under it. Every
@@ -236,10 +248,24 @@ type SignIns interface {
 }
 
 // BrokerError is a non-success answer, with the contract's code.
+//
+// Code is the answer's code as it came, which the helper acts on, and said its words as they
+// came, which enrollmentNotLive reads (says): nothing prints said, a *string, as
+// brokeraddr.Address's address is, so fmt prints the pointer, never the text, where it prints this
+// struct field by field (%#v). Message is the words as a message may print them
+// (brokeraddr.Address.Words): beside an address that is not clean, whoever answers can repeat the
+// credential the address carries in any text it answers, so there do makes Message
+// brokeraddr.WordsNotPrinted, sets withheld, and the refusal prints as its status and Message
+// alone, without its code. A log line that names a code whatever the address names one the
+// helper matched against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
 type BrokerError struct {
 	Status  int
 	Code    string
 	Message string
+	said    *string
+	// withheld is whether the answer came from an address that is not clean, so that none of
+	// its text prints: the decision do made, read by Error.
+	withheld bool
 }
 
 // Error names only the fields it has: the status always, then the code where there is one, then
@@ -247,16 +273,26 @@ type BrokerError struct {
 // not "broker 502 : ", and an unknown outcome's answer shows that text to an operator
 // (mayHaveReachedCause, server.go). With both fields set it reads "broker 403 SESSION_HELD: the
 // session … belongs to …", which nocredential_test.go matches as a prefix ("broker 401
-// LAUNCHER_INVALID").
+// LAUNCHER_INVALID"). A refusal whose text is withheld names no code. The code and the message are
+// the broker's, so each prints on one line (redact.OneLine): as it came where it holds no control
+// character, and Go-quoted where a line break or an escape sequence in it would start a line of
+// its own where this error prints. Message came through brokeraddr.Address.Words from do, under
+// that rule already, and from oauthBrokerError as the broker's OAuth answer held it.
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
-	if e.Code != "" {
-		s += " " + e.Code
+	if e.Code != "" && !e.withheld {
+		s += " " + redact.OneLine(e.Code)
 	}
 	if e.Message != "" {
-		s += ": " + e.Message
+		s += ": " + redact.OneLine(e.Message)
 	}
 	return s
+}
+
+// says reports whether the broker's words hold phrase. A BrokerError do did not make (an OAuth
+// refusal, oauthBrokerError) holds none, and says nothing.
+func (e *BrokerError) says(phrase string) bool {
+	return e.said != nil && strings.Contains(*e.said, phrase)
 }
 
 // readOperator reads OperatorFile, trimmed, per call: it names the login_hint for a machine
@@ -290,19 +326,20 @@ func (b *Broker) oauthConfig() *oauth2.Config {
 	return &oauth2.Config{
 		ClientID: oauthwire.ClientID, Scopes: []string{oauthwire.Scope},
 		Endpoint: oauth2.Endpoint{
-			DeviceAuthURL: b.URL + "/v1/oauth/device_authorization",
-			TokenURL:      b.URL + "/v1/oauth/token",
+			DeviceAuthURL: b.URL.Raw() + "/v1/oauth/device_authorization",
+			TokenURL:      b.URL.Raw() + "/v1/oauth/token",
 			AuthStyle:     oauth2.AuthStyleInParams,
 		},
 	}
 }
 
-// httpClient is b.HTTP, or http.DefaultClient when it is nil, as net/http reads a nil client.
+// httpClient is b.HTTP, or http.DefaultClient when it is nil, as net/http reads a nil client, with
+// redirects refused (redirects.Refused): every call the helper makes to the broker carries a
+// proof, a request object, a device code or a refresh token, and a 3xx answered for the broker
+// must not hand any of them to a host the deployment never named. It is a copy of its own each
+// call, so the caller may change it.
 func (b *Broker) httpClient() *http.Client {
-	if b.HTTP == nil {
-		return http.DefaultClient
-	}
-	return b.HTTP
+	return redirects.Refused(cmp.Or(b.HTTP, http.DefaultClient))
 }
 
 // baseTransport is httpClient's transport, or http.DefaultTransport when it is nil, as net/http
@@ -335,18 +372,33 @@ func (t contextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // tokenContext is ctx carrying the client x/oauth2 sends token requests with: b.HTTP's transport
-// and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires.
+// and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires,
+// and with redirects refused, as httpClient's are.
 func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) context.Context {
-	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: brokerclient.NewDPoPTransport(key, b.baseTransport()), Timeout: b.httpClient().Timeout})
+	client := b.httpClient()
+	client.Transport = brokerclient.NewDPoPTransport(key, b.baseTransport())
+	return context.WithValue(ctx, oauth2.HTTPClient, client)
 }
 
-// oauthBrokerError is err as a BrokerError when the broker answered it with an OAuth error: the
-// device authorization endpoint's own refusals (invalid_request, described "<CODE>: <message>")
-// carry the broker's code and message, any other OAuth error its error code and description.
-func oauthBrokerError(err error) error {
+// oauthBrokerError is err, from an OAuth call to the broker at addr, as a message may print it
+// (addr.Error), and as a BrokerError when the broker answered it with an OAuth error the redactor
+// printed whole: the device authorization endpoint's own refusals (invalid_request, described
+// "<CODE>: <message>") carry the broker's code and message, any other OAuth error its error code
+// and description.
+//
+// An answer the redactor did not print whole - every answer beside an address that carries a
+// credential, which the broker or anyone answering for it can repeat back - stays as it printed
+// it, the failure's class and status: the code and description under it are the very text it
+// withheld, and a BrokerError made of them would print them all the same. The redactor printed
+// the answer whole exactly when its Cause, which is what it prints of the failure without a call's
+// operation and URL, is the answer's own text. That holds under a caller's %w too, whose words it
+// drops while it still prints the answer, which is why this asks the text and not whether Error
+// answered err itself.
+func oauthBrokerError(err error, addr brokeraddr.Address) error {
+	shown := addr.Error(err)
 	var re *oauth2.RetrieveError
-	if !errors.As(err, &re) {
-		return err
+	if !errors.As(err, &re) || addr.Cause(err).Error() != re.Error() {
+		return shown
 	}
 	be := &BrokerError{Code: re.ErrorCode, Message: re.ErrorDescription}
 	if re.Response != nil {
@@ -403,7 +455,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 		return "", err
 	}
 	details := []record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: hostname}}
-	compact, err := record.Sign(key, b.URL, details, "", operator, nil, time.Now())
+	compact, err := record.Sign(key, b.URL.Raw(), details, "", operator, nil, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -412,7 +464,7 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	da, err := cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.contextClient(ctx)),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint))
 	if err != nil {
-		return "", reach.settle(oauthBrokerError(redact.Error(err, b.URL)))
+		return "", reach.settle(oauthBrokerError(err, b.URL))
 	}
 	if da.DeviceCode == "" || da.UserCode == "" {
 		return "", reach.settle(errors.New("broker returned no device_code/user_code"))
@@ -573,7 +625,7 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 		b.credMu.Unlock()
 	}
 	if err != nil {
-		b.logger().Error("machine login approved, but the helper could not keep it; run: agent-secrets machine login again", "error", err)
+		b.logger().Error("machine login approved, but the helper could not keep it; "+brokerclient.Hint(brokerclient.FailureNoMachineLogin), "error", err)
 		b.recordLogin(&loginState{Code: code, State: "expired"})
 		return
 	}
@@ -591,7 +643,7 @@ func (b *Broker) keepLogin(key *ecdsa.PrivateKey, tok *oauth2.Token, code, opera
 // It is best effort: a failure is logged at WARN, never retried, and changes nothing the helper
 // holds.
 func (b *Broker) retireReplaced(old *machineCredential) {
-	url := b.URL + "/v1/operator/machines/" + old.id + "/retire"
+	url := b.URL.Raw() + "/v1/operator/machines/" + old.id + "/retire"
 	err := func() error {
 		compact, err := proof.SignLauncher(old.key, old.id, http.MethodPost, url, time.Now())
 		if err != nil {
@@ -599,7 +651,7 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 		}
 		req, err := http.NewRequest(http.MethodPost, url, nil)
 		if err != nil {
-			return redact.Error(err, b.URL)
+			return b.URL.Error(err)
 		}
 		req.Header.Set("Proof", compact)
 		return b.do(req, []int{http.StatusNoContent}, nil)
@@ -678,6 +730,14 @@ func (b *Broker) Start(ctx context.Context) error {
 	return nil
 }
 
+// errAnswerLacksCredential stops startIdentity's trade loop: the broker served a token, but no
+// launcher credential to enrol sessions with. It describes the answer, not the helper, which may
+// still hold the credential an earlier trade gave it. It names no URL, so a log line prints it as
+// it is.
+var errAnswerLacksCredential = fmt.Errorf("the broker's token answer carries no %s or RFC 3339 %s, so it gives this machine no launcher credential", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
+
+const identityShutdownLine = "the helper stopped trading this machine's identity: it is shutting down"
+
 // startIdentity is Start for a machine that proves an identity of its own: the token client
 // trades it for one of the broker's access tokens, whose launcher credential the helper then
 // enrolls sessions with, and keeps trading before each one lapses (brokerclient.Client.Run) until
@@ -697,7 +757,7 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 	go func() {
 		err := b.Identity.Run(ctx, func(_ context.Context, token *brokerclient.Token) error {
 			if token.CredentialID == "" || token.CredentialExpiresAt.IsZero() {
-				return fmt.Errorf("the broker's token answer lacks a %s or an RFC 3339 %s, so this machine has no launcher credential to enrol sessions with", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
+				return errAnswerLacksCredential
 			}
 			cred := &machineCredential{key: b.Identity.Key(), id: token.CredentialID, expiresAt: token.CredentialExpiresAt.UTC(), gone: make(chan struct{})}
 			b.credMu.Lock()
@@ -709,7 +769,16 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 			return nil
 		})
 		if err != nil {
-			b.logger().Error("the helper stopped trading this machine's identity; it enrols no session until this is fixed", "error", redact.Error(err, b.URL))
+			b.identityStopped.Store(true)
+			// The answer that lacks a credential is this helper's own words, naming no URL, so it
+			// is logged as it stands; a refusal, or a failure of the call, is redacted.
+			reason := b.URL.Error(err)
+			if errors.Is(err, errAnswerLacksCredential) {
+				reason = err
+			}
+			b.logger().Error("the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols under this machine's credential once that lapses, until the helper restarts", "error", reason)
+		} else {
+			b.logger().Info(identityShutdownLine)
 		}
 		once.Do(func() { close(first) })
 	}()
@@ -806,9 +875,10 @@ func (b *Broker) Close() {
 
 // Logged when a rotated login's save fails: the file was removed (unsavedRemovedMsg), or the
 // filesystem refused even that (unsavedStuckMsg).
-const (
-	unsavedRemovedMsg = "the helper could not keep the machine login's refresh on disk; removed the machine file, which named a token the broker has rotated away: the login is held only in memory, the helper retries only the save every 15 s, and a restart before a save lands needs a new approval (run: agent-secrets machine login)"
-	unsavedStuckMsg   = "the helper could not keep the machine login's refresh on disk, nor remove the machine file: a restart before the disk is writable again presents a token the broker has rotated away, and the broker revokes the machine as a reuse, ending its sessions; make the disk writable, and do not restart the helper until then"
+var (
+	unsavedRemovedMsg = "the helper could not keep the machine login's refresh on disk; removed the machine file, which named a token the broker has rotated away: the login is held only in memory, the helper retries only the save every 15 s, and a restart before a save lands needs a new approval; " +
+		brokerclient.Hint(brokerclient.FailureNoMachineLogin)
+	unsavedStuckMsg = "the helper could not keep the machine login's refresh on disk, nor remove the machine file: a restart before the disk is writable again presents a token the broker has rotated away, and the broker revokes the machine as a reuse, ending its sessions; make the disk writable, and do not restart the helper until then"
 )
 
 // unsaveFile records cred, the held login whose save just failed with err, as unsaved, and
@@ -970,7 +1040,7 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 	tok, err := b.oauthConfig().TokenSource(b.tokenContext(ctx, cred.key),
 		&oauth2.Token{RefreshToken: cred.refreshToken, Expiry: time.Unix(1, 0)}).Token()
 	if err != nil {
-		err = redact.Error(err, b.URL)
+		err = b.URL.Error(err)
 		var re *oauth2.RetrieveError
 		switch {
 		case errors.As(err, &re) && re.Response != nil && re.Response.StatusCode == http.StatusTooManyRequests:
@@ -1103,8 +1173,9 @@ func (b *Broker) settleRefused(ctx context.Context, cred *machineCredential) err
 // watchExpiry warns a day (expiryWarning) before cred lapses, at once when less than that is left,
 // and drops cred when it reaches its expiry (dropExpired), as a broker refusal would: the login
 // renews itself only while a refresh reaches the broker, and from then on no session can enroll
-// until a human approves a new machine login. It ends early, silently, once the helper stops
-// holding cred (a refusal, a refresh, or a newer login).
+// under this machine's credential until a human approves a new machine login (a person signed in
+// on the machine still enrols under their own sign-in). It ends early, silently, once the helper
+// stops holding cred (a refusal, a refresh, or a newer login).
 //
 // In identity mode there is no warning at all, only the drop. The credential this machine's
 // identity token trades for lives as long as that token, which Google bounds at an hour, so a
@@ -1187,7 +1258,9 @@ func (b *Broker) dropOutsideRefresh(ctx context.Context, cred *machineCredential
 }
 
 // expiresSoonMsg is the WARN watchExpiry logs a day before the held credential lapses.
-const expiresSoonMsg = "the launcher credential lapses soon: no refresh has moved its expiry; the machine login renews itself while the helper reaches the broker, otherwise run: agent-secrets machine login, and have a human approve it"
+// It is logged in machine-login mode alone: in identity mode watchExpiry warns of nothing.
+var expiresSoonMsg = "the launcher credential lapses soon: no refresh has moved its expiry; the machine login renews itself while the helper reaches the broker, otherwise " +
+	brokerclient.Hint(brokerclient.FailureNoMachineLogin)
 
 // enrollBody is POST /v1/enrollments's shape in the shared broker contract (the v8 "approver"
 // field is gone: the broker's policy picks a request's approver, never the enrollment).
@@ -1215,7 +1288,7 @@ type leaseReply struct {
 func (b *Broker) launcherProof(method, url string) (string, *machineCredential, error) {
 	cred := b.cred.Load()
 	if cred == nil {
-		return "", nil, errNoCredential
+		return "", nil, b.noCredential()
 	}
 	compact, err := proof.SignLauncher(cred.key, cred.id, method, url, time.Now())
 	return compact, cred, err
@@ -1269,7 +1342,7 @@ func (b *Broker) clearOnInvalid(ctx context.Context, cred *machineCredential, er
 	if !dropped && held {
 		return err
 	}
-	return errNoCredential
+	return b.noCredential()
 }
 
 // drop stops holding cred, if the helper still does, records why, logs at ERROR that it did,
@@ -1297,9 +1370,12 @@ func (b *Broker) drop(cred *machineCredential, why string, attrs ...any) bool {
 		return false
 	}
 	close(cred.gone)
-	b.logger().Error(why+"; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)",
-		append([]any{"credential_id", cred.id}, attrs...)...)
+	b.logger().Error(why+"; cleared: "+b.dropLeaves(), append([]any{"credential_id", cred.id}, attrs...)...)
 	return true
+}
+
+func (b *Broker) dropLeaves() string {
+	return "no session can enroll under this machine's credential; " + brokerclient.Hint(b.noCredentialFailure())
 }
 
 // logger is b.Log, or a logger that writes nowhere when there is none.
@@ -1379,7 +1455,7 @@ func (b *Broker) signingAuthority(ctx context.Context) (*brokerclient.Authority,
 	}
 	cred := b.cred.Load()
 	if cred == nil {
-		return nil, nil, errNoCredential
+		return nil, nil, b.noCredential()
 	}
 	return &brokerclient.Authority{Key: cred.key, CredentialID: cred.id}, cred, nil
 }
@@ -1447,7 +1523,7 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Authority, cred *machineCredential,
 	kind, runtimeID, thumbprint string, sessionID *string,
 ) (string, time.Time, error) {
-	url := b.URL + "/v1/enrollments"
+	url := b.URL.Raw() + "/v1/enrollments"
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodPost, url, time.Now())
 	if err != nil {
 		return "", time.Time{}, err
@@ -1463,7 +1539,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Author
 	ctx, reach := traceReach(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", time.Time{}, redact.Error(err, b.URL)
+		return "", time.Time{}, b.URL.Error(err)
 	}
 	req.Header.Set("Proof", compact)
 	req.Header.Set("Content-Type", "application/json")
@@ -1507,14 +1583,14 @@ func (b *Broker) Renew(ctx context.Context, s *Session) (time.Time, identity, er
 // that back would tell it nothing it does not have.
 func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, error) {
 	id := cur.EnrollmentID
-	url := b.URL + "/v1/enrollments/" + id + "/renew"
+	url := b.URL.Raw() + "/v1/enrollments/" + id + "/renew"
 	compact, err := proof.Sign(cur.Key, id, http.MethodPost, url, time.Now())
 	if err != nil {
 		return time.Time{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
-		return time.Time{}, redact.Error(err, b.URL)
+		return time.Time{}, b.URL.Error(err)
 	}
 	req.Header.Set("Proof", compact)
 	var out leaseReply
@@ -1555,7 +1631,7 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 // settled as known or unknown (requestReach.settle) before anything else reads it, so Revoke's
 // retry after a 403, a known refusal, never follows an unknown outcome.
 func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Authority, cred *machineCredential, enrollmentID string) error {
-	url := b.URL + "/v1/enrollments/" + enrollmentID
+	url := b.URL.Raw() + "/v1/enrollments/" + enrollmentID
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodDelete, url, time.Now())
 	if err != nil {
 		return err
@@ -1563,7 +1639,7 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	ctx, reach := traceReach(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
-		return redact.Error(err, b.URL)
+		return b.URL.Error(err)
 	}
 	req.Header.Set("Proof", compact)
 	if err := b.do(req, []int{http.StatusNoContent, http.StatusNotFound}, nil); err != nil {
@@ -1576,17 +1652,22 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	return nil
 }
 
-// do sends req and decodes the broker's answer. A failed exchange goes through redact.Error, so
-// no message or log line the helper makes from it carries a credential AGENT_SECRETS_URL holds.
+// do sends req and decodes the broker's answer. A failed exchange - the request, or the read of
+// its answer - goes through the address's Error (brokeraddr.Address.Error). A refusal is a
+// BrokerError with the answer's status and code, which the helper acts on, and with the broker's
+// own words (the answer's error) as the address lets them print (brokeraddr.Address.Words):
+// beside an address that is not clean, the broker, or whoever answers for that address, can
+// repeat the credential back in any text of its answer, so the refusal prints as its status alone
+// (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs.
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	resp, err := b.httpClient().Do(req)
 	if err != nil {
-		return redact.Error(err, b.URL)
+		return b.URL.Error(err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return b.URL.Error(err)
 	}
 	if !slices.Contains(ok, resp.StatusCode) {
 		var e struct {
@@ -1594,7 +1675,7 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		return &BrokerError{Status: resp.StatusCode, Code: e.Code, Message: e.Error}
+		return &BrokerError{Status: resp.StatusCode, Code: e.Code, Message: b.URL.Words(e.Error), said: &e.Error, withheld: !b.URL.Clean()}
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)

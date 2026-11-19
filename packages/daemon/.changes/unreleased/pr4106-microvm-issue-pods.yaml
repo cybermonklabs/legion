@@ -1,0 +1,31 @@
+kind: Added
+custom:
+  Issue: pr4106
+body: |-
+  A project's issue pods can run in GKE Sandbox microVMs instead of gVisor. Set
+  `runtime.kubernetes.sandbox`: `type` (`gvisor`, the default, or `microvm`), `canary_issues`
+  (issue keys whose pods run in the other sandbox), and `microvm` with the `compute_class` the
+  microVM pods run on, the `storage_class` of their workspace volume, and an optional `metadata`
+  block. A microVM pod runs under the `microvm` RuntimeClass, selects and tolerates its
+  ComputeClass in place of any class `scheduling.node_selector` names, and carries the label
+  `legion.dev/sandbox: microvm`; the controller's pod, the repository cache pods and the image
+  probe stay in gVisor. A change of an issue's sandbox, or of the microVM block, opens an update
+  round on each pod it moves and on no other.
+  In a microVM pod the gVisor memory guard is off. The launcher instead raises every command a
+  role runs to `oom_score_adj` 1000, so in a `Guaranteed` issue pod (each request of
+  `runtime.kubernetes.resources.issue` equal to its limit) the pod's own kernel stops a command and
+  not Oh My Pi; in a `Burstable` pod it can stop an agent that is larger than the command by more
+  than `memory request / node memory` of the pod's limit. The launcher names a process the kernel killed in
+  the guard's `ended` line only while that process shows SIGKILL pending, which it reads at each
+  file-modified event of the cgroup's `memory.events` and at a scan every 100 ms, and the role is
+  told; a note of its own says when the process was one that runs the role's session. A kill no
+  process shows has a `killed unnamed` line with the pod's memory, and no role is told. A pod that sets
+  `workload-identity-token` as a `runtime.kubernetes.pod.volumes` name is now refused: that name is
+  Legion's own, as the other names it puts in every pod are. A `runtime.kubernetes.agent_secrets`
+  `audience` or `exchange_audience` equal to `microvm.metadata.workload_pool` is refused too while an
+  issue pod runs in a microVM with `metadata` set: the cluster projects one volume per audience. The
+  launcher also logs the guest's memory once an hour (`launcher: guest memory: hour ...`).
+  With `microvm.metadata` set, the launcher serves the metadata server's paths for the pod's own
+  account at `127.0.0.1:8169`, from the pod's projected token exchanged at Google's Security Token
+  Service, and sets `GCE_METADATA_HOST` and `GCE_METADATA_IP` on every role. Daemon API
+  contract 151.

@@ -23,8 +23,8 @@ import (
 func TestPriorityHistory(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
+	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	// The window every act of this test was written in, a minute either side of it, which is
 	// what each act's moment is read against.
 	opened := time.Now().UTC().Add(-time.Minute)

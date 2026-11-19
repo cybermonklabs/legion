@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // githubPageAttempts bounds how many times one list/search page is asked for before the step
@@ -50,36 +51,43 @@ var githubPageRetryWait = time.Second
 // can outlast a fresh token's hour too. An ask the cache answers costs no GitHub call. A read of
 // one or two requests (FetchWorkflowRun, FetchPullRequest) takes one token, which lasts it: two
 // requests take at most about two minutes.
+//
+// Each try runs in a held scope of the pass's attempt (githubreads.Hold): the failures the client
+// notes on a try asked again are dropped, since the page's outcome is the try it returns, and that
+// try's notes are kept. A page GitHub answers 502 once and then reads is no failure of the pass,
+// and one it answers 502 every try is the last try's 502.
 func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path string) (body []byte, status int, header http.Header, attempts int, err error) {
 	for attempts = 1; ; attempts++ {
-		body, status, header, err = client.Read(ctx, token, path)
-		if !retryGitHubPage(ctx, attempts, status, err) {
-			if err == nil {
-				if limited := githubapp.RateLimit(status, header, body); limited != nil {
-					limited.Scope = client.TokenScope(token)
-					return body, status, header, attempts, limited
-				}
+		asked, held := githubreads.Hold(ctx)
+		body, status, header, err = client.Read(asked, token, path)
+		if retryGitHubPage(ctx, attempts, status, err) && waitBeforeRetry(ctx, attempts) == nil {
+			held.Drop()
+			continue
+		}
+		held.Keep()
+		if err == nil {
+			if limited := githubapp.RateLimit(status, header, body); limited != nil {
+				limited.Scope = client.TokenScope(token)
+				return body, status, header, attempts, limited
 			}
-			return body, status, header, attempts, err
 		}
-		if waitErr := waitBeforeRetry(ctx, attempts); waitErr != nil {
-			return body, status, header, attempts, err
-		}
+		return body, status, header, attempts, err
 	}
 }
 
-// queryGitHubPage is readGitHubPage for one GraphQL search page: the same bounded retry, and the
-// same count of attempts. A GraphQL query is a read however GitHub spells it, so retrying one
-// repeats nothing.
+// queryGitHubPage is readGitHubPage for one GraphQL search page: the same bounded retry, the same
+// count of attempts, and each try held the same way. A GraphQL query is a read however GitHub
+// spells it, so retrying one repeats nothing.
 func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query string, variables map[string]any) (body []byte, status int, header http.Header, attempts int, err error) {
 	for attempts = 1; ; attempts++ {
-		body, status, header, err = client.GraphQL(ctx, token, query, variables)
-		if !retryGitHubPage(ctx, attempts, status, err) {
-			return body, status, header, attempts, err
+		asked, held := githubreads.Hold(ctx)
+		body, status, header, err = client.GraphQL(asked, token, query, variables)
+		if retryGitHubPage(ctx, attempts, status, err) && waitBeforeRetry(ctx, attempts) == nil {
+			held.Drop()
+			continue
 		}
-		if waitErr := waitBeforeRetry(ctx, attempts); waitErr != nil {
-			return body, status, header, attempts, err
-		}
+		held.Keep()
+		return body, status, header, attempts, err
 	}
 }
 

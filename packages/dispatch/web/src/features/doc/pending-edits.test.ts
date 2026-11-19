@@ -1,6 +1,7 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import * as Y from "yjs";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import {
   deletePendingEdits,
   openPendingEdits,
@@ -197,7 +198,7 @@ test("an IndexedDB that throws on open leaves the browser keeping no edits, and 
       throw new DOMException("The user denied permission.", "SecurityError");
     },
   };
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: refusing });
   try {
     expect(await openPendingEdits(artifactId(), 1)).toBeUndefined();

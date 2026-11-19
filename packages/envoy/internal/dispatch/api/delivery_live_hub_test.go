@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -50,6 +52,15 @@ func newHubRig(t *testing.T, configure func(*deliveryHub)) *hubRig {
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	return hubOn(t, handler, database, deps, newNoonHubClock(), configure)
+}
+
+// notifyChannel sends one notification on channel, as a trigger's commit does: the hub hears it
+// on the connection its listener holds (pglisten.Listener).
+func notifyChannel(t *testing.T, database *store.Store, channel, payload string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `select pg_notify($1, $2)`, channel, payload); err != nil {
+		t.Fatalf("pg_notify(%q, %q): %v", channel, payload, err)
+	}
 }
 
 // newClockedHubRig is newHubRig on a clock the test moves.
@@ -631,9 +642,26 @@ func getBody(t *testing.T, handler http.Handler, target string) json.RawMessage 
 	return json.RawMessage(response.Body.Bytes())
 }
 
-// windowTarget is the GET route of kind for the window a body answered.
+// windowTarget is the GET route of kind for what a body answered, built of what that route reads.
+// A timeline or measures body names its window, and query is the rest of what its route reads; a
+// legion body names its project, and its route reads its path alone, so it takes no query. A
+// pipeline body can name neither: its route reads `at` and nothing else, and the body's days carry
+// only at's UTC day while its failing-jobs table looks 24 hours back from at itself, so query is
+// the view's own `at=`, and a call without one fails rather than read the present on both sides.
 func windowTarget(t *testing.T, kind string, body json.RawMessage, query string) string {
 	t.Helper()
+	switch kind {
+	case legionBoardView:
+		if query != "" {
+			t.Fatalf("the board's route reads its path alone, so query %q would be read by nothing", query)
+		}
+		return "/api/v1/projects/" + legionBodyProject(t, body) + "/legion/board"
+	case deliveryLivePipeline:
+		if values, err := url.ParseQuery(query); err != nil || len(values) != 1 || values.Get("at") == "" {
+			t.Fatalf("the pipeline route reads at alone and a pipeline body names none, so query must be the view's at=, not %q", query)
+		}
+		return "/api/v1/delivery/pipeline?" + query
+	}
 	var shape struct {
 		Window delivery.DeliveryWindowView `json:"window"`
 	}
@@ -909,8 +937,27 @@ func TestResumeWithRevsGetsOnlyWhatChanged(t *testing.T) {
 	requireLandsOnGET(t, handler, deliveryLiveTimeline, snapshot.Body, delta, "")
 }
 
+// The hub's cursor decides where the first subscribe's snapshot stands, and nothing of the hub
+// runs until that subscribe starts its generation (deliveryHub.Subscribe), so the cursor is read
+// after the prune below and stands on a kept change, with no catch-up racing it (INFRA-1077). A
+// catch-up that found its own cursor row gone would read the log as reset (catchUpChanges); a
+// recompute that read across a reset keeps no change position (recompute); and the snapshot would
+// then stand at 0, before the oldest kept change, so the second resume below would be answered
+// with a snapshot of its own rather than with the nothing this test is about. The listener here
+// reaches no connection, so every catch-up is this test's own, and one of them runs inside the
+// first recompute's read, which is the order CI took.
 func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
-	rig := newHubRig(t, nil)
+	var drove sync.Once
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		hub.dial = func(context.Context) (*pgx.Conn, error) { return nil, context.DeadlineExceeded }
+		observe := hub.observe
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			if note.what == "recompute position" {
+				drove.Do(hub.catchUpNow)
+			}
+		}
+	})
 	seedHubSettings(t, rig.database)
 	now := rig.clock.Now()
 	for n := 1; n <= 3; n++ {
@@ -934,7 +981,16 @@ func TestResumeFromBeforeTheKeptDayGetsASnapshot(t *testing.T) {
 	requireSameBody(t, "a resume from before the kept day", snapshot.Body, getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, snapshot.Body, "")))
 
 	// A resume from a kept change answers the delta, here none, since the view's body reflects that
-	// change; the verdict the hub knows follows all the same.
+	// change; the verdict the hub knows follows all the same. The snapshot stands on a kept change,
+	// or the resume from it is the case above once more and says nothing about this one.
+	oldest, err := delivery.OldestChangeSeq(t.Context(), rig.database.Pool)
+	if err != nil {
+		t.Fatalf("read the oldest kept change: %v", err)
+	}
+	if seq, err := strconv.ParseInt(snapshot.Seq, 10, 64); err != nil || seq < oldest {
+		t.Fatalf("the snapshot stands at change %q, want one the log still keeps (from %d)", snapshot.Seq, oldest)
+	}
+
 	kept := newFakeLiveConn()
 	frame.Sub, frame.Resume = "u", &DeliveryLiveResume{Seq: snapshot.Seq, Revs: snapshot.Revs}
 	rig.hub.Subscribe(kept, frame)
@@ -2298,11 +2354,10 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 		view  DeliveryLiveView
 		kind  string
 		query string
-		get   string
 	}{
 		{sub: "timeline", view: timelineRange(from, to, "author=octocat"), kind: deliveryLiveTimeline, query: "author=octocat"},
 		{sub: "measures", view: measuresRange(from, to, ""), kind: deliveryLiveMeasures},
-		{sub: "pipeline", view: livePipelineView(&at), get: "/api/v1/delivery/pipeline?at=" + at.Format(time.RFC3339)},
+		{sub: "pipeline", view: livePipelineView(&at), kind: deliveryLivePipeline, query: "at=" + at.Format(time.RFC3339Nano)},
 		{sub: "preset", view: presetView(deliveryLiveTimeline, 7, ""), kind: deliveryLiveTimeline},
 	} {
 		rig.hub.Subscribe(conn, subscribeFrame(test.sub, test.view))
@@ -2312,11 +2367,7 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 			// followed by it.
 			conn.freshness(t, time.Second, "the verdict after the snapshot of "+test.sub)
 		}
-		target := test.get
-		if target == "" {
-			target = windowTarget(t, test.kind, snapshot.Body, test.query)
-		}
-		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, target))
+		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, windowTarget(t, test.kind, snapshot.Body, test.query)))
 		if snapshot.Seq == "" || len(snapshot.Revs.Fields) == 0 {
 			t.Fatalf("%s snapshot seq = %q, revs = %+v; want its change position and every revision", test.sub, snapshot.Seq, snapshot.Revs)
 		}
@@ -2609,4 +2660,128 @@ func TestNotConfiguredIsAnErrorFrameThenASnapshotOnceConfigured(t *testing.T) {
 	seedHubSettings(t, rig.database)
 	snapshot := conn.snapshot(t, 5*time.Second, "p")
 	requireSameBody(t, "the first snapshot once configured", snapshot.Body, getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, snapshot.Body, "")))
+}
+
+// legionView is a subscribe frame's view for the Legion board of project.
+func legionView(project string) DeliveryLiveView {
+	return DeliveryLiveView{Kind: legionBoardView, Project: &project}
+}
+
+// legionBodyProject is the project a Legion board body names, which is the whole of what its GET
+// route reads.
+func legionBodyProject(t *testing.T, body json.RawMessage) string {
+	t.Helper()
+	var shape struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal(body, &shape); err != nil {
+		t.Fatalf("read the board body's project: %v", err)
+	}
+	return shape.Project
+}
+
+// TestALegionBoardsSnapshotAndDeltasLandOnItsGET: the fourth view kind holds the hub's own rule —
+// the snapshot plus every delta a page applies is the GET route's body — through a read of the
+// daemon the sampler announces (legion.StateChannel) and through a write of one of the board's
+// issues, the two things that move it.
+func TestALegionBoardsSnapshotAndDeltasLandOnItsGET(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	seedLegionBoard(t, rig.database, "INFRA", rig.clock.Now())
+
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
+	snapshot := conn.snapshot(t, 5*time.Second, "b")
+	requireSameBody(t, "the board's first snapshot", snapshot.Body,
+		getBody(t, rig.handler, windowTarget(t, legionBoardView, snapshot.Body, "")))
+
+	// The sampler's next read finds the implementer's child in review, with no role in a turn.
+	held := snapshot.Body
+	now := rig.clock.Now()
+	seedLegionObservation(t, rig.database, "INFRA", "INFRA-4", legion.FieldPhase, `"reviewing"`, now)
+	seedLegionObservation(t, rig.database, "INFRA", "INFRA-4", legion.ClaimFieldPrefix+"implementer", `"idle"`, now)
+	seedLegionRead(t, rig.database, "INFRA", now, "")
+	notifyChannel(t, rig.database, legion.StateChannel, "INFRA")
+	held = requireLandsOnGET(t, rig.handler, legionBoardView, held, conn.delta(t, 5*time.Second, "b"), "")
+
+	// A title Dispatch itself rewrites moves the card it is on, through the event log. Its event
+	// reaches the hub on the relay's feed, which stands behind the event horizon (eventDelta).
+	patched := dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/INFRA-4",
+		map[string]any{"title": "The reviewer's child"}, "alice")
+	if patched.Code != http.StatusOK {
+		t.Fatalf("retitle the card's issue: status=%d body=%s", patched.Code, patched.Body.String())
+	}
+	held = requireLandsOnGET(t, rig.handler, legionBoardView, held, conn.eventDelta(t, rig.database, "b"), "")
+	if !strings.Contains(string(held), "The reviewer's child") {
+		t.Fatalf("the board a page holds after the deltas does not carry the new title: %s", held)
+	}
+}
+
+// TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce: a view of a project that names no daemon is
+// told LEGION_NOT_CONFIGURED once and stays open, as a delivery view with no settings is.
+func TestALegionBoardOfAProjectWithNoDaemonIsRefusedOnce(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("INFRA")))
+	conn.refusal(t, 5*time.Second, "b", "LEGION_NOT_CONFIGURED")
+	conn.none(t, time.Second, "the refusal of a project with no daemon")
+}
+
+// TestALegionBoardOfAProjectThatDoesNotExistIsRefusedAsTheRouteRefusesIt: a view of a project
+// that does not exist is told what GET /api/v1/projects/{key}/legion/board answers it,
+// loadProject's PROJECT_NOT_FOUND with its words, once, rather than LEGION_NOT_CONFIGURED: what is
+// missing is the project, not its daemon.
+func TestALegionBoardOfAProjectThatDoesNotExistIsRefusedAsTheRouteRefusesIt(t *testing.T) {
+	rig := newHubRig(t, nil)
+	routed := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/projects/NOPE/legion/board", nil, "alice")
+	answer := decodeBody[refusalAnswer](t, routed)
+	if routed.Code != http.StatusNotFound || answer.Code != "PROJECT_NOT_FOUND" {
+		t.Fatalf("GET the board of NOPE: status=%d body=%s, want 404 PROJECT_NOT_FOUND", routed.Code, routed.Body.String())
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("b", legionView("NOPE")))
+	if refusal := conn.refusal(t, 5*time.Second, "b", answer.Code); refusal.Message != answer.Error {
+		t.Errorf("the refusal's message = %q, want the board route's %q", refusal.Message, answer.Error)
+	}
+	conn.none(t, time.Second, "the refusal of a project that does not exist")
+}
+
+// TestALegionViewNamesItsProjectAndNothingElse: the kind's shape is held where every other kind's
+// is, so a frame of another kind's shape is refused before anything is subscribed. A badly spelled
+// project is refused as GET /api/v1/projects/{key}/legion/board refuses it, INVALID_PROJECT and its
+// words alike, so the two doors to one board name one refusal.
+func TestALegionViewNamesItsProjectAndNothingElse(t *testing.T) {
+	window := DeliveryLiveWindow{Preset: new(7)}
+	project := "INFRA"
+	for _, refused := range []struct {
+		what string
+		view DeliveryLiveView
+	}{
+		{"a legion view with no project", DeliveryLiveView{Kind: legionBoardView}},
+		{"a legion view with a window", DeliveryLiveView{Kind: legionBoardView, Project: &project, Window: &window}},
+		{"a timeline view with a project", DeliveryLiveView{Kind: deliveryLiveTimeline, Window: &window, Project: &project}},
+	} {
+		if _, refusal := parseDeliveryLiveView(refused.view); refusal == nil || refusal.Code != "INVALID_FRAME" {
+			t.Errorf("%s: refusal = %+v, want INVALID_FRAME", refused.what, refusal)
+		}
+	}
+	notAKey := "infra"
+	routed := dispatchRequest(t, newTestHandler(t), http.MethodGet, "/api/v1/projects/"+notAKey+"/legion/board", nil, "alice")
+	answer := decodeBody[refusalAnswer](t, routed)
+	if routed.Code != http.StatusBadRequest || answer.Code != "INVALID_PROJECT" {
+		t.Fatalf("GET the board of %q: status=%d body=%s, want 400 INVALID_PROJECT", notAKey, routed.Code, routed.Body.String())
+	}
+	_, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: legionBoardView, Project: &notAKey})
+	if refusal == nil || refusal.Code != answer.Code || refusal.Message != answer.Error {
+		t.Errorf("a legion view of %q: refusal = %+v, want the board route's %+v", notAKey, refusal, answer)
+	}
+	spec, refusal := parseDeliveryLiveView(legionView("INFRA"))
+	if refusal != nil {
+		t.Fatalf("a legion view of INFRA: %+v", refusal)
+	}
+	if spec.project != "INFRA" || spec.key != "legion|INFRA|" {
+		t.Fatalf("the spec = %+v, want the project it names and a key of its own", spec)
+	}
 }

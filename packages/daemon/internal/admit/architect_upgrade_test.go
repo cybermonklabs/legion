@@ -2,9 +2,7 @@ package admit
 
 import (
 	"context"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -435,9 +434,10 @@ func embeddedMigration(t *testing.T, version int) string {
 
 // wayBackHeredoc and wayBackTerminator open and close a way back in a migration's header: a psql
 // heredoc whose lines are the one transaction an operator runs, begin and commit included. They
-// are the headers' own lines — the phase entry's (20261111225552_phase_entry.up.sql), and the one
-// this migration's header and 20261113181500_architect_stalled_notices.up.sql's both carry — and
-// internal/daemon's upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
+// are the headers' own lines — the phase entry's (20261111225552_phase_entry.up.sql), the one
+// this migration's header and 20261113181500_architect_stalled_notices.up.sql's both carry, and
+// the reviewed commit's (20261116234034_phase_reviewed_head.up.sql) — and internal/daemon's
+// upgrade_phase_entry_way_back_test.go reads the phase entry's the same way.
 const (
 	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
@@ -494,48 +494,43 @@ const (
 	entryVerbatimVersion  = 20261114061900
 )
 
-// wayBackVersionDelete is one statement of a way back that deletes a version row, the form each
-// block of a migration's header writes it in.
-var wayBackVersionDelete = regexp.MustCompile(`(?m)^delete from schema_version where version = (\d+);$`)
+// wayBackVersions is every version the two ways back delete: this migration's block deletes its
+// own, the marks' table's, the handshake's and the mark's, and the phase entry's block deletes its
+// own. Written here, not read from the blocks' text, so a block that stops deleting one of them
+// fails the test rather than moving what it expects.
+var wayBackVersions = []int{architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
 
-// leftStandingVersion is the version the store reports once the ways back have run: the highest
-// embedded migration (migrations.All) whose version row none of them deletes, each deleted row
-// read from the block's own statements. It is computed rather than written down because every
-// migration added later that no block touches stands above the last one that did, as
-// docs/kubernetes.md says of a migration added after the blocks: written down, it was the newest
-// migration of the day it was written, and the next migration made it false. A block that deletes
-// no version row fails the test, since the ways back would then have nothing to say about the
-// version, and so would this.
-func leftStandingVersion(t *testing.T, wayBacks ...string) int {
+// leftStanding is every version the schema_version table records once the ways back have run,
+// ascending: each embedded migration but wayBackVersions. It is computed from the migrations the
+// binary ships rather than written here: a number written here was true only until the next
+// migration landed above these, which neither block deletes (20261114031356_merge_queue_removal
+// when #3711 wrote it, 20261116144907_claim_sessions after #4220), and the
+// highest version alone cannot see the deletes at all once one such migration stands above them,
+// so the test reads every version.
+func leftStanding(t *testing.T) []int {
 	t.Helper()
-	deleted := map[int]bool{}
-	for _, wayBack := range wayBacks {
-		statements := wayBackVersionDelete.FindAllStringSubmatch(wayBack, -1)
-		if len(statements) == 0 {
-			t.Fatalf("the way back deletes no version row, so no version can be said to stand after it:\n%s", wayBack)
-		}
-		for _, statement := range statements {
-			version, err := strconv.Atoi(statement[1])
-			if err != nil {
-				t.Fatalf("read the version the way back deletes in %q: %v", statement[0], err)
-			}
-			deleted[version] = true
-		}
-	}
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	standing := 0
+	var standing []int
 	for _, migration := range all {
-		if !deleted[migration.Version] && migration.Version > standing {
-			standing = migration.Version
+		if !slices.Contains(wayBackVersions, migration.Version) {
+			standing = append(standing, migration.Version)
 		}
 	}
-	if standing == 0 {
-		t.Fatalf("the ways back delete every one of the %d embedded migrations", len(all))
-	}
 	return standing
+}
+
+// versionsNotIn is every version of a that b does not hold, in a's order.
+func versionsNotIn(a, b []int) []int {
+	var out []int
+	for _, v := range a {
+		if !slices.Contains(b, v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
@@ -552,9 +547,10 @@ func leftStandingVersion(t *testing.T, wayBacks ...string) int {
 //
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
-// none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it reports that release's own version and holds no marks' table, no handshake column
-// and no column of the mark.
+// none stands after the two blocks. The store between the blocks and the roll-forward holds no
+// marks' table, no handshake column and no column of the mark, and records every embedded
+// version but those the blocks delete (leftStanding); a migration above them stays recorded, since
+// Migrate applies each migration the table has not recorded, whatever version stands highest.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
@@ -571,6 +567,7 @@ func leftStandingVersion(t *testing.T, wayBacks ...string) int {
 func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T) {
 	const settled, readmitted = "LEGION-850", "LEGION-851"
 	wayBack := headerWayBack(t, architectUpgradeVersion)
+	standing := leftStanding(t)
 	for _, version := range []int{stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion} {
 		if other := headerWayBack(t, version); other != wayBack {
 			t.Fatalf("the headers of migrations %d and %d carry two ways back, want the one block both are reversed by:\n%s\nagainst\n%s",
@@ -627,9 +624,23 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				if unsent != 0 {
 					t.Fatalf("the two ways back left %d unsent architect wakes, want none: the older release refuses their kind", unsent)
 				}
+				var recorded []int
+				rows, err := pool.Query(ctx, `select version from schema_version order by version`)
+				if err != nil {
+					t.Fatalf("read the versions the store records after the way back: %v", err)
+				}
+				if recorded, err = pgx.CollectRows(rows, pgx.RowTo[int]); err != nil {
+					t.Fatalf("read the versions the store records after the way back: %v", err)
+				}
 				version, err := st.SchemaVersion(ctx)
 				if err != nil {
 					t.Fatalf("read the version the store reports after the way back: %v", err)
+				}
+				if !slices.Equal(recorded, standing) || version != standing[len(standing)-1] {
+					extra, missing := versionsNotIn(recorded, standing), versionsNotIn(standing, recorded)
+					t.Fatalf("after the two ways back the store records %d versions and reports %d; want the %d embedded "+
+						"migrations but those the blocks delete, and the highest of them, %d: recorded and not wanted %v, wanted "+
+						"and not recorded %v", len(recorded), version, len(standing), standing[len(standing)-1], extra, missing)
 				}
 				var marksTable, handshakeColumn, markColumn bool
 				if err := pool.QueryRow(ctx, `select to_regclass('architect_stalled_notices') is not null`).Scan(&marksTable); err != nil {
@@ -645,12 +656,9 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				standing := leftStandingVersion(t, wayBack, headerWayBack(t, phaseEntryVersion))
-				t.Logf("the highest embedded migration neither way back deletes is %d", standing)
-				if version != standing || marksTable || handshakeColumn || markColumn {
-					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
-						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, standing)
+				if marksTable || handshakeColumn || markColumn {
+					t.Fatalf("after the two ways back the marks' table stands: %v, a handshake column stands: %v, and the "+
+						"phases row's mark stands: %v; want none of them", marksTable, handshakeColumn, markColumn)
 				}
 			}
 
@@ -715,5 +723,128 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+// phaseReviewedHeadVersion is the version of the migration that keeps the commit the reviewer's
+// newest recorded review read (20261116234034_phase_reviewed_head.up.sql,
+// record.PhaseRow.ReviewedHead).
+const phaseReviewedHeadVersion = 20261116234034
+
+// The reviewed commit's way back, the one transaction its migration's header carries
+// (headerWayBack), drops phases.reviewed_head and pending_task_deliveries.round_named, deletes the
+// key `roundNamed` from each supervise start row, and deletes the migration's version row, and the
+// roll-forward after it adds the two columns again at their defaults: a reviewer's row that held a
+// commit comes through both with the rest of its record and reads no commit, so the next round of
+// its issue reads the whole change. Without the drops, the roll-forward's adds of columns that stand
+// fail; without the delete of the version row, Migrate finds the version recorded and never adds
+// them again, and every phases read and every claims read, which name the columns, fail; without
+// the key's delete, the earlier release, which decodes an outbox row strictly, retries the row for
+// ever. The rest of the start row is left as it was. The way back takes the daemon's last two
+// sentences off each task this release stored with them - the reviewer's row, the start row and
+// the claim's pending delivery - so each holds the text the earlier release would have written,
+// and the roll-forward appends one pair again, the commit `none` and the row's entry: the task
+// ends with exactly one pair of the daemon's sentences, never two. The test is in this package
+// because headerWayBack, the reader of a header's way back, is a test helper here, which
+// internal/store's own tests cannot import.
+func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	const key, reviewed = "LEGION-860", "2222222222222222222222222222222222222222"
+	sentences := func(commit string) string {
+		return " " + reviewround.CommitLabel + ": " + commit + ". " + reviewround.EntryLabel + ": 2."
+	}
+	base := "Continue " + key + ". Issue: " + key + ". Phase: reviewing."
+	held := record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Entry: 2,
+		EntryTask: base + sentences(reviewed), ReviewedHead: reviewed}
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
+		Title: key, Tree: key, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "A", HandedOver: true})
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutPhase(ctx, tx, held); err != nil {
+			t.Fatalf("record the reviewer's row of %s holding the commit its review read: %v", key, err)
+		}
+	})
+	if got := phaseRow(t, pool, key, claim.RoleReviewer).ReviewedHead; got != reviewed {
+		t.Fatalf("the reviewer's row before the way back reads the reviewed commit %q, want %s", got, reviewed)
+	}
+	start := `{"op":"start","tree":"` + key + `","role":"reviewer","task":"Continue.` + sentences(reviewed) + `","generation":1,"phase":"reviewing","entry":2,"roundNamed":true}`
+	if _, err := pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('supervise', $1, $2::jsonb, 0, now(), '')`, key, start); err != nil {
+		t.Fatalf("queue the reviewer's start as this release writes it: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ('reviewer-claim', $1, $2, $2, 'reviewer', 1, 'ses-reviewer', '', 'working', 0, 0, 0, 0)`, testProject, key); err != nil {
+		t.Fatalf("record the reviewer's claim: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, round_named)
+		values ('reviewer-claim', 'outbox:1', $1, now(), true)`, base+sentences(reviewed)); err != nil {
+		t.Fatalf("record the reviewer's pending delivery as this release writes it: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, headerWayBack(t, phaseReviewedHeadVersion), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the reviewed commit's way back as its one transaction: %v", err)
+	}
+	columnStands := func(table, column string) bool {
+		t.Helper()
+		var stands bool
+		if err := pool.QueryRow(ctx, `select exists (select 1 from information_schema.columns
+			where table_schema = current_schema() and table_name = $1 and column_name = $2)`, table, column).Scan(&stands); err != nil {
+			t.Fatalf("look for %s.%s: %v", table, column, err)
+		}
+		return stands
+	}
+	var recorded int
+	if err := pool.QueryRow(ctx, `select count(*) from schema_version where version = $1`, phaseReviewedHeadVersion).Scan(&recorded); err != nil {
+		t.Fatalf("count the version rows of migration %d after the way back: %v", phaseReviewedHeadVersion, err)
+	}
+	if columnStands("phases", "reviewed_head") || columnStands("pending_task_deliveries", "round_named") || recorded != 0 {
+		t.Fatalf("after the way back phases.reviewed_head stands: %v, pending_task_deliveries.round_named stands: %v, and migration %d's version rows number %d; "+
+			"want none of them: the roll-forward adds the columns again only when all are gone",
+			columnStands("phases", "reviewed_head"), columnStands("pending_task_deliveries", "round_named"), phaseReviewedHeadVersion, recorded)
+	}
+	var keyed bool
+	var task string
+	if err := pool.QueryRow(ctx, `select payload ? 'roundNamed', payload->>'task' from outbox where kind = 'supervise' and issue = $1`, key).Scan(&keyed, &task); err != nil {
+		t.Fatalf("read the reviewer's start after the way back: %v", err)
+	}
+	if keyed || task != "Continue." {
+		t.Fatalf("after the way back the reviewer's start carries roundNamed: %v and the task %q; want no such key and the task "+
+			"without the daemon's last two sentences, as the earlier release queues it", keyed, task)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `select entry_task from phases where issue = $1 and role = 'reviewer'`, key).Scan(&stored); err != nil {
+		t.Fatalf("read the reviewer's stored task after the way back: %v", err)
+	}
+	if stored != base {
+		t.Fatalf("after the way back the reviewer's row stores the task %q, want %q, without the daemon's last two sentences", stored, base)
+	}
+	var delivered string
+	if err := pool.QueryRow(ctx, `select task from pending_task_deliveries where claim_token = 'reviewer-claim'`).Scan(&delivered); err != nil {
+		t.Fatalf("read the reviewer's pending delivery after the way back: %v", err)
+	}
+	if delivered != base {
+		t.Fatalf("after the way back the reviewer's pending delivery holds %q, want %q, without the daemon's last two sentences", delivered, base)
+	}
+
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the record store: %v", err)
+	}
+	defer st.Close()
+	applied, err := st.Migrate(ctx)
+	if err != nil {
+		t.Fatalf("roll forward after the way back: %v", err)
+	}
+	if applied != 1 {
+		t.Fatalf("the roll-forward applied %d migrations, want 1: the way back re-arms its own migration and no other", applied)
+	}
+	got := phaseRow(t, pool, key, claim.RoleReviewer)
+	if want := base + sentences("none"); got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != want || got.ReviewedHead != "" {
+		t.Fatalf("the reviewer's row after the roll-forward = claim %q, entry %d, task %q, reviewed commit %q; want the row as it was "+
+			"with no reviewed commit, the column's default, and the task ending with exactly one pair of the daemon's sentences: %q",
+			got.Claim, got.Entry, got.EntryTask, got.ReviewedHead, want)
+	}
+	if !columnStands("pending_task_deliveries", "round_named") {
+		t.Fatal("after the roll-forward pending_task_deliveries.round_named does not stand, want it added again at its default")
 	}
 }

@@ -3,7 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { UserIssueState, UserState } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
-import { defineWriteKind, ofKind, type Writes, writesOf } from "../writes/write-store";
+import { defineWriteKind, isLive, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
 
 export type PinStateOperation = { readonly id: string; readonly op: "pin" | "unpin" };
@@ -73,10 +73,7 @@ function pinAttempt({ issueKey, operation }: PinWrite) {
 function pinsOut(writes: Writes, issueKey: string): boolean {
   return writes.rows().some((row) => {
     const pin = ofKind(row, pinWrite);
-    return (
-      pin?.detail.issueKey === issueKey &&
-      (pin.status === "queued" || pin.status === "sending" || pin.status === "late")
-    );
+    return pin?.detail.issueKey === issueKey && isLive(pin);
   });
 }
 

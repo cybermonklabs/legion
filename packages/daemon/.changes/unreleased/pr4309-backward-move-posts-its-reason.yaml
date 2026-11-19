@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A worker's backward move (`request_backward_move`) now posts on the issue which phase the issue
+  left and went to, the role that asked, and that role's reason: before the status changes, or as a
+  message of its own when the two phases show one status (implementing back to planning, accepting
+  back to reviewing, merging back to retro). The reason used to reach only the architect's notice
+  and the next role's task, and the issue showed a bare status change, or nothing. A reason whose
+  post Dispatch would refuse, over its bounds or holding a decision block, is refused before the
+  move (`BACKWARD_REASON_TOO_LONG`, `BACKWARD_REASON_DECISION_BLOCK`), so the worker can send a
+  shorter one.

@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 )
@@ -211,6 +212,40 @@ func TestContractOnlyTheListedAccountWithALiveTokenLogsIn(t *testing.T) {
 	}
 }
 
+// TestContractAPodEnrollmentStatesItsClaim: the real broker reads the claim the daemon sends under
+// the name the daemon sends it, and files the pod under that claim of the account the daemon's
+// own token login proved (claim:<login subject>/<claim>), so the claim's next pod reads the
+// requests this one makes. A field the broker did not declare would be refused, retried without
+// it, and leave the row with no owner.
+func TestContractAPodEnrollmentStatesItsClaim(t *testing.T) {
+	rig := newBrokerRig(t)
+	ctx := context.Background()
+	c := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, brokertest.DaemonAccount, time.Hour)}
+	if _, err := c.Login(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const claim = "legion-acme-acme-12-planner"
+	enrolled, err := c.Enroll(ctx, PodEnrollment{PodUID: "pod-uid-1", Thumbprint: "tp-1", PodToken: rig.MintPodToken(t, "pod-uid-1"), Session: "planner-session-1", Claim: claim})
+	if err != nil {
+		t.Fatalf("Enroll with a claim: %v", err)
+	}
+	var owner, stated *string
+	if err := rig.Store.Pool.QueryRow(ctx, `select owner, claim from enrollments where id=$1`, enrolled.ID).Scan(&owner, &stated); err != nil {
+		t.Fatal(err)
+	}
+	if want := "claim:" + brokertest.DaemonAccount + "/" + claim; owner == nil || *owner != want || stated == nil || *stated != claim {
+		t.Fatalf("the enrollment records owner %v and claim %v, want %s and %s", deref(owner), deref(stated), want, claim)
+	}
+}
+
+// deref is *s, or "<null>" for nil.
+func deref(s *string) string {
+	if s == nil {
+		return "<null>"
+	}
+	return *s
+}
+
 // TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken drives RegisterPodSession against
 // the real broker's POST /v1/oauth/exchange/pod-sessions. Its class is serviceAuth
 // (routes_table.go), which authenticates the bearer with the token login's own check
@@ -310,7 +345,7 @@ func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 // session.
 func tradeAs(t *testing.T, rig *brokertest.Rig, exchangeToken string, key *ecdsa.PrivateKey, session string) error {
 	t.Helper()
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: rig.URL, Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
+	client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(rig.URL), Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -223,6 +223,9 @@ func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error 
 	return nil
 }
 
+func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -616,8 +619,8 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
-// notice router decides (owningArchitect): the root architect the reviewer's phase-finished notice
-// reaches may accept it and retry it, and a sub-architect still may not.
+// notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
+// notice reaches may accept it and retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")

@@ -622,11 +622,11 @@ type attributionMove struct {
 // AppendAttributionEvents takes at most AttributionMovesPerPass queued moves, the oldest first,
 // and deletes them, in one transaction. For each move whose two keys differ, it appends one
 // issue.pull_request_attribution_changed on the issue left and one on the issue reached, each
-// where it is set and still an issue, in one AppendAll, which takes the issues in one order. It
-// publishes the events after the commit and answers how many it appended. A move whose keys are
-// equal again, a move and the move back before the events, appends nothing. Two processes take
-// disjoint moves (skip locked). A caller with no broker appends nothing, and the moves wait for a
-// pass that has one.
+// where it is set and still an issue. It locks every issue in one call before the first append
+// (events.Broker.LockOwners), which takes them in one order. It publishes the events after the
+// commit and answers how many it appended. A move whose keys are equal again, a move and the
+// move back before the events, appends nothing. Two processes take disjoint moves (skip locked).
+// A caller with no broker appends nothing, and the moves wait for a pass that has one.
 func AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *events.Broker) (int, error) {
 	if broker == nil {
 		return 0, nil
@@ -724,11 +724,18 @@ func AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *even
 			moved = append(moved, model.Event{IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: move.payload})
 		}
 	}
-	var appended []model.Event
+	appended := make([]model.Event, 0, len(moved))
 	if len(moved) > 0 {
-		if appended, err = broker.AppendAll(ctx, tx, moved); err != nil {
+		if err := broker.LockOwners(ctx, tx, moved...); err != nil {
 			return 0, fmt.Errorf("append the events of %d attribution moves: %w", len(moves), err)
 		}
+	}
+	for _, event := range moved {
+		written, err := broker.Append(ctx, tx, event)
+		if err != nil {
+			return 0, fmt.Errorf("append the events of %d attribution moves: %w", len(moves), err)
+		}
+		appended = append(appended, written)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit the events of %d attribution moves: %w", len(moves), err)
