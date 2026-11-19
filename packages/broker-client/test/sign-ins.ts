@@ -9,6 +9,7 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { calculateJwkThumbprint, generateKeyPair, type JWK, SignJWT } from "jose";
 import type { SignInRecord } from "../src/signins";
 
@@ -32,7 +33,9 @@ export async function signedIn(
     person,
     issuer: "https://accounts.example",
     client_id: "example-device-client",
-    refresh_token: `refresh-token-of-${person}`,
+    // Random, as a real refresh token is: a value that held the person's email would be scrubbed
+    // out of every line naming that person (`@legion/contracts/held-secrets`).
+    refresh_token: `refresh-${crypto.randomUUID()}`,
     box_key: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
     thumbprint: await thumbprintOf(publicKey.export({ format: "jwk" }) as JWK),
     enrollment_id: "",
@@ -59,8 +62,9 @@ export async function writeSignIn(dir: string, record: SignInRecord): Promise<st
   await chmod(dir, 0o700);
   const { enrollment_id, ...rest } = record;
   const path = signInPath(dir, record.person);
-  const written = enrollment_id === "" ? rest : record;
-  await writeFile(path, `${JSON.stringify(written, null, 2)}\n`, { mode: 0o600 });
+  // The record's secrets are random where they are made (`signedIn`, or a caller's override).
+  const json = JSON.stringify(enrollment_id === "" ? rest : record, null, 2);
+  await writeFile(path, `${json}\n`, { mode: 0o600 });
   return path;
 }
 
@@ -139,7 +143,7 @@ export async function stubIssuer(options: {
         .sign(privateKey);
       idTokens.push(idToken);
       return Response.json({
-        access_token: `issuer-access-token-${refreshes}`,
+        access_token: fixtureSecret("issuer"),
         token_type: "Bearer",
         expires_in: 3600,
         scope: "openid email",

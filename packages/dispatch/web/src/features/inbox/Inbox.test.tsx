@@ -6,8 +6,14 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import {
+  type Commits,
+  drawnPick,
+  type HeldNotifications,
+  holdNotifications,
+  recordCommits,
+} from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
@@ -1188,7 +1194,8 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
     expect(within(kept).getByText("bob")).toBeTruthy();
-    expect(within(kept).getByText("JSON, always.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("JSON, always.")).toBeTruthy();
     // The answer form is gone; the row keeps keyboard focus so j/k/Escape still start here.
     expect(row).toHaveFocus();
 
@@ -1269,6 +1276,240 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
   }
 });
 
+/** What the picker named `Priority of <issueKey>` inside `scope`, a CSS selector, draws
+ *  (`drawnPick`), or `(none)` while none is drawn there. */
+function drawnPriority(scope: string, issueKey: string): string {
+  const select = document.querySelector<HTMLSelectElement>(
+    `${scope} select[aria-label="Priority of ${issueKey}"]`
+  );
+  return select === null ? "(none)" : drawnPick(select);
+}
+
+// A pick of P2 on a P1 row under `?priority=P1` takes the row out of the filter, and the Inbox
+// holds it in place while the reader's hand is on it (`heldRow`), in the band another P1 row
+// keeps on the page. The held row is drawn as the Inbox holds it now, not as it was last drawn,
+// so its picker draws the pick in every commit from the press on: before TanStack Query tells
+// the Inbox of the pick, after it, and after the save lands and the Inbox is read again.
+test("a priority pick that takes the row under the reader's hand out of the priority filter draws the pick from the press through the landing", async () => {
+  const user = userEvent.setup();
+  const ask = inboxIssue("ask-p1", "CORE-1", "Ship it at P1?", { priority: 1 });
+  const other = inboxIssue("ask-other", "CORE-2", "Which format?", { priority: 1 });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask, other]);
+  const getAsk = mockAskReads([ask, other]);
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]', "CORE-1"));
+  const { queryClient, unmount } = renderInbox("/?priority=P1", { commits });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await screen.findByText("Ship it at P1?");
+    const row = rowOf("ask-p1");
+    // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
+    fireEvent.pointerOver(row);
+    const select = within(row).getByRole("combobox", { name: "Priority of CORE-1" });
+    const fromPick = commits.markAt(select, "change");
+    notifications = holdNotifications();
+    await user.selectOptions(select, "2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    notifications.tell();
+    const reads = getInbox.mock.calls.length;
+    getInbox.mockResolvedValue([{ ...ask, priority: 2 }, other]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(ask, "alice"), priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    // The hand is still on the row, which the filter no longer lists.
+    expect(rowIds()).toContain("ask-p1");
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+  } finally {
+    notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The reading column keeps a question whose row has left the list while the reader has an
+// unsent answer in its box (`paneRow`). A pick of P2 in the column's own priority picker, under
+// `?priority=P1`, takes the row out of the list; the kept question is drawn as the Inbox holds it
+// now, so the column's picker draws the pick in every commit from the press on, through the
+// landing.
+test("a priority pick in the reading column that takes its question out of the priority filter draws the pick from the press through the landing, while an unsent answer keeps the question there", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const askA = inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 });
+  const askB = inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 1 });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = mockAskReads([askA, askB]);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = recordCommits<null>(() => drawnPriority('[data-testid="inbox-pane"]', "CORE-1"));
+  const { queryClient, unmount } = renderInbox("/?priority=P1", { commits });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    const pane = screen.getByTestId("inbox-pane");
+    const draft = within(pane).getByLabelText("Your answer");
+    await user.clear(draft);
+    await user.click(draft);
+    await user.paste("Whichever the mirror already holds.");
+    const select = within(pane).getByRole("combobox", { name: "Priority of CORE-1" });
+    const fromPick = commits.markAt(select, "change");
+    notifications = holdNotifications();
+    await user.selectOptions(select, "2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    notifications.tell();
+    const reads = getInbox.mock.calls.length;
+    getInbox.mockResolvedValue([{ ...askA, priority: 2 }, askB]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(askA, "alice"), priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    // The list no longer holds the question, and the column still shows it.
+    expect(rowIds()).toEqual(["ask-b"]);
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+  } finally {
+    notifications?.tell();
+    unmount();
+    narrow();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// Under typed search only the reader's own typing drops a row at once. A server edit of the text
+// the search reads - here the question of the row whose answer box the reader is typing in -
+// takes that row out of the typed words' match, and the Inbox holds it where it was, as last
+// drawn, with the half-typed answer and the focus still in its box, through each read after.
+test("a server edit that takes the row under the reader's hand out of the typed search keeps the row, its half-typed answer and the focus", async () => {
+  const user = userEvent.setup();
+  const askA = inboxIssue("ask-a", "CORE-1", "Ship it?");
+  const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = mockAskReads([askA, askB]);
+  const { queryClient, unmount } = renderInbox("/?q=ship");
+  try {
+    const card = await screen.findByTestId("ask-ask-a");
+    const draft = within(card).getByLabelText("Your answer");
+    await user.clear(draft);
+    await user.click(draft);
+    await user.paste("Ship it on Friday");
+    expect(draft).toHaveFocus();
+
+    getInbox.mockResolvedValue([{ ...askA, question: "Rename it?" }, askB]);
+    for (const read of ["first", "second"]) {
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: ["inbox"] });
+      });
+      expect(rowIds(), `after the ${read} read`).toContain("ask-a");
+    }
+    const kept = within(screen.getByTestId("ask-ask-a")).getByLabelText("Your answer");
+    expect(kept).toHaveValue("Ship it on Friday");
+    expect(kept).toHaveFocus();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The row a server edit took out of the typed search stays held, and it is still drawn as the
+// Inbox holds it: a pick of P2 in it draws P2 in every commit from the press on, before TanStack
+// Query tells the Inbox of it, after, and after the save lands and the Inbox is read again.
+test("a priority pick on a row held after a server edit took it out of the typed search draws the pick from the press through the landing", async () => {
+  const user = userEvent.setup();
+  const ask = inboxIssue("ask-p1", "CORE-1", "Ship it at P1?", { priority: 1 });
+  const other = inboxIssue("ask-b", "CORE-2", "Ship the docs?", { priority: 1 });
+  const renamed = { ...ask, question: "Rename it?" };
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask, other]);
+  const getAsk = mockAskReads([ask, other]);
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]', "CORE-1"));
+  const { queryClient, unmount } = renderInbox("/?q=ship", { commits });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await screen.findByTestId("ask-ask-p1");
+    // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
+    fireEvent.pointerOver(rowOf("ask-p1"));
+    getInbox.mockResolvedValue([renamed, other]);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(rowIds()).toContain("ask-p1");
+
+    const select = within(rowOf("ask-p1")).getByRole("combobox", { name: "Priority of CORE-1" });
+    const fromPick = commits.markAt(select, "change");
+    notifications = holdNotifications();
+    await user.selectOptions(select, "2");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    notifications.tell();
+    const reads = getInbox.mock.calls.length;
+    getInbox.mockResolvedValue([{ ...renamed, priority: 2 }, other]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(ask, "alice"), priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+
+    expect(rowIds()).toContain("ask-p1");
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "2 P2"));
+  } finally {
+    notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The hold under the typed words lasts only while the reader's words are those: once they type,
+// the row a server edit took out of the search is tested against their words again, and goes at
+// once, though the pointer still rests on it.
+test("a row held after a server edit took it out of the typed search goes once the reader types more words", async () => {
+  const user = userEvent.setup();
+  const askA = inboxIssue("ask-a", "CORE-1", "Ship it?");
+  const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
+  const getAsk = mockAskReads([askA, askB]);
+  const { queryClient, unmount } = renderInbox("/?q=ship");
+  try {
+    await screen.findByTestId("ask-ask-a");
+    // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
+    fireEvent.pointerOver(rowOf("ask-a"));
+    getInbox.mockResolvedValue([{ ...askA, question: "Rename it?" }, askB]);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    expect(rowIds()).toContain("ask-a");
+
+    await user.type(screen.getByRole("searchbox", { name: "Search asks" }), " docs");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("after the reader's own answer fails, an answer from elsewhere still holds the row they are in", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
@@ -1335,7 +1576,8 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
 
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
-    expect(within(kept).getByText("YAML.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("YAML.")).toBeTruthy();
   } finally {
     view.unmount();
     answerAsk.mockRestore();
@@ -1410,10 +1652,11 @@ function RouteProbe() {
  *  has something underneath it. `runtime` is for the tests whose reading column opens a
  *  document: that column mounts `ProofDocument`, which wants the document runtime and the
  *  margin the app shell gives it, and every other test's column shows a card and needs
- *  neither. */
+ *  neither. `commits` records each commit of the Inbox; it has no one value a host passes, so
+ *  each commit's `host` is null. */
 function renderInbox(
   route: string | readonly string[] = "/",
-  { runtime }: { runtime?: DocumentRuntimeValue } = {}
+  { commits, runtime }: { commits?: Commits<null>; runtime?: DocumentRuntimeValue } = {}
 ) {
   const entries = typeof route === "string" ? [route] : [...route];
   const queryClient = new QueryClient({
@@ -1422,7 +1665,13 @@ function renderInbox(
   const inbox = (
     <KeymapProvider>
       <RouteProbe />
-      <Inbox />
+      {commits === undefined ? (
+        <Inbox />
+      ) : (
+        <commits.Recorded host={null}>
+          <Inbox />
+        </commits.Recorded>
+      )}
     </KeymapProvider>
   );
   const view = render(
@@ -2687,7 +2936,8 @@ test("the reader's own answer takes its row off the list and selects the next on
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(rowIds()).toEqual(["ask-b"]));
@@ -2726,7 +2976,8 @@ test("an answer the server refuses keeps its question in the column, and a retry
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
 
     // The optimistic removal takes the row at once; the column keeps the question, because the
@@ -3717,7 +3968,8 @@ test("an answer given from the column drops the record: Escape lands on the ques
     // The reader answers the question in front of them from inside the column. Their clicks move
     // no focus, so no blur fires: what ends the record is the column showing another question.
     const pane = screen.getByTestId("inbox-pane");
-    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await within(pane).findByRole("radio", { name: "Ship" }));
     await user.click(within(pane).getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
     expect(rowIds()).toEqual(["ask-a", "ask-c"]);
@@ -4013,7 +4265,8 @@ test("Enter pressed inside the column belongs to the control holding it, and sti
     // A control inside the card, holding the focus the card gave it: Enter is that control's,
     // and the Inbox's own binding - which would move the focus to the answer box and swallow
     // the key with `preventDefault` - stands down.
-    const option = within(pane).getByRole("radio", { name: "Ship" });
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const option = await within(pane).findByRole("radio", { name: "Ship" });
     option.focus();
     await user.keyboard("{Enter}");
     expect(option).toHaveFocus();

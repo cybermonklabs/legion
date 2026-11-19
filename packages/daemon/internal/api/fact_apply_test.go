@@ -219,6 +219,7 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 		"POST /legion/v1/operator/claims/{token}/retry":          {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/compact":        {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/forget-session": {none: noRequester},
+		"POST /legion/v1/operator/claims/{token}/release-names":  {none: noRequester},
 		"POST /legion/v1/operator/claims/{token}/close":          {none: noRequester},
 		"POST /legion/v1/operator/project/pause":                 {none: noRequester},
 		"POST /legion/v1/operator/project/resume":                {none: noRequester},

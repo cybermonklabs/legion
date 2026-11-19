@@ -52,7 +52,7 @@ var legionCommands = [][]string{
 	{"restart"},
 	{"claims"}, {"claims", "spawn"}, {"claims", "deliver"}, {"claims", "suspend"}, {"claims", "resume"},
 	{"claims", "stop"}, {"claims", "retry"}, {"claims", "compact"}, {"claims", "forget-session"},
-	{"claims", "close"}, {"claims", "list"},
+	{"claims", "release-names"}, {"claims", "close"}, {"claims", "list"},
 	{"project"}, {"project", "pause"}, {"project", "resume"},
 	{"sessions"}, {"sessions", "import"},
 	{"probe-boot"},
@@ -64,7 +64,7 @@ var legionCommands = [][]string{
 // to. Each sets Hidden, so neither help nor completion offers it, its group's included.
 var legionHidden = [][]string{
 	{"worker-shim"},
-	{"launcher"}, {"launcher", "role-init"},
+	{"launcher"}, {"launcher", "role-init"}, {"launcher", "volume-trim-delete"},
 	{"claude-bridge"}, {"model-token"}, {"probe-image"},
 	{"workspace-init"}, {"workspace-init", "fetch"},
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},

@@ -270,6 +270,68 @@ func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
 	}
 }
 
+// A shared check a signal ended (the kernel's out-of-memory kill) is a setup failure that it could
+// not be run, with the signal and what the check printed before it beneath: the check may have said
+// why first. Read as a status, it was "exited -1, which it does not document", with that output.
+func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
+	killsItself := "cat >/dev/null\necho 'LEAK CHECK ERROR: out of memory reading the history' >&2\nkill -KILL $$\n"
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), killsItself), Public)
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     t.TempDir(),
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	})
+	failed := setupFailure(t, err)
+	says(t, failed, "the shared public leak check could not be run")
+	if want := "signal: killed\nLEAK CHECK ERROR: out of memory reading the history"; failed.Err == nil || failed.Err.Error() != want {
+		t.Errorf("the setup failure carries %v beneath it, want %q", failed.Err, want)
+	}
+}
+
+// A read of the guard's that a signal ended after its program printed (the kernel's out-of-memory
+// kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
+// carries it: the gh visibility read, its GraphQL read, the curl read, the read with no credential,
+// a git read of a push's records, which quotes only git's standard error (gitSaid), never the
+// push's content on its standard output, and the token read, which quotes only its standard error,
+// never the password on its standard output. Each row's stand-in is the one program it names, first
+// on PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is
+// pointed at the stand-in.
+func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
+	const slug = "invented-org/invented-repo"
+	killsItself := func(t *testing.T, name, script string, env ...string) *Guard {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script+"\nkill -KILL $$\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		guard := New(Options{Env: append(append(fixtureenv.Isolated(t.TempDir()), env...), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+		guard.curl = filepath.Join(dir, "curl")
+		return guard
+	}
+	said := "error connecting to api.github.com for " + slug
+	toStderr := "echo '" + said + "' >&2"
+	for _, row := range []struct {
+		name, program, script string
+		env                   []string
+		read                  func(g *Guard) error
+	}{
+		{"the gh visibility read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
+		{"the GraphQL read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
+		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
+		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
+		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := row.read(killsItself(t, row.program, row.script, row.env...))
+			if want := "signal: killed\n" + said; err == nil || err.Error() != want {
+				t.Errorf("read = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {

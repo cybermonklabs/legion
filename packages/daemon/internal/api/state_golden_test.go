@@ -175,6 +175,12 @@ runtime:
         floor_percent: 15
         wait_seconds: 8
         interval_milliseconds: 250
+    volume_trim:
+      enabled: true
+      high_percent: 90
+      low_percent: 60
+      min_age_minutes: 120
+      interval_seconds: 30
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a

@@ -18,6 +18,7 @@ import {
 } from "@legion/pi-shared/handoff-record";
 import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool, type LegionToolSession } from "./tools";
 
@@ -69,6 +70,9 @@ const noBranchHead = async (): Promise<string> => {
   throw new Error("branchHead is not expected in this test");
 };
 
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+
 /** A claim's session on LEGION-208: a root architect's, a sub-architect's (its issue is not its
  * tree), or a phase worker's by role. */
 function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession {
@@ -78,7 +82,7 @@ function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession
     sessionID: "ses_208",
     tree: "LEGION-208",
     issue,
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     claimToken: roleToken("omp", issue, role),
     generation: 1,
   };
@@ -480,7 +484,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   expect(calls).toEqual([
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "gateRegister",
@@ -794,7 +798,7 @@ test("read_release_records reads the window with this session's claim, and repor
           "LEGION-208",
           session.kind === "architect" ? "architect" : "tester"
         ),
-        secret: "claim-secret",
+        secret: CLAIM_SECRET,
         since: "2026-11-01T00:00:00Z",
       },
     ]);
@@ -1033,7 +1037,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     ["state", undefined],
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "handoffComplete",
@@ -1454,7 +1458,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       ["state", undefined],
       [
         "grant",
-        { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+        { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
       ],
       [
         "handoffComplete",

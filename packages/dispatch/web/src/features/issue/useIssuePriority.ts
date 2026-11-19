@@ -11,9 +11,16 @@ export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "er
  * issue page's keys `0`-`3` and its palette: the pick's write shows the value on the issue detail,
  * every list of issues and every inbox query that shows the issue, keeps it there over every
  * answer until it lands, and puts back the value Dispatch last confirmed if it is refused (see
- * `useIssueFieldWrite` and `issue-field-writes.ts`).
+ * `useIssueFieldWrite` and `issue-field-writes.ts`). `host` is the priority as the caller reads
+ * it from the issue's caches; draw `shown`.
  */
-export function useIssuePriority(issueKey: string): IssuePriorityWrite {
-  const write = useIssueFieldWrite(issueKey, "priority");
-  return { failed: write.failed, pending: write.pending, retry: write.retry, submit: write.submit };
+export function useIssuePriority(issueKey: string, host: IssuePriority | null): IssuePriorityWrite {
+  const write = useIssueFieldWrite(issueKey, "priority", host);
+  return {
+    failed: write.failed,
+    pending: write.pending,
+    retry: write.retry,
+    shown: write.shown,
+    submit: write.submit,
+  };
 }

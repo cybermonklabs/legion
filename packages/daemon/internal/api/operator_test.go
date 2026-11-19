@@ -46,6 +46,7 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/stop"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/retry"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session"},
+		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/release-names"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/close"},
 		{http.MethodPost, "/legion/v1/operator/project/pause"},
 		{http.MethodPost, "/legion/v1/operator/project/resume"},

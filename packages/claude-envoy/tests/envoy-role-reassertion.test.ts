@@ -193,6 +193,9 @@ test("the role read's 404 still means no live holder: the kept lane changed only
   const stateDirectory = scratchState()
   const regains: string[] = []
   const regained = Promise.withResolvers<void>()
+  // The listener names no holder once, and this session once its soft claim takes the role back,
+  // so the regain happens once however many heartbeats run before the hook's first call is read.
+  let unclaimed = true
   const client: FakeClient = {
     subscribe: async () => registered(),
     getInterest: async () => interest(),
@@ -200,6 +203,10 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     unregisterSession: async () => undefined,
     setRole: async () => ({ claimed: true, interest: interest() }),
     getRole: async () => {
+      if (!unclaimed) {
+        return { role: "legion-claim", holder: "ses_current", last_seen: 1, state: "live" } as const
+      }
+      unclaimed = false
       throw new EnvoyApiError({
         method: "GET",
         url: "http://listener.test/v1/roles/legion-claim",

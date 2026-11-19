@@ -233,7 +233,7 @@ func (m *Machine) Retree(ctx context.Context, tree string) error {
 	if !m.claim.RunsNothing() {
 		return wait.Errorf("re-point claim %s from tree %s to %s: it is %s there", m.claim.Token, m.claim.Tree, tree, m.claim.State)
 	}
-	m.log.Info("supervise: the claim's issue moved to another tree", "claim", m.claim.Token, "from", m.claim.Tree, "to", tree)
+	m.log.Info("supervise: the claim's issue moved to another tree", "from", m.claim.Tree, "to", tree)
 	m.claim.Tree, m.claim.TreeEpoch = tree, 0
 	return m.persist(ctx)
 }

@@ -16,6 +16,7 @@ import {
   currentModel,
   dispatchTurns,
   EMPTY_CONVERSATION,
+  isRenderableFrame,
   sessionCommands,
   sessionSettingsView,
   toThreadMessages,
@@ -651,6 +652,11 @@ function contextFrame(seq: number, fields: Record<string, unknown> = {}): AgentS
   } as AgentStreamContextFrame;
 }
 
+/** A `context-cleared` frame (INFRA-4325): the session reports no window now. */
+function clearedFrame(seq: number): AgentStreamFrame {
+  return { kind: "context-cleared", seq, v: 1 };
+}
+
 // How full the session's context window is (INFRA-812) arrives as its own frame, so a figure
 // this build cannot read costs the view its ring alone and never the model picker beside it.
 describe("the session's context figures", () => {
@@ -704,6 +710,56 @@ describe("the session's context figures", () => {
     expect(state.context).toEqual(contextFrame(3));
     expect(state.settings).toEqual(settingsFrame(1));
     expect(sessionCommands(state)).toEqual(SWITCHES);
+  });
+
+  // A host that reports no window now - a switch to a model that has none - sends a clearing
+  // frame (INFRA-4325). It shares the reading's slot, and whichever of the two carries the higher
+  // seq stands.
+  test("a clearing frame newer than the reading takes the figures away", () => {
+    const state = applyFrames(EMPTY_CONVERSATION, [contextFrame(5), clearedFrame(6)]);
+    expect(state.context).toBeUndefined();
+    expect(Object.hasOwn(state, "context")).toBe(false);
+    expect(state.applied.context).toBe(6);
+  });
+
+  test("a clearing frame no newer than the reading changes nothing", () => {
+    const read = applyFrame(EMPTY_CONVERSATION, contextFrame(5));
+    expect(applyFrame(read, clearedFrame(4))).toBe(read);
+    expect(applyFrame(read, clearedFrame(5))).toBe(read);
+    expect(read.context).toEqual(contextFrame(5));
+  });
+
+  test("a reading newer than a clearing frame draws the figures again, and an older one does not", () => {
+    const cleared = applyFrames(EMPTY_CONVERSATION, [contextFrame(5), clearedFrame(6)]);
+    expect(applyFrame(cleared, contextFrame(6, { tokens: 4_000 })).context).toBeUndefined();
+    expect(applyFrame(cleared, contextFrame(7, { tokens: 4_000 })).context).toEqual(
+      contextFrame(7, { tokens: 4_000 })
+    );
+  });
+
+  test("a replay holding the clearing frame after a turn or a reading rebuilds with no figures", () => {
+    const turn = message(1, "a50", 50, "Hello", false);
+    const afterTurn = applyFrames(EMPTY_CONVERSATION, [turn, clearedFrame(2)]);
+    expect(afterTurn.context).toBeUndefined();
+    expect(afterTurn.messages).toHaveLength(1);
+
+    const afterReading = applyFrames(EMPTY_CONVERSATION, [turn, contextFrame(2), clearedFrame(3)]);
+    expect(afterReading.context).toBeUndefined();
+    expect(afterReading.messages).toHaveLength(1);
+  });
+
+  test("a clearing frame with no seq, or of another version, is dropped", () => {
+    const read = applyFrame(EMPTY_CONVERSATION, contextFrame(5));
+    const bad: unknown[] = [
+      { kind: "context-cleared", v: 1 },
+      { kind: "context-cleared", seq: "6", v: 1 },
+      { kind: "context-cleared", seq: 6, v: 2 },
+    ];
+    for (const frame of bad) {
+      expect(isRenderableFrame(frame)).toBe(false);
+      expect(applyFrame(read, frame)).toBe(read);
+    }
+    expect(isRenderableFrame(clearedFrame(6))).toBe(true);
   });
 });
 

@@ -84,7 +84,8 @@ func newRoleHoldersRig(t *testing.T) *roleHoldersRig {
 func (r *roleHoldersRig) clock() time.Time { return time.Now().UTC().Add(r.ahead) }
 
 // seedClaim writes the claim of issue's role in state, with session, last changed ago before now:
-// the row the daemon's supervision leaves.
+// the row the daemon's supervision leaves, the hold of the session's id for the claim included,
+// which a registration writes before it records the session (supervise's holdRecorded).
 func (r *roleHoldersRig) seedClaim(issue string, role claim.Role, session string, state supervise.ClaimState, ago time.Duration) claim.Token {
 	r.t.Helper()
 	token, err := claim.NewToken("legion", issue, role)
@@ -96,6 +97,12 @@ func (r *roleHoldersRig) seedClaim(issue string, role claim.Role, session string
 		values ($1, 'legion', $2, $2, $3, 1, $4, '', $5, 0, 0, 0, 0, now() - $6::interval)`,
 		string(token), issue, string(role), session, string(state), fmt.Sprintf("%d seconds", int(ago.Seconds()))); err != nil {
 		r.t.Fatalf("seed the %s claim of %s: %v", role, issue, err)
+	}
+	if session != "" {
+		if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', 'session', $1, $2)`,
+			session, string(token)); err != nil {
+			r.t.Fatalf("hold %s for the %s claim of %s: %v", session, role, issue, err)
+		}
 	}
 	return token
 }
@@ -170,6 +177,118 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 	want = []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{}}}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the tester failed, published %+v, want %+v", got, want)
+	}
+}
+
+// The publication names only a session its claim holds (plan E's t-e-54): a live claim that records
+// a session held for another claim, held for none, or held by no row at all — which the boot finds
+// where a daemon from before the hold ran, and suspends, but not before a working claim's turn
+// ends, nor after a suspension the runtime refused — is left out, so Dispatch is never told that
+// its role holds a session that is not its own. So is a claim whose session's text is held for it
+// only as another kind of name, or only in another project: the hold that counts is of the
+// session's id, in the claim's own project. The claim holding its own session is published as
+// before.
+//
+// The controls (the pull request records the runs): LiveRoleHolders without its claim_sessions
+// clause publishes all six sessions; without its `h.kind` predicate it publishes the one held as a
+// file name, and without its `h.project` predicate the one held in another project.
+func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
+	const issue = "LEGION-209"
+	r := newRoleHoldersRig(t)
+	r.seedClaim(issue, claim.RoleTester, "ses-own", supervise.StateReady, time.Minute)
+	// Five live claims whose sessions the table holds for another claim, for none, not at all, for
+	// the claim itself as a file name, and for the claim itself in another project.
+	for _, seeded := range []struct {
+		role          claim.Role
+		session       string
+		holder        string
+		held          bool
+		kind, project string
+	}{
+		{claim.RoleReviewer, "ses-another-claims", "legion-legion-legion-299-tester", true, "session", "legion"},
+		{claim.RoleImplementer, "ses-held-for-none", "", true, "session", "legion"},
+		{claim.RolePlanner, "ses-held-by-no-row", "", false, "", ""},
+		{claim.RoleArchitect, "ses-held-as-a-file-name", "self", true, "file-name", "legion"},
+		{claim.RoleMerger, "ses-held-in-another-project", "self", true, "session", "other"},
+	} {
+		token, err := claim.NewToken("legion", issue, seeded.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.pool.Exec(r.ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, updated_at)
+			values ($1, 'legion', $2, $2, $3, 1, $4, '', 'working', 0, 0, 0, 0, now())`,
+			string(token), issue, string(seeded.role), seeded.session); err != nil {
+			t.Fatalf("seed the %s claim: %v", seeded.role, err)
+		}
+		if seeded.holder == "self" {
+			seeded.holder = string(token)
+		}
+		if seeded.held {
+			if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ($3, $4, $1, $2)`,
+				seeded.session, seeded.holder, seeded.project, seeded.kind); err != nil {
+				t.Fatalf("hold %s for %q as %s in %s: %v", seeded.session, seeded.holder, seeded.kind, seeded.project, err)
+			}
+		}
+	}
+
+	r.enqueue(issue)
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses-own"}}}}
+	if got := r.published(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("published %+v, want %+v: only the tester holds the session it records", got, want)
+	}
+}
+
+// The publication names a live claim's session only while the claim holds every name its record
+// gives the session (supervise.RecordedHolds), in its own project, and none is a name no hold can
+// cover (review round 14 of #4220): a claim whose session's id is held for it while its file's
+// name, the id its Oh My Pi file name gives, or the Claude Code session its `<uuid>.jsonl` file
+// names is not, is left out, and so is one whose file is not a clean path. The claim holding every
+// name of its session is published as before.
+//
+// The control (the pull request records the run): LiveRoleHolders asking for the session id's
+// hold alone, as round 13 did; every one of the four claims is published beside the architect.
+func TestTheExecutorPublishesASessionOnlyWhileItsClaimHoldsEveryNameOfIt(t *testing.T) {
+	const issue = "LEGION-210"
+	const uuid = "9d0c8b7a-6e5f-4a3b-8c2d-1e0f9a8b7c6d"
+	r := newRoleHoldersRig(t)
+	for _, seeded := range []struct {
+		role    claim.Role
+		session string
+		file    string
+		skip    supervise.HoldKind // the kind of name left unheld; "" holds every name
+	}{
+		{claim.RoleArchitect, "ses-whole", "/state/sessions/2026-11-17T00-00-00-000Z_ses-whole.jsonl", ""},
+		{claim.RolePlanner, "ses-no-file-name", "/state/sessions/2026-11-17T00-00-00-000Z_ses-no-file-name.jsonl", supervise.HoldFileName},
+		{claim.RoleImplementer, "ses-no-file-id", "/state/sessions/2026-11-17T00-00-00-000Z_ses-other-id.jsonl", supervise.HoldFileID},
+		{claim.RoleTester, "ses-no-claude-stem", "/home/agent/.claude/projects/repo/" + uuid + ".jsonl", "stem"},
+		{claim.RoleReviewer, "ses-unclean-file", "/state/sessions/ses-unclean-file.jsonl/..", ""},
+	} {
+		token, err := claim.NewToken("legion", issue, seeded.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.pool.Exec(r.ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, updated_at)
+			values ($1, 'legion', $2, $2, $3, 1, $4, $5, 'working', 0, 0, 0, 0, now())`,
+			string(token), issue, string(seeded.role), seeded.session, seeded.file); err != nil {
+			t.Fatalf("seed the %s claim: %v", seeded.role, err)
+		}
+		for _, h := range supervise.RecordedHolds(seeded.session, seeded.file) {
+			if h.Kind == seeded.skip || seeded.skip == "stem" && h.Name == uuid {
+				continue
+			}
+			if _, err := r.pool.Exec(r.ctx, `insert into claim_sessions (project, kind, name, claim) values ('legion', $1, $2, $3)`,
+				string(h.Kind), h.Name, string(token)); err != nil {
+				t.Fatalf("hold %s %s for the %s claim: %v", h.Kind, h.Name, seeded.role, err)
+			}
+		}
+	}
+
+	r.enqueue(issue)
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "architect", Session: "ses-whole"}}}}
+	if got := r.published(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("published %+v, want %+v: only the architect holds every name of the session it records", got, want)
 	}
 }
 

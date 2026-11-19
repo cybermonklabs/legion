@@ -108,6 +108,8 @@ function startNotice(
   if (checkout?.kind === "invalid" && (dispatch.enabled || dispatch.error !== checkout.error)) {
     parts.push(`${checkout.error}; not read while DISPATCH_URL is set`);
   }
+  // Once, at the start: why every link this session's Dispatch commands print is a reference.
+  if (dispatch.enabled && dispatch.linkNotice !== undefined) parts.push(dispatch.linkNotice);
   parts.push(...config.warnings);
   if (envoy.enabled && nats && "off" in envoy.inbound) {
     parts.push(

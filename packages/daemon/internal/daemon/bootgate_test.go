@@ -312,9 +312,11 @@ yes-envoy-mismatch) printf "${legion}LEGION_ENVOY_INTERFACE=2\nLEGION_ENVOY_LOAD
 yes-legacy) printf "$legion${with_envoy}LEGION_LEGACY_PLUGIN_LOADED_FROM=file://$HOME/legacy/dist/legion.js?mtime=1\n" >&2; exit 0 ;;
 yes-envoy-elsewhere) printf "${legion}LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$HOME/envoy-elsewhere/dist/envoy.js?mtime=1\n" >&2; exit 0 ;;
 yes-then-die) echo LEGION_PLUGIN_LOADED=yes >&2; echo "database is locked" >&2; exit 1 ;;
+yes-then-killed) echo LEGION_PLUGIN_LOADED=yes >&2; kill -KILL $$ ;;
 no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 silent) exit 0 ;;
 denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
+denied-then-killed) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; kill -KILL $$ ;;
 hang) exec sleep 30 ;;
 no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 30 ;;
 esac
@@ -764,30 +766,36 @@ func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
 }
 
 // A launch that fails before Oh My Pi says anything — the launch prefix refusing, a binary that is
-// not Oh My Pi — is its own refusal, with the command and what it printed.
+// not Oh My Pi — is its own refusal, with the command and what it printed. One a signal ended names
+// the signal where an exit names its status: it has none, and read as one it was `(exit -1)`.
 func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
-	f := newFakeOmp(t, "denied")
-	gate, _ := gateUnder(t, f, contractCurrent)
+	for step, ending := range map[string]string{"denied": "(exit 3)", "denied-then-killed": "(signal: killed)"} {
+		t.Run(step, func(t *testing.T) {
+			f := newFakeOmp(t, step)
+			gate, _ := gateUnder(t, f, contractCurrent)
 
-	err := gate.verify(context.Background())
+			err := gate.verify(context.Background())
 
-	if err == nil {
-		t.Fatal("the gate passed a launch that failed")
-	}
-	for _, want := range []string{"OMP launch probe failed (exit 3) for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the refusal does not say %q: %v", want, err)
-		}
-	}
-	if n := f.attempts(t); n != 1 {
-		t.Errorf("Oh My Pi ran %d times for a definitive failure, want once", n)
+			if err == nil {
+				t.Fatal("the gate passed a launch that failed")
+			}
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal does not say %q: %v", want, err)
+				}
+			}
+			if n := f.attempts(t); n != 1 {
+				t.Errorf("Oh My Pi ran %d times for a definitive failure, want once", n)
+			}
+		})
 	}
 }
 
-// Oh My Pi dying after it loaded the plugin, or a probe the budget cut off before it answered, says
-// nothing about the plugin: the gate waits it out and asks again.
+// Oh My Pi dying after it loaded the plugin, with an exit of its own or by a signal (the kernel's
+// out-of-memory kill), or a probe the budget cut off before it answered, says nothing about the
+// plugin: the gate waits it out and asks again.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
-	for _, step := range []string{"yes-then-die", "hang"} {
+	for _, step := range []string{"yes-then-die", "yes-then-killed", "hang"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes")
 			gate, logged := gateUnder(t, f, contractCurrent)

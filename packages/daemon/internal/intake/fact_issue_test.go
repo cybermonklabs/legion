@@ -32,6 +32,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"SessionLost":             SessionLost{Issue: issue},
 		"SessionStoreFault":       SessionStoreFault{Issue: issue},
 		"MemoryGuardKill":         MemoryGuardKill{Issue: issue},
+		"VolumeNearFull":          VolumeNearFull{Issue: issue},
 		"ClaimReady":              ClaimReady{Issue: issue},
 		"TaskConfirmed":           TaskConfirmed{Issue: issue},
 		"GateRequestFound":        GateRequestFound{Issue: issue},
