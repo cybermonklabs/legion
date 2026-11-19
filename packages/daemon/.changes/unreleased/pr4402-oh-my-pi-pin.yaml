@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The worker image carries Oh My Pi `18.18.6-sami.20261119-125259` of cybermonklabs/oh-my-pi,
+    The worker image carries Oh My Pi `18.18.6-sami.20261119-142454` of cybermonklabs/oh-my-pi,
     which `.omp-pin` names. That build knows `secrets.maskSessionStore`, refuses to open its SQL
     session store under a login whose default is read-only, on a hot standby, or on tables that
     carry a column, a default, a trigger, a rule or row-level security it does not declare, that
