@@ -27,10 +27,24 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
+/** How long one case gets, and the hook that ends it. The hook removes the case's scratch root
+ *  (some 250 to 320 files, 135 MB), which took from 0.1 s to 38 s on a loaded dev box, past bun's
+ *  own 5 s per hook. */
+const CASE_MS = 180_000;
+
+/**
+ * The handler limit every profile Legion writes or documents gives AskGate
+ * (`deploy/kubernetes/operator-route/overlay.yml`, the model route installers, pi-envoy's README,
+ * "The time limit"). At Oh My Pi's 30 s default the gate's deadline is 25 s, its dry run gets half
+ * of that and no second run, and a dry run a busy machine slows past 12.5 s posts the write
+ * unreviewed. At this limit the dry run gets 20 s, and a second run with what is left of 45 s.
+ */
+const DEPLOYED_SETTINGS = ["extensionHandlers:", "  toolCallTimeoutMs: 120000"];
+
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, CASE_MS);
 
 /** The system prompt of a request the charter check sends: its own frame heads it. */
 const isGateRequest = (request: Request): boolean =>
@@ -151,7 +165,7 @@ async function runSession(options: {
       ...deliveryFor(url.pathname, body, id),
     });
   });
-  await writeStandinProfile(home, base, options.config ?? []);
+  await writeStandinProfile(home, base, [...DEPLOYED_SETTINGS, ...(options.config ?? [])]);
 
   let settled = Promise.withResolvers<void>();
   const rpc = spawnRpc(
@@ -248,7 +262,7 @@ test.skipIf(omp === undefined && !onActions)(
       },
     ]);
   },
-  180_000
+  CASE_MS
 );
 
 // A write an eval cell makes reaches the gate through the tool bridge, which calls the tool with no
@@ -291,7 +305,7 @@ for (const [language, code] of [
         { tool: "dispatch_ask", outcome: "no-verdict", decision: "allow" },
       ]);
     },
-    180_000
+    CASE_MS
   );
 
 // AskGate's enforcement at the CLI, on the real binary with the real CLI and a fake Dispatch: the
@@ -336,7 +350,7 @@ test.skipIf(omp === undefined && !onActions)(
       { tool: "dispatch_ask", outcome: "verdict", decision: "allow" },
     ]);
   },
-  180_000
+  CASE_MS
 );
 
 // The review of the marker design at cf3f1e021, C1: the gate bound an upload's marker to its own
@@ -393,7 +407,7 @@ test.skipIf(omp === undefined && !onActions)(
       { tool: "dispatch_artifact", outcome: "verdict", decision: "allow" },
     ]);
   },
-  180_000
+  CASE_MS
 );
 
 for (const [form, firstTurn, config] of [
@@ -448,7 +462,7 @@ for (const [form, firstTurn, config] of [
         { tool: "dispatch_ask", outcome: "unmarked", decision: "revise", verdictMode: "block" },
       ]);
     },
-    180_000
+    CASE_MS
   );
 
 // The CLI's checks default to warn: in a session that chose no mode, a gated write with no marker
@@ -472,7 +486,7 @@ test.skipIf(omp === undefined && !onActions)(
       { tool: "dispatch_ask", outcome: "unmarked", decision: "allow", verdictMode: "warn" },
     ]);
   },
-  180_000
+  CASE_MS
 );
 
 test.skipIf(omp === undefined && !onActions)(
@@ -492,5 +506,5 @@ test.skipIf(omp === undefined && !onActions)(
     expect(lastTurn(requests)).not.toContain(REFUSED);
     expect(await gateEntries(sessions)).toEqual([]);
   },
-  180_000
+  CASE_MS
 );
