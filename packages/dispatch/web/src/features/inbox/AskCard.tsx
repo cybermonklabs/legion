@@ -91,7 +91,7 @@ import {
 } from "./AskCompletionCard";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
-import { AskThread } from "./AskThread";
+import { AskThread, UnsentBox } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askTurnHolder } from "./ask-turn";
@@ -100,7 +100,6 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
-import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -179,6 +178,10 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: badgeMed.text,
 };
 
+/** What the unsent answer's box says, on today's pages and inside `NoTooltips` alike. */
+const UNSENT_ANSWER_WHY =
+  "This question closed before you sent your answer, so it was not sent. Your text is here to copy.";
+
 /**
  * Each colour the card's own elements draw inside `NoTooltips`, the new issue page's, by the
  * role `main`'s colour has: the card is the page's paper inside its hairline rule; the question
@@ -187,8 +190,8 @@ const URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
  * orange; the answer box is the page's field, which keeps `main`'s focus rule, the application's
  * one focus indicator; Answer and Ask back instead are filled with the ink, as the page's one
  * filled control is, and the other actions are its header control's rule and muted words. What
- * the card's children draw - the recipients, the thread, the options, the earlier approval - is
- * theirs.
+ * the card's children draw - the recipients, the thread, the options, the earlier approval, the
+ * unsent answer's box (`UnsentBox`) - is theirs.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -207,7 +210,6 @@ const ON_PAGE = {
   notch: pagePaperBg,
   quiet: pageQuietText,
   quietAct: `${pageQuietText} hover:text-page-muted`,
-  rule: pageLineBorder,
   warning: pageStateText.waiting,
 } as const;
 
@@ -662,11 +664,6 @@ export function AskCard({
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
   const currentAsk = completed ?? displayedAsk;
-  // A resolved ask takes no more replies, so an unsent one has nowhere to go.
-  const resolved = displayedAsk.state === "resolved" || currentAsk.state === "resolved";
-  useEffect(() => {
-    if (resolved) clearReplyDraft(displayedAsk.id);
-  }, [displayedAsk.id, resolved]);
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
@@ -898,21 +895,12 @@ export function AskCard({
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
         />
         {unsentAnswer === "" ? null : (
-          <div
-            className={`mt-3 rounded-xl border p-3 ${tooltips ? borderDefault : ON_PAGE.rule}`}
-            data-testid="ask-unsent-answer"
-          >
-            <p className={`text-xs ${tooltips ? textMutedOnSurface : ON_PAGE.quiet}`}>
-              This question closed before you sent your answer, so it was not sent. Your text is
-              here to copy.
-            </p>
-            <p
-              // Inside `NoTooltips` the reader's own words are a value, which breaks anywhere.
-              className={`mt-1 text-sm whitespace-pre-wrap ${tooltips ? textPrimaryOnSurface : `max-w-full [overflow-wrap:anywhere] ${ON_PAGE.ink}`}`}
-            >
-              {unsentAnswer}
-            </p>
-          </div>
+          <UnsentBox
+            className="mt-3"
+            testId="ask-unsent-answer"
+            text={unsentAnswer}
+            why={UNSENT_ANSWER_WHY}
+          />
         )}
         {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
         {referencedByNode}

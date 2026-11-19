@@ -1,26 +1,43 @@
-import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { ID_AMBIGUOUS } from "@legion/contracts";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { EditorView } from "@milkdown/kit/prose/view";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  focusManager,
+  QueryClient,
+  QueryClientProvider,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
+import { primarySpec } from "../../api/issue-cache";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Artifact, Decision, IssueDecisions, IssueDetails } from "../../api/types";
+import type {
+  Artifact,
+  Comment,
+  Decision,
+  IDCandidate,
+  IssueDecisions,
+  IssueDetails,
+} from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
@@ -28,9 +45,11 @@ import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
+import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
   useAskOutline,
@@ -44,10 +63,19 @@ import {
   useOutlineWriter,
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
-import { CONTROL_LABELS, EMPTY_STATE_LINES, NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import {
+  CONTROL_LABELS,
+  EMPTY_STATE_LINES,
+  NODE_TYPE_NAMES,
+  type NodeType,
+  PRESET_ORDER,
+  type Preset,
+} from "./page-words";
 import { EditorBox } from "./StagedDocument";
+import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 
@@ -75,6 +103,13 @@ const decisionsDocument: Artifact = {
   session_id: null,
   slug: "decisions",
   versions: [],
+};
+
+const specDocument: Artifact = {
+  ...decisionsDocument,
+  id: "artifact-spec",
+  name: "Spec",
+  slug: "spec",
 };
 
 const decision: Decision = {
@@ -230,9 +265,10 @@ function EditedDocument({
  *  down to the node an address names, which the tree is then to put the focus on
  *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
  *  which the page draws on that row's stage; `emptyLine` is what the tree says where the issue
- *  holds nothing, none where it is not given; `readsHeld` is whether the reads the tree is built
- *  from hold their answers, until `holdReads` draws the same tree with them held; `redraw` draws
- *  the same tree again, as a read answering does. */
+ *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
+ *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
+ *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
+ *  does. */
 function renderTree(
   root: TreeNode,
   {
@@ -240,6 +276,7 @@ function renderTree(
     decisions,
     editor,
     emptyLine,
+    isClosed = false,
     readsHeld = true,
     reveal,
   }: {
@@ -247,6 +284,7 @@ function renderTree(
     decisions?: IssueDecisions;
     editor?: StandInEditor;
     emptyLine?: string;
+    isClosed?: boolean;
     readsHeld?: boolean;
     reveal?: readonly TreeNode[];
   } = {}
@@ -277,7 +315,7 @@ function renderTree(
                   filtering={false}
                   focusReveal={reveal !== undefined}
                   holdsEscape={false}
-                  isClosed={false}
+                  isClosed={isClosed}
                   onEditing={(artifactId, onEditor) => {
                     edited.push(artifactId);
                     editedDocument.set?.(artifactId, onEditor);
@@ -443,16 +481,6 @@ async function nextFrame(): Promise<void> {
   const frame = Promise.withResolvers<void>();
   requestAnimationFrame(() => frame.resolve());
   await act(async () => frame.promise);
-}
-
-/** Lets `ms` pass inside `act`, after `first` where given, and React draw what changed by then. */
-function waitInAct(ms: number, first?: () => void): Promise<void> {
-  return act(async () => {
-    first?.();
-    const waited = Promise.withResolvers<void>();
-    setTimeout(waited.resolve, ms);
-    await waited.promise;
-  });
 }
 
 /** Holds every frame asked for from here on until `run` runs them - the ones named, or every one
@@ -1146,10 +1174,193 @@ test("Home from a chip of the first row brings the row back on screen after the 
   }
 });
 
+// A code block or table of the focused row's words keeps a tab stop of its own, so a reader on
+// the keyboard can scroll it sideways. On it, or on a link inside it, every key the browser
+// scrolls by - the block, or the page where the block does not scroll the key's way - is the
+// browser's: the page's keymap prevents none of them, and the tree moves no focus, folds nothing
+// and says nothing. Escape from it gives the row back, and `j`, which scrolls nothing, still moves
+// to the next row. happy-dom scrolls nothing, so a key left to the browser is what a unit case
+// reads; the browser suite reads the scroll itself.
+test("on a block of the focused row that keeps its tab stop, the keys the browser scrolls by are left to it, and Escape gives the row back", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const text = [
+    "Run it so:",
+    "",
+    "```sh",
+    "bun run e2e --project=chromium --workers=1 --retries=0",
+    "```",
+    "",
+    "| Where | What |",
+    "| --- | --- |",
+    "| [the notes](https://example.com/notes) | value |",
+  ].join("\n");
+  // The comment holds a reply, drawn folded, so Right would unfold it and Left move to no row;
+  // the second comment is the row after it.
+  const root = node({
+    children: [
+      node({
+        children: [node({ id: "reply-1", text: "A reply.", type: "comment" })],
+        id: "comment-1",
+        text,
+        tree: displayTree(text),
+        type: "comment",
+      }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  // The rules that make a block of a row's words scroll, which `useOutOfTabOrder` reads through
+  // the computed style: happy-dom applies no rule of styles.css.
+  const sheet = document.createElement("style");
+  sheet.textContent = "[data-node-words] pre, [data-node-words] table { overflow-x: auto; }";
+  document.head.append(sheet);
+  try {
+    const { container } = renderTree(root);
+    await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+    const [row] = rowsFor(container, "comment-1");
+    if (row === undefined) throw new Error("the comment has no row");
+    expect(row.getAttribute("aria-expanded"), "the comment's reply is drawn").toBe("false");
+    /** The block of the focused row that keeps its tab stop under `name`, marked as kept. */
+    const kept = (name: string): HTMLElement => {
+      const block = row.querySelector<HTMLElement>(
+        `[data-kept-scroller][tabindex="0"][aria-label="${name}"]`
+      );
+      if (block === null) throw new Error(`the focused row keeps no tab stop named "${name}"`);
+      return block;
+    };
+    const code = await waitFor(() => kept(CONTROL_LABELS.scrolls_code));
+    const link = kept(CONTROL_LABELS.scrolls_table).querySelector<HTMLElement>("a[href]");
+    if (link === null) throw new Error("the table draws no link");
+    /** The rows as drawn, each with whether it is open: what a move or a fold changes. */
+    const drawn = (): string[] =>
+      [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+        (one) => `${one.dataset.rowKey} ${one.getAttribute("aria-expanded")}`
+      );
+    /** Presses `key` where the focus is, as the browser sends it, and answers the event once
+     *  the page has heard it. */
+    const press = (key: string): KeyboardEvent => {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.activeElement?.dispatchEvent(event);
+      });
+      return event;
+    };
+    const rows = drawn();
+    const report = rowReport(container);
+    for (const [on, what] of [
+      [code, "the code block"],
+      [link, "a link in the table"],
+    ] as const) {
+      act(() => code.focus());
+      // `f` steps from the block to the row's one link, the table's.
+      if (on === link) await user.keyboard("f");
+      expect(document.activeElement, `the focus did not reach ${what}`).toBe(on);
+      for (const key of [
+        "ArrowRight",
+        "ArrowLeft",
+        "ArrowDown",
+        "ArrowUp",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        " ",
+      ]) {
+        const name = key === " " ? "Space" : key;
+        expect(press(key).defaultPrevented, `the page took ${name} from ${what}`).toBe(false);
+        expect(document.activeElement, `${name} moved the focus off ${what}`).toBe(on);
+        expect(drawn(), `${name} on ${what} moved through the tree or folded it`).toEqual(rows);
+        expect(rowReport(container), `${name} on ${what} said something`).toBe(report);
+      }
+      press("Escape");
+      expect(document.activeElement, `Escape on ${what} did not give the row back`).toBe(row);
+    }
+
+    act(() => code.focus());
+    expect(press("j").defaultPrevented, "j on the code block was left to the browser").toBe(true);
+    expect(focusedRow(container), "j on the code block did not move to the next row").toBe(
+      "comment-2"
+    );
+  } finally {
+    sheet.remove();
+  }
+});
+
+// A row whose node Enter puts the caret in - a block of one of the issue's documents, a statement
+// and a check among them - carries `data-editable` (`useNodeEditing.ts`'s `nodeEditable`), which
+// draws the cue that it takes typing (`styles.css`). A comment, a result and a child issue are no
+// block of a document and take no caret, and a closed issue's documents are read-only, so none of
+// its rows carries the mark.
+test("a statement's and a check's rows carry data-editable, a comment's, a result's and a child's do not, and no row of a closed issue does", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const artifacts: Artifact[] = [
+    specDocument,
+    {
+      ...decisionsDocument,
+      id: "artifact-verification",
+      name: "Verification",
+      slug: "verification",
+    },
+  ];
+  const root = node({
+    children: [
+      node({
+        children: [
+          node({
+            children: [node({ id: "result-1", text: "What the run saw.", type: "result" })],
+            id: "verification#b-c1",
+            state: "no-result",
+            text: "The check of the statement.",
+            type: "check",
+          }),
+        ],
+        id: "spec#b-r1",
+        statement: true,
+        text: "A statement of the spec.",
+        type: "requirement",
+      }),
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "CORE-2", text: "The first child", type: "child_issue" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const marked = async (isClosed: boolean): Promise<(string | undefined)[]> => {
+    const view = renderTree(root, { artifacts, isClosed });
+    try {
+      // The check's own branch arrives folded; the reader opens it to draw its result.
+      const [check] = rowsFor(view.container, "verification#b-c1");
+      if (check === undefined) throw new Error("the tree drew no row of the check");
+      await act(async () => check.focus());
+      await user.keyboard("{ArrowRight}");
+      await waitFor(() => expect(rowsFor(view.container, "result-1")).toHaveLength(1));
+      const rows = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")];
+      expect(
+        rows.map((row) => row.dataset.nodeId),
+        "the tree did not draw every row"
+      ).toEqual(["spec#b-r1", "verification#b-c1", "result-1", "comment-1", "CORE-2"]);
+      return rows
+        .filter((row) => row.hasAttribute("data-editable"))
+        .map((row) => row.dataset.nodeId);
+    } finally {
+      view.unmount();
+    }
+  };
+
+  expect(await marked(false), "the rows marked as taking typing on an open issue").toEqual([
+    "spec#b-r1",
+    "verification#b-c1",
+  ]);
+  expect(await marked(true), "a row of the closed issue is marked as taking typing").toEqual([]);
+});
+
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   // A check of the Verification document draws a state, and a requirement of the spec is a
   // statement (`isCheck`, `isStatement`): with neither, the outline folds the branch away.
   const shared = {
@@ -1176,7 +1387,7 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, { artifacts: [spec] });
+  const view = renderTree(root, { artifacts: [specDocument] });
   const placements = rowsFor(view.container, "spec#b-c1");
   expect(placements.length).toBe(2);
   const second = placements[1];
@@ -1199,7 +1410,6 @@ test("Escape leaves the caret for the placement it was taken from, not the node'
 test("the row the reader is editing in places nothing of its own as it grows", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1221,7 +1431,7 @@ test("the row the reader is editing in places nothing of its own as it grows", a
   const sizes = sizesByHand();
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
   try {
-    const view = renderTree(root, { artifacts: [spec] });
+    const view = renderTree(root, { artifacts: [specDocument] });
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
     await user.keyboard("j");
     await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -1250,12 +1460,11 @@ test("the row the reader is editing in places nothing of its own as it grows", a
 // room is left under it gets half the room, and the page is scrolled just far enough to show it.
 // The editor is made editable before it has read its document, and holds no block for the caret
 // or the box until then, so nothing is placed until it has drawn the document's blocks.
-// happy-dom lays nothing out, so the box, and the block 1,500 px down the document it scrolls,
-// are given, under a band of 60 px at the top and over a box of 100 px at the foot.
+// happy-dom lays nothing out, so the row, its box, and the block 1,500 px down the document it
+// scrolls, are given (`pageAroundEditingRow`), here a row that draws nothing over or under its box.
 test("the row's editor opens at the node's block, in a box that ends at the foot of the window", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1264,32 +1473,12 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     id: KEY,
     type: "issue",
   });
-  const documentHeight = 3000;
-  let stands = 200;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
-    if (box === null) return new DOMRect();
-    if (box === this) {
-      const cap = Number.parseFloat(box.style.maxHeight);
-      return new DOMRect(0, stands, 800, Number.isNaN(cap) ? documentHeight : cap);
-    }
-    return this.dataset.blockId === "r1"
-      ? new DOMRect(0, stands + 1500 - box.scrollTop, 800, 24)
-      : new DOMRect();
-  });
-  // The second look after the drawing above the block settles watches the editor's size.
-  const sizes = sizesByHand();
-  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
-  const published = document.documentElement.style;
-  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
-  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
-  const floor = window.innerHeight - 100;
-  const room = floor - 60;
+  const layout: RowLayout = { above: 0, below: 0, drawn: 3000, stands: 200 };
+  const page = pageAroundEditingRow(layout);
+  const { floor, room, scrolled } = page;
   try {
     const view = renderTree(root, {
-      artifacts: [spec],
+      artifacts: [specDocument],
       editor: <div contentEditable suppressContentEditableWarning />,
     });
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
@@ -1329,7 +1518,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     await drawText();
     const box = await editorBox();
     expect(box.style.maxHeight, "the box does not end at the foot of the window").toBe(
-      `${floor - stands}px`
+      `${floor - layout.stands}px`
     );
     expect(box.scrollTop, "the box was not scrolled to the statement's block").toBe(1500);
     expect(scrolled, "the page around the row moved").not.toHaveBeenCalled();
@@ -1338,7 +1527,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     // Low on the screen, with less than half the room under it.
     await user.keyboard("{Escape}");
     await waitFor(() => expect(view.edited.at(-1)).toBeUndefined());
-    stands = floor - 40;
+    layout.stands = floor - 40;
     await user.keyboard("{Enter}");
     await drawText();
     const low = await editorBox();
@@ -1350,15 +1539,235 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     expect(
       (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
       "the page did not bring the low row's box over the foot"
-    ).toBeGreaterThanOrEqual(stands + cap - floor);
+    ).toBeGreaterThanOrEqual(layout.stands + cap - floor);
   } finally {
-    sizes.restore();
-    boxes.mockRestore();
-    scrolled.mockRestore();
-    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
-    published.removeProperty(FOOT_HEIGHT_PROPERTY);
+    page.restore();
   }
 });
+
+// The tester's red row `a row that edits a statement is no taller than the window, and the page
+// around it stays put`, its second half: the row's body - its facts, Keep open, Copy reference -
+// stands under its editor's box, and a box held to the room under its top alone left that body
+// under the window: a long statement the reader moved to and edited made a row of 971 px in a
+// window 900 px tall. The box is held so the whole row fits the room between the band and the
+// foot: a row whose top is at the band gets the room less what the row draws over and under its
+// box, and the page moves not at all.
+test("a row whose body stands under its editor's box is no taller than the room", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  // The row's top at the band, 60 px down: 2 px of it over the box, and a body of 120 px under it.
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  try {
+    const { box } = await heldEditorBox(user, page);
+    expect(box.style.maxHeight, "the box leaves the row taller than the room").toBe(
+      `${page.room - layout.above - layout.below}px`
+    );
+    expect(page.scrolled, "the page around the row moved").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+// Low on the screen, with less than half the room the row leaves its box under the box's top
+// once the body under it is counted: the box takes that half, and the page is scrolled just as
+// far as brings the whole row, its body too, over the foot's box.
+test("a low row whose body stands under its editor's box takes half the room the row leaves it, and is brought on screen whole", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 0 };
+  const page = pageAroundEditingRow(layout);
+  layout.stands = page.floor - 40;
+  try {
+    const { box } = await heldEditorBox(user, page);
+    const cap = Math.floor((page.room - layout.above - layout.below) / 2);
+    expect(box.style.maxHeight, "the box of a low row is not half the room the row leaves it").toBe(
+      `${cap}px`
+    );
+    expect(page.scrolled, "the page did not bring the low row on screen").toHaveBeenCalledTimes(1);
+    expect(
+      (page.scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
+      "the page did not bring the low row's body over the foot"
+    ).toBeGreaterThanOrEqual(layout.stands + cap + layout.below - page.floor);
+  } finally {
+    page.restore();
+  }
+});
+
+// A body taller than the room leaves the box no room at all: the box still takes three of the
+// editor's lines (`node-caret.ts`'s `LEAST_BOX_LINES`), and the page, which shows that box
+// already, stays where it was.
+test("a row whose body is taller than the room still holds its editor's box to three of its lines", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 0, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  layout.below = page.room + 100;
+  try {
+    const { box } = await heldEditorBox(user, page);
+    expect(
+      box.style.maxHeight,
+      "the box under a body taller than the room is not three of the editor's lines"
+    ).toBe(`${3 * EDITOR_LINE}px`);
+    expect(page.scrolled, "the page moved though the box was on screen").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+// A line height of `normal`, which a computed style keeps as the word rather than a length, is
+// read as 1.2 times the editor's font size (`node-caret.ts`'s `NORMAL_LINE_HEIGHT`): the box under
+// a body taller than the room takes three lines of 1.2 x 20 px.
+test("a box held to three of the editor's lines reads a line of normal height as 1.2 times the editor's font size", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 0, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  layout.below = page.room + 100;
+  try {
+    const { box } = await heldEditorBox(user, page, { fontSize: "20px", lineHeight: "normal" });
+    expect(
+      box.style.maxHeight,
+      "the box of an editor whose lines are of normal height is not three lines of 1.2 times its font size"
+    ).toBe("72px");
+  } finally {
+    page.restore();
+  }
+});
+
+// The body can grow after the editor opened, as the page's reads answer - a requirement's counts
+// come with the coverage read - and the second look after the editor's drawing settles holds the
+// box again, so the row still fits the room.
+test("a body grown by the time the editor's drawing settles is counted when the box is held again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  try {
+    const { box, editable } = await heldEditorBox(user, page);
+    layout.below = 180;
+    layout.drawn = 3200;
+    await page.resized(editable);
+    await waitFor(
+      () =>
+        expect(box.style.maxHeight, "the box was not held again once the body grew").toBe(
+          `${page.room - layout.above - layout.below}px`
+        ),
+      { timeout: 2_000 }
+    );
+    expect(page.scrolled, "the page around the row moved").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+/** Where the statement's row and its editor stand on the window, laid out by hand: the editor's
+ *  box `stands` px down the window, the row `above` px over the box's top and `below` px - its
+ *  body - under the box's foot, and the editor's drawing of the document `drawn` px tall, which
+ *  the box is as tall as until it is held to a height. A case moves them as it goes. */
+interface RowLayout {
+  above: number;
+  below: number;
+  drawn: number;
+  stands: number;
+}
+
+/** How tall a line of the editor `heldEditorBox` draws is. */
+const EDITOR_LINE = 24;
+
+/** The page around the statement's row while it holds its editor (`pageAroundEditingRow`). */
+interface EditingPage {
+  /** How far down the window the box at the foot starts. */
+  readonly floor: number;
+  /** Calls by hand the size observers watching `target`, or every one (`sizesByHand`). */
+  readonly resized: (target?: Element) => Promise<void>;
+  /** Puts back what the page was laid out by. */
+  readonly restore: () => void;
+  /** The room between the band at the top and the box at the foot. */
+  readonly room: number;
+  /** The page's scroll, which moves nothing. */
+  readonly scrolled: Mock<typeof window.scrollBy>;
+}
+
+/**
+ * The page around the statement's row while it holds its editor, by hand, since happy-dom lays
+ * nothing out and observes no size: the row, its editor's box, the editor's drawing and the
+ * statement's block 1,500 px down the document stand where `layout` says, and nothing else
+ * draws; the page's scroll is watched and moves nothing; its size observers are called by hand
+ * (`sizesByHand`), as the second look after the drawing above the block settles watches the
+ * editor's size; and a band of 60 px stands at the top, over a box of 100 px at the foot.
+ * Answers the line the foot's box starts at, the room between the two, the page's scroll, its
+ * size observers, and what puts it all back.
+ */
+function pageAroundEditingRow(layout: RowLayout): EditingPage {
+  const boxRect = (box: HTMLElement) => {
+    const cap = Number.parseFloat(box.style.maxHeight);
+    return new DOMRect(0, layout.stands, 800, Number.isNaN(cap) ? layout.drawn : cap);
+  };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const held = this.matches("[data-node-row]")
+      ? this.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`)
+      : null;
+    if (held !== null) {
+      const box = boxRect(held);
+      return new DOMRect(0, box.top - layout.above, 800, layout.above + box.height + layout.below);
+    }
+    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+    if (box === null) return new DOMRect();
+    if (box === this) return boxRect(box);
+    if (this.matches('[contenteditable="true"]')) {
+      return new DOMRect(0, layout.stands - box.scrollTop, 800, layout.drawn);
+    }
+    return this.dataset.blockId === "r1"
+      ? new DOMRect(0, layout.stands + 1500 - box.scrollTop, 800, 24)
+      : new DOMRect();
+  });
+  const sizes = sizesByHand();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
+  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
+  const floor = window.innerHeight - 100;
+  return {
+    floor,
+    resized: sizes.resized,
+    restore: () => {
+      sizes.restore();
+      boxes.mockRestore();
+      scrolled.mockRestore();
+      published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+      published.removeProperty(FOOT_HEIGHT_PROPERTY);
+    },
+    room: floor - 60,
+    scrolled,
+  };
+}
+
+/** The statement's row on `page` with Enter pressed on it, once its editor - an editable drawn in
+ *  `style`, by default in lines of `EDITOR_LINE` px - has drawn the statement's document and the
+ *  row has held the editor's box to a height. The page's scroll is watched from the drawing on:
+ *  the move to the row before it placed the row as every move does. Answers the box and the
+ *  editable. */
+async function heldEditorBox(
+  user: UserEvent,
+  page: EditingPage,
+  style: CSSProperties = { lineHeight: `${EDITOR_LINE}px` }
+): Promise<{ readonly box: HTMLElement; readonly editable: HTMLElement }> {
+  const { editable } = await enterStatement(
+    user,
+    <div contentEditable style={style} suppressContentEditableWarning />
+  );
+  page.scrolled.mockClear();
+  await drawStatementBlocks(editable);
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (box === null) throw new Error("the row's editor stands in no box");
+  await waitFor(() =>
+    expect(box.style.maxHeight, "the row's editor was not held to the window").not.toBe("")
+  );
+  return { box, editable };
+}
 
 /** Blocks of the statement's document as its editor draws them, each by its `data-block-id` and
  *  its words: by default the words above the statement (`r0`), then the statement (`r1`). */
@@ -1399,7 +1808,6 @@ async function enterStatement(
   editor: StandInEditor,
   after: readonly TreeNode[] = []
 ) {
-  const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
       node({ id: "comment-1", text: "The first words.", type: "comment" }),
@@ -1409,7 +1817,7 @@ async function enterStatement(
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, { artifacts: [spec], editor });
+  const view = renderTree(root, { artifacts: [specDocument], editor });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -2984,19 +3392,32 @@ test("Tab from the row's editor goes past a control another block draws to the f
 
 // Shift+Tab from the row's editor goes past every control the editor draws outside the node's
 // block to the row, the outline's one tab stop, and the editing ends there as Escape's does, the
-// focus staying on the row. The document stays as it was.
+// focus staying on the row. The document stays as it was. Shift+Tab steps back from the editable
+// to what stands before it in the page's order, never into the blocks it holds, so the control
+// it passes over here is drawn before the editable, inside the box: the references button of the
+// block above the node's (`doc/ProofDocument.tsx`'s "Block references"), in an aside the case
+// draws there, as the references-button case below draws one after the editable.
 test("Shift+Tab from the row's editor goes to the row past a control another block draws, and ends the editing", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const { editable, view } = await editLive(user, [
-    taskServing("t0", "The task above the statement."),
-    paragraph("r1", "A statement of the spec."),
-    taskServing("t2", "The task below the statement."),
-  ]);
+  const { editable, view } = await editLive(user);
   const row = editable.closest<HTMLElement>("[data-node-row]");
-  if (row === null) throw new Error("the statement's row does not hold the editor");
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (row === null || box === null) throw new Error("the statement's row does not hold the editor");
+  const aside = document.createElement("aside");
+  aside.setAttribute("aria-label", "Block references");
+  const above = document.createElement("button");
+  above.type = "button";
+  above.setAttribute("aria-label", "1 references on block r0");
+  above.setAttribute("data-block-references", "r0");
+  aside.append(above);
+  box.prepend(aside);
   const before = blocksOf(view);
   await user.tab({ shift: true });
+  expect(
+    document.activeElement === above,
+    "Shift+Tab stopped on the references button of the block above"
+  ).toBe(false);
   expect(
     document.activeElement === row,
     "Shift+Tab from the row's editor did not go to the row"
@@ -3181,6 +3602,37 @@ test("a references button of a block inside the node's block is a tab stop of th
       stops.flatMap((stop) => stop.getAttribute("data-block-references") ?? []),
       "the references buttons Tab stops at are not those of the node's block and the block in it"
     ).toEqual(["p1", "r1"]);
+  } finally {
+    row.remove();
+  }
+});
+
+// The editor draws a mermaid block's "Mermaid source" toggle as a `summary` of its own
+// `contenteditable="false"`, right inside the block's editable `details` (`@legion/proof-editor`'s
+// `mermaid-code-block-view.ts`), and the browser stops at it for Tab, as it does at no link of the
+// editable's text. A callout may hold a mermaid block, so the toggle of one in the node's block is
+// a tab stop of the row's editor, while the link in the block's words is not, and neither is the
+// toggle of a mermaid block beside it, another block's.
+test("a mermaid block's source toggle inside the node's block is a tab stop of the row's editor, and one beside it is not", () => {
+  const row = document.createElement("div");
+  const mermaid = `<div class="proof-code-block proof-mermaid-block"><div class="proof-mermaid-preview" contenteditable="false" hidden></div><div class="proof-mermaid-status" contenteditable="false" hidden></div><details class="proof-mermaid-source" open><summary class="proof-mermaid-source-summary" contenteditable="false">Mermaid source</summary><pre class="proof-code-block-pre" data-language="mermaid"><code>graph TD</code></pre></details></div>`;
+  row.innerHTML = `<div ${EDITOR_BOX_ATTRIBUTE}><div contenteditable="true"><p data-block-id="r0">Above.</p><section data-block-id="r1"><p>The statement, after <a href="#b-r0">the words above</a>.</p>${mermaid}</section><section data-block-id="t2">${mermaid}</section></div></div>`;
+  document.body.append(row);
+  try {
+    const editable = row.querySelector('[contenteditable="true"]');
+    if (editable === null) throw new Error("the stand-in draws no editable");
+    const stops = nodeCaret.tabStopsFrom(row, "r1", editable, false) ?? [];
+    /** Each stop inside the row, by its element and the block it stands in. */
+    const named = stops
+      .filter((stop) => row.contains(stop))
+      .map((stop) => {
+        const block = stop.closest("[data-block-id]")?.getAttribute("data-block-id");
+        return `${stop.localName} in ${block ?? "no block"}`;
+      });
+    expect(
+      named,
+      "the stops Tab takes from the row's editor are not the source toggle of the node's block alone"
+    ).toEqual(["summary in r1"]);
   } finally {
     row.remove();
   }
@@ -4377,6 +4829,146 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
     boxes.mockRestore();
     scrolled.mockRestore();
     published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+  }
+});
+
+// `.` zooms into a row of the outline's top level and `,` draws the whole outline again with the
+// focus still on that row: it took no new focus, so nothing of its own placed it, and a zoom back
+// out to the issue placed nothing either - at 1440 by 900 on a long issue the row stood 2,000 to
+// 40,000 px below the window until the next key. Once the outline is drawn the row is brought on
+// screen by the page's one rule and held there while the rows above it grow, as the cycle key's
+// row is. A row `,` moves the focus to - the zoom's own, from a row under it - places itself as it
+// takes the focus, and the zoom places it no second time. happy-dom lays nothing out, so the boxes
+// are given, moved by each scroll, and the size observers watching the page are called by hand.
+test(", from the row . zoomed into brings that row on screen and holds it there as the page grows", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let scrolledTo = 0;
+  // The one row given a box: how tall it is, and where it stands down the page. Every other row
+  // is given none, which reads as whole on screen.
+  let given = { height: 40, id: "comment-2", top: 300 };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches("[data-node-row]") && this.dataset.nodeId === given.id
+      ? new DOMRect(0, given.top - scrolledTo, 800, given.height)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  const sizes = sizesByHand();
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("{End}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    scrolled.mockClear();
+
+    // The whole outline drawn again puts the 40 px row 2,000 px below the window's foot.
+    given = { ...given, top: scrolledTo + window.innerHeight + 2000 };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container), "the key back out moved the focus off the row").toBe(
+      "comment-2"
+    );
+    // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+    expect(
+      scrolled,
+      "the key back out of the row . zoomed into left that row off screen"
+    ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+
+    // The rows above it grow by 500 px more, which puts it below the window's foot again.
+    given = { ...given, top: given.top + 500 };
+    await sizes.resized(document.body);
+    expect(
+      scrolled,
+      "the row was not held on screen as the rows above it grew"
+    ).toHaveBeenLastCalledWith({ top: 500 });
+
+    // `,` from the reply under the first comment's zoom moves the focus to the first comment,
+    // a row taller than the window, which places itself once: at its top just under the band.
+    await user.keyboard("{Home}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+    scrolled.mockClear();
+    given = {
+      height: 2 * window.innerHeight,
+      id: "comment-1",
+      top: scrolledTo + window.innerHeight + 2000,
+    };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container)).toBe("comment-1");
+    expect(scrolled, "the row , moved the focus to was placed twice").toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveBeenCalledWith({ top: window.innerHeight + 2000 - CLEARANCE });
+  } finally {
+    sizes.restore();
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
+// `,` from a row under the zoom's root takes the focus to the root's row, another element, which
+// places itself as it takes the focus. The zoom out places the row that kept the focus through
+// it (`zoomedOutOn`) only while that row still holds the focus once the whole outline is drawn:
+// the row the key's move took the focus from is placed by nothing, since bringing it on screen
+// would take the page away from the row the reader is on. happy-dom lays nothing out, so both
+// rows are given boxes below the window, moved by each scroll.
+test(", from a row under the zoom's root places the root's row alone, not the row the focus left", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let scrolledTo = 0;
+  // Where each row given a box stands down the page, 40 px tall; a row given none reads as whole
+  // on screen.
+  let tops: Readonly<Record<string, number>> = {};
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const top = this.matches("[data-node-row]") ? tops[this.dataset.nodeId ?? ""] : undefined;
+    return top === undefined ? new DOMRect() : new DOMRect(0, top - scrolledTo, 800, 40);
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+    scrolled.mockClear();
+
+    // The whole outline drawn again puts the first comment's row 2,000 px below the window's
+    // foot, and its reply's 100 px below that.
+    const below = scrolledTo + window.innerHeight + 2000;
+    tops = { "comment-1": below, "comment-1a": below + 100 };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container)).toBe("comment-1");
+    await nextFrame();
+    // The root's row alone, its foot brought 8 px clear of the screen's
+    // (`identity-block.ts`'s `bringOnScreen`).
+    expect(scrolled, "the zoom out placed two rows").toHaveBeenCalledTimes(1);
+    expect(
+      scrolled,
+      "the zoom out brought on screen the row the focus left, not the row it is on"
+    ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
   }
 });
 
@@ -6270,6 +6862,22 @@ test("a node whose words are only a bare address is named by its short form, in 
   expect(crumbs[1]?.textContent, "the crumb names the node by its address as written").toBe(short);
 });
 
+/** Seeds `client` with the reader and every read the body's tree is built from (`slots/body.tsx`),
+ *  each answered empty, but the comments', which answer `comments` and are left unread where
+ *  none are given. */
+function seedBodyReads(
+  client: QueryClient,
+  { comments }: { readonly comments?: readonly Comment[] } = {}
+): void {
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
+  client.setQueryData(["issue-messages", KEY], []);
+}
+
 // The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads
 // are still out - the asks, the comments, the messages, the decisions, the coverage, the results
 // and the documents' blocks each draw nodes once they answer, and only the children come with the
@@ -6283,12 +6891,7 @@ test("the outline says the issue holds nothing only once the reads its nodes com
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["issue-messages", KEY], []);
+  seedBodyReads(client);
   // The comments' read, held out until the case answers it.
   const held = Promise.withResolvers<never[]>();
   const comments = spyOn(api, "listComments").mockReturnValue(held.promise as never);
@@ -6354,13 +6957,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["comments", KEY], []);
-  client.setQueryData(["issue-messages", KEY], []);
+  seedBodyReads(client, { comments: [] });
   const reads = [
     spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -6411,5 +7008,1304 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   } finally {
     setSystemTime();
     for (const spy of [...reads, ...others]) spy.mockRestore();
+  }
+});
+
+/** The page's body at the address the router holds, as the page's root draws it
+ *  (`IssueOutlinePage.tsx`): the route read from the address at every render. `held.navigate`
+ *  is what a link followed calls. `Slot` is what draws the address: the body, or the stage that
+ *  chooses between the body and a view. */
+function AddressedBody({
+  held,
+  issue,
+  Slot,
+}: {
+  held: { navigate?: NavigateFunction };
+  issue: IssueDetails;
+  Slot: (props: SlotProps) => ReactNode;
+}): ReactNode {
+  const { pathname, search } = useLocation();
+  held.navigate = useNavigate();
+  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <IssueScope />
+      <Slot issue={issue} route={route} />
+    </ProvidersSlot>
+  );
+}
+
+/** The page's body opened at `path`, every read the tree is built from answered: the issue
+ *  holds `comments` and nothing else, and its comments' read is left unread where `comments` is
+ *  undefined, as is each read `unread` names by its query key. `follow` follows a link to an
+ *  address, as a row's link or the router's does; `redraw` draws the same location again, as a
+ *  read answering does; `client` holds the reads. `Slot` draws the address, the body where none
+ *  is given, of `issue`, which holds no document where none is given. */
+function renderAddressedBody(
+  path: string,
+  comments: readonly Comment[] | undefined,
+  Slot: (props: SlotProps) => ReactNode = BodySlot,
+  issue: IssueDetails = { ...issueDetails(), artifacts: [] },
+  unread: readonly QueryKey[] = []
+) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  seedBodyReads(client, { comments });
+  for (const queryKey of unread) client.removeQueries({ queryKey });
+  const held: { navigate?: NavigateFunction } = {};
+  const draw = () => (
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedBody held={held} issue={issue} Slot={Slot} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw());
+  return {
+    client,
+    follow: (to: string) =>
+      act(async () => {
+        await held.navigate?.(to);
+      }),
+    redraw: () => view.rerender(draw()),
+    view,
+  };
+}
+
+// The architect's rule for an address of a node of the issue: following a link to it opens the
+// branches above the node and puts the focus on its row. A zoom the reader held on another branch
+// drew no row for the node, and the landing gave up with nothing said: the focus stayed where it
+// was and the zoom stood. The following leaves a zoom the node is outside of.
+test("a comment's address followed while the reader is zoomed into another branch leaves the zoom and lands on the comment's row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    await user.keyboard(".");
+    await waitFor(() => expect(container.querySelector("[data-crumb]")).not.toBeNull());
+    expect(rowsFor(container, "reply-b"), "the zoom into head-a drew the other thread").toEqual([]);
+
+    await body.follow(buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }));
+    await waitFor(() =>
+      expect(
+        focusedRow(container),
+        "the comment's address, followed from a zoom into another branch, landed nowhere"
+      ).toBe("reply-b")
+    );
+    expect(
+      container.querySelector("[data-crumb]"),
+      "the zoom into the other branch stood after the following"
+    ).toBeNull();
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The landing was keyed on the node alone, so a link to the node the reader had moved away from,
+// followed again - the same address, a new following - landed nowhere. It is keyed on the
+// following too (the location's own key), and a tree drawn again at the same following - a read
+// answering - lands no more once the reader has moved.
+test("the same address followed twice lands both times, and a redraw of it after the reader moved lands no more", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const address = buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" });
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(container)).not.toBe("reply-b"));
+    const moved = focusedRow(container);
+    expect(moved, "k left the focus on no row").toBeDefined();
+
+    await body.follow(address);
+    await waitFor(() =>
+      expect(focusedRow(container), "the same address followed a second time landed nowhere").toBe(
+        "reply-b"
+      )
+    );
+
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(container)).toBe(moved));
+    body.redraw();
+    await nextFrame();
+    await nextFrame();
+    expect(focusedRow(container), "a redraw of the same following landed on the node again").toBe(
+      moved
+    );
+  } finally {
+    names.mockRestore();
+  }
+});
+
+/** An id that names no comment of the issue, which the item's own read answers 404 for. */
+const GONE_COMMENT = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
+
+/** The item's own read's answer for an id that names no comment of the issue. */
+function noSuchComment(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: "no such comment" });
+}
+
+/** A read's answer that the server is down, which the reader can retry. */
+function serverDown(): ApiError {
+  return new ApiError(500, { code: "INTERNAL", error: "the server is down" });
+}
+
+// A node the tree does not hold falls back to the address's own page, never to the page's body,
+// once every read the tree is built from has answered: for an id no item of the issue holds, the
+// old page's landing reads the item and finds none (`missing`), and the page says so where the
+// outline would be, with the focus on that line.
+test("an address naming an item no node holds draws the item's failure once the reads are held, with the focus on its line", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Comment not found" })
+    );
+    expect(read).toHaveBeenCalledWith(GONE_COMMENT);
+    await waitFor(() =>
+      expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
+    );
+    expect(heading.parentElement?.textContent).toContain(
+      `That link doesn't name a comment on ${KEY} — it may have been deleted.`
+    );
+    expect(body.view.queryByRole("tree"), "the outline is drawn beside the failure").toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
+// its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,
+// which is no row, so the outline's tab stop - and says at that row that the thread is the agents'
+// alone. The item is not read as the old page reads one: it is named as a kind of its own.
+test("an address naming a turn only agents wrote in lands on its nearest drawn ancestor and says there the thread is the agents' alone", async () => {
+  setViewport(1440);
+  const agent = { id: "session-1", kind: "session" } as const;
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment");
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: "agents-1", key: KEY, kind: "comment" }),
+      [...TWO_THREADS, readComment("agents-1", 5, null, agent)]
+    );
+    const { container } = body.view;
+    await waitFor(() =>
+      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+        KEY_REPORTS.agents_thread
+      )
+    );
+    expect(focusedRow(container), "the landing is not on the outline's tab stop").toBe("head-a");
+    expect(
+      rowsFor(container, "head-a")[0]?.querySelector("[data-row-report]"),
+      "the report is not drawn at the row the address landed on"
+    ).not.toBeNull();
+    expect(rowsFor(container, "agents-1"), "the outline drew the agents' turn").toEqual([]);
+    expect(
+      read,
+      "the agents' turn was read as an item the issue may not hold"
+    ).not.toHaveBeenCalled();
+    expect(body.view.queryByRole("heading", { name: "Comment not found" })).toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The fallback's line took the focus the moment it drew, whatever the reader had done since they
+// followed the address: a reader who put the focus on a control and pressed a key there while the
+// item's read was still out lost it to the line. The line takes the focus only while the reader
+// has not acted since the address was followed - as the landing on a row takes none after such an
+// act - or in place of whatever held the focus in the body's box, a row of the outline or a line,
+// and the same address followed again, with no act since, gives it the focus again.
+test("an item's failure drawn after the reader pressed a key leaves the focus where they put it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const address = buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  const outside = controlOutside();
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await act(async () => outside.control.focus());
+    await user.keyboard("{Shift}");
+    await act(async () => answer.reject(noSuchComment()));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    await nextFrame();
+    expect(
+      document.activeElement,
+      "the failure's line took the focus from the control the reader pressed a key on"
+    ).toBe(outside.control);
+
+    await body.follow(address);
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the same address followed again, with no act since, left the focus off the failure's line"
+      ).toBe(body.view.getByRole("heading", { name: "Comment not found" }))
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// After the reader acted, the fallback's line took the focus wherever nothing held it, so a
+// reader who left the focus on the page's body - their own nowhere - lost it to the line drawn
+// after, where the address's row drawn after the same act takes none: a press on blank space,
+// and Tab from a row of the outline, the page's last tab stop, which a browser run measured on
+// a missing comment's address (the line took the focus in all 7 of 7 tries where Tab left it on
+// the body). The line takes the focus after an act only where the focus was on the body's box as
+// what it replaces left the page, and the focus leaving that box - from the row the page opened
+// on, by Tab or a press elsewhere - clears that mark.
+test("an item's failure drawn after the reader left the focus on the page's body leaves it there", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment");
+  const outside = controlOutside();
+  // Something outside the outline that takes no focus.
+  const words = "Words outside the outline";
+  const blank = render(<p>{words}</p>).getByText(words);
+  const paths = [
+    [
+      "a press on a control, then on blank space",
+      async () => {
+        await user.click(outside.control);
+        await user.click(blank);
+      },
+    ],
+    [
+      "Tab from a row of the outline, the last tab stop",
+      async (container: HTMLElement) => {
+        await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+        await user.keyboard("{Tab}");
+      },
+    ],
+  ] as const;
+  try {
+    for (const [what, leave] of paths) {
+      const answer = Promise.withResolvers<never>();
+      read.mockReturnValue(answer.promise);
+      // Drawn after the control and the words, so the outline is the page's last tab stop.
+      const body = renderAddressedBody(
+        buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+        TWO_THREADS
+      );
+      await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+      await leave(body.view.container);
+      expect(document.activeElement, `${what} left the focus on an element`).toBe(document.body);
+
+      await act(async () => answer.reject(noSuchComment()));
+      await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+      await nextFrame();
+      expect(
+        document.activeElement,
+        `the line that names no comment, drawn after ${what}, took the focus`
+      ).toBe(document.body);
+      body.view.unmount();
+      read.mockClear();
+    }
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+/** Moves the focus by a key from the row the page opens on, `head-a`, to the next row of the
+ *  outline drawn in `container`: an act of the reader's, which leaves the focus on the outline. */
+async function moveOnFromFirstRow(user: UserEvent, container: HTMLElement): Promise<void> {
+  await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(container)).not.toBe("head-a"));
+  expect(focusedRow(container), "j left the focus on no row").toBeDefined();
+}
+
+// The mark that lets a line take the focus after the reader acted was held on the fallback's own
+// box, which the outline is not drawn in: a reader who had moved to a row of the outline by a key
+// while the item's read was out lost the focus with the outline as the line replaced it, and the
+// line took none, leaving it on the page's body. The mark is the body's box's, which holds the
+// outline and every line drawn in its place, so the line takes the focus the outline took off the
+// page with it.
+test("an item's failure drawn in place of the outline after the reader moved to a row takes the focus", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await moveOnFromFirstRow(user, body.view.container);
+
+    await act(async () => answer.reject(noSuchComment()));
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Comment not found" })
+    );
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the line that names no comment, drawn in place of the outline the reader had moved in, left the focus on the page's body"
+      ).toBe(heading)
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A line took the focus after the reader acted wherever the focus had been on the body's box, a
+// mark a focusout leaving the box clears: the page took out the row the reader had moved to while
+// the outline stayed drawn, so the focus fell to the page's body with the mark still set, and no
+// focusout left the box when the reader then pressed a control outside it. The line drawn later
+// took the focus from that control. After an act the line takes the focus only while nothing else
+// holds it as it is drawn.
+test("a line drawn after the reader's row left the outline and they pressed a control outside it leaves the focus on that control", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  const outside = controlOutside();
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const { container } = body.view;
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await moveOnFromFirstRow(user, container);
+    const moved = focusedRow(container);
+    if (moved === undefined) throw new Error("j left the focus on no row");
+
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        TWO_THREADS.filter((comment) => comment.id !== moved)
+      );
+    });
+    await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
+    expect(rowsFor(container, "head-a"), "the outline left the page with the row").not.toEqual([]);
+    expect(
+      document.activeElement,
+      "the row's leaving left the focus on an element, not the page's body"
+    ).toBe(document.body);
+    await user.click(outside.control);
+    expect(document.activeElement).toBe(outside.control);
+
+    await act(async () => answer.reject(noSuchComment()));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    await nextFrame();
+    expect(
+      document.activeElement,
+      "the line that names no comment, drawn after the reader's row left the outline and they pressed a control outside it, took the focus from that control"
+    ).toBe(outside.control);
+    body.view.unmount();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The line saying the outline holds no row of the block a `#b-` address names is drawn once the
+// last of the tree's reads answers, which can be after a read that answered first drew the rows
+// and the reader moved to one of them by a key: drawn in place of the outline, it takes the focus
+// the outline took off the page with it, as an item's line does. Here the messages' read is the
+// last to answer.
+test("the line that names no row of a block, drawn in place of the outline after the reader moved to a row, takes the focus", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never[]>();
+  const messages = spyOn(api, "listIssueMessages").mockReturnValue(answer.promise as never);
+  try {
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}#b-no-such-block`,
+      TWO_THREADS,
+      BodySlot,
+      undefined,
+      [["issue-messages", KEY]]
+    );
+    await waitFor(() => expect(messages).toHaveBeenCalled());
+    await moveOnFromFirstRow(user, view.container);
+
+    await act(async () => answer.resolve([]));
+    const title = await waitFor(() => view.getByRole("heading", { name: "No row for this block" }));
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the line that names no row of the block, drawn in place of the outline the reader had moved in, left the focus on the page's body"
+      ).toBe(title)
+    );
+    view.unmount();
+  } finally {
+    names.mockRestore();
+    messages.mockRestore();
+  }
+});
+
+// The mark was read by React's `onFocus` and `onBlur` on the body's box, which hear only what React
+// draws inside the box: the document a row is being edited in is drawn there by a React portal
+// whose React parent is beside the box (`document-stage.tsx`), so the focus leaving it for a
+// control outside the box left the mark set, and the line drawn later took the focus from that
+// control. The box's own listeners hear every focus inside its DOM, whatever draws it. A stage the
+// case moves into the box stands for the row's, with a control a portal draws in it.
+test("a line drawn after the focus left a portal inside the outline's box for a control outside it takes no focus", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  const outside = controlOutside();
+  const stage = document.createElement("div");
+  const name = "A control a portal draws";
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS,
+      (props) => (
+        <>
+          <BodySlot {...props} />
+          {createPortal(<button type="button">{name}</button>, stage)}
+        </>
+      )
+    );
+    const { container } = body.view;
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    const box = container.querySelector<HTMLElement>("[data-issue-body]");
+    if (box === null) throw new Error("the body's box is not drawn");
+    await act(async () => box.append(stage));
+    const portalled = body.view.getByRole("button", { name });
+    await user.click(portalled);
+    expect(document.activeElement, "the press left the focus off the portal's control").toBe(
+      portalled
+    );
+    await user.click(outside.control);
+    expect(document.activeElement).toBe(outside.control);
+
+    await act(async () => answer.reject(noSuchComment()));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    await nextFrame();
+    expect(
+      document.activeElement,
+      "the line that names no comment, drawn after the focus left a portal inside the outline's box for a control outside it, took the focus from that control"
+    ).toBe(outside.control);
+    body.view.unmount();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// happy-dom fires nothing at a focused element it takes out of the page, where Chromium fires blur
+// and focusout, their relatedTarget null, while the element is still connected (measured in
+// Chromium 156). The case fires them as Chromium does, at the focused row as React takes the
+// outline out to draw the line in its place. Heard as the focus leaving the box for nowhere, that
+// focusout cleared the mark, and the line took no focus, though the focus fell to the page's body
+// with the outline it was on: the line takes it.
+test("a line drawn in place of the outline takes the focus though taking out the focused row fires focusout, as Chromium does", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  const removeChild = Node.prototype.removeChild;
+  // The focusouts fired at a focused element as it was taken out of the page.
+  let fired = 0;
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await moveOnFromFirstRow(user, body.view.container);
+
+    const removals = spyOn(Node.prototype, "removeChild").mockImplementation(function (
+      this: Node,
+      child: Node
+    ) {
+      const focused = document.activeElement;
+      if (focused !== null && focused !== document.body && child.contains(focused)) {
+        fired += 1;
+        focused.dispatchEvent(new FocusEvent("blur", { relatedTarget: null }));
+        focused.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+      }
+      return removeChild.call(this, child);
+    } as typeof Node.prototype.removeChild);
+    let heading: HTMLElement;
+    try {
+      await act(async () => answer.reject(noSuchComment()));
+      heading = await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    } finally {
+      removals.mockRestore();
+    }
+    expect(fired, "taking the outline out of the page fired no focusout at the focused row").toBe(
+      1
+    );
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the line that names no comment, drawn in place of the outline whose focused row fired focusout as it was taken out, left the focus on the page's body"
+      ).toBe(heading)
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The fallback's Retry was today's page's, which reads nothing of the read it asks again: it drew
+// no busy state while the read ran, and a second failure left the first alert standing, so a
+// screen reader said nothing. It is the new page's failed read's line (`FailedReadLine`): busy
+// while the read runs again and never disabled, and each failure draws its alert afresh.
+test("an item whose read failed draws a Retry that is busy while it reads again, and says a second failure again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValueOnce(serverDown());
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const retry = await waitFor(() =>
+      body.view.getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const first = body.view.getByRole("alert");
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise);
+    await user.click(retry);
+    await waitFor(() =>
+      expect(retry, "the Retry is not busy while its read runs again").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retry, "the Retry is disabled while its read runs again").not.toBeDisabled();
+    await act(async () => again.reject(serverDown()));
+    await waitFor(() =>
+      expect(retry, "the Retry is still busy once its read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(
+      body.view.getByRole("alert"),
+      "the second failure left the first failure's alert standing, which says nothing again"
+    ).not.toBe(first);
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+/** Every preset that draws a view in the outline's place, read from the stage's own slots
+ *  (`VIEW_SLOTS`), so a view added there is a view these cases cover. */
+const VIEW_PRESETS: readonly Preset[] = PRESET_ORDER.filter(
+  (preset) => VIEW_SLOTS[preset] !== undefined
+);
+
+/** The stage at `path` (`renderAddressedBody`), every view a stand-in that draws its preset's
+ *  name (`data-stand-in-view`), `preset`'s slot `filled` or not and every other slot as
+ *  `SLOT_FILLED` has it: the stage's rule, read apart from what each view's part draws and from
+ *  which of them have filled their slots. */
+function renderStage(path: string, preset: Preset, filled: boolean, issue?: IssueDetails) {
+  const views = Object.fromEntries(
+    Object.entries(VIEW_SLOTS).map(([each, slot]) => [
+      each,
+      slot === undefined ? undefined : () => <div data-stand-in-view={each} />,
+    ])
+  ) as ViewSlots;
+  return renderAddressedBody(
+    path,
+    TWO_THREADS,
+    (props) => <StageSlot {...props} filled={{ ...SLOT_FILLED, [preset]: filled }} views={views} />,
+    issue
+  );
+}
+
+/** The presets of the stand-in views drawn in `container`, in the page's order. */
+function standInViews(container: HTMLElement): (string | null)[] {
+  return [...container.querySelectorAll("[data-stand-in-view]")].map((view) =>
+    view.getAttribute("data-stand-in-view")
+  );
+}
+
+// `documentItemPath` writes the address of an item of the spec as the Spec view's address with
+// the item beside it (`/spec?comment=<id>`), which keeps the view's preset (`issueAddress`). A
+// view whose part has not filled its slot draws nothing, so the address drew no outline and landed
+// nowhere, with the focus on the page's body. Under every view, while its slot is not filled, an
+// address naming a node of the outline beside the view's own draws the body, which lands on the
+// node, or says in the outline's place that the issue holds no such item. Each view is a
+// stand-in, so the case reads the stage's rule whichever views their parts have filled.
+test("under a view whose slot is not filled, an item's address beside the view's draws the body: it lands on the item's row, or says the issue holds none", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+  try {
+    for (const preset of VIEW_PRESETS) {
+      (document.activeElement as HTMLElement | null)?.blur();
+      const held = renderStage(`${presetPath(KEY, preset)}?comment=reply-b`, preset, false);
+      const { container } = held.view;
+      await waitFor(() =>
+        expect(
+          focusedRow(container),
+          `the item's address beside the ${preset} view drew ${container.querySelector("[data-issue-body]") === null ? "no" : "the"} body and left the focus on ${document.activeElement?.tagName}`
+        ).toBe("reply-b")
+      );
+      expect(standInViews(container), `the ${preset} view was drawn beside the body`).toEqual([]);
+      held.view.unmount();
+
+      (document.activeElement as HTMLElement | null)?.blur();
+      const gone = renderStage(`${presetPath(KEY, preset)}?comment=${GONE_COMMENT}`, preset, false);
+      const heading = await waitFor(
+        () => gone.view.getByRole("heading", { name: "Comment not found" }),
+        {
+          onTimeout: () =>
+            new Error(
+              `the address beside the ${preset} view of an item the issue holds none of drew no line saying so; ${gone.view.container.querySelector("[data-issue-body]") === null ? "no" : "the"} body, with the focus on ${document.activeElement?.tagName}`
+            ),
+        }
+      );
+      await waitFor(() =>
+        expect(
+          document.activeElement,
+          `the line that names no item beside the ${preset} view does not hold the focus`
+        ).toBe(heading)
+      );
+      gone.view.unmount();
+    }
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// Once a view's part fills its slot, an address naming a node beside the view's own is that
+// view's to draw, which lands on the node in its own tree: the stage draws the view and no body in
+// its place, though the outline holds the node. The body is found by its own mark
+// (`data-issue-body`), not by a tree, since in place of the outline it can draw a line.
+test("under a view whose slot is filled, an item's address beside the view's draws the view and no body", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    for (const preset of VIEW_PRESETS) {
+      const body = renderStage(`${presetPath(KEY, preset)}?comment=reply-b`, preset, true);
+      await nextFrame();
+      await nextFrame();
+      const { container } = body.view;
+      expect(
+        container.querySelector("[data-issue-body]"),
+        `the stage drew the body in place of the filled ${preset} view`
+      ).toBeNull();
+      expect(
+        focusedRow(container),
+        `the outline's landing ran under the filled ${preset} view`
+      ).toBeUndefined();
+      expect(standInViews(container), `the stage drew no ${preset} view, or another`).toEqual([
+        preset,
+      ]);
+      body.view.unmount();
+    }
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The architect's rule for an address of a node: it never leaves the reader on the page's body.
+// A `#b-` fragment on the issue's own address naming no block the tree holds, and `/children` on
+// an issue with none, landed nowhere and said nothing. Once the reads are held, each draws a
+// line in the outline's place that says what the link names is not on this issue's page, with
+// the focus on it, as an item the issue holds none of does.
+test("a block or the children an address names that the tree holds none of draw a line saying so, with the focus on it", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    for (const [path, heading, line] of [
+      [
+        `/issues/${KEY}#b-no-such-block`,
+        "No row for this block",
+        `That link names no row of ${KEY}'s outline.`,
+      ],
+      [
+        buildIssuePath({ key: KEY, kind: "children" }),
+        "No child issues",
+        `That link names the child issues of ${KEY}, which has none.`,
+      ],
+    ] as const) {
+      (document.activeElement as HTMLElement | null)?.blur();
+      const body = renderAddressedBody(path, TWO_THREADS);
+      const title = await waitFor(
+        () => body.view.getByRole("heading", { name: heading }),
+        // The message names what the page drew instead.
+        {
+          onTimeout: () =>
+            new Error(
+              `${path} drew no "${heading}" line; ${body.view.queryByRole("tree") === null ? "no" : "an"} outline, with the focus on ${document.activeElement?.tagName}`
+            ),
+        }
+      );
+      await waitFor(() =>
+        expect(document.activeElement, `${path}'s line does not hold the focus`).toBe(title)
+      );
+      expect(title.parentElement?.textContent).toContain(line);
+      expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
+      body.view.unmount();
+    }
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The ids of an ask and a message no item of the issue holds, which their own reads answer for.
+const GONE_ASK = "3c0d5a2e-7f41-4b8e-9d26-1e6a4f0b8c55";
+const GONE_MESSAGE = "9a4e6c1b-2d73-4f58-b0e9-6c3a1d7f2e84";
+
+// A following decides its fallback once. A comment the address landed on, deleted while the
+// reader is on its row - the comments' read answering without it - left the tree, and the whole
+// outline was replaced by the line that names no comment, the focus falling to the page's body.
+// A following whose tree has held the address's node draws no fallback for the rest of it: the
+// outline stays, and nothing reads the comment as the old page's landing would.
+test("a comment the address landed on that leaves the tree leaves the outline drawn, and no line says it is not found", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        TWO_THREADS.filter((comment) => comment.id !== "reply-b")
+      );
+    });
+    await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
+    // Long enough for a read of the comment to have answered.
+    await waitInAct(50);
+    expect(
+      body.view.queryByRole("heading", { name: "Comment not found" }),
+      "the comment that left the tree replaced the outline with the line that names no comment"
+    ).toBeNull();
+    expect(rowsFor(container, "head-b"), "the outline left the page").not.toEqual([]);
+    expect(
+      read,
+      "the comment the tree held was read as an item it may not hold"
+    ).not.toHaveBeenCalled();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// What a following decided is its own: a following that landed on a comment's row leaves the
+// next one, to an item the tree holds none of, to say so, and the line that following drew is
+// not drawn for a later one while that one's read is out - each follows its own address.
+test("each following decides its own fallback: what the one before it found or drew is none of its own", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+  const otherGone = "5d2f8a17-4c6e-4b39-a0d1-7e9b3c5f2a68";
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    await waitFor(() => expect(focusedRow(body.view.container)).toBe("reply-b"));
+
+    await body.follow(buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }), {
+      onTimeout: () =>
+        new Error(
+          "an address of a comment the tree holds none of, followed from a comment the reader landed on, drew no line saying so"
+        ),
+    });
+
+    const other = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(other.promise);
+    await body.follow(buildIssuePath({ id: otherGone, key: KEY, kind: "comment" }));
+    await waitFor(() => expect(read).toHaveBeenCalledWith(otherGone));
+    await nextFrame();
+    expect(
+      body.view.queryByRole("heading", { name: "Comment not found" }),
+      "the line the following before drew was drawn for the next one while its read is out"
+    ).toBeNull();
+    await act(async () => other.reject(noSuchComment()));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// Window focus reads a read in error again (`refetchFailedOnFocus`), and a 404 is one: while it
+// ran, the landing was pending again and the cache still counted the 404 as a failure, so the
+// line that names no comment was swapped for the one that could not load it, and back. While a
+// read runs again the following keeps drawing the landing it last settled on.
+test("an item found missing keeps its line while window focus reads it again", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+  const body = renderAddressedBody(
+    buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+    TWO_THREADS
+  );
+  try {
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Comment not found" })
+    );
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise);
+    await act(async () => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await nextFrame();
+    expect(
+      body.view.queryByRole("heading", { name: "Couldn't load this comment" }),
+      "the read run again on window focus drew the line that could not load the comment"
+    ).toBeNull();
+    expect(
+      body.view.queryByRole("heading", { name: "Comment not found" }),
+      "the read run again on window focus took away the line that names no comment"
+    ).toBe(heading);
+
+    await act(async () => again.reject(noSuchComment()));
+    await waitInAct(20);
+    expect(body.view.queryByRole("heading", { name: "Comment not found" })).toBe(heading);
+    expect(body.view.queryByRole("heading", { name: "Couldn't load this comment" })).toBeNull();
+  } finally {
+    // The client stops listening for window focus first, so the focus given back reads nothing.
+    body.view.unmount();
+    focusManager.setFocused(undefined);
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The failures are counted from the following's start. An item whose read failed, followed again
+// after the reader had gone elsewhere, reads again, and while it ran the cache still counted the
+// old failure: the line that could not load it was drawn, busy, for a read that then answered.
+// A following with no landing settled yet draws nothing in the outline's place while its read is
+// out, whatever reads before it failed.
+test("an item followed again after its read failed draws no failure while its read runs again, nor once it answers", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValueOnce(serverDown());
+  const address = buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" });
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    await waitFor(() => body.view.getByRole("heading", { name: "Couldn't load this comment" }));
+    await body.follow(buildIssuePath({ key: KEY, kind: "issue" }));
+    await waitFor(() => expect(rowsFor(body.view.container, "head-a")).not.toEqual([]));
+
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise);
+    await body.follow(address);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await nextFrame();
+    expect(
+      body.view.queryByRole("heading", { name: "Couldn't load this comment" }),
+      "the following drew the failure of the read before it while its own read runs"
+    ).toBeNull();
+
+    await act(async () => again.reject(noSuchComment()));
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    expect(body.view.queryByRole("heading", { name: "Couldn't load this comment" })).toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A link to the same item followed again draws its failed line anew from the failure the read
+// had before the following, which reads nothing again. A Retry pressed there runs the read again,
+// and its line stays drawn, busy, with the focus on the Retry, though this following has counted
+// no failure of its own yet: the following keeps the landing it settled on while its read runs.
+test("an item's failed line drawn for the same address followed again stays drawn, busy, while its Retry reads again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValueOnce(serverDown());
+  const address = buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" });
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    await waitFor(() => body.view.getByRole("heading", { name: "Couldn't load this comment" }));
+    await body.follow(address);
+    const retry = await waitFor(() =>
+      body.view.getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise);
+    await user.click(retry);
+    await waitFor(() =>
+      expect(
+        retry.getAttribute("aria-busy"),
+        `the Retry of the address followed again is not busy while its read runs again; ${retry.isConnected ? "it is drawn" : "its line left the page"}`
+      ).toBe("true")
+    );
+    expect(document.activeElement, "the Retry pressed lost the focus").toBe(retry);
+    await act(async () => again.reject(serverDown()));
+    await waitFor(() => expect(retry.getAttribute("aria-busy")).toBeNull());
+    expect(retry.isConnected, "the failed line left the page once its read failed again").toBe(
+      true
+    );
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The reader's press of Retry is an act, and the line drawn once its read answers replaced the
+// line that held the focus, which fell to the page's body: the line that names no comment took
+// no focus. A line drawn in place of a line of the fallback that held the focus takes it.
+test("a Retry whose read answers that the item is gone leaves the focus on the line that says so", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValueOnce(serverDown());
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const retry = await waitFor(() =>
+      body.view.getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise);
+    await user.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    await act(async () => again.reject(noSuchComment()));
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Comment not found" })
+    );
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the line that names no comment, drawn in place of the Retry the reader pressed, left the focus on the page's body"
+      ).toBe(heading)
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A Retry pressed on the failed read of an id written short, whose read then answers with the
+// several items the id names: the list is drawn in place of the line that held the focus, which
+// fell to the page's body with that line, and the list takes it, as the line that names no item
+// does. No case held it: a list that took none still passed.
+test("a Retry whose read answers that the id names several items leaves the focus on their list", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getReferences").mockRejectedValueOnce(serverDown());
+  const short = GONE_COMMENT.slice(0, 8);
+  const match = (id: string, first_line: string): IDCandidate => ({
+    first_line,
+    id,
+    issue_key: KEY,
+    kind: "comment",
+    ref: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+  });
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: short, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const retry = await waitFor(() =>
+      body.view.getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise as never);
+    await user.click(retry);
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+
+    await act(async () =>
+      again.reject(
+        new ApiError(409, {
+          candidates: [
+            match(GONE_COMMENT, "The first note"),
+            match(`${short}-0000-4000-8000-000000000002`, "The other note"),
+          ],
+          code: ID_AMBIGUOUS,
+          error: `the id prefix "${short}" names 2 items; write more of the id`,
+        })
+      )
+    );
+    const list = await waitFor(() => {
+      const drawn = body.view
+        .getByRole("heading", { name: "Several items match that link" })
+        .closest<HTMLElement>('[tabindex="-1"]');
+      if (drawn === null) throw new Error("the list of matches is drawn in no focusable box");
+      return drawn;
+    });
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the list of matches, drawn in place of the Retry the reader pressed, left the focus on the page's body"
+      ).toBe(list)
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The landing on an address's row watched for the reader's acts only from the moment the row
+// drew, so a row whose read answered late took the focus from a control the reader had moved to
+// since they followed the address. Given no focus, it was still brought on screen, which took the
+// page away from where the reader had it. A landing whose following saw an act before its row
+// drew - a press, a key, a turn of the wheel - does nothing to the page: the row is drawn where it
+// stands, the focus and the page where the reader left them. happy-dom lays nothing out, so the
+// row is given a box 2,000 px below the window, which the page's one rule (`identity-block.ts`'s
+// `bringOnScreen`) scrolls to.
+test("a comment's row drawn after the reader acted since following its address moves neither the focus nor the page", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const comments = spyOn(api, "listComments");
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches('[data-node-row][data-node-id="reply-b"]')
+      ? new DOMRect(0, window.innerHeight + 2000, 800, 40)
+      : new DOMRect();
+  });
+  const scrolls = [
+    spyOn(window, "scroll").mockImplementation(() => {}),
+    spyOn(window, "scrollBy").mockImplementation(() => {}),
+    spyOn(window, "scrollTo").mockImplementation(() => {}),
+    spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {}),
+  ];
+  const outside = controlOutside();
+  const acts = [
+    ["a press on a control", () => user.click(outside.control), outside.control],
+    [
+      "a key pressed on a control",
+      async () => {
+        await act(async () => outside.control.focus());
+        await user.keyboard("{Shift}");
+      },
+      outside.control,
+    ],
+    [
+      "a turn of the wheel",
+      () => act(async () => window.dispatchEvent(new Event("wheel"))),
+      document.body,
+    ],
+  ] as const;
+  try {
+    for (const [what, run, stays] of acts) {
+      const answer = Promise.withResolvers<Comment[]>();
+      comments.mockReturnValue(answer.promise as never);
+      const body = renderAddressedBody(
+        buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }),
+        undefined
+      );
+      await waitFor(() => expect(comments).toHaveBeenCalled());
+      await run();
+      expect(document.activeElement, `${what} left the focus elsewhere`).toBe(stays);
+      for (const scroll of scrolls) scroll.mockClear();
+
+      await act(async () => answer.resolve([...TWO_THREADS]));
+      await waitFor(() => expect(rowsFor(body.view.container, "reply-b")).not.toEqual([]));
+      await nextFrame();
+      await nextFrame();
+      expect(
+        document.activeElement,
+        `the comment's row, drawn after ${what}, took the focus from where it was`
+      ).toBe(stays);
+      expect(
+        scrolls.flatMap<unknown>((scroll) => scroll.mock.calls),
+        `the comment's row, drawn after ${what}, scrolled the page`
+      ).toEqual([]);
+      body.view.unmount();
+      comments.mockClear();
+      await act(async () => outside.control.blur());
+    }
+  } finally {
+    names.mockRestore();
+    comments.mockRestore();
+    boxes.mockRestore();
+    for (const scroll of scrolls) scroll.mockRestore();
+  }
+});
+
+// An address that opens a document - the document's own address with a `#b-` fragment - names a
+// block of that document, which the document is to land on: the outline in the body says nothing
+// there of a block it draws no row for, and draws as it stands.
+test("a block an address names beside the document it opens draws no line in the outline's place", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(
+      `${buildIssuePath({ key: KEY, kind: "artifact", slug: "notes" })}#b-no-such-block`,
+      TWO_THREADS
+    );
+    await nextFrame();
+    await nextFrame();
+    expect(
+      body.view.queryByRole("heading", { name: "No row for this block" }),
+      "the block an address names beside the document it opens drew the line that the outline holds no row of it"
+    ).toBeNull();
+    expect(rowsFor(body.view.container, "head-a"), "the outline drew no row").not.toEqual([]);
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The line of an item whose read failed is busy while the read the old page's landing answers
+// from runs again, read under that read's own key (`landingReadKey`): the graph read that
+// resolves an id written short, and an ask's or a message's own read, as a comment's is above.
+test("a failed read of an id written short, of an ask and of a message draws a Retry that is busy while it reads again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const reads = [
+    {
+      name: "a comment's id written short",
+      path: buildIssuePath({ id: GONE_COMMENT.slice(0, 8), key: KEY, kind: "comment" }),
+      read: spyOn(api, "getReferences"),
+    },
+    {
+      name: "an ask",
+      path: buildIssuePath({ id: GONE_ASK, key: KEY, kind: "ask" }),
+      read: spyOn(api, "getAsk"),
+    },
+    {
+      name: "a message",
+      path: buildIssuePath({ id: GONE_MESSAGE, key: KEY, kind: "message" }),
+      read: spyOn(api, "getMessage"),
+    },
+  ];
+  try {
+    for (const { name, path, read } of reads) {
+      read.mockRejectedValueOnce(serverDown());
+      const body = renderAddressedBody(path, TWO_THREADS);
+      const retry = await waitFor(
+        () => body.view.getByRole("button", { name: CONTROL_LABELS.retry }),
+        { onTimeout: () => new Error(`${name}'s failed read drew no Retry`) }
+      );
+      const again = Promise.withResolvers<never>();
+      read.mockReturnValueOnce(again.promise as never);
+      await user.click(retry);
+      await waitFor(() =>
+        expect(
+          retry.getAttribute("aria-busy"),
+          `${name}'s Retry is not busy while its read runs again`
+        ).toBe("true")
+      );
+      await act(async () => again.reject(serverDown()));
+      await waitFor(() =>
+        expect(
+          retry.getAttribute("aria-busy"),
+          `${name}'s Retry is still busy once its read failed again`
+        ).toBeNull()
+      );
+      body.view.unmount();
+    }
+  } finally {
+    names.mockRestore();
+    for (const { read } of reads) read.mockRestore();
+  }
+});
+
+// Under a view whose slot is not filled the stage draws the body only for an address that names
+// a node and opens no document (`StageSlot`): the view's own address names no node, and an address
+// that keeps the view's preset and opens a document - a block of the spec on the Spec view's own
+// address, which the page opens the spec at - is that document's, so each draws the view and no
+// body in its place. Which addresses open a document is read as the page reads them
+// (`issueAddress`), among a block, `?mark=` and a pinned version beside each view's own address.
+test("under a view whose slot is not filled, the view's own address and an address of it that opens a document draw the view, not the body", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const issue = issueDetails();
+  const specSlug = primarySpec(issue)?.slug;
+  // The addresses read here that open a document, across every view.
+  const opening: string[] = [];
+  try {
+    for (const preset of VIEW_PRESETS) {
+      const own = presetPath(KEY, preset);
+      const documents = [`${own}#b-r1`, `${own}?mark=reply-b`, `${own}?comment=reply-b&v=1`].filter(
+        (path) => {
+          const { hash, pathname, search } = new URL(path, "http://dispatch.test");
+          const route = parseIssuePath(pathname, search);
+          if (route === undefined) return false;
+          const address = issueAddress(route, search, hash, specSlug);
+          return address.preset === preset && address.document !== undefined;
+        }
+      );
+      opening.push(...documents);
+      for (const path of [own, ...documents]) {
+        const body = renderStage(path, preset, false, issue);
+        await nextFrame();
+        const { container } = body.view;
+        expect(
+          container.querySelector("[data-issue-body]"),
+          `${path} drew the body in place of the ${preset} view`
+        ).toBeNull();
+        expect(standInViews(container), `${path} drew no ${preset} view, or another`).toEqual([
+          preset,
+        ]);
+        body.view.unmount();
+      }
+    }
+    expect(opening, "no view's address read here opens a document").not.toEqual([]);
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The architect's ruling: a block of the spec on the Spec view's own address opens the Spec view
+// at that block, never the outline, while the view's slot is not filled. The view is a stand-in,
+// so the case reads the stage's rule apart from what the Spec view draws.
+// It names the spec on purpose: the one view whose address can open a document (`routeDocument`).
+test("a block of the spec on the Spec view's address draws the Spec view and no body while its slot is not filled", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderStage(`/issues/${KEY}/spec#b-r1`, "spec", false, issueDetails());
+    await nextFrame();
+    const { container } = body.view;
+    expect(
+      container.querySelector("[data-issue-body]"),
+      "the spec's block drew the body in place of the Spec view"
+    ).toBeNull();
+    expect(standInViews(container), "the spec's block drew no Spec view, or another").toEqual([
+      "spec",
+    ]);
+    body.view.unmount();
+  } finally {
+    names.mockRestore();
   }
 });

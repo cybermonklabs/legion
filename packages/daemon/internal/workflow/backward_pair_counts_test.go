@@ -74,6 +74,7 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 	standsIn(t, pool, phase.Reviewing, "needs_review")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
 		HandoffCommit: "review-" + round})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	applyRefusingNothing(t, pool, engine, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
 		State: "changes_requested", CommitID: head, HeadSHA: head, Author: testReviewApp,
 		Body: reviewBody("the round "+round+" findings", head)})

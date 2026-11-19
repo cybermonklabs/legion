@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -27,10 +28,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -393,7 +396,7 @@ var fakeSettings = Settings{
 // what each of these lines must carry is the source, not one spelling of it; source_test.go pins
 // what the renderer puts in a source.
 func fakeSourceText(broker *httptest.Server) string {
-	return brokerSource(broker.URL).withSettings(fakeSettings).String()
+	return brokerSource(brokeraddr.New(broker.URL)).withSettings(fakeSettings).String()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -430,6 +433,39 @@ func writeKeyDir(t *testing.T, key *ecdsa.PrivateKey, enrollmentID string) strin
 		t.Fatalf("write enrollment: %v", err)
 	}
 	return dir
+}
+
+// proofKey is a session key that signs as testEnrollmentID, with the key dir that holds both, for
+// a fake broker that checks each proof as the broker does.
+type proofKey struct {
+	thumbprint string
+	keyDir     string
+}
+
+func newProofKey(t *testing.T) *proofKey {
+	t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &proofKey{thumbprint: thumbprint, keyDir: writeKeyDir(t, key, testEnrollmentID)}
+}
+
+// verify checks r's proof as the broker's proof.Verifier does, for this key's enrollment alone,
+// with the htu rebuilt from publicURL and r's path, never its query, as the broker rebuilds it
+// from BROKER_PUBLIC_URL. A client that signed anything else is refused.
+func (k *proofKey) verify(r *http.Request, publicURL string) error {
+	verifier := &proof.Verifier{Skew: time.Minute,
+		Lookup: func(_ context.Context, id string) (string, bool, error) {
+			return k.thumbprint, id == testEnrollmentID, nil
+		},
+		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	_, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, publicURL+r.URL.Path, time.Now())
+	return err
 }
 
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
@@ -1515,7 +1551,23 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 		{name: "pending", resp: helper.Response{LoginState: "pending"}, want: "pending\n", exit: 1},
 		{name: "denied", resp: helper.Response{LoginState: "denied"}, want: "denied\n", exit: 1, remedy: true},
 		{name: "expired", resp: helper.Response{LoginState: "expired"}, want: "expired\n", exit: 1, remedy: true},
-		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true},
+		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it\n"},
+		{name: "none, in identity mode", resp: helper.Response{MachineIdentity: true}, want: "none\n", exit: 1,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "dropped at its expiry, in identity mode", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "a live credential, the trade loop stopped", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true, IdentityStopped: true},
+			want: "issued\n",
+			stderr: prefix + "nothing renews the launcher credential, which lapses at " + expiresAt + " (in 2d1h59m), and no session enrols under this machine's credential after that; " +
+				"the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
+		{name: "a live credential, the trade loop running", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true},
+			want:   "issued\n",
+			stderr: prefix + "the helper's trade loop renews the launcher credential; without a trade it lapses at " + expiresAt + " (in 2d1h59m)\n"},
+		{name: "dropped, the trade loop stopped", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true, IdentityStopped: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
 		{name: "pending beside a refused credential", resp: helper.Response{LoginState: "pending", LoginRefused: true}, want: "pending\n", exit: 1},
 		{name: "pending beside a held credential", resp: helper.Response{LoginState: "pending", CredentialHeld: true}, want: "issued\n",
 			stderr: prefix + "a machine login is waiting for approval (code KQ7M-X4PZ); " + held + "\n" + unknown},
@@ -1544,20 +1596,29 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 }
 
 // TestCredentialExpiryLine: login-status's expiry line rounds to the minute with days, names a
-// credential already past its expiry (the helper has not dropped it yet) with the login remedy,
-// and says plainly when the helper's answer carries no expiry or one it cannot read.
+// credential already past its expiry (the helper has not dropped it yet) with the hint of the
+// helper's mode, and says plainly when the helper's answer carries no expiry or one it cannot read.
 func TestCredentialExpiryLine(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	for _, tc := range []struct{ expiresAt, want string }{
-		{"2026-10-10T11:59:30Z", "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
-		{"2026-10-03T15:05:00Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
-		{"2026-10-03T12:00:40Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
-		{"2026-10-03T12:00:00Z", "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login"},
-		{"", "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
-		{"next tuesday", `the helper reported an unreadable launcher credential expiry "next tuesday"`},
+	machineLogin, identity := brokerclient.FailureNoMachineLogin, brokerclient.FailureIdentityLapsed
+	for _, tc := range []struct {
+		expiresAt string
+		failure   brokerclient.Failure
+		want      string
+	}{
+		{"2026-10-10T11:59:30Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", identity, "the helper's trade loop renews the launcher credential; without a trade it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", brokerclient.FailureIdentityStopped, "nothing renews the launcher credential, which lapses at 2026-10-10T11:59:30Z (in 6d23h59m), and no session enrols under this machine's credential after that; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T12:00:00Z", brokerclient.FailureIdentityStopped, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T15:05:00Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
+		{"2026-10-03T12:00:40Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
+		{"2026-10-03T12:00:00Z", machineLogin, "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login, and have a human approve it"},
+		{"2026-10-03T12:00:00Z", identity, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper's trade loop is trading this machine's identity for a new credential"},
+		{"", machineLogin, "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
+		{"next tuesday", machineLogin, `the helper reported an unreadable launcher credential expiry "next tuesday"`},
 	} {
-		if got := credentialExpiry(tc.expiresAt, now); got != tc.want {
-			t.Errorf("credentialExpiry(%q) = %q, want %q", tc.expiresAt, got, tc.want)
+		if got := credentialExpiry(tc.expiresAt, now, tc.failure); got != tc.want {
+			t.Errorf("credentialExpiry(%q, %v) = %q, want %q", tc.expiresAt, tc.failure, got, tc.want)
 		}
 	}
 }

@@ -14,8 +14,10 @@ export interface FocusLoss {
   /**
    * Where the lost element stood at the change: its parent while it is still in the document;
    * for a removal, the element the change took it (or an ancestor of it) out of, while that
-   * element is still in the document; else null. A fallback that wants the control next to the
-   * lost one starts from here.
+   * element is still in the document; else null. For a control lost while the focus was in a
+   * layer outside the region, whose removal the keeper does not hear, that element is the
+   * nearest one around the control as it stood when the focus left it that is still in the
+   * document. A fallback that wants the control next to the lost one starts from here.
    */
   readonly place: HTMLElement | null;
 }
@@ -92,9 +94,7 @@ function placeOf(lost: HTMLElement, records: readonly MutationRecord[]): HTMLEle
   let place: HTMLElement | null = null;
   for (const record of records) {
     const { target } = record;
-    if (record.type !== "childList" || !(target instanceof HTMLElement) || !target.isConnected) {
-      continue;
-    }
+    if (!(target instanceof HTMLElement) || !target.isConnected) continue;
     for (const removed of record.removedNodes) {
       if (removed.contains(lost)) place = target;
     }
@@ -109,6 +109,211 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
     if (canHoldFocus(next)) return next;
   }
   return null;
+}
+
+/**
+ * Hears the reader's pointer presses on `page`, and returns what ends the hearing. It is the one
+ * reader of presses on the page: the keeper's watches and the header's title row read presses
+ * through it, so a press is over for each of them on the same events. `begin` is told of each
+ * press as its pointer goes down; once the press is over, `done` is told where the focus was as
+ * the press began and what `begin` answered. A press is over at the first of these:
+ * - Its pointerup, where it has moved the focus by then or is of a button other than the primary
+ *   one. A mouse press moves the focus as its button goes down, so a press that has moved it by
+ *   its pointerup has done its move then, and a press of any other button sends no click.
+ * - Its click. A tap moves the focus only after its pointer is up, from the mousedown the browser
+ *   sends it then, so a press of the primary button that has moved no focus by its pointerup is
+ *   still under way until its click. That click is heard in the capture phase on the page, before
+ *   the target's own handler: the header's Details control cancels its mousedown so the focus
+ *   stays where it is, and closes Details from its click, which must not read as the press moving
+ *   the focus.
+ * - Its pointercancel. A press the browser cancels, as it does a touch it turns into a scroll and
+ *   as Chromium does a press it turns into a drag, sends neither a pointerup nor a click.
+ * - Its dragend. A press that becomes a drag sends no pointerup and no click, so the drag's end
+ *   ends the press where no pointercancel did.
+ * - Its contextmenu. Where the menu opens as the button goes down, it takes the pointerup itself.
+ * - The blur of the page's window. A press under way as the reader leaves the window may send the
+ *   page no release at all. The window keeps its focused element as it blurs, so a press that had
+ *   moved no focus by then reads as no move. The blur is heard on the window outside the capture
+ *   phase, and only the window's own: a capture listener there hears every element's blur.
+ * A new pointerdown replaces a press still under way.
+ */
+export function hearPresses<T>(
+  page: Document,
+  begin: (event: PointerEvent) => T,
+  done: (from: Element | null, start: T) => void
+): () => void {
+  /** The press under way: where the focus was as it began, whether it is of the primary button,
+   *  and what `begin` answered; null while no press is under way. */
+  let press: {
+    readonly from: Element | null;
+    readonly primary: boolean;
+    readonly start: T;
+  } | null = null;
+  const notePress = (event: PointerEvent) => {
+    // A touch and a pen press as the primary button does.
+    press = { from: page.activeElement, primary: event.button === 0, start: begin(event) };
+  };
+  /** Ends the press under way, if any, and tells `done` of it. */
+  const endPress = () => {
+    if (press === null) return;
+    const { from, start } = press;
+    press = null;
+    done(from, start);
+  };
+  const notePointerUp = () => {
+    // No click follows a press of any button but the primary one, so such a press ends here
+    // whether or not it moved the focus.
+    if (press !== null && (!press.primary || page.activeElement !== press.from)) endPress();
+  };
+  const view = page.defaultView;
+  page.addEventListener("pointerdown", notePress, true);
+  page.addEventListener("pointerup", notePointerUp, true);
+  page.addEventListener("pointercancel", endPress, true);
+  page.addEventListener("dragend", endPress, true);
+  page.addEventListener("contextmenu", endPress, true);
+  page.addEventListener("click", endPress, true);
+  view?.addEventListener("blur", endPress);
+  return () => {
+    page.removeEventListener("pointerdown", notePress, true);
+    page.removeEventListener("pointerup", notePointerUp, true);
+    page.removeEventListener("pointercancel", endPress, true);
+    page.removeEventListener("dragend", endPress, true);
+    page.removeEventListener("contextmenu", endPress, true);
+    page.removeEventListener("click", endPress, true);
+    view?.removeEventListener("blur", endPress);
+  };
+}
+
+/**
+ * Watches `layer`, a layer outside `region` that the focus left the region for from `opener`,
+ * and returns what ends the watch (decision 237). A write may take the opener away while the
+ * layer is open, as the header's labels' count goes once every label fits; the layer, as it
+ * closes, then has nothing to give the focus back to and leaves it on the body. So the watch
+ * hears the changes that may close the layer, and one task after one it reads the layer. Once
+ * the layer is closed - out of the page, or under a hidden or inert element - the watch ends,
+ * and it asks `fallbacks` about the opener and focuses the first answer that can hold the focus,
+ * as for a loss inside the region, when all of these hold:
+ * - the focus is on the body or nowhere, or still on a control of the closed layer, which the
+ *   browser is about to drop to the body;
+ * - the opener can no longer hold the focus: it is removed, disabled, hidden or inert;
+ * - no press of the reader's put the focus on the body. A press outside the layer that moved the
+ *   focus off an element still in the page onto the page, with no element focused since, is the
+ *   reader putting it there. A press that moved no focus is no move of the reader's: the header's
+ *   Details control keeps the focus where it is and closes Details. Nor is a fall to the body
+ *   from an element that went as the press began: a popover that closes on a pointerdown, as an
+ *   `AnchoredPanel` does, takes the control focused in it along and drops the focus to the body
+ *   before the press's mousedown. Nor is a press that moved the focus to an element, as one in a
+ *   popover the layer opened: a later fall to the body is not its doing. A press is read once its
+ *   own move is done (`hearPresses`), and its click is read before the target's own handler, so a
+ *   click that closes the layer is read before it does.
+ *
+ * The loss names no added elements, since nothing watched the region while the layer was open,
+ * and its place is read from where the opener stood when the watch began (`FocusLoss.place`).
+ *
+ * A loss inside a layer still open is the layer's own. The watch also ends when the reader goes
+ * on to the page: a focus on an element of the page's own top-level container (the app's root)
+ * that stands in no layer leaves nothing of the layer's to drop, and a later fall of that focus to
+ * the body, as a control there goes, is no doing of the layer's. A focus in another layer keeps
+ * the watch going, since that layer gives the focus back as it closes: a dialog the app draws in
+ * its root, as the search palette is, gives it back to the control of the layer that held it as
+ * the dialog opened; a popover a control of the layer opens, as Details' Edit labels does, is
+ * drawn on the page's body outside that container, and the focus comes back into the layer from
+ * it or falls with it as the layer closes.
+ */
+function watchLayer(
+  region: HTMLElement,
+  opener: HTMLElement,
+  layer: Element,
+  fallbacks: RefObject<readonly FocusFallback[]>
+): () => void {
+  const page = region.ownerDocument;
+  // The elements around the opener, from its parent up to the region, are read now, while it is
+  // in the page: a write that takes it away may take the element around it too, as an approval
+  // chip's two actions go with the box that keeps them together, and an element out of the page
+  // leads up to nothing.
+  const around: HTMLElement[] = [];
+  for (let element = opener.parentElement; element !== null; element = element.parentElement) {
+    around.push(element);
+    if (element === region) break;
+  }
+  // The page's own top-level container, the app's root, which holds the region, the rest of the
+  // page and the dialogs the app draws, but not a popover drawn straight on the page's body.
+  const app = region.closest("body > *");
+  /** Whether the reader's last press that moved the focus put it on the page from outside the
+   *  layer, off an element still in the page, and no element has taken the focus since: then that
+   *  press, not the layer, put the focus on the body. */
+  let pressedOntoPage = false;
+  /** The timer of the read of the layer, which waits one task after a change of the layer or of
+   *  an ancestor, or undefined while no read waits. */
+  let read: number | undefined;
+
+  const readPress = (from: Element | null, outside: boolean) => {
+    // A press that left the focus where it was is no move of the reader's, and leaves the mark as
+    // it was. A fall to the body is the press's own only while the element the focus left is
+    // still in the page: a popover that closes as the press begins takes its focused control
+    // along, which drops the focus to the body before the press could move it.
+    if (page.activeElement === from) return;
+    pressedOntoPage = outside && focusOnDocument() && from?.isConnected === true;
+  };
+  const noteFocus = (event: FocusEvent) => {
+    const { target } = event;
+    if (
+      target instanceof Element &&
+      app?.contains(target) === true &&
+      outermostLayer(target) === null
+    ) {
+      // The reader went on to the page, so the layer holds no focus of theirs to drop as it
+      // closes, and a later fall of this focus to the body is none of the layer's doing. A focus
+      // in a layer, this one or another, is not on the page, so the watch goes on: the layer
+      // gives the focus back as it closes.
+      stop();
+      return;
+    }
+    // An element took the focus, so a later fall of the focus to the body is not a press's doing.
+    pressedOntoPage = false;
+  };
+  const observer = new MutationObserver(() => {
+    // The read waits one task, as the region's move does: the layer's own code gives the focus
+    // back as it closes, and the browser drops a focus the closing took away to the body.
+    read ??= window.setTimeout(readLayer, 0);
+  });
+  const stop = () => {
+    window.clearTimeout(read);
+    read = undefined;
+    observer.disconnect();
+    page.removeEventListener("focusin", noteFocus, true);
+    stopPresses();
+  };
+  const readLayer = () => {
+    read = undefined;
+    // A layer still open keeps the watch going: a loss inside it is the layer's own.
+    if (layer.isConnected && layer.closest(OUT_OF_REACH) === null) return;
+    stop();
+    const active = page.activeElement;
+    // A focus still on a control of the closed layer is as good as nowhere: the browser drops it
+    // to the body in a later task.
+    const dropped = focusOnDocument() || layer.contains(active);
+    // An opener that can still hold the focus is the layer's to give it back to, or the reader
+    // moved the focus off it.
+    if (!dropped || pressedOntoPage || canHoldFocus(opener)) return;
+    const place = around.find((element) => element.isConnected) ?? null;
+    const loss: FocusLoss = { added: [], lost: opener, place, root: region };
+    firstHolder(fallbacks.current, loss)?.focus();
+  };
+
+  // Each change that closes the layer is a record on the layer or on one of its ancestors, so no
+  // other change of the page wakes the observer.
+  for (let node: Node | null = layer; node !== null; node = node.parentNode) {
+    observer.observe(node, LAYER_CLOSINGS);
+  }
+  page.addEventListener("focusin", noteFocus, true);
+  // Each press notes as it begins whether it fell outside the layer, which `readPress` reads.
+  const stopPresses = hearPresses(
+    page,
+    (event) => !(event.target instanceof Node && layer.contains(event.target)),
+    readPress
+  );
+  return stop;
 }
 
 /**
@@ -140,25 +345,16 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
  * When the focus leaves the region for a layer outside it - the outermost dialog or Details'
  * drawer (`aside[data-details]`) around the element that took the focus, so a dialog inside
  * Details does not narrow the watch to that dialog - the keeper stops watching the region as
- * above, but remembers the control the focus left and that layer (decision 237). A write may
- * take that control away while the layer is open, as the header's labels' count goes once every
- * label fits; the layer, as it closes, then has nothing to give the focus back to and leaves it
- * on the body. So while the keeper remembers them it watches the layer and its ancestors, and
- * one task after a change of them it asks `fallbacks` about that control, with no added elements
- * and no place, and focuses the first answer that can hold the focus, as for a loss inside the
- * region. It does so only when all of these hold:
- * - the layer is closed: out of the page, or under a hidden or inert element;
- * - the focus is on the body or nowhere, or still on a control of the closed layer, which the
- *   browser is about to drop to the body;
- * - the control can no longer hold the focus: it is removed, disabled, hidden or inert;
- * - the reader's last pointer press since the focus was last inside the layer, if any, fell
- *   inside it: a press outside it is the reader putting the focus on the page, where a press on
- *   the layer's own Close is how a reader closes it.
- *
- * A loss inside a layer still open is never the region's to act on. The keeper forgets the
- * control and the layer when the focus comes back into the region, when the focus goes to an
- * element outside both, once the layer has closed - whether the keeper placed the focus, the
- * layer's own code gave it back to the control, or the reader moved it - and on unmount.
+ * above, and watches that layer for the control the focus left (`watchLayer`): a write may take
+ * that control away while the layer is open, and the layer then has nothing to give the focus
+ * back to as it closes. That watch ends in four ways: when the focus comes back into the region,
+ * whose own watch keeps the focus from there, even where it comes back into a dialog the region
+ * draws, which is a layer of its own; when it goes on to an element of the page that stands in no
+ * layer, from which a later fall to the body is no loss of the control's; once the layer has
+ * closed, whether the keeper placed the focus, the layer's own code gave it back to the control,
+ * or the reader moved it; and on unmount. A focus in another layer - a dialog the app draws in its
+ * root, or a popover the layer opened on the page's body - keeps it going, since that layer gives
+ * the focus back as it closes.
  *
  * `fallbacks` may be a new array on every render; the keeper always asks the latest one.
  */
@@ -182,13 +378,19 @@ export function useFocusKeeper(
     /** The observer's records since the last check: what a change added, and where it took an
      *  element out. */
     let heard: MutationRecord[] = [];
-    /** Whether the reader has pressed the pointer somewhere other than `held` since it took the
-     *  focus, and pressed no key since. Such a press is the reader moving the focus: a press on
-     *  the page blurs the control to the body, and the handler that blur runs may remove it before
-     *  the check below runs. A press that moves no focus on purpose (a control that prevents its
-     *  mousedown) leaves the focus on `held` with no focusin to clear the mark, so a key clears
-     *  it: a key acts from where the focus is. */
+    /** Whether a press of the reader's somewhere other than `held` may have moved the focus off
+     *  it. Such a press sets the mark as it begins and keeps it until it is done (`hearPresses`):
+     *  a mouse press on the page blurs the control to the body as its button goes down, and the
+     *  handler that blur runs may remove the control before the check below runs, all before the
+     *  press's pointerup. A press that is done keeps the mark when it moved the focus and clears
+     *  it when it moved none: a control that cancels its own mousedown, as the header's Details
+     *  control does, leaves the focus on `held`, and a write that then takes `held` away is a loss
+     *  the keeper owes the reader. A press on `held` clears it as it begins, and so do a key,
+     *  which acts from where the focus is, and a focus on an element of the region (`hold`). */
     let pointerMoved = false;
+    /** Ends the hearing of the reader's presses (`hearPresses`), which runs while the keeper holds
+     *  an element, or is undefined while it holds none. */
+    let stopPresses: (() => void) | undefined;
     /** The timer of the keeper's move, which waits one task after the check that found the loss,
      *  or undefined while no move waits. */
     let waiting: number | undefined;
@@ -196,24 +398,25 @@ export function useFocusKeeper(
      *  where the keeper put the focus. Null once the control has the focus back, the reader has
      *  acted or the focus has moved on. */
     let given: { readonly from: HTMLElement; readonly to: HTMLElement } | null = null;
-    /** The control that held the focus when it left the region for a layer outside it, and that
-     *  layer, while the keeper waits for the layer to close; null while it waits for none. */
-    let left: { readonly layer: Element; readonly opener: HTMLElement } | null = null;
-    /** Whether the reader's last pointer press since the focus was last inside the layer fell
-     *  outside it: then that press, not the layer, put the focus where it is. */
-    let pressedOutside = false;
-    /** The timer of the read of the layer, which waits one task after a change of the layer or of
-     *  an ancestor, or undefined while no read waits. */
-    let layerRead: number | undefined;
+    /** Ends the watch of the layer the focus last left the region for (`watchLayer`), or is
+     *  undefined while no watch runs, save that a watch that ends by itself, as its layer closes
+     *  or the reader goes on to the page, leaves it set: ending a watch that has ended does
+     *  nothing. */
+    let stopLayerWatch: (() => void) | undefined;
 
     const notePress = (event: PointerEvent) => {
       // A press is the reader acting, which ends a claim to give a control its focus back.
       given = null;
       // A press on the control that holds the focus leaves the focus there and focuses nothing
-      // anew, so no focusin would clear the mark: the write that press starts may then take the
-      // control away, which is a loss the keeper owes the reader.
-      if (held !== null && event.target instanceof Node && held.contains(event.target)) return;
-      pointerMoved = true;
+      // anew, and the write it starts, even before its click, may take the control away, which is
+      // a loss the keeper owes the reader. Any other press is marked until it is done.
+      const onHeld = held !== null && event.target instanceof Node && held.contains(event.target);
+      pointerMoved = !onHeld;
+    };
+    const readPress = (from: Element | null) => {
+      // A press that moved the focus keeps the mark; one that left it where it was is no move of
+      // the reader's.
+      if (page.activeElement === from) pointerMoved = false;
     };
     const noteKey = () => {
       given = null;
@@ -229,7 +432,7 @@ export function useFocusKeeper(
     const hold = (element: HTMLElement) => {
       if (held === null) {
         observer.observe(region, LOSSES);
-        page.addEventListener("pointerdown", notePress, true);
+        stopPresses = hearPresses(page, notePress, readPress);
         page.addEventListener("keydown", noteKey, true);
       }
       held = element;
@@ -243,24 +446,35 @@ export function useFocusKeeper(
       waiting = undefined;
       given = null;
       observer.disconnect();
-      page.removeEventListener("pointerdown", notePress, true);
+      stopPresses?.();
+      stopPresses = undefined;
       page.removeEventListener("keydown", noteKey, true);
+    };
+    /** Whether the focus has moved from `lost` to an element outside the region: the reader has
+     *  left the region, and the keeper stops watching it. Where that element stands in a layer
+     *  outside the region, the keeper watches that layer for `lost` until it closes. A focus on
+     *  the body, still on `lost`, or on another element of the region has not left. */
+    const leftRegion = (lost: HTMLElement): boolean => {
+      const active = page.activeElement;
+      if (focusOnDocument() || active === null || active === lost || region.contains(active)) {
+        return false;
+      }
+      forget();
+      const layer = outermostLayer(active);
+      if (layer !== null && !layer.contains(region)) {
+        stopLayerWatch = watchLayer(region, lost, layer, latestFallbacks);
+      }
+      return true;
     };
     /** Whether the focus `lost` held is lost: it is on the body or still on `lost`, no press of
      *  the reader's put it there, and `lost` can no longer hold it. Every other answer is final,
-     *  and where the focus has left the region the keeper stops watching it. */
+     *  and with the focus on the body the keeper then stops watching the region. A focus outside
+     *  the region is read before this, as the reader leaving it (`leftRegion`). */
     const isLost = (lost: HTMLElement): boolean => {
-      const active = page.activeElement;
       const onBody = focusOnDocument();
-      if (!onBody && active !== lost) {
-        // The focus moved to another element. Inside the region the focusin has already made it
-        // the one held, and a handler that handed the focus on is obeyed; outside it, the reader
-        // has left the region, and where they went into a layer the keeper waits for it to close.
-        if (!region.contains(active)) {
-          forget();
-          const layer = active === null ? null : outermostLayer(active);
-          if (layer !== null && !layer.contains(region)) watchLayer(lost, layer);
-        }
+      if (!onBody && page.activeElement !== lost) {
+        // The focus moved to another element of the region, whose focusin has already made it
+        // the one held: a handler that handed the focus on is obeyed.
         return false;
       }
       if (onBody && pointerMoved) {
@@ -295,6 +509,7 @@ export function useFocusKeeper(
       giveBack();
       // A give-back moved the focus, and its focusin made the control given it the one held.
       const lost = held;
+      if (leftRegion(lost)) return;
       if (!isLost(lost)) {
         heard = [];
         return;
@@ -306,9 +521,9 @@ export function useFocusKeeper(
     const move = () => {
       waiting = undefined;
       // The focus may have moved since the check, so the loss is read again, of whatever the
-      // region holds now.
+      // region holds now, and the focus may have left the region since.
       const lost = held;
-      if (lost === null) return;
+      if (lost === null || leftRegion(lost)) return;
       hear(observer.takeRecords());
       const change = heard;
       heard = [];
@@ -335,6 +550,12 @@ export function useFocusKeeper(
     };
     const noteFocus = (event: FocusEvent) => {
       if (!(event.target instanceof HTMLElement)) return;
+      // The reader is back in the region, so the layer they left it for, if any, holds no focus
+      // of theirs to drop as it closes, and the region's own watch keeps the focus from here. The
+      // layer's watch goes on through a focus that stands in a layer, as one in a dialog the
+      // region draws does, so this is what ends it then.
+      stopLayerWatch?.();
+      stopLayerWatch = undefined;
       // A focus anywhere but where the keeper put it moves the focus on, past any give-back.
       if (given !== null && event.target !== given.to) given = null;
       hold(event.target);
@@ -346,67 +567,6 @@ export function useFocusKeeper(
       // the observer hears the change; the check waits a microtask for the change's records.
       queueMicrotask(check);
     };
-    const layerObserver = new MutationObserver(() => {
-      // The read waits one task, as the move above does: the layer's own code gives the focus
-      // back as it closes, and the browser drops a focus the closing took away to the body.
-      layerRead ??= window.setTimeout(readLayer, 0);
-    });
-    const notePagePress = (event: PointerEvent) => {
-      if (left === null) return;
-      pressedOutside = !(event.target instanceof Node && left.layer.contains(event.target));
-    };
-    const notePageFocus = (event: FocusEvent) => {
-      if (left === null) return;
-      if (event.target instanceof Node && left.layer.contains(event.target)) {
-        pressedOutside = false;
-        return;
-      }
-      // The focus came back into the region, which the keeper watches again from its own focusin,
-      // or the reader took it somewhere else.
-      forgetLayer();
-    };
-    const watchLayer = (opener: HTMLElement, layer: Element) => {
-      if (left === null) {
-        page.addEventListener("focusin", notePageFocus, true);
-        page.addEventListener("pointerdown", notePagePress, true);
-      }
-      // Each change that closes the layer is a record on the layer or on one of its ancestors, so
-      // no other change of the page wakes the observer.
-      for (let node: Node | null = layer; node !== null; node = node.parentNode) {
-        layerObserver.observe(node, LAYER_CLOSINGS);
-      }
-      left = { layer, opener };
-      pressedOutside = false;
-    };
-    const forgetLayer = () => {
-      left = null;
-      pressedOutside = false;
-      window.clearTimeout(layerRead);
-      layerRead = undefined;
-      layerObserver.disconnect();
-      page.removeEventListener("focusin", notePageFocus, true);
-      page.removeEventListener("pointerdown", notePagePress, true);
-    };
-    /** Once the layer has closed, forgets it, and places the focus it dropped by the fallbacks
-     *  when the control it was opened from can no longer hold the focus. */
-    const readLayer = () => {
-      layerRead = undefined;
-      if (left === null) return;
-      const { layer, opener } = left;
-      // A loss inside a layer still open is the layer's own.
-      if (layer.isConnected && layer.closest(OUT_OF_REACH) === null) return;
-      const active = page.activeElement;
-      // A focus still on a control of the closed layer is as good as nowhere: the browser drops
-      // it to the body in a later task.
-      const dropped = focusOnDocument() || (active !== null && layer.contains(active));
-      const readerMoved = pressedOutside;
-      forgetLayer();
-      // A control that can still hold the focus is the layer's to give it back to, or the reader
-      // moved the focus off it; a press outside the layer put the focus on the page.
-      if (!dropped || readerMoved || canHoldFocus(opener)) return;
-      const loss: FocusLoss = { added: [], lost: opener, place: null, root: region };
-      firstHolder(latestFallbacks.current, loss)?.focus();
-    };
 
     // A control that took the focus as it mounted did so before this effect could hear it.
     const active = page.activeElement;
@@ -417,7 +577,7 @@ export function useFocusKeeper(
       region.removeEventListener("focusin", noteFocus);
       region.removeEventListener("focusout", noteLeave);
       forget();
-      forgetLayer();
+      stopLayerWatch?.();
     };
   }, [root]);
 }

@@ -424,6 +424,47 @@ test("Escape closes the open card", async () => {
   }
 });
 
+// The Escape that ends an IME composition is the composition's: the open card stays open, and an
+// Escape after the composition closes it.
+test("an Escape that ends an IME composition leaves the open card open", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const view = render(<Harness />);
+  try {
+    const first = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(first, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    // user-event has no form for a key that ends a composition, so the event is made by hand.
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          isComposing: true,
+          key: "Escape",
+        })
+      );
+    });
+    expect(
+      screen.queryByRole("tooltip"),
+      "the Escape that ended a composition closed the card"
+    ).toBeInTheDocument();
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
+      );
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
 test("only one card is open at a time: hovering a second reference replaces the first", async () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();

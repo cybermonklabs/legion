@@ -685,6 +685,7 @@ export function RefPreviewHost(): ReactNode {
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
     // open. With no open card the key passes through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
       if (event.key === "Escape" && state?.phase === "open") {
         event.stopPropagation();
         closeRefPreview();

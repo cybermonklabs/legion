@@ -18,6 +18,9 @@ import {
   useFillMarginSlot,
 } from "../issue-page/margin-slot";
 import { buildIssuePath } from "../refs/routes";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
+import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { Margin } from "./Margin";
 import { MarginProvider } from "./margin-context";
 import {
@@ -404,6 +407,67 @@ test("on a phone, a link that keeps Details open leaves the sheet open, and a pl
         "a plain link beside the kept ones left the phone's Details open"
       ).toBe(true)
     );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+/** The list of keys over the page, as `app.tsx` binds its `?`. */
+function ListOfKeys(): ReactNode {
+  const [snapshot, setSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  useKeymap("global", [
+    { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => setSnapshot([]) },
+  ]);
+  return <ShortcutHelp onClose={() => setSnapshot(null)} snapshot={snapshot} />;
+}
+
+// R14: Escape closes the innermost layer. With the list of keys open over Details, Escape closes
+// the list alone, wherever the focus is: still on Details' Close in the frame before the list
+// takes it, or on the page after a press on the list's own text.
+test("with the list of keys over Details, Escape closes the list alone, the focus outside it", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <KeymapProvider>
+          <MarginProvider>
+            <Details open>
+              <Margin />
+            </Details>
+            <ListOfKeys />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    const close = await screen.findByTestId("details-close");
+    act(() => close.focus());
+    const list = () => screen.queryByRole("dialog", { name: "Keyboard shortcuts" });
+
+    // The list moves the focus into itself a frame after it opens; with that frame held, the
+    // Escape lands on Details' Close.
+    const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      await user.keyboard("?");
+      expect(list(), "? drew no list of keys").not.toBeNull();
+      expect(document.activeElement, "the list took the focus in its first frame").toBe(close);
+      await user.keyboard("{Escape}");
+    } finally {
+      frames.mockRestore();
+    }
+    expect(list(), "Escape before the list took the focus left the list open").toBeNull();
+    expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
+
+    await user.keyboard("?");
+    await user.click(screen.getByRole("heading", { name: "Keyboard shortcuts" }));
+    expect(document.activeElement, "a press on the list's text kept the focus").toBe(document.body);
+    await user.keyboard("{Escape}");
+    expect(list(), "Escape with the focus on the page left the list open").toBeNull();
+    expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
   } finally {
     view.unmount();
     restoreMatchMedia();

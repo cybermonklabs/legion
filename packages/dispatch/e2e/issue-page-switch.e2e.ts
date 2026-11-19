@@ -44,12 +44,16 @@ async function navigation(page: Page): Promise<Locator> {
 }
 
 async function openSettings(page: Page): Promise<void> {
+  // Each caller has waited for the page it stands on, today's or the new one, to draw, so one
+  // count says whether it is the new one.
+  const onNewPage = (await page.locator("[data-issue-page]").count()) > 0;
+  // The shell draws the rail, which holds Open navigation, in the render that routes to the new
+  // page, from a width query read as it renders, so one count says whether this width has it.
+  const navigationControls = await page.getByRole("button", { name: "Open navigation" }).count();
   // The new page's frame (part D) draws no navigation below 768 px until the header's menu
   // comes, so there the reader goes to Settings with its key, `g s`, which moves with no reload
   // as a link does.
-  const frameWithoutNavigation =
-    (await page.locator("[data-issue-page]").count()) > 0 &&
-    (await page.getByRole("button", { name: "Open navigation" }).count()) === 0;
+  const frameWithoutNavigation = onNewPage && navigationControls === 0;
   if (frameWithoutNavigation) {
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press("g");

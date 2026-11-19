@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // slowDaemon never answers the claims routes: it holds every request until the test ends, as a
@@ -71,9 +73,13 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 
 // --wait defaults to one minute, which is the bound a command with no flag of its own runs under.
 func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
-	c := newClaimsCall("suspend", &bytes.Buffer{}, &bytes.Buffer{})
-	if code, ok := c.parse([]string{"--operator-token-file", operatorTokenFile(t)}); !ok {
-		t.Fatalf("parse exited %d, want it to accept a command with no --wait", code)
+	cmd := &cobra.Command{Use: "suspend"}
+	c := newClaimsCall(cmd, &bytes.Buffer{}, &bytes.Buffer{})
+	if err := cmd.ParseFlags([]string{"--operator-token-file", operatorTokenFile(t)}); err != nil {
+		t.Fatalf("the flags were refused: %v", err)
+	}
+	if code, ok := c.check(); !ok {
+		t.Fatalf("check exited %d, want it to accept a command with no --wait", code)
 	}
 	if *c.wait != time.Minute {
 		t.Fatalf("--wait defaults to %s, want one minute", *c.wait)

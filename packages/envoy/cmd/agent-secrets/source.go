@@ -29,11 +29,10 @@ package main
 import (
 	"context"
 	"net/url"
-	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // sourceSettingsTimeout bounds the settings read describe makes. It is short because naming the
@@ -57,18 +56,18 @@ type source struct {
 }
 
 // brokerSource is the source naming the broker at base, with its store still unread.
-func brokerSource(base string) source {
+func brokerSource(base brokeraddr.Address) source {
 	return source{host: brokerHost(base)}
 }
 
-// brokerHost is base's host and port when redact.URL prints base, and redact.NotPrinted when it
-// does not (user info, a query, an escape, no http(s) scheme, anything its allow-list does not
-// prove clean), so a credential in the variable never prints.
-func brokerHost(base string) string {
-	base = redact.URL(strings.TrimSuffix(base, "/"))
-	parsed, err := url.Parse(base)
+// brokerHost is base's host and port when base prints as written (redact.URL), and
+// redact.NotPrinted when it does not (user info, a query, an escape, no http(s) scheme, anything
+// its allow-list does not prove clean), so a credential in the variable never prints.
+func brokerHost(base brokeraddr.Address) string {
+	shown := base.String()
+	parsed, err := url.Parse(shown)
 	if err != nil || parsed.Host == "" {
-		return base
+		return shown
 	}
 	return parsed.Host
 }

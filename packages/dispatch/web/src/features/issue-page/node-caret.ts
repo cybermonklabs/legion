@@ -332,14 +332,17 @@ export function tabStopsFrom(
 }
 
 /** Whether the browser stops at `element`, one of `TAB_STOPS`, for Tab: no negative `tabindex`,
- *  no content of an editable - whose links take no focus of their own there, while what the
- *  editor draws `contenteditable="false"` does - and able to take the focus (`canHoldFocus`). A
- *  stop the page draws nothing of - `display: none`, a closed `details` - is one the browser
- *  refuses the focus to, which `useNodeEditing.ts` steps past. */
+ *  nothing editable inside an editable - a link in the editor's text takes no focus of its own,
+ *  while the editable itself does, and so does a control the editor draws
+ *  `contenteditable="false"`, even one right in its text, as a mermaid block's "Mermaid source"
+ *  toggle stands in an editable `details` (`@legion/proof-editor`'s `mermaid-code-block-view.ts`)
+ *  and a callout may hold that block - and able to take the focus (`canHoldFocus`). A stop the
+ *  page draws nothing of - `display: none`, a closed `details` - is one the browser refuses the
+ *  focus to, which `useNodeEditing.ts` steps past. */
 function isTabStop(element: HTMLElement): boolean {
   return (
     (!element.hasAttribute("tabindex") || element.tabIndex >= 0) &&
-    element.parentElement?.isContentEditable !== true &&
+    !(element.isContentEditable && element.parentElement?.isContentEditable === true) &&
     canHoldFocus(element)
   );
 }
@@ -658,27 +661,68 @@ function keyAtBlock(
 }
 
 /**
- * Opens the editor in `host` at `blockId`'s block, in a box no taller than the window. The
- * editor holds the whole document, and drawn whole in the row it made the row as tall as the
- * document - 35,635 px for the spec of a real issue of some 160 rows - and took everything
- * under the row down by as much. So the box it scrolls in (`EDITOR_BOX_ATTRIBUTE`) reaches from
- * where it stands down to the box at the foot of the screen and no further: the page stays where
- * the reader had it, and every line of the box is on screen, so the editor, which keeps its
- * caret in view as the reader writes, scrolls the box and never the page. The box - never the
+ * Opens the editor in `host`, the row being edited, at `blockId`'s block, in a box that leaves the
+ * row no taller than the window. The editor holds the whole document, and drawn whole in the row
+ * it made the row as tall as the document - 35,635 px for the spec of a real issue of some 160
+ * rows - and took everything under the row down by as much. So the box it scrolls in
+ * (`EDITOR_BOX_ATTRIBUTE`) is held short enough that the whole row - what the row draws over the
+ * box, the box, and the body under it: the node's facts, Keep open, Copy reference - fits the
+ * room between the band at the top and the box at the foot of the screen, and that the body ends
+ * above the foot's box: the room from the box's top down to the foot is shared with the body
+ * under it. The page stays where the reader had it, and every line of the row is on screen, so
+ * the editor, which keeps its caret in view as the reader writes, scrolls the box and never the
+ * page. A box held to the room under its top alone left the body under the window: a long
+ * statement the reader moved to made a row of 971 px in a window 900 px tall. The box - never the
  * page - is then scrolled so the block stands at its top, where the row's words stood, and once
  * more after the drawing above the block has settled (`refocusWhenSettled`): a picture or a
- * diagram above it draws after the editor opened, and pushes it down.
+ * diagram above it draws after the editor opened, and pushes it down. The box is held, and the
+ * row brought on screen, again then: the body under the box can have grown in that time too, as
+ * the page's reads answer - a requirement's counts and gaps come with the coverage read. A body
+ * that grows where nothing of the drawing is waited on is not held again.
  *
- * A row so low on the screen that less than half the room between the band at the top and the
- * box at the foot stands under it would leave an editor a line or two tall, so its box takes
- * that half, and the page is scrolled just as far as brings the box on screen (`bringOnScreen`,
- * which leaves a box already on screen where it is).
+ * A row so low on the screen that the room under its box's top, less the body, is less than half
+ * the room the row leaves its box would leave an editor a line or two tall, so its box takes that
+ * half, and the page is scrolled just as far as brings the whole row on screen (`bringOnScreen`,
+ * which leaves a row already on screen where it is).
  *
- * Answers what drops that second scroll.
+ * A body so tall that the room leaves the box fewer than `LEAST_BOX_LINES` of the editor's lines
+ * still gets a box of that many lines. The row is then taller than the window, and the page is
+ * scrolled only as far as brings the box on screen, the body running on under the foot's box.
+ *
+ * Answers what drops that second look.
  */
 export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined): () => void {
   const box = host.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
   if (box === null) return () => {};
+  const editable = box.querySelector<HTMLElement>('[contenteditable="true"]');
+  const least = LEAST_BOX_LINES * lineHeightOf(editable ?? box);
+  const place = () => {
+    holdBoxInRow(host, box, least);
+    const block = blockIn(box, blockId);
+    if (block !== null) scrollElementToTop(block, box);
+  };
+  place();
+  return refocusWhenSettled(place, editable ?? undefined);
+}
+
+/** The fewest of the editor's lines a row's box is held to, however tall the body under it
+ *  (`holdEditorAtBlock`): the line the caret is on and one on either side of it, the least that
+ *  still shows the words around the caret rather than a slit a line tall. */
+const LEAST_BOX_LINES = 3;
+
+/** CSS's `normal` line height, which a computed style keeps as the word rather than a length:
+ *  about 1.2 times the font size, as browsers draw it for most faces. */
+const NORMAL_LINE_HEIGHT = 1.2;
+
+/**
+ * Holds `box`, the editor's box in `row`, to the height `holdEditorAtBlock`'s rules give it and
+ * no lower than `least` px, and brings the row on screen: the whole row where it fits the room,
+ * and the box alone where `least` makes the row taller than the room. What the row draws over
+ * the box and under it is read from where the two stand, so it counts whatever the row draws
+ * there: the body under the words, and on a phone the line of the tag, the author and the time
+ * under them (`NodeRow.tsx`'s `NODE_ROW_LAYOUT`).
+ */
+function holdBoxInRow(row: HTMLElement, box: HTMLElement, least: number): void {
   const published = getComputedStyle(document.documentElement);
   const height = (property: string) => {
     const value = Number.parseFloat(published.getPropertyValue(property));
@@ -686,17 +730,24 @@ export function holdEditorAtBlock(host: HTMLElement, blockId: string | undefined
   };
   const floor = window.innerHeight - height(FOOT_HEIGHT_PROPERTY);
   const room = floor - height(IDENTITY_HEIGHT_PROPERTY);
-  const under = floor - box.getBoundingClientRect().top;
-  // Whole pixels down, so a box that ends on the line the foot's box starts at is not read as
+  const rowRect = row.getBoundingClientRect();
+  const boxRect = box.getBoundingClientRect();
+  const below = rowRect.bottom - boxRect.bottom;
+  // The room the row leaves its box, and the room under the box's top the body leaves it.
+  const fits = room - (boxRect.top - rowRect.top) - below;
+  const under = floor - boxRect.top - below;
+  const cap = Math.max(least, Math.min(fits, Math.max(under, fits / 2)));
+  // Whole pixels down, so a row that ends on the line the foot's box starts at is not read as
   // reaching under it by a fraction and scrolled for it.
-  box.style.maxHeight = `${Math.floor(Math.min(room, Math.max(under, room / 2)))}px`;
-  bringOnScreen(box);
-  const place = () => {
-    const block = blockIn(box, blockId);
-    if (block !== null) scrollElementToTop(block, box);
-  };
-  place();
-  return refocusWhenSettled(place, box.querySelector('[contenteditable="true"]') ?? undefined);
+  box.style.maxHeight = `${Math.floor(cap)}px`;
+  bringOnScreen(cap > fits ? box : row);
+}
+
+/** One line of `element`'s text, in px, from its computed style. */
+function lineHeightOf(element: Element): number {
+  const style = getComputedStyle(element);
+  const line = Number.parseFloat(style.lineHeight);
+  return Number.isFinite(line) ? line : NORMAL_LINE_HEIGHT * Number.parseFloat(style.fontSize);
 }
 
 /** `blockId`'s block of the editor in `root`, or null where it draws none. */

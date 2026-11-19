@@ -27,20 +27,32 @@ import { CONTROL_LABELS } from "./page-words";
  * The group is drawn while it is shut too, hidden, so the keys that act on one of its controls -
  * `Shift+P`, the pin (`useHeaderKeys.ts`) - press the same control a reader presses.
  *
- * Escape, and an action pressed from the open group, give the focus back to the group's control,
- * 'Issue actions', as the ARIA menu-button pattern does (WCAG 2.4.3): the group hides the focused
- * action as it closes, and with no control focused the browser would leave the focus on the
- * page's body, so the next Tab would start again from the top of the page. A press outside the
- * group leaves the focus where the press lands, and `Shift+P`, which presses the hidden pin while
- * the group is shut, leaves it where it was.
+ * The open group closes in these ways:
+ * - a second press on its control, 'Issue actions';
+ * - a press outside the control and the group, which leaves the focus where the press lands;
+ * - Escape, and an action pressed from the open group, which give the focus back to the control,
+ *   as the ARIA menu-button pattern does (WCAG 2.4.3): the group hides the focused action as it
+ *   closes, and with no control focused the browser would leave the focus on the page's body,
+ *   so the next Tab would start again from the top of the page;
+ * - the focus moving on to an element outside the control and the group - Tab past its last
+ *   action, Shift+Tab back past the control, or a focus the page moves by code - which leaves
+ *   the focus where it went, as the menu-button and disclosure patterns close a menu the focus
+ *   leaves: at 390 px the open group covers the title and the properties line, so the focus
+ *   would otherwise sit on a control the reader cannot see (WCAG 2.4.11).
+ *
+ * A focus that goes to no element leaves the group open: a focus that falls to the page's body,
+ * or the window losing the focus as the reader switches to another window, is not the reader
+ * moving on in the page, and a press outside has already closed the group as the press went down.
+ * `Shift+P`, which presses the hidden pin while the group is shut, leaves the focus where it
+ * was.
  */
 export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] }): ReactNode {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const wrapper = useRef<HTMLDivElement>(null);
   const control = useRef<HTMLButtonElement>(null);
-  // A press outside the group, or Escape, closes it: an open group would otherwise cover the
-  // page's own first row until the reader pressed the control again.
+  // A press outside the group, Escape, or the focus moving on out of it closes it: an open group
+  // would otherwise cover the page's own first row until the reader pressed the control again.
   useEffect(() => {
     if (!open) return;
     const closeOutside = (event: PointerEvent) => {
@@ -56,11 +68,23 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
       setOpen(false);
       control.current?.focus();
     };
+    // The focus going to an element outside the control and the group closes it and moves no
+    // focus, since the focus is already where the reader took it. A focus with no element to go
+    // to (`relatedTarget` null) - the page's body, or another window - keeps it open.
+    const closeOnFocusAway = (event: FocusEvent) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && wrapper.current?.contains(next) !== true) {
+        setOpen(false);
+      }
+    };
+    const box = wrapper.current;
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);
+    box?.addEventListener("focusout", closeOnFocusAway);
     return () => {
       document.removeEventListener("pointerdown", closeOutside);
       document.removeEventListener("keydown", closeOnEscape);
+      box?.removeEventListener("focusout", closeOnFocusAway);
     };
   }, [open]);
 
@@ -77,8 +101,20 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         ref={control}
         type="button"
       >
-        <span aria-hidden="true" {...pageChrome}>
-          ⋯
+        {/* Three dots on the middle line, a shape and not the text ⋯, which the page's typeface
+            lacks: as text it was drawn in a face of the reader's own machine, at that face's
+            width. It hides itself from assistive technology and holds no words; its span keeps
+            the control's 20 px line, so the control is as tall as its one character made it. */}
+        <span>
+          <svg
+            aria-hidden="true"
+            className="inline-block size-[1em] align-middle"
+            viewBox="0 0 16 16"
+          >
+            <circle cx="3" cy="8" fill="currentColor" r="1.25" />
+            <circle cx="8" cy="8" fill="currentColor" r="1.25" />
+            <circle cx="13" cy="8" fill="currentColor" r="1.25" />
+          </svg>
         </span>
       </button>
       {/* The panel hangs from a zero-size anchor at the wrapper's bottom left, so it opens under

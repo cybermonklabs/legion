@@ -14,7 +14,14 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
-import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
+import type {
+  AnswerAskInput,
+  Ask,
+  AskAnswer,
+  AskRead,
+  Comment,
+  CreateCommentInput,
+} from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
@@ -640,6 +647,154 @@ test("a question closed under the reader keeps their unsent answer, out of the f
     view.unmount();
   }
 });
+
+/** An ask resolved as `kind`, which a session did before anyone replied. */
+function resolvedAsk(kind: string, overrides: Partial<Ask> = {}): Ask {
+  return answeredAsk({
+    answer: null,
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-10-08T03:00:00Z",
+      kind,
+      reason: "Settled elsewhere.",
+    },
+    state: "resolved",
+    ...overrides,
+  });
+}
+
+/** A `createReply` that records what it was asked to post, and answers the comment posted. */
+function recordingReply(sent: [string, CreateCommentInput][]) {
+  return async (issueKey: string, input: CreateCommentInput): Promise<Comment> => {
+    sent.push([issueKey, input]);
+    return { ...askReply(`reply-${sent.length}`, "2026-10-08T04:00:00Z"), body: input.body ?? "" };
+  };
+}
+
+// The collapsed thread the Conversation and a decision block draw (`AskThreadDisclosure`) keeps
+// its Write a reply under a resolved ask, as under an answered one, before anyone has replied
+// too: however the question was settled, the conversation under it goes on.
+test("a collapsed thread under a resolved ask offers Write a reply, and its reply goes on that ask", async () => {
+  const user = userEvent.setup();
+  for (const kind of ["resolved", "retracted", "declined", "withdrawn"]) {
+    const resolved = resolvedAsk(kind);
+    const sent: [string, CreateCommentInput][] = [];
+    const { view } = renderCard(
+      <AskCard
+        ask={resolved}
+        createReply={recordingReply(sent)}
+        getAskThread={async () => thread(resolved)}
+        initialThread={thread(resolved)}
+        thread="collapsed"
+      />
+    );
+    const card = within(view.container);
+    try {
+      await user.click(await card.findByRole("button", { name: "Write a reply" }));
+      await user.click(card.getByRole("textbox", { name: "Reply" }));
+      await user.paste(`After the ${kind} ask.`);
+      await user.click(card.getByRole("button", { name: "Reply" }));
+      await waitFor(() =>
+        expect(sent).toEqual([["CORE-1", { ask_id: "ask-1", body: `After the ${kind} ask.` }]])
+      );
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
+// A reply being written belongs to the ask's thread, which a resolved ask keeps: the ask
+// resolving under the reader, and a card mounted for it since, leave the draft where it was,
+// and it is sent on that ask.
+test("a reply draft outlives its ask resolving and its card remounting, and goes on that ask", async () => {
+  const user = userEvent.setup();
+  const answered = answeredAsk();
+  const retracted = resolvedAsk("retracted", { answer: firstAnswer });
+  const typed = "One more thing before this closes.";
+  const sent: [string, CreateCommentInput][] = [];
+  const first = renderCard(
+    <AskCard ask={answered} createReply={recordingReply(sent)} initialThread={thread(answered)} />
+  );
+  try {
+    const card = within(first.view.container);
+    await user.click(await card.findByRole("textbox", { name: "Reply" }));
+    await user.paste(typed);
+
+    // Document settlement retracts the answered ask while the reply is still a draft.
+    act(() => {
+      first.queryClient.setQueryData<AskRead>(["ask-thread", answered.id], thread(retracted));
+    });
+    await waitFor(() =>
+      expect(card.getByTestId("ask-resolution-badge").textContent).toBe("Retracted")
+    );
+    expect(card.getByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+  } finally {
+    first.view.unmount();
+  }
+
+  // A card mounted for the retracted ask since, as a margin tab switched back mounts one.
+  const again = renderCard(
+    <AskCard
+      ask={retracted}
+      createReply={recordingReply(sent)}
+      getAskThread={async () => thread(retracted)}
+      initialThread={thread(retracted)}
+    />
+  );
+  try {
+    const card = within(again.view.container);
+    expect(await card.findByRole("textbox", { name: "Reply" })).toHaveValue(typed);
+    await user.click(card.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(sent).toEqual([["CORE-1", { ask_id: "ask-1", body: typed }]]));
+  } finally {
+    again.view.unmount();
+  }
+});
+
+// A reply typed under a settled ask that then opens again (a withdrawn ask whose issue is
+// reopened, a retracted question a document's settlement restores) has no composer left to sit
+// in, since an open ask takes none: each thread shows the text read-only where its composer
+// stood, so the reader can still copy it.
+for (const surface of ["inline", "collapsed"] as const) {
+  test(`a reply typed under a retracted ask that opens again stays on screen in the ${surface} thread`, async () => {
+    const user = userEvent.setup();
+    const retracted = resolvedAsk("retracted");
+    const reopened = answeredAsk({ answer: null, state: "open" });
+    const typed = "Before this is picked up again: the lease is the cause.";
+    const card = (ask: Ask) => (
+      <AskCard
+        ask={ask}
+        getAskThread={async () => thread(ask, [])}
+        initialThread={thread(ask, [])}
+        thread={surface}
+      />
+    );
+    const { queryClient, view } = renderCard(card(retracted));
+    const scope = within(view.container);
+    try {
+      if (surface === "collapsed") {
+        await user.click(await scope.findByRole("button", { name: "Write a reply" }));
+      }
+      await user.click(await scope.findByRole("textbox", { name: "Reply" }));
+      await user.paste(typed);
+
+      // The ask opens again: its thread and the list the card is drawn from both read it open.
+      act(() => {
+        queryClient.setQueryData<AskRead>(["ask-thread", retracted.id], thread(reopened, []));
+      });
+      view.rerender(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>{card(reopened)}</QueryClientProvider>
+        </MemoryRouter>
+      );
+      expect(await scope.findByLabelText("Your answer")).toBeInTheDocument();
+      expect(await scope.findByTestId("ask-unsent-reply")).toHaveTextContent(typed);
+      expect(scope.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
+  });
+}
 
 // Handing a question to somebody else is a move on a question still waiting for an answer, so
 // the control is part of an open card and of no record: an answered, a resolved or a withdrawn

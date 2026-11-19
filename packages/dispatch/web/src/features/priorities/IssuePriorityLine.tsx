@@ -52,6 +52,31 @@ export function addPriorityControlName(issueKey: string): string {
   return `Add a priority to ${issueKey}`;
 }
 
+/** The cross a priority's Remove draws inside `NoTooltips`, one em square so it takes its
+ *  button's text size, in its button's text colour. It is a shape and not text because the page's
+ *  typeface holds only the characters its subset lists, and ✕ is not among them: as text, ✕ is
+ *  drawn in a face of the reader's own machine, at that face's width. Drawn as a shape, it is the
+ *  same on every machine. The button's name says what it does, so the cross is hidden from
+ *  assistive technology. */
+function RemoveCross(): ReactNode {
+  return (
+    <svg
+      aria-hidden="true"
+      className="inline-block size-[1em] align-middle"
+      data-remove-glyph=""
+      viewBox="0 0 16 16"
+    >
+      <path
+        d="M4.5 4.5l7 7m0-7l-7 7"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.75"
+      />
+    </svg>
+  );
+}
+
 /**
  * The `Advances` item of the issue header's metadata rail (INFRA-2947, R16 and R3): each
  * priority this issue advances, named by its order and title and linking to that priority's own
@@ -279,7 +304,7 @@ export function IssuePriorityLine({
                 type="button"
                 {...page?.pageChrome}
               >
-                ✕
+                {page === null ? "✕" : <RemoveCross />}
               </button>
             )}
           </span>
@@ -297,7 +322,9 @@ export function IssuePriorityLine({
         <form
           className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
           onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
+            // A press that ends an IME composition gives up what the reader was composing, not
+            // the form: the form leaves it alone, unmarked, as the key registry does.
+            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
             // Escape closes this form and goes no further. The panel the line sits in closes on
             // Escape too - Details on the new issue page, which on a phone is a sheet whose
             // Escape is the key registry's dialog binding (`useDialog`) - and one press reaching

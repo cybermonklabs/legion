@@ -837,6 +837,14 @@ path prefixes it may travel on
 the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
+A host is a host name, never an IP address: a TLS client sends no server name for an address, so
+the proxy refuses every request to an address in its canonical form `sni mismatch`, and it
+compares no other spelling of one at all (`2001:db8:7:0::1`, `[2001:db8:7::1]`,
+`::ffff:192.0.2.10`, `192.0.2.10.`). A host name is written without a trailing dot too
+(`api.github.com`, not `api.github.com.`), because a client writes it that way. The broker
+refuses to start with a file that gives a host as an address in any spelling, that writes a
+name with a trailing dot, that gives any host a port, that has an empty host, or whose host ends
+in a number, and `airlock-check` refuses that file too.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
@@ -875,7 +883,16 @@ could not carry, writes
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
 method, the path, the reason and the answer id
-([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A path that
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A tunnel is
+read by nobody, and a plain-HTTP request is forwarded with nothing decided, so each socket the
+proxy opens for one writes a line of its own instead: `airlock proxy: a tunnel`, with the
+grant, its enrollment, the session and the runtime behind it, the host and port asked for and
+the address the broker dialled. A dial the proxy refused or could not make writes
+`airlock proxy: a dial that did not happen`, with those fields, how many addresses the host
+resolved to, the class of the failure and the reason. The host and the port are the command's
+own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
+path and correlation id are too; none of that is redaction, so every line the proxy writes has
+each placeholder written whole, in any case, replaced by `[placeholder]`. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
@@ -908,8 +925,13 @@ What the airlock does not stop is as much of the design as what it does:
   agent in the middle of a call to ask for a new one.
 
 - A private address that reaches the proxy is refused, because the proxy runs beside the broker,
-  whose own identity reads every secret. A command that needs such a call sets its own `NO_PROXY`
-  entry for that name.
+  whose own identity reads every secret. So is an address inside the broker cluster's own
+  Service, pod and node ranges, which the deployment names in `BROKER_AIRLOCK_CLUSTER_RANGES`
+  beside `BROKER_AIRLOCK_RULES_FILE`: a Service range can be public address space, as GKE's
+  default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
+  (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
+  broker with a rules file refuses to start without that setting, or when no range in it holds
+  that address. A command that needs such a call sets its own `NO_PROXY` entry for that name.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

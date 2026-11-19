@@ -1,4 +1,4 @@
-import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
@@ -58,7 +58,7 @@ export interface IssueTreeView {
  * load's 47 requests, so no other document's blocks are read: four reads at most, and fewer
  * where one document plays two parts or the issue holds none in a part.
  */
-function treeDocumentIds(issue: IssueDetails): string[] {
+export function treeDocumentIds(issue: IssueDetails): string[] {
   const ids = new Set<string>();
   for (const document of [
     primarySpec(issue),
@@ -102,6 +102,17 @@ const NO_TARGET_NAMES: ReadonlyMap<string, string> = new Map();
 /** The references the page publishes as ambiguous until the batched name read answers: none,
  *  and the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
+
+/** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
+ *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
+ *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the
+ *  key from here and cannot drift from it; such a view, like the tree, adds how it is kept fresh
+ *  (`EVENT_FRESH`). */
+export const issueAsksQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["asks", key],
+    queryFn: () => api.listIssueAsks(key, "all"),
+  });
 
 /**
  * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
@@ -167,11 +178,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const coverage = useQuery({ ...issueCoverageQuery(key), ...EVENT_FRESH });
   const decisions = useQuery({ ...issueDecisionsQuery(key, true), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(key), ...EVENT_FRESH });
-  const asks = useQuery({
-    queryKey: ["asks", key],
-    queryFn: () => api.listIssueAsks(key, "all"),
-    ...EVENT_FRESH,
-  });
+  const asks = useQuery({ ...issueAsksQuery(key), ...EVENT_FRESH });
   // Under the keys the margin, the history and the focused row's facts read too, so a reader
   // opening the panel after the tree finds them answered rather than read a second time.
   const comments = useQuery({

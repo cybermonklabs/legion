@@ -113,6 +113,7 @@ export function NodeRow({
   body,
   context,
   document,
+  editable = false,
   editing,
   expanded,
   focused,
@@ -149,6 +150,9 @@ export function NodeRow({
    *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
    *  no block of a document of this issue. */
   document?: Artifact;
+  /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
+   *  place and draws such a row its own way. False unless the view passes it. */
+  editable?: boolean;
   /** The document this row's own text lives in, while the reader is editing it here: its
    *  editor is drawn in place of the row's words and the caret is in this node's block. */
   editing?: string;
@@ -259,6 +263,7 @@ export function NodeRow({
       aria-expanded={expanded}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
+      data-editable={editable ? "" : undefined}
       data-folded-count={folded}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
@@ -323,6 +328,7 @@ export function NodeRow({
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
                 <RowText
+                  focused={focused}
                   markdown={node.text}
                   source={node.source}
                   tabStops={tabStops}

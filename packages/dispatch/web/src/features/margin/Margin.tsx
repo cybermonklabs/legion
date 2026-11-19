@@ -20,6 +20,7 @@ import { routeHasMargin } from "../refs/routes";
 import { DIALOG_SCOPE, useKeymap } from "../shell/keymap";
 import {
   COMPACT_VIEWPORT_QUERY,
+  dialogOpen,
   PHONE_VIEWPORT_QUERY,
   useDialog,
   useMediaQuery,
@@ -305,10 +306,11 @@ function DetailsDrawer({
     closeButton.current?.focus({ preventScroll: true });
     // Escape closes the drawer before the page's own Escape does anything else: the press is the
     // drawer's alone. A field keeps its own Escape, which leaves the field, wherever it is -
-    // inside the drawer or beside it. So does a layer over the drawer or inside it: a dialog the
-    // focus is in - the navigation's sheet, the list of keys - closes on its own Escape and
-    // leaves the drawer open under it, and a menu open in the drawer closes before the drawer
-    // does, since Escape closes the innermost layer.
+    // inside the drawer or beside it. So does a layer over the drawer or inside it: an open
+    // dialog - the navigation's sheet, the list of keys - closes on its own Escape and leaves the
+    // drawer open under it, with the focus in it or not yet in it (the list of keys takes the
+    // focus a frame after it opens) or gone to the page (a press on the list's text), and a menu
+    // open in the drawer closes before the drawer does, since Escape closes the innermost layer.
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
@@ -321,6 +323,7 @@ function DetailsDrawer({
             !["button", "checkbox", "radio", "reset", "submit"].includes(target.type)));
       if (field) return;
       if (target instanceof Element && target.closest('[role="dialog"]') !== null) return;
+      if (dialogOpen()) return;
       if (box.current?.querySelector('[role="menu"]') != null) return;
       event.preventDefault();
       setOpenNow.current(false);

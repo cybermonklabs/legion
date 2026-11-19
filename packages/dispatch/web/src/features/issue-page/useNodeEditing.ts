@@ -3,7 +3,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from "react"
 
 import type { Artifact } from "../../api/types";
 import { focusOnDocument } from "../shell/roving";
-import { documentOfNode } from "./issue-artifacts";
+import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import {
   caretInBlock,
@@ -77,6 +77,20 @@ export function abortOnReaderAct(then?: () => void): AbortController {
     );
   }
   return acts;
+}
+
+/**
+ * Whether a row takes typing, and so draws the cue that it does (`styles.css`), given `place`,
+ * its node's place in one of the issue's documents. That place is Enter's own rule
+ * (`documentOfNode`): a block of one of the issue's documents, which Enter puts the caret in
+ * (`useNodeEditing`'s `edit`), a statement and a check among them, takes typing on an issue that
+ * is open. A closed issue's documents take comments by quote and no edit (`ProofDocument`'s
+ * `editorAccess`), so none of its blocks takes typing, though Enter still opens the editor
+ * there. Every other node has no place - the issue, a child issue, an ask, a comment, a message,
+ * a result, a block of another issue's document such as one above it - and takes no caret at all.
+ */
+export function nodeEditable(place: NodeDocument | undefined, isClosed: boolean): boolean {
+  return !isClosed && place !== undefined;
 }
 
 /**

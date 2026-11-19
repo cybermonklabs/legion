@@ -229,7 +229,9 @@ export interface StallTold {
   readonly evidenceWritten: boolean;
   /** The owner was told. A listener that refuses the publish, and a session with Envoy off, leave
    * this false; the ladder goes on, because an owner that cannot be reached is no reason to leave
-   * a worker stuck. */
+   * a worker stuck. A notice the listener refused for the session's send rate is sent again in the
+   * background (`packages/pi-legion/src/stall-evidence.ts`), so a later telling of the same call
+   * answers true once a resend has told the owner, where the first answered false. */
   readonly ownerTold: boolean;
 }
 

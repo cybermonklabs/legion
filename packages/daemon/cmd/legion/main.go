@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +20,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -82,154 +83,78 @@ var release string
 // revision and release; both empty in every other build. They are this binary's own plugin
 // pair for a stale-plugin relaunch under Kubernetes (LEGION-164) when `legion.yaml` names none
 // (`runtime.kubernetes.plugins`) — `legion version`'s second line, and start's and
-// --check-config's resolution of the pair to install (applyLinkedPlugins, daemon.ResolvedPlugins).
+// `legion config check`'s resolution of the pair to install (applyLinkedPlugins, daemon.ResolvedPlugins).
 var piLegionVersion, piEnvoyVersion string
 
-type command func(ctx context.Context, args []string, stdout, stderr io.Writer) int
-
-// commandEntry is one `legion` command: what runs it, and its line in `legion --help`.
-type commandEntry struct {
-	run     command
-	summary string
-}
-
-var commands = map[string]commandEntry{
-	"version":          {runVersion, "print the version and the commit the binary was built from"},
-	"config-reference": {runConfigReference, "print legion.yaml's key table as JSON: every top-level key with its default, whether it is required and what it does, and the described nested keys under it"},
-	"start":            {runStart, "run the Legion daemon from legion.yaml in the foreground; --check-config validates the file and exits"},
-	"stop":             {runStop, "stop the daemon registered for legion.yaml's project"},
-	"state":            {runState, "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)"},
-	"legions":          {runLegions, "list the daemons registered on this machine"},
-	"status":           {runStatus, "say whether a team's daemon is running, or set an issue's Dispatch status"},
-	"restart":          {runRestart, "stop a registered daemon and start it again from the configuration it recorded"},
-	"claude-bridge":    {runClaudeBridge, "run Claude Code in Oh My Pi's place under worker-shim, for a role worker_backends puts on claude"},
-	"worker-shim":      {runWorkerShim, "bridge an agent's Oh My Pi to the daemon's worker stream (the daemon starts it in every pod)"},
-	"launcher":         {runLauncher, "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command"},
-	"model-token":      {runModelToken, "sign a pod in to Cognito with its service-account token and print the access token (a model apiKey command)"},
-	"claims":           {runClaims, "the operator's hand on the daemon's claims"},
-	"sessions":         {runSessions, "copy recorded session files into Oh My Pi's session database (runtime.kubernetes.session_store postgres)"},
-	"probe-boot":       {runProbeBoot, "run a Kubernetes daemon's cluster check and worker image probe from legion.yaml, with no workflow, and exit"},
-	"probe-image":      {runProbeImage, "run the worker image's launch probes (the image build and the daemon's probe Sandbox run it)"},
-	"workspace-init":   {runWorkspaceInit, "an issue pod's init containers: fetch the repository, clone the skills marketplace, provision the issue's workspace; and a repository cache pod's process"},
-	"skills-check":     {runSkillsCheck, "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)"},
-	"controller":       {runController, "start the operator's controller, the interactive Oh My Pi session an operator talks to"},
-	"git-credential":   {runGitCredential, "git's credential helper in every shared clone: answers git with the token of the owner the repository's path names (git runs it, never a person)"},
-	"git":              {runGit, "the commit half of a pod's git and the git first on a tmux pane's PATH: adds a git commit's Omp-Session and Legion-Role trailers and runs the real git (a git wrapper runs it, never a person)"},
-	"gh":               {runGh, "the gh first on a pane's or pod's PATH: runs the real gh with the gh directory of the owner the command names (a pane runs it, never a person)"},
-	"leak-check":       {runLeakCheck, "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)"},
-}
-
-// helpRequested says whether a command's first argument asks for its usage.
+// helpRequested says whether a pass-through command's first argument asks for its usage: such a
+// command reads its own arguments (passThrough), --help among them.
 func helpRequested(arg string) bool {
 	return arg == "-h" || arg == "-help" || arg == "--help"
 }
 
-// usage is `legion --help`: every command, alphabetically, with its one line.
-func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: legion <command> [flags]")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Commands:")
-	for _, name := range slices.Sorted(maps.Keys(commands)) {
-		fmt.Fprintf(w, "  %-16s %s\n", name, commands[name].summary)
+func newVersionCommand(stdout io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "print the version and the commit the binary was built from",
+		Args:  noArguments,
+		RunE: runs(func(context.Context, []string) int {
+			version := "(devel)"
+			if release != "" {
+				version = release
+			} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+				version = info.Main.Version
+			}
+			if revision != "" {
+				fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
+			} else {
+				fmt.Fprintf(stdout, "legion %s\n", version)
+			}
+			if piLegionVersion != "" && piEnvoyVersion != "" {
+				fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
+			}
+			return 0
+		}),
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run `legion <command> --help` for a command's flags.")
 }
 
-// runSubcommand runs the subcommand of `legion <name>` that args[0] names, from table, the one
-// list of them: -h, -help or --help prints subcommandUsage and exits 0, and no subcommand or an
-// unknown one is a usage error.
-func runSubcommand(ctx context.Context, name string, table map[string]command, args []string, stdout, stderr io.Writer) int {
-	line := subcommandUsage(name, table)
-	if len(args) > 0 && helpRequested(args[0]) {
-		fmt.Fprintln(stderr, line)
-		return 0
+// configOnly refuses a word: the configuration is named only by --config, since a file given as
+// an argument would otherwise be ignored while ./legion.yaml is read, and `legion config check`
+// would vouch for the wrong file.
+func configOnly(_ *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return usageError{fmt.Errorf("unexpected argument %q; name the configuration with --config <file>", args[0])}
 	}
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, line)
-		return 2
-	}
-	sub, ok := table[args[0]]
-	if !ok {
-		fmt.Fprintf(stderr, "legion %s: unknown subcommand %q\n%s\n", name, args[0], line)
-		return 2
-	}
-	return sub(ctx, args[1:], stdout, stderr)
+	return nil
 }
 
-// subcommandUsage is `legion <name>`'s usage line, naming every subcommand of table
-// alphabetically: `usage: legion <name> a|b|… [flags]`.
-func subcommandUsage(name string, table map[string]command) string {
-	return "usage: legion " + name + " " + strings.Join(slices.Sorted(maps.Keys(table)), "|") + " [flags]"
+func newStartCommand(stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "start",
+		Short: "run the Legion daemon from legion.yaml in the foreground",
+		Args:  configOnly,
+	}
+	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return start(ctx, *configPath, stderr) })
+	return cmd
 }
 
-func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
-	if len(argv) < 2 {
-		usage(stderr)
-		return 2
+// newConfigCheckCommand is `legion config check`, checkConfig on the file --config names.
+func newConfigCheckCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "check",
+		Short: "check legion.yaml as `legion start` reads it, running none of its key commands, and exit without starting",
+		Args:  configOnly,
 	}
-	if argv[1] == "help" || helpRequested(argv[1]) {
-		usage(stdout)
-		return 0
-	}
-	cmd, ok := commands[argv[1]]
-	if !ok {
-		fmt.Fprintf(stderr, "legion: unknown command %q; run legion --help for the commands\n", argv[1])
-		return 2
-	}
-	return cmd.run(ctx, argv[2:], stdout, stderr)
-}
-
-func runVersion(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("version", "usage: legion version", stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	if flags.NArg() > 0 {
-		flags.Usage()
-		return 2
-	}
-	version := "(devel)"
-	if release != "" {
-		version = release
-	} else if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-		version = info.Main.Version
-	}
-	if revision != "" {
-		fmt.Fprintf(stdout, "legion %s commit %s\n", version, revision)
-	} else {
-		fmt.Fprintf(stdout, "legion %s\n", version)
-	}
-	if piLegionVersion != "" && piEnvoyVersion != "" {
-		fmt.Fprintf(stdout, "plugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s\n", piLegionVersion, piEnvoyVersion)
-	}
-	return 0
-}
-
-func runStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("start", "usage: legion start [flags]", stderr)
-	configPath := flags.String("config", defaultConfigPath, "path to legion.yaml")
-	checkConfig := flags.Bool("check-config", false, "validate the configuration, run none of its key commands, and exit without starting")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	// The configuration is named only by --config: a file given as an argument would otherwise be
-	// ignored while ./legion.yaml is read, and --check-config would vouch for the wrong file.
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "legion start: unexpected argument %q; name the configuration with --config <file>\n", flags.Arg(0))
-		return 2
-	}
-	if *checkConfig {
-		return checkStartConfig(*configPath, stdout, stderr)
-	}
-	return start(ctx, *configPath, stderr)
+	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
+	cmd.RunE = runs(func(context.Context, []string) int { return checkConfig(*configPath, stdout, stderr) })
+	return cmd
 }
 
 // applyLinkedPlugins fills cfg.Runtime.Kubernetes.Plugins from this binary's linked pair
 // (piLegionVersion, piEnvoyVersion) when the file names none: the file's
 // runtime.kubernetes.plugins wins when it is set, the binary's linked pair otherwise, and neither
 // leaves the daemon knowing no plugin pair at all (LEGION-164). PluginsFromBinary records which,
-// for the boot log and `legion start --check-config` to name. A no-op under tmux, or once the
+// for the boot log and `legion config check` to name. A no-op under tmux, or once the
 // file already named a pair.
 func applyLinkedPlugins(cfg *config.Config) {
 	k := cfg.Runtime.Kubernetes
@@ -241,7 +166,7 @@ func applyLinkedPlugins(cfg *config.Config) {
 }
 
 // pluginsSourceWords is ResolvedPlugins' source (daemon.PluginsFromFile or daemon.PluginsFromBinary)
-// as the `--check-config` line's parenthetical names it.
+// as the `legion config check` line's parenthetical names it.
 func pluginsSourceWords(source string) string {
 	if source == daemon.PluginsFromBinary {
 		return "the binary"
@@ -249,7 +174,7 @@ func pluginsSourceWords(source string) string {
 	return source
 }
 
-// pluginsLine is `--check-config`'s plugins line: the pair this daemon would install for a
+// pluginsLine is `legion config check`'s plugins line: the pair this daemon would install for a
 // stale-plugin relaunch and where it came from (pluginsSourceWords), or the gap when it knows
 // none. When worker_backends runs any role on Claude Code, the line gains one sentence naming
 // those roles: their plugin is the worker image's claude-envoy, which no relaunch installs (the
@@ -277,7 +202,7 @@ func pluginsLine(cfg config.Config) string {
 		strings.Join(claude, ", "))
 }
 
-// checkStartConfig is `legion start --check-config`: every refusal the configuration's read at
+// checkConfig is `legion config check`: every refusal the configuration's read at
 // boot makes, through the loader that runs neither GitHub App's private_key_command nor any
 // secretsd read, then every refusal boot makes from the configuration, the environment and the
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
@@ -316,7 +241,7 @@ func pluginsLine(cfg config.Config) string {
 // (pluginsLine); it is its own line rather than a capability row, since it would otherwise be
 // open on every unreleased build. All of them run only under kubernetes, since the probe and the
 // caches run only there.
-func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
+func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err == nil {
 		applyLinkedPlugins(&cfg)
@@ -326,7 +251,7 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %v\n", err)
+		fmt.Fprintf(stderr, "legion config check: %v\n", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
@@ -380,7 +305,7 @@ func designGateSteps(steps []record.DesignStep) string {
 	return strings.Join(record.StepNames(steps), ",")
 }
 
-// productionCheckLine is `--check-config`'s line for one project's `production_check`: the word
+// productionCheckLine is `legion config check`'s line for one project's `production_check`: the word
 // the file writes (`tester` or `off`, config.Project.ProductionCheckWord) and what it decides.
 // The role the key names works the check, and `off` opens none; either way the key decides only
 // the checks opened after the load, never one already open, which keeps the role it opened with.
@@ -393,7 +318,7 @@ func productionCheckLine(key string, project config.Project) string {
 		key, project.ProductionCheckWord(), effect)
 }
 
-// reservedUnder is a cpu or memory reservation as --check-config names it: the one quantity when
+// reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when
 // the request is the limit, as at the defaults, and `<request> under <limit>` when the file set a
 // lower request.
 func reservedUnder(request, limit string) string {
@@ -504,7 +429,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 
 // listenFDVariable names the listening TCP socket `legion start` serves its API on in place of
 // binding legion.yaml's bind and port: a test harness opens it on port 0 and holds it until the
-// daemon serves, so no other program takes the port in between. `legion start --check-config`
+// daemon serves, so no other program takes the port in between. `legion config check`
 // binds nothing and never reads it.
 const listenFDVariable = "LEGION_LISTEN_FD"
 
@@ -533,19 +458,21 @@ func adoptListenFD() (net.Listener, listenfd.Socket, error) {
 	return listener, socket, nil
 }
 
-func runStop(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("stop", "usage: legion stop [flags]", stderr)
-	configPath := flags.String("config", defaultConfigPath, "path to legion.yaml")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newStopCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stop",
+		Short: "stop the daemon registered for legion.yaml's project",
+		Args:  configOnly,
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "legion stop: unexpected argument %q; name the configuration with --config <file>\n", flags.Arg(0))
-		return 2
-	}
+	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
+	cmd.RunE = runs(func(context.Context, []string) int { return stopLegion(*configPath, stdout, stderr) })
+	return cmd
+}
 
+// stopLegion is `legion stop`: it stops the daemon registered for configPath's project.
+func stopLegion(configPath string, stdout, stderr io.Writer) int {
 	// The file names the team and nothing else here, so its App key commands do not run.
-	cfg, err := config.LoadForValidation(*configPath, nil)
+	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion stop: %v\n", err)
 		return 1
@@ -588,11 +515,20 @@ func runStop(_ context.Context, args []string, stdout, stderr io.Writer) int {
 // (operatorCall): one decision of which daemon the command reads, and the bearer, which this
 // command alone may leave out, read from the same --operator-token-file. With one it also names
 // who suspended each stranded claim, which the state body does not carry (strandedSuspenders).
-func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newOperatorCall("state", "usage: legion state [flags]\nthe configuration is named with --config <file>, never as an argument",
-		"file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
-	asJSON := c.flags.Bool("json", false, "print the state as the daemon serves it")
-	if code, ok := c.parse(args); !ok {
+func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "state",
+		Short: "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)",
+		Args:  configOnly,
+	}
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
+	asJSON := cmd.Flags().Bool("json", false, "print the state as the daemon serves it")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return runState(ctx, c, *asJSON, stdout, stderr) })
+	return cmd
+}
+
+func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr io.Writer) int {
+	if code, ok := c.check(); !ok {
 		return code
 	}
 	op, ok := c.connect()
@@ -606,7 +542,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
-	if *asJSON {
+	if asJSON {
 		if _, err := stdout.Write(body); err != nil {
 			fmt.Fprintf(stderr, "legion state: %v\n", err)
 			return 1
@@ -1507,13 +1443,18 @@ func stateAddress(configPath string, port int) (string, error) {
 	return net.JoinHostPort(dialHost(cfg.Bind), strconv.Itoa(port)), nil
 }
 
-func runLegions(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("legions", "usage: legion legions [flags]", stderr)
-	asJSON := flags.Bool("json", false, "print the registry as JSON")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newLegionsCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "legions",
+		Short: "list the daemons registered on this machine",
+		Args:  noArguments,
 	}
+	asJSON := cmd.Flags().Bool("json", false, "print the registry as JSON")
+	cmd.RunE = runs(func(context.Context, []string) int { return runLegions(*asJSON, stdout, stderr) })
+	return cmd
+}
 
+func runLegions(asJSON bool, stdout, stderr io.Writer) int {
 	legions, err := registryPath()
 	if err != nil {
 		fmt.Fprintf(stderr, "legion legions: %v\n", err)
@@ -1525,7 +1466,7 @@ func runLegions(_ context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 
-	if *asJSON {
+	if asJSON {
 		if entries == nil {
 			entries = []registry.Entry{}
 		}
@@ -1544,20 +1485,28 @@ func runLegions(_ context.Context, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-func runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) >= 2 && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[1], "-") {
-		return runIssueStatus(ctx, args[0], args[1], args[2:], stdout, stderr)
+// exactWords refuses every count of words but n: the command's arguments, which what names.
+func exactWords(n int, what string) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) != n {
+			return usageError{fmt.Errorf("name %s (got %d words)", what, len(args))}
+		}
+		return nil
 	}
-	flags := newFlags("status", "usage: legion status <team>\n       "+issueStatusSynopsis, stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	if flags.NArg() != 1 {
-		flags.Usage()
-		return 2
-	}
-	team := flags.Arg(0)
+}
 
+func newStatusCommand(stdout, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "status <team>",
+		Short: "say whether a team's daemon is running",
+		Args:  exactWords(1, "one team"),
+		RunE: runs(func(ctx context.Context, args []string) int {
+			return runStatus(ctx, args[0], stdout, stderr)
+		}),
+	}
+}
+
+func runStatus(ctx context.Context, team string, stdout, stderr io.Writer) int {
 	entry, found, err := findLegion(team)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion status: %v\n", err)
@@ -1591,17 +1540,18 @@ func dialHost(bind string) string {
 	return bind
 }
 
-func runRestart(ctx context.Context, args []string, _, stderr io.Writer) int {
-	flags := newFlags("restart", "usage: legion restart <team>", stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newRestartCommand(stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:   "restart <team>",
+		Short: "stop a registered daemon and start it again from the configuration it recorded",
+		Args:  exactWords(1, "one team"),
+		RunE: runs(func(ctx context.Context, args []string) int {
+			return runRestart(ctx, args[0], stderr)
+		}),
 	}
-	if flags.NArg() != 1 {
-		flags.Usage()
-		return 2
-	}
-	team := flags.Arg(0)
+}
 
+func runRestart(ctx context.Context, team string, stderr io.Writer) int {
 	entry, found, err := findLegion(team)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion restart: %v\n", err)
@@ -1688,31 +1638,6 @@ func get(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return body, nil
-}
-
-// newFlags is `legion <name>`'s flag set, reporting on stderr. Its Usage, which Parse prints for
-// -h, -help and --help and after a flag it refuses, is usage and then every flag.
-func newFlags(name, usage string, stderr io.Writer) *flag.FlagSet {
-	flags := flag.NewFlagSet("legion "+name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.Usage = func() {
-		fmt.Fprintln(stderr, usage)
-		flags.PrintDefaults()
-	}
-	return flags
-}
-
-// parseFlags parses args into flags. When ok is false Parse has printed flags' Usage, and code
-// is the command's exit: 0 for a help request, 2 for a flag it refused.
-func parseFlags(flags *flag.FlagSet, args []string) (code int, ok bool) {
-	switch err := flags.Parse(args); {
-	case err == nil:
-		return 0, true
-	case errors.Is(err, flag.ErrHelp):
-		return 0, false
-	default:
-		return 2, false
-	}
 }
 
 // processEnvironment is this process's environment by name, the last entry for a name winning as

@@ -2,10 +2,15 @@ import type { FocusLoss } from "./focus-keeper";
 
 /**
  * The box `ApprovalChip` draws a document's approval chip in on the header: the chip, its two
- * actions beside it, and the dialogs it opens, deeper in the same box. The header's keys
- * (`useHeaderKeys.ts`), its focus keeper (`IssueHeader.tsx`), its count of what waits
- * (`IssuePropertiesRow.tsx`) and the header's browser rows (`e2e/issue-page-p.ts`) all read the
- * chip and its actions from here, so what one of them takes for an action the others do too.
+ * actions beside it, and the dialogs it opens, deeper in the same box. Each reader of the header
+ * takes what it reads of that box from here. The header's keys (`useHeaderKeys.ts`) find the box
+ * (`chipBox`) and its actions in it, by their place (`CHIP_ACTIONS`) and their words
+ * (`ACTION_WORDS`). Its focus keeper (`IssueHeader.tsx`) reads only the box around where the lost
+ * control stood (`chipOfLostAction`, through `chipBox`) and takes nothing for an action. Its count
+ * of what waits (`IssuePropertiesRow.tsx`) finds the chips (`APPROVAL_CHIP`). The header's browser
+ * rows (`e2e/issue-page-p.ts`, `e2e/issue-page-p.e2e.ts`) find the actions by their words
+ * (`ACTION_WORDS`), the same words the keys read, so what a row takes for an action the keys do
+ * too.
  */
 
 /** A document's approval chip (`ApprovalChip`'s `data-approval-artifact`). The header draws it on
@@ -44,26 +49,23 @@ export function chipBox(
 }
 
 /**
- * Where the header's focus keeper (`useFocusKeeper`) puts the focus when the control it lost is
- * one of an approval chip's two actions, or a control of a dialog the chip opened: that chip, or
- * `null` when the lost control is neither. Both actions go once the request is answered, so a
- * reader who pressed one stays on the document they reviewed, and the chip is what stays of its
- * approval control.
+ * Where the header's focus keeper (`useFocusKeeper`) puts the focus when the control it lost
+ * stood in the box `ApprovalChip` draws a chip in: that chip, or `null` when the control stood in
+ * no such box. That box holds the chip, its two actions and the dialogs the chip opens, and
+ * nothing else, so where the control stood is enough to say it was one of the two actions or a
+ * control of one of those dialogs. Both actions go once the request is answered, so a reader who
+ * pressed one stays on the document they reviewed, and the chip is what stays of its approval
+ * control.
  *
  * The Request changes dialog gives the focus back to the header's Request changes as it shuts.
  * When that button went first - the request was answered elsewhere while the dialog was open -
  * the focus falls from the dialog's own control: its submit, which reads "Submitting…" then, or
- * its text box after a Mod+Enter, whose words are no action's. So a control that stood inside a
- * dialog is taken too; `closest` walks the subtree the dialog was taken out with.
+ * its text box after a Mod+Enter. That control stood in the chip's box too, so it finds the same
+ * chip.
  *
  * The lost control may already be out of the page, so its chip is found from where it stood
- * (`FocusLoss.place`), and an action by the words it draws.
+ * (`FocusLoss.place`).
  */
-export function chipOfLostAction({ lost, place, root }: FocusLoss): HTMLElement | null {
-  const words = lost.textContent ?? "";
-  const action = Object.values(ACTION_WORDS).some((pattern) => pattern.test(words));
-  if (!action && lost.closest('[role="dialog"]') === null) {
-    return null;
-  }
+export function chipOfLostAction({ place, root }: FocusLoss): HTMLElement | null {
   return chipBox(place, root)?.chip ?? null;
 }

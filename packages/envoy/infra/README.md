@@ -214,7 +214,7 @@ pod starts on them.
 | `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside `tailnet`, whose listener connects as a user with a stored seed until its service identity arrives with dispatch://INFRA-840 (t-e-13). Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to. |
-| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. |
+| `tailnet.listener` | required with `tailnet` | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest; `machineId`, `tailnet.serviceName` by default; `nkey`, the public key of the listener user's seed; `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold that seed and which the component mounts by reference and never reads; `allowedHosts`, any further address a client dials the listener by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -255,8 +255,9 @@ input:
   Tailscale's rule, `replicas` below 2, and no `listener`; of the listener: a `machineId` the
   shared machine-id rule refuses, an empty `nkey`, a `seedSecretName` that is not a DNS subdomain,
   a `seedSecretKey` outside `[-._a-zA-Z0-9]+`, an `allowedHosts` entry refused as `gcp:NatsHub`'s
-  `listener.allowedHosts` entries are, and a `cpu` or `memory` at which Autopilot would not run the
-  listener pod as rendered (see [Sizing](#sizing));
+  `listener.allowedHosts` entries are, a `senderMessagesPerMinute` outside 1 to 60000, a
+  `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, and a `cpu` or `memory` at
+  which Autopilot would not run the listener pod as rendered (see [Sizing](#sizing));
 - no `users` without `tailnet`, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
   session listener's durable among them; the listener's user is named after its machine id.
@@ -351,7 +352,11 @@ The listener runs as machine `tailnet.listener.machineId` and binds `0.0.0.0`, t
 Service reaches it at. It connects to NATS at `serviceUrl` with `ENVOY_ALLOW_REMOTE_NATS=1`.
 `ENVOY_ALLOWED_HOSTS` is `<tailnet.serviceName>.<tailnetDnsName>` and `allowedHosts`.
 `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` are set exactly when `natsReplicas` and
-`streamMaxBytes` are. `NATS_NKEY_SEED_FILE` names the mounted seed.
+`streamMaxBytes` are. `ENVOY_SENDER_MESSAGES_PER_MINUTE` and `ENVOY_SENDER_MESSAGE_BURST` are set
+exactly when `tailnet.listener.senderMessagesPerMinute` and `tailnet.listener.senderMessageBurst`
+are ([The listener's sender limit](#the-listeners-sender-limit)). Setting, changing or removing
+either changes the pod's environment, so the update rolls the pod as above. `NATS_NKEY_SEED_FILE`
+names the mounted seed.
 
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is what lets the API serve `/v1` off loopback with no
 credential. There is no `ENVOY_API_TOKEN`. The NetworkPolicy above is what decides who may call
@@ -919,6 +924,16 @@ Each unset renders nothing, and the binaries then keep one copy and set no byte 
 stream keeping the one it has. Both are independent of `natsInCluster`: a hub outside
 this cluster can be clustered too.
 
+`senderMessagesPerMinute` and `senderMessageBurst` are the listener's sender limit
+([The listener's sender limit](#the-listeners-sender-limit)): `ENVOY_SENDER_MESSAGES_PER_MINUTE`
+and `ENVOY_SENDER_MESSAGE_BURST`, each rendered only when its input is set, on the listener's
+`envoy-listener` container alone, since the app does not read them. The rate is from 1 to 60000,
+and the burst is at least 1 and only with a rate. Unset, the rate sets no limit and the burst
+equals the rate. Each of the `listenerReplicas` pods keeps its own count for each session, so a
+session whose requests reach more than one pod can send more than the rate in all. The component
+refuses a rate outside 1 to 60000, a burst below 1 and a burst with no rate, each by name, before
+it registers a resource, and `clusterOnly` refuses both inputs by name.
+
 `signingKeyGenerations`, `[0]` by default, is the ordered key set `DISPATCH_SIGNING_KEY` holds:
 the first generation in the list signs every new session cookie and seals every new refresh
 token, and every generation in it verifies a cookie and opens a seal. A generation names one
@@ -1174,7 +1189,8 @@ namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemo
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
 already binds (above), a `replicas`, `frontDoorReplicas` or `listenerReplicas` below 1, a
-`natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a
+`natsReplicas` outside 1 to 5 or a `streamMaxBytes` below 1, a `senderMessagesPerMinute` outside
+1 to 60000, a `senderMessageBurst` below 1 or without `senderMessagesPerMinute`, a
 `priorityClassName` that is empty, not a DNS subdomain or a `system-` class, an
 `appPdbMinAvailable`, `frontDoorPdbMinAvailable` or `listenerPdbMinAvailable` outside 1 to its
 Deployment's replica count, a `databaseAvailabilityType` other than `ZONAL` or `REGIONAL`, a
@@ -1775,6 +1791,8 @@ Its environment comes from the inputs:
 | `ENVOY_MACHINE_ID` | `machineId` |
 | `NATS_URLS` | `natsUrls`, joined with commas |
 | `ENVOY_ALLOW_REMOTE_NATS` | `1` when any URL in `natsUrls` names a host other than `localhost` or a loopback address. The URL is read, never resolved. |
+| `ENVOY_SENDER_MESSAGES_PER_MINUTE` | `senderMessagesPerMinute`, when set |
+| `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
 | `NATS_NKEY_SEED` | `seed`, when set. The whole environment is then a secret in the stack's state. |
 
 The listener serves on the host's loopback, `127.0.0.1:<port>`. This version sets no listen host,
@@ -1792,6 +1810,8 @@ The listener's outputs are `containerName` and `port`.
 | `image` | required | The listener image, such as `ghcr.io/cybermonklabs/legion/envoy:<tag>`. |
 | `containerName` | `envoy-listener` | The container's name. |
 | `port` | `9020` | The port the listener serves and the health check calls. |
+| `senderMessagesPerMinute` | unset | `ENVOY_SENDER_MESSAGES_PER_MINUTE`, from 1 to 60000: how many messages one agent session may send through the listener in a minute. Unset, there is no limit. See [The listener's sender limit](#the-listeners-sender-limit). |
+| `senderMessageBurst` | unset | `ENVOY_SENDER_MESSAGE_BURST`, at least 1 and only with `senderMessagesPerMinute`: how many of those messages one session may send at once. Unset, it equals the rate. |
 | `seed` | unset | A secret: the nkey seed of the NATS user the listener connects as. May come from another resource or stack. |
 | `waitForHealthy` | `true` | Whether `pulumi up` waits on the container's health check. See [Readiness](#readiness). |
 | `watchdog` | unset | `{host}`: deploys the watchdog on that SSH address. See [The watchdog](#the-watchdog). |
@@ -1821,7 +1841,8 @@ The listener refuses these before it registers anything, with an error naming wh
   `\`, a control character, or whitespace other than an interior ordinary space, or one over 246 bytes: none can be used
   the durable consumer `listener-<machineId>` and queue group `envoy-listener-<machineId>` the
   listener uses;
-- a `port` outside 1-65535;
+- a `port` outside 1-65535, a `senderMessagesPerMinute` outside 1 to 60000, a
+  `senderMessageBurst` below 1, or a `senderMessageBurst` without `senderMessagesPerMinute`;
 - `watchdog` with a `containerName` other than `envoy-listener`;
 - `watchdog` with `seed`;
 - a `watchdog.host` containing `@` or `://`;
@@ -2155,6 +2176,8 @@ environment, in this order:
 | `ENVOY_MACHINE_ID` | `machineId` |
 | `NATS_URLS` | `natsUrls`, joined with commas |
 | `ENVOY_ALLOW_REMOTE_NATS` | `1` when any URL names a host other than `localhost` or a loopback address |
+| `ENVOY_SENDER_MESSAGES_PER_MINUTE` | `senderMessagesPerMinute`, when set |
+| `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
 | `ENVOY_NATS_REPLICAS` | `natsReplicas` |
 | `ENVOY_WEBHOOKS` | `webhooks`, joined with commas, when it lists one |
 | `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_REVIEWER_APP_ID` | `mentionTrigger`, `reviewerAppId`, with `github` |
@@ -2170,8 +2193,9 @@ delivery NATS can never take, answered 422), `<N>-reconnect-hooks-stalled` (a KV
 has not succeeded for a minute after a NATS reconnect, so the listener's caches serve what they
 last held and `/healthz` answers 200 `degraded`), `<N>-stream-subject-dropped` (a start that
 dropped another deployment's overlapping stream subject), `<N>-durable-refused` (a start that
-refused its durable consumer) and `<N>-subscribe-exhausted` (a start that gave up binding its
-durable subscription). `<N>-publish-failure` and `<N>-webhook-refused` count a GitHub delivery's
+refused its durable consumer, or whose NATS grant refused the durable's read, create or update)
+and `<N>-subscribe-exhausted` (a start that gave up binding its durable subscription).
+`<N>-publish-failure` and `<N>-webhook-refused` count a GitHub delivery's
 first failure or refusal in each listener task: a later one of the same delivery, such as each of
 the redeliveries Dispatch's sweep asks for over 72 hours, is logged
 `redelivery <delivery>: <action> refused` (or `failed`), which no filter counts, so one delivery
@@ -2208,6 +2232,8 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `logGroupName`, `logRetentionDays` | required | The log group, which the filters read and the alarms' descriptions name. |
 | `listenHost` | required | `ENVOY_LISTEN_HOST`. The listener binds `127.0.0.1` when it is blank, where the target group cannot reach it. |
 | `natsReplicas` | required | `ENVOY_NATS_REPLICAS`, from 1 to 5: the deployment's replica count, which the listener creates its stream and buckets at and raises them to, at start and every 30 seconds after. Every Envoy program of the deployment carries the same value. More than 1 needs a clustered NATS; `aws:NatsService` runs one server. |
+| `senderMessagesPerMinute` | unset | `ENVOY_SENDER_MESSAGES_PER_MINUTE`, from 1 to 60000: how many messages one agent session may send through the listener in a minute. Unset, there is no limit. See [The listener's sender limit](#the-listeners-sender-limit). |
+| `senderMessageBurst` | unset | `ENVOY_SENDER_MESSAGE_BURST`, at least 1 and only with `senderMessagesPerMinute`: how many of those messages one session may send at once. Unset, it equals the rate. |
 | `alarmTopicArn` | required | The SNS topic the alarms page and clear on. |
 | `baseTags`, `metricNamespace` | required | As for `aws:NatsService`. |
 | `natsServiceArn` | required | The NATS service's ARN. The component only orders its ECS service after it, so the listener rolls out after NATS, which by then holds the key the listener presents: pass the `NatsService`'s `serviceArn` output, not a literal. |
@@ -2234,7 +2260,9 @@ the input:
 - `aws:WebhookListener`: a `webhooks` not given at all (give `[]` for a listener with no webhook);
   a webhook's input missing while `webhooks` lists it (a blank `reviewerAppId` or `mentionTrigger`
   counts as missing) or given while it does not, each input checked before the list; then a
-  `webhooks` other than `[]` or exactly `["github", "slack"]`; an empty `machineId`, one with
+  `webhooks` other than `[]` or exactly `["github", "slack"]`, then a `senderMessagesPerMinute`
+  outside 1 to 60000, a `senderMessageBurst` below 1 or one without `senderMessagesPerMinute`; an
+  empty `machineId`, one with
   leading or trailing whitespace, or one holding `.`, `*`, `>`, `/`, `\`, a control character, or
   whitespace other than an interior ordinary space, or one over 246 bytes; a `listenHost` holding
   a control character; a blank `listenHost`; a `natsReplicas` below 1 or above 5; an empty
@@ -2547,7 +2575,7 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n>
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
@@ -2573,6 +2601,15 @@ none for `webhooks: []`, and refuses `--reviewer-app-id` and `--mention-trigger`
 Without `--reviewer-app-id`, it prints
 `refused: --reviewer-app-id: reviewerAppId is required with webhook "github"` and exits 2.
 
+`--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
+`senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or
+`ENVOY_SENDER_MESSAGE_BURST`, only when the flag is given, before `ENVOY_NATS_REPLICAS`, as the
+component writes it. Without either flag the output is the one above. A value the component
+refuses is refused naming its flag, so `--sender-message-burst 8` with no
+`--sender-messages-per-minute` prints
+`refused: --sender-message-burst: senderMessageBurst is given without senderMessagesPerMinute, and the listener refuses a burst with no rate when it boots`
+and exits 2.
+
 ### metric-filters
 
 ```text
@@ -2593,6 +2630,76 @@ the one output format. The listener's first filter, for a listener named `exampl
   "metricNamespace": "example/EnvoyListener"
 }
 ```
+
+## The listener's sender limit
+
+Each component that runs a listener takes two optional inputs, `senderMessagesPerMinute` and
+`senderMessageBurst`: `host:Listener`, `gcp:NatsHub` under `listener`, `gcp:ClusteredNatsHub`
+under `tailnet.listener`, `gcp:Dispatch` and `aws:WebhookListener`. They limit how many messages
+one agent session sends through the listener, on `/v1/messages/send` and `/v1/messages/publish`
+together. The component renders `ENVOY_SENDER_MESSAGES_PER_MINUTE` and
+`ENVOY_SENDER_MESSAGE_BURST` only when its input is set. An unset rate sets no limit, and an unset
+burst equals the rate.
+
+The component refuses these before it registers anything, each with an error that names the
+input's path, as `tailnet.listener.senderMessageBurst is given without
+tailnet.listener.senderMessagesPerMinute, and the listener refuses a burst with no rate when it
+boots`:
+
+- a `senderMessagesPerMinute` outside 1 to 60000. The listener reads 0 as no limit, but a
+  component refuses it, because an unset rate is how an operator sets no limit.
+- a `senderMessageBurst` below 1.
+- a `senderMessageBurst` with no `senderMessagesPerMinute`, which the listener refuses when it
+  starts.
+
+The listener keeps one count for each sending session. The count starts at the burst and gains
+one message every 60 seconds divided by the rate, up to the burst. The counts are the listener
+process's own. So each listener keeps its own counts, each of `gcp:Dispatch`'s `listenerReplicas`
+pods included, and a restart fills each count again.
+
+The sender is the session that a secrets-broker token proves, else the request's
+`source_session`. The listener does not count a message with another `source`, such as
+`dispatch` or `envoy`. It does not count a message with no sender either, which is how the Legion
+daemon sends its notices.
+
+So the count is bound to a session only where callers present secrets-broker tokens. A caller
+that presents one and names another session in the body gets `403`. A caller that the listener
+admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
+`source_session`. Such a caller can send under another session's id and spend that session's
+count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
+send messages as that session.
+
+A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
+it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole
+seconds, rounded up and at least 1, until the count holds one message again. The JSON body holds
+`reason: "sender_rate_limited"`, `retry_after_seconds`, `messages_per_minute`, `burst`, and an
+`error` that is this sentence with the values filled in:
+
+```text
+Your sending is rate limited. This message was not sent. This listener lets one session send <rate> messages a minute and <burst> at once. You can send it again after <seconds> seconds.
+```
+
+Where a value in the sentence is 1, its noun is singular: `1 message a minute`, `after 1 second`.
+The request's log line has the outcome `sender_rate_limited` and the field `sender`. The clients
+show the sentence and do not send the message again by themselves. The one exception is the
+Legion stall notice, whose sender waits the seconds and sends it again, at most 3 times.
+
+A counted message costs one when the listener stores it, may have stored it (any answer after an
+earlier forward of the same role send, or a `503` after the listener sent the message to the
+stream and the write's acknowledgement did not arrive in time) or reports a wake for it. A role
+send's `504` costs one whether or not a forward went out, also when the window ended before the
+first forward. The listener does not tell a `504` that forwarded nothing from one whose forward
+the stream may hold. A refusal before any store or wake report, such as a `400`, `403`, `413` or
+a `503` before the listener sent anything (one while it waits for NATS to reconnect), costs
+nothing. A repeat the listener recognises costs nothing too: the stream's `duplicate` answer, a
+repeat of a role message kept for the role's next holder, and a repeat of a role forward the route
+made in the last 10 minutes. So does an echo, a role message from the session that holds the role.
+A `duplicate` that answers the listener's own second send, made after its connection to NATS
+closed under the first, costs one, since the first may have stored the message. A role send's
+echo, repeat or `403` costs nothing only while the send has made no forward, since an earlier
+forward may have stored the message. A repeat that finds the count at 0 is refused as a new
+message is. The listener's own two settings are on the documentation site's
+[Envoy page](https://cybermonklabs.github.io/legion/dispatch/envoy/#the-sender-limit).
 
 ## NATS seeds
 

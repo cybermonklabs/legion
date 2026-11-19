@@ -156,4 +156,9 @@ export const KEY_REPORTS = freeze({
   editor_closed: "This row's editor could not open.",
   /** The key that zooms back out, with the whole issue already drawn. */
   whole_tree: "The tree is already showing the whole issue.",
+  /** What the row an address lands on says where the address names a turn of a thread only
+   *  agents wrote in, which the outline draws no row for: the row is the turn's nearest drawn
+   *  ancestor (`address-target.ts`'s `useAddressFallback`). An answer to the reader's own
+   *  following of that address, never drawn on a plain load. */
+  agents_thread: "This thread is the agents' alone.",
 } as const);

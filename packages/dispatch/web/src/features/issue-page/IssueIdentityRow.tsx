@@ -15,8 +15,8 @@ import { useShellNavigation } from "./shell-navigation";
  * issue has one, each as the way back up to it - the issue's key, the control that copies it, and
  * the one overflow menu that holds the pin, close, reopen and the control that sets the parent.
  * At its right end, Details opens the panel of every other property over the right of the page;
- * below the phone's width the row starts with the `☰` that opens the navigation, where the shell
- * draws no rail (the 390 px picture).
+ * below the phone's width the row starts with the control that opens the navigation, three
+ * strokes drawn as a shape, where the shell draws no rail (the 390 px picture).
  *
  * It is the prototype's `.row1` and `.crumb`: the crumbs in the quiet grey, the key in the ink.
  */
@@ -47,8 +47,24 @@ export function IssueIdentityRow({
           onClick={navigation.onOpen}
           type="button"
         >
-          <span aria-hidden="true" {...pageChrome}>
-            ☰
+          {/* A shape and not the text ☰, which the page's typeface lacks: as text it was drawn in
+              a face of the reader's own machine, at that face's width. It hides itself from
+              assistive technology and holds no words; its span keeps the control's 20 px line,
+              so the control is as tall as its one character made it. */}
+          <span>
+            <svg
+              aria-hidden="true"
+              className="inline-block size-[1em] align-middle"
+              viewBox="0 0 16 16"
+            >
+              <path
+                d="M2.5 4h11M2.5 8h11M2.5 12h11"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="1.5"
+              />
+            </svg>
           </span>
         </button>
       )}

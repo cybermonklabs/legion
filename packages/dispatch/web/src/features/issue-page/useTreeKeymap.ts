@@ -1,4 +1,4 @@
-import { type RefObject, useRef } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
@@ -29,14 +29,21 @@ import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
  * reader is.
  *
  * The controls a row draws are worked by keys too, and for the same reason the moves are: the
- * tree is one tab stop, so nothing inside a row takes the focus and Tab from a row leaves
- * the tree. The arrows press the fold control, `o` the one that pins the body open, `r` and `a`
- * Reply and Answer - the line `a` sets draws an open question's options as chips of its own -
- * `Shift+K` presses Keep, `Shift+C` presses Change and puts the caret in the form it opens, and
- * `f` steps through the row's links and then through every other control no key presses - Copy
- * reference, Change answer, a command's Copy - where Enter follows or presses the one it stopped
- * on. So every control of the focused row is reachable from the keyboard without a second tab
- * stop (WCAG 2.1.1), and `?` names each key by what it does, as it names every other.
+ * tree is one tab stop, so the only tab stops inside a row are the focused row's scrolling
+ * blocks, and Tab from a row leaves the tree past them. The arrows press the fold control, `o`
+ * the one that pins the body open, `r` and `a` Reply and Answer - the line `a` sets draws an open
+ * question's options as chips of its own - `Shift+K` presses Keep, `Shift+C` presses Change and
+ * puts the caret in the form it opens, and `f` steps through the row's links and then through
+ * every other control no key presses - Copy reference, Change answer, a command's Copy - where
+ * Enter follows or presses the one it stopped on. So every control of the focused row is
+ * reachable from the keyboard without a second tab stop (WCAG 2.1.1), and `?` names each key by
+ * what it does, as it names every other.
+ *
+ * Every block of the focused row's words that scrolls its own content - each code block, table,
+ * a diagram's preview - keeps a tab stop of its own, so a reader on the keyboard can scroll it
+ * (`RowText.tsx`'s `useOutOfTabOrder`). On that block, or inside it, the keys the browser
+ * scrolls by are the browser's: the tree moves, folds and says nothing for them
+ * (`scrollsABlock`), and Escape gives the row back, as it does from any control inside a row.
  */
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
@@ -95,6 +102,25 @@ const NODE_ROW = "[data-node-row]";
 
 /** How far a tree reaches when a key steps to its end. */
 const END = Number.MAX_SAFE_INTEGER;
+
+/** A block of a row's words that scrolls its own content and keeps a tab stop of its own while
+ *  its row holds the focus: each code block, table and diagram's preview. It is known by the mark
+ *  `RowText.tsx`'s `useOutOfTabOrder` puts on each scroller `keepScrollers` keeps,
+ *  `data-kept-scroller`, and takes off wherever it leaves the tab order or the hook lets it go. */
+const KEPT_SCROLLER = `${NODE_ROW} [data-kept-scroller]`;
+
+/** The keys of this keymap the browser also scrolls by: the arrows, Home and End. It scrolls the
+ *  box the focus is in where that box scrolls the key's way - Right a wide code block - and the
+ *  page where it does not: Home and End go up and down alone. Space and the page keys are the
+ *  browser's already, since no binding here takes them. */
+const SCROLL_KEYS: Record<string, true> = {
+  ArrowDown: true,
+  ArrowLeft: true,
+  ArrowRight: true,
+  ArrowUp: true,
+  End: true,
+  Home: true,
+};
 
 /** The marks of the controls a row draws that a key of this keymap presses, which `f` leaves to
  *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), Reply and
@@ -167,6 +193,31 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   // The row the caret was taken from, so Escape puts the reader back on it rather than on
   // whichever row the tree would otherwise offer.
   const caretFrom = useRef<HTMLElement | null>(null);
+  // The key being pressed, noted as it sets out for its target: the keymap asks a binding's
+  // `when` with no key in hand, and a binding of two keys - `j` and Down - leaves the one that
+  // scrolls a block to the browser while the other still moves the reader.
+  const pressing = useRef<KeyboardEvent | null>(null);
+  useEffect(() => {
+    const note = (event: KeyboardEvent): void => {
+      pressing.current = event;
+    };
+    window.addEventListener("keydown", note, true);
+    return () => window.removeEventListener("keydown", note, true);
+  }, []);
+  /** Whether the key being pressed now is one the browser scrolls by, pressed on a block that
+   *  keeps its tab stop or inside one (`KEPT_SCROLLER`): the browser scrolls the block, or the
+   *  page, so the tree takes none of it, and the keymap prevents nothing. A key the event has
+   *  finished with is pressed no longer, so while `?` reads the bindings this is false. */
+  const scrollsABlock = (): boolean => {
+    const event = pressing.current;
+    return (
+      event !== null &&
+      event.eventPhase !== Event.NONE &&
+      SCROLL_KEYS[event.key] === true &&
+      event.target instanceof Element &&
+      event.target.closest(KEPT_SCROLLER) !== null
+    );
+  };
 
   /** The rows as the browser holds them, beside the rows as the fold drew them: the nth element
    *  is the nth node row, so one index answers for both. */
@@ -253,7 +304,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const on = at(elements);
         moveTo(on === -1 ? 0 : on + 1);
       },
-      when: () => reading() && drawn().elements.length > 0,
+      when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
     {
       id: "tree-previous",
@@ -265,7 +316,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         const on = at(elements);
         moveTo(on === -1 ? 0 : on - 1);
       },
-      when: () => reading() && drawn().elements.length > 0,
+      when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
     {
       // Home and End are the page's own scroll keys everywhere else, so they move through the
@@ -275,7 +326,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       label: "Move to the first row",
       palette: false,
       run: () => moveTo(0),
-      when: inTheTree,
+      when: () => inTheTree() && !scrollsABlock(),
     },
     {
       id: "tree-last",
@@ -283,7 +334,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       label: "Move to the last row",
       palette: false,
       run: () => moveTo(END),
-      when: inTheTree,
+      when: () => inTheTree() && !scrollsABlock(),
     },
     {
       // Right unfolds what is closed and then steps into it, which is the WAI-ARIA tree
@@ -321,7 +372,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if ((rows[on + 1]?.level ?? 0) > row.level) moveTo(on + 1);
         else tree.onOpenDeeper(row.node.id);
       },
-      when: () => at(drawn().elements) !== -1,
+      when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
       id: "tree-fold",
@@ -360,7 +411,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           }
         }
       },
-      when: () => at(drawn().elements) !== -1,
+      when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
       id: "tree-pin",
@@ -597,9 +648,10 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     },
     {
       // From a control the reader reached inside a row - a link or a control `f` stopped on,
-      // Keep, Change - Escape gives the row back, because the row is where the keys that move
-      // through the tree are; from the row itself it leaves the tree, once the page has cleared
-      // its filter by words and turned its filter off, which come first in the key table's order.
+      // Keep, Change, a block Tab stopped on to scroll it - Escape gives the row back, because
+      // the row is where the keys that move through the tree are; from the row itself it leaves
+      // the tree, once the page has cleared its filter by words and turned its filter off, which
+      // come first in the key table's order.
       id: "tree-leave",
       keys: "Escape",
       label: "Leave the control, then the tree",

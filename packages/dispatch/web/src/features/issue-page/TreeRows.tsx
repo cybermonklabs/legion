@@ -13,6 +13,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
+import { nodeEditable } from "./useNodeEditing";
 
 /**
  * The rows of the issue's tree, drawn.
@@ -113,6 +114,7 @@ export function TreeRows({
             }
             context={context.has(row.node.id)}
             {...(place === undefined ? {} : { document: place.artifact })}
+            editable={nodeEditable(place, isClosed)}
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
             focused={focused === key}

@@ -72,6 +72,7 @@ sequenceDiagram
             Broker-->>CLI: a narrowing it cannot serve is refused here, before the approval request
         end
         Broker-->>CLI: pending, the approver its record names, and its page on the broker
+        CLI->>Broker: GET /v1/requests/{id}?wait=N, held while pending
         opt the airlock rules let the judge decide this secret
             Broker->>Dispatch: is the issue the request's reason names open?
             Broker->>Model: the request and that issue, as data to judge
@@ -82,7 +83,7 @@ sequenceDiagram
         Person->>Dispatch: open the request in the Inbox
         Dispatch-->>Person: a link to the request's page on the broker
         Person->>Broker: Approve, signed in to the broker
-        CLI->>Broker: poll until granted
+        Broker-->>CLI: granted, at once, to the read it was holding
     end
     CLI->>Broker: POST /v1/grants/{id}/values
     Broker-->>CLI: the values, read fresh from the secret store

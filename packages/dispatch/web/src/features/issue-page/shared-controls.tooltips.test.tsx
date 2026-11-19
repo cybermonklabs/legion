@@ -69,23 +69,28 @@ import {
   architecture,
   CLAIMED_AT,
   classOf,
+  colourOf,
   DECISIONS_ID,
   doc,
   draw,
+  FOCUS_VARIANTS,
   GONE_SESSION,
   holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
   minutesFromNow,
+  offPageColours,
   openAsk,
   priorities,
   proofDocument,
+  RAW_COLOR_PATTERN,
   SPEC_ID,
   STALLED_SESSION,
   type Surface,
   settleReads,
   specRequest,
+  splitToken,
   threadOf,
   tokens,
   undraw,
@@ -146,123 +151,6 @@ async function drawMount(mount: Mount, surface: Surface): Promise<Drawn> {
     (element) => !skipped.some((root) => root.contains(element))
   );
   return { elements, view };
-}
-
-// ---------------------------------------------------------------------------------------------
-// Reading a class for its colours
-// ---------------------------------------------------------------------------------------------
-
-/** `theme/no-raw-colors.test.ts`'s `COLOR_FAMILIES` and `RAW_COLOR_PATTERN`, copied as they
- *  stand there: they are constants of that test file, which exports nothing. The pattern is the
- *  palette guard's own reading of a raw Tailwind colour. */
-const COLOR_FAMILIES = [
-  "slate",
-  "sky",
-  "rose",
-  "amber",
-  "emerald",
-  "red",
-  "orange",
-  "yellow",
-  "lime",
-  "green",
-  "teal",
-  "cyan",
-  "blue",
-  "indigo",
-  "violet",
-  "purple",
-  "fuchsia",
-  "pink",
-  "gray",
-  "zinc",
-  "neutral",
-  "stone",
-] as const;
-const RAW_COLOR_PATTERN = new RegExp(
-  `\\b(?:text|bg|border|ring|placeholder|divide|outline|caret|accent|decoration|from|via|to)-(?:(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}|white|black|transparent)\\b`
-);
-
-/** The variants of a focus indicator, kept inside `NoTooltips`: `focusVisibleRing`,
- *  `hasFocusVisibleRing` and `main`'s focus rule on a field stay, since the page's palette holds
- *  no focus colour and the application has one focus indicator. */
-const FOCUS_VARIANTS: readonly string[] = ["focus", "focus-visible", "has-focus-visible"];
-
-/** A token as its variants and the utility after them. A colon inside brackets or parentheses
- *  is an arbitrary value's (`[overflow-wrap:anywhere]`, `content-[attr(data-initial)]`), not a
- *  variant's. */
-function splitToken(token: string): { readonly utility: string; readonly variants: string[] } {
-  const variants: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let index = 0; index < token.length; index += 1) {
-    const character = token[index];
-    if (character === "[" || character === "(") depth += 1;
-    else if (character === "]" || character === ")") depth -= 1;
-    else if (character === ":" && depth === 0) {
-      variants.push(token.slice(start, index));
-      start = index + 1;
-    }
-  }
-  return { utility: token.slice(start), variants };
-}
-
-/** Every utility that takes a colour after its property, and what follows the property. */
-const COLOUR_PROPERTY =
-  /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|inset-ring|shadow|inset-shadow|drop-shadow|fill|stroke|decoration|divide|placeholder|caret|accent|from|via|to)-(.+)$/;
-const SHADE = new RegExp(`^(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}$`);
-
-/**
- * The colour a utility names, or `undefined` for a utility that names none.
- *
- * The same property prefix carries colours and sizes alike (`text-sky-700` and `text-xs`,
- * `border-page-line` and `border-2`, `ring-sky-600` and `ring-2`), so a utility names a colour
- * by what follows its property, an opacity (`/40`) dropped: a shade of a palette family
- * (`sky-700`), one of the keyword colours `white`, `black` and `transparent`, an arbitrary colour
- * (`[#fff]`, `[rgb(…)]`, `[color:…]`, `[var(--color-…)]`), or a token of the page's palette by its
- * own name (`page-ink`, `icon-rail`), which `PAGE_COLORS` must then hold, so a misspelt page
- * token is a colour and fails. Anything else after the same prefixes names no colour: a size
- * (`text-xs`, `border-2`, `ring-2`, `border-l-4`), a style (`border-dashed`, `outline-none`,
- * `text-left`, `shadow-lg`), an arbitrary value that is no colour (`text-[10px]`), and `current`
- * and `inherit`, which paint the element's own text colour rather than name one; that text
- * colour is a token of its own, read here too.
- */
-function colourOf(utility: string): string | undefined {
-  const named = COLOUR_PROPERTY.exec(utility)?.[1];
-  if (named === undefined) return undefined;
-  const name = named.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
-  if (SHADE.test(name) || name === "white" || name === "black" || name === "transparent") {
-    return name;
-  }
-  if (/^\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-)/.test(name)) return name;
-  return /^(?:page|icon-rail)(?:-[a-z]+)*$/.test(name) ? name : undefined;
-}
-
-/** What a mount's elements draw that is no colour of the page: each token the palette guard
- *  reads as raw, and each colour `PAGE_COLORS` does not name, focus indicators skipped. */
-function offPageColours(
-  name: string,
-  elements: readonly Element[]
-): { readonly colours: number; readonly offenders: string[] } {
-  const offenders: string[] = [];
-  let colours = 0;
-  for (const element of elements) {
-    const testId = element.getAttribute("data-testid");
-    const where = `${name}: <${element.tagName.toLowerCase()}${testId === null ? "" : ` data-testid="${testId}"`}>`;
-    for (const token of (element.getAttribute("class") ?? "").split(/\s+/).filter(Boolean)) {
-      const { utility, variants } = splitToken(token);
-      if (variants.some((variant) => FOCUS_VARIANTS.includes(variant))) continue;
-      if (RAW_COLOR_PATTERN.test(utility)) {
-        offenders.push(`${where} ${token}: a raw colour`);
-        continue;
-      }
-      const colour = colourOf(utility);
-      if (colour === undefined) continue;
-      colours += 1;
-      if (!Object.hasOwn(PAGE_COLORS, colour)) offenders.push(`${where} ${token}: no page colour`);
-    }
-  }
-  return { colours, offenders };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1054,12 +942,20 @@ const MOUNTS: readonly Mount[] = [
     settle: pressing("Edit labels"),
   },
   {
-    name: "RepoControl, its own repository, an inherited one and none in a row of Details",
+    name: "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one",
     node: () => (
       <>
         <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
         <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
         <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
+        <RepoControl
+          inRow
+          issueKey="CORE-4"
+          project="CORE"
+          repo="acme/app"
+          resolvedRepo="acme/app"
+        />
+        <RepoControl inRow issueKey="CORE-5" project="CORE" repo={null} resolvedRepo="acme/site" />
       </>
     ),
   },
@@ -1658,8 +1554,14 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [mountNamed("IssueLabels, its chips and its picker open"), ["api", "frontend"]],
   [labelsEmptyAndSaving, []],
   [
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
-    ["Clear it, and the issue inherits a repository again"],
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
+    // Outside `NoTooltips` a row of Details draws `main`'s box, its clear control with it.
+    [
+      "Clear it, and the issue inherits a repository again",
+      "Clear it, and the issue inherits a repository again",
+    ],
   ],
   [repoNothingResolved, []],
   [componentsWithPicker, []],
@@ -2029,7 +1931,9 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
     values: [LONG.label],
   }),
   withLongValues(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     {
       node: () => (
         <>
@@ -2045,12 +1949,20 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
             repo={null}
             resolvedRepo={LONG.inheritedRepository}
           />
+          <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
           <RepoControl
             inRow
-            issueKey="CORE-3"
+            issueKey="CORE-4"
             project="CORE"
             repo={LONG.repository}
             resolvedRepo={LONG.repository}
+          />
+          <RepoControl
+            inRow
+            issueKey="CORE-5"
+            project="CORE"
+            repo={null}
+            resolvedRepo={LONG.inheritedRepository}
           />
         </>
       ),
@@ -2185,6 +2097,8 @@ const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  "features/inbox/AskThread.tsx",
+  "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",
 ] as const;
 
@@ -2519,9 +2433,10 @@ test("outside NoTooltips each shared control sets the title that main sets", asy
 });
 
 // Inside `NoTooltips` no shared control sets a `title` it sets on `main`,
-// the two the source kept (the stale chip and `AgentUnresponsiveNote`) and an open
-// `MultiSelect`'s options among them. `AskCard`'s own elements are read, the asker's name and the
-// submit among them, and its children of other files are not (`askCardChildren`).
+// the two the source kept (the stale chip and `AgentUnresponsiveNote`), an open
+// `MultiSelect`'s options and a repository row's "None" and its repository's text in Details among
+// them. `AskCard`'s own elements are read, the asker's name and the submit among them, and its
+// children of other files are not (`askCardChildren`).
 test("inside NoTooltips no shared control sets a title", async () => {
   const scope = (view: RenderResult) => within(view.baseElement);
   const named = new Map<Mount, (view: RenderResult) => readonly Element[]>([
@@ -2548,6 +2463,16 @@ test("inside NoTooltips no shared control sets a title", async () => {
       (view) => [
         scope(view).getByText("alice"),
         scope(view).getByRole("button", { name: "Answer" }),
+      ],
+    ],
+    [
+      mountNamed(
+        "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+      ),
+      (view) => [
+        scope(view).getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-3` }),
+        scope(view).getByRole("button", { name: "acme/app, Repository of CORE-4" }),
+        scope(view).getByRole("button", { name: "acme/site, Repository of CORE-5" }),
       ],
     ],
   ]);
@@ -2740,17 +2665,25 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     ]);
   });
 
-  // `RepoControl` says beside an inherited repository that it is inherited or the default.
+  // `RepoControl` says beside an inherited repository that it is inherited or the default: beside
+  // the box, and in a row of Details beside the repository's text.
   await readDrawn(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     "inside",
     (view) => {
       const scope = within(view.container);
       const drawn = scope.getAllByText(CONTROL_LABELS.repository_inherited);
-      expect(drawn).toHaveLength(1);
+      expect(drawn).toHaveLength(2);
       expect(
         drawn[0]?.parentElement?.contains(
           scope.getByRole("combobox", { name: "Repository of CORE-2" })
+        )
+      ).toBe(true);
+      expect(
+        drawn[1]?.parentElement?.contains(
+          scope.getByRole("button", { name: "acme/site, Repository of CORE-5" })
         )
       ).toBe(true);
     }
@@ -3023,9 +2956,14 @@ test("inside NoTooltips the words come from the page's word list and carry their
         ["P2 Rocq and Lean speed work restarted", "author-text"],
         ["P1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
-        ["✕", "page-chrome"],
         ["+", "page-chrome"],
       ]);
+      // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
+      // name.
+      const remove = within(view.container).getByRole("button", {
+        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+      });
+      expect(markOf(remove)).toBe("page-chrome");
     }
   );
   await readDrawn(mountNamed("IssuePriorityLine, in a row of Details"), "inside", (view) => {
@@ -3113,16 +3051,20 @@ test("inside NoTooltips the words come from the page's word list and carry their
   );
 
   await readDrawn(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     "inside",
     (view) => {
       expectMarks(view.container, [
         [`${PROPERTY_LABELS.repository}:`, "page-chrome"],
         ["acme/api", "author-text"],
         ["acme/web", "author-text"],
+        ["acme/app", "author-text"],
+        ["acme/site", "author-text"],
         [CONTROL_LABELS.repository_inherited, "page-chrome"],
         [`, ${CONTROL_LABELS.repository_inherited}`, "page-chrome"],
-        [CONTROL_LABELS.no_repository, "page-chrome"],
+        [CONTROL_LABELS.none, "page-chrome"],
       ]);
     }
   );
@@ -3223,6 +3165,50 @@ test("inside NoTooltips every colour is one of the page's colours", async () => 
   expect(offenders).toEqual([]);
   // A mount that drew nothing would pass the walk above with nothing read.
   expect(colourless).toEqual([]);
+});
+
+// The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
+// `unicode-range` in styles.css repeats (`fonts/inter/subset.test.ts` holds the two equal). A
+// character outside them is drawn in a face of the reader's own machine, at that face's width,
+// so the page draws such a glyph as an inline svg. A value the reader or a fixture wrote is no
+// glyph the page draws, so author text and each of a mount's `values` are skipped.
+test("inside NoTooltips no shared control draws a character the page's typeface lacks", async () => {
+  const subsetSh = readFileSync(
+    join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
+    "utf8"
+  );
+  const unicodes = /^UNICODES=(\S+)$/m.exec(subsetSh)?.[1];
+  if (unicodes === undefined) throw new Error("subset.sh has no UNICODES= line");
+  const ranges = unicodes.split(",").map((entry) => {
+    const match = /^U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?$/i.exec(entry.trim());
+    if (match === null) throw new Error(`${entry} in subset.sh's UNICODES is no U+ entry`);
+    const first = Number.parseInt(match[1], 16);
+    return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
+  });
+  const offenders: string[] = [];
+  let read = 0;
+  for (const mount of EVERY_MOUNT) {
+    await readDrawn(mount, "inside", (_view, elements) => {
+      for (const element of elements) {
+        if (element.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) !== null) continue;
+        for (const node of element.childNodes) {
+          if (node.nodeType !== node.TEXT_NODE) continue;
+          const text = node.textContent ?? "";
+          if (mount.values?.some((value) => text.includes(value))) continue;
+          for (const character of text) {
+            read += 1;
+            const point = character.codePointAt(0) ?? 0;
+            if (ranges.some(([first, last]) => point >= first && point <= last)) continue;
+            const code = point.toString(16).toUpperCase().padStart(4, "0");
+            offenders.push(`${mount.name}: U+${code} ${character} in "${text}"`);
+          }
+        }
+      }
+    });
+  }
+  expect(offenders).toEqual([]);
+  // A walk that read no character would pass with nothing read.
+  expect(read).toBeGreaterThan(0);
 });
 
 // The components line's picker takes its trigger's class from `ComponentPicker`, which hands it

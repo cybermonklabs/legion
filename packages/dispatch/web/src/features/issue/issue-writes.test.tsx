@@ -227,6 +227,44 @@ test("IssuePage keeps an unsaved route draft when a stale refetch arrives", asyn
   }
 });
 
+// A Cancel while a route's write is out puts back the route the issue still has, and the write's
+// landing then gives the draft the route it lands with: left on the old route, the draft would
+// read as changed, the trigger would name no route while Dispatch has one, and a Save would send
+// the old route over the new one.
+test("IssuePage gives a route draft cancelled while its write is out the route that write lands with", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const { unmount } = renderIssuePage();
+  const firstSave = deferred<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+
+  try {
+    let route = await openRouteEditor();
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
+    );
+    route = await openRouteEditor();
+    expect(route.value).toBe("role:a");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await screen.findByRole("button", { name: "Messages default to no route" });
+
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, route: "role:a" }));
+    });
+    await screen.findByRole("button", { name: "Messages default to role:a" });
+    route = await openRouteEditor();
+    expect(route.value).toBe("role:a");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    expect(patchIssue.mock.calls).toEqual([["CORE-1", { route: "role:a" }, keyedAttempt]]);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 test("IssuePage keeps a route cleared while the previous save was still in flight", async () => {
   const user = userEvent.setup();
   // The CI route-clear flake: the user clears the field while the earlier PATCH is
@@ -1031,6 +1069,90 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
     );
     const link = (await screen.findByRole("link", { name: "CORE-9" })) as HTMLAnchorElement;
     expect(link).toHaveAttribute("href", "/issues/CORE-9");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The parent's draft the same way: a Cancel while its write is out puts back the issue's old
+// parent, and the landing gives the draft the parent it lands with, so the editor opens on that
+// parent and a Save sends nothing more.
+test("IssuePage gives a parent draft cancelled while its write is out the parent that write lands with", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    let parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    await user.click(parent);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
+    );
+    // The write is out, so the issue has no parent yet.
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    expect(parent.value).toBe("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, parent: "CORE-9" }));
+    });
+    const link = await screen.findByRole("link", { name: "CORE-9" });
+    expect(link).toHaveAttribute("href", "/issues/CORE-9");
+    await user.click(screen.getByRole("button", { name: "Edit parent issue" }));
+    parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    expect(parent.value).toBe("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    expect(patchIssue.mock.calls).toEqual([["CORE-1", { parent: "CORE-9" }, keyedAttempt]]);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A parent cleared while its write is out is a change: the issue has no parent yet, but the write
+// out is about to set the one the reader took out. The landing leaves the cleared draft, and Save
+// then clears the parent the write set.
+test("IssuePage keeps a parent draft cleared while its write is out as that write lands, and Save clears the parent", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    let parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    await user.click(parent);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
+    );
+    // The write is out, so the issue has no parent yet.
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    expect(parent.value).toBe("CORE-9");
+    await user.clear(parent);
+
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, parent: "CORE-9" }));
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(["issue", "CORE-1"])?.parent).toBe("CORE-9")
+    );
+    expect(parent.value).toBe("");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(2);
   } finally {
     unmount();
     restore();

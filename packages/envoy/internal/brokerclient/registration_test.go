@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -78,7 +79,7 @@ func waitForRegistration(t *testing.T, refusals int) (*Token, error, []stubReque
 	clock := &waitingClock{now: time.Date(2026, 11, 16, 4, 0, 0, 0, time.UTC), stop: ctx}
 	logged := &logtest.Recorder{}
 	client, err := New(Config{
-		BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
+		BrokerURL: brokeraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
 		Log: slog.New(logged), Now: clock.Now, After: clock.After,
 	})
 	if err != nil {
@@ -216,7 +217,7 @@ func TestEveryOtherRefusalStaysPermanent(t *testing.T) {
 		{"a refused subject token", 400, "invalid_request", "The subject token was refused: its audience is not this broker's.", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			refused := newRefusedError(tc.status, tc.code, tc.description)
+			refused := newRefusedError("a pod's projected token", tc.status, tc.code, tc.description)
 			if got := refused.Permanent(); got != tc.permanent {
 				t.Errorf("HTTP %d %s %q reads permanent=%t, want %t", tc.status, tc.code, tc.description, got, tc.permanent)
 			}
