@@ -330,9 +330,11 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // (`extra`), and the first's for every other: an answer the second gave for an older set,
   // kept while its new set loads or after that read fails, may name an address the first read
   // has taken over since, whose name it holds from before. Where nothing is left for the second
-  // read to name, it has no answer, and the one it gave before is dropped: its query is
-  // disabled, so that answer would stand for good over the first read's newer names for the
-  // same addresses, and again while a later set loads or after its read fails.
+  // read to name, the answer it gave before is dropped: its query is disabled and never answers
+  // again, so that answer would have the page publish for good a name for an address no read
+  // asks for any more. A link beside the tree draws a published name in place of the one it
+  // reads of its own (`useKnownReferenceName`), and the feed refreshes a names read only for an
+  // address its key holds (`referenceNameTargets`), so no event would ever move that name.
   const moreAnswer = useLastAnswer(extra.length === 0 ? NO_MORE_TARGETS : more.data);
   const named = useMemo(() => {
     const added = moreAnswer?.targets ?? [];

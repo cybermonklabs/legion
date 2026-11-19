@@ -1464,13 +1464,19 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a renamed or
- *  removed document's own, and an edited comment's document's (`artifact_slug`, absent from a
- *  comment event written before the field). A new version and an ask's edit carry none. */
+ *  removed document's own, an edited comment's document's (`artifact_slug`, absent from a
+ *  comment event written before the field), and an edited ask's document's, the one its anchor
+ *  quotes (`anchor_artifact`) or the one that holds its typed block (`block_artifact`), each
+ *  the document the ask is on. A new version carries none, and neither does the edit of an ask
+ *  that carries neither field: one asked of the document as a whole, with no anchor and no
+ *  block. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "artifact.removed":
     case "artifact.renamed":
       return event.payload.artifact.slug;
+    case "ask.edited":
+      return event.payload.anchor_artifact?.slug ?? event.payload.block_artifact?.slug;
     case "comment.edited":
       return event.payload.artifact_slug;
     default:
@@ -1482,17 +1488,27 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
  * Which addresses `event` can change the words or the name under, or undefined for an event on
  * neither an issue nor a project document. An issue's event is on the issue or on something it
  * owns - a comment, an ask, a message, a document and its blocks - each written under
- * `dispatch://<KEY>`, with `/` or `#` next. A project document's event is on the document or on
- * an ask, a comment or a block of it, each written under `dispatch://<PROJECT>/artifact/<slug>`,
- * with `@`, `/` or `#` next. A rename, a removal and a comment's edit carry that slug
- * (`projectDocumentSlug`); a new version and an ask's edit name the document by its id alone,
- * which no address is written with, so theirs are the addresses of every document of the
- * project.
+ * `dispatch://<KEY>`, with `/` or `#` next. The issue's own address, `dispatch://<KEY>`, is
+ * named by the issue's title and by nothing else, since the names read names an issue by its
+ * title alone and every other target by its own words, a document by its name and a block by its
+ * text (the server's `refs.TargetNames`). So a write that changes the title (`issue.updated`) is
+ * on that one address, and every other event is on the addresses under it and never on that one,
+ * since none of them changes the title: a child's page cites its parent by its bare address, and
+ * a new version of the parent's spec leaves the name of that address as it was. A project
+ * document's event is on the document or on an ask, a comment or a block of it, each written
+ * under `dispatch://<PROJECT>/artifact/<slug>`, with `@`, `/` or `#` next. A rename, a removal,
+ * a comment's edit and the edit of an anchored or a block ask carry that slug
+ * (`projectDocumentSlug`); a new version and the edit of an ask asked of the document as a whole
+ * name the document by its id alone, which no address is written with, so theirs are the
+ * addresses of every document of the project.
  */
 function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | undefined {
   if (event.issue_key !== null) {
     const issue = buildDispatchReference({ key: event.issue_key, kind: "issue" });
-    return (address) => addressUnder(address, issue, "/#");
+    if (event.type === "issue.updated") {
+      return (address) => address === issue;
+    }
+    return (address) => address !== issue && addressUnder(address, issue, "/#");
   }
   const project = event.project;
   if (event.artifact_id === null || event.artifact_id === undefined || project === undefined) {
@@ -1537,21 +1553,22 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * addresses it names, so a page that comes to hold another set reads again under a key of its
  * own: only a change of words under the same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
- * naming none, as an older server sends it) renames the issue's address, since a names read
- * names an issue by its title, so it refreshes them too.
+ * naming none, as an older server sends it) renames the issue's own address, since a names read
+ * names an issue by its title, so it refreshes the reads naming that address, and only those
+ * (`eventAddresses`).
  * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
  * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
  * name nothing (`gone`), so each refreshes them too.
  *
- * Of the names reads the app holds, each event refreshes those whose key holds an address of the
- * issue or the project document it is on (`namesReadsNaming`). The test reads the query's key,
- * not the page's issue, since a page's words can cite another issue's target. Every address the
- * issue page names a read by is written `dispatch://` and its owner (`treeReferences`): a node's
- * own, a chip's, each one its words cite, a bare key asked as its issue's own address, and an
- * item id or a block id written short still under its owner, so the key alone ties each address
- * to what owns it. An event of these kinds on neither an issue nor a project document never
- * reaches this rule: `documentTargets` refuses it first, and the feed then refreshes every read
- * the app holds.
+ * Of the names reads the app holds, each event refreshes those whose key holds an address it can
+ * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
+ * query's key, not the page's issue, since a page's words can cite another issue's target. Every
+ * address the issue page names a read by is written `dispatch://` and its owner
+ * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
+ * issue's own address, and an item id or a block id written short still under its owner, so the
+ * key alone ties each address to what owns it. An event of these kinds on neither an issue nor a
+ * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
+ * refreshes every read the app holds.
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
@@ -1561,19 +1578,20 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * changes under its address.
  *
  * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
- * project document of the workspace, a document's new version above all, and one that no names
- * read the app holds names costs nothing. One that a read's key names - an event of the open
- * issue itself, whose tree holds its addresses, or of an issue or a project document its words
- * cite - costs one read per such query the app holds and renders (one request per batch of its
- * addresses, which no ordinary issue passes), at most two for an open issue page - the tree's
- * own and the one naming what a typed block's words cite (`useIssueTree`) - and marks stale one
- * the app holds and renders not. A project document's new version or ask's edit reaches a read
- * naming any document of its project, since neither carries the slug its addresses are written
- * with (`eventAddresses`). It refreshes through the same `refreshQueries` every other rule does,
- * so a read already out, or begun under a second ago, is fetched again once those rules allow;
- * since the rule tests the read's key against the answer that lands, a first read out at the
- * event that then fails holds no answer to test and is not read again by it, and window focus
- * or a later event reads it again (`refetchFailedOnFocus`).
+ * project document of the workspace, a document's new version above all, and one that can
+ * change no address a names read the app holds names costs nothing. One that can change an
+ * address a read's key holds - an event of the open issue itself, whose tree holds its
+ * addresses, or of an issue or a project document its words cite - costs one read per such
+ * query the app holds and renders (one request per batch of its addresses, which no ordinary
+ * issue passes), at most two for an open issue page - the tree's own and the one naming what a
+ * typed block's words cite (`useIssueTree`) - and marks stale one the app holds and renders not.
+ * A project document's new version reaches a read naming any document of its project, since it
+ * does not carry the slug its addresses are written with, and so does the edit of an ask asked
+ * of the document as a whole (`eventAddresses`). It refreshes through the same `refreshQueries`
+ * every other rule does, so a read already out, or begun under a second ago, is fetched again
+ * once those rules allow; since the rule tests the read's key against the answer that lands, a
+ * first read out at the event that then fails holds no answer to test and is not read again by
+ * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {

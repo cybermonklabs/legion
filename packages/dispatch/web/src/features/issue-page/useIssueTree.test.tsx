@@ -759,6 +759,70 @@ test("once the second read has nothing left to name, the first read's newer name
   }
 });
 
+// A published name stands in for the one a link beside the tree would read of its own
+// (`useKnownReferenceName`), and the feed refreshes only a names read whose key holds the address,
+// so the page publishes a name only for an address one of its reads asks for now. A plan task's
+// words cite an issue, which the one more read names. The task is reworded to cite nothing, and
+// a comment arriving reads the tree's new set: nothing is left for the one more read to name, its
+// query is disabled and never answers again, and the name it gave goes.
+test("once a plan task's words stop citing an address, the page publishes no name for it", async () => {
+  const cited = "dispatch://CORE-7";
+  let words = `Draw the tree as ${cited} asks.`;
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(async (refs) => {
+    asked.push([...refs]);
+    return {
+      targets: namedTargets(refs).targets.map((target) => {
+        if (target.ref === TASK_REF) {
+          return {
+            ...target,
+            name: `:::plan_task{#t1}\n${words}\n:::`,
+            text_tree: {
+              content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+              type: "doc",
+            },
+          };
+        }
+        return target.ref === cited
+          ? { ...target, kind: "issue", name: "The cited issue" }
+          : target;
+      }),
+    };
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(cited);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("The cited issue"));
+    expect(asked[1]).toEqual([cited]);
+
+    // The task is reworded to cite nothing, and a comment arrives: the first read of the tree's
+    // new set answers the new words.
+    words = "Draw the tree from one read.";
+    await act(async () => {
+      client.setQueryData(["comments", KEY], [comment]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current).toBeUndefined());
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(asked).toHaveLength(3);
+    expect(asked[2]).toContain(TASK_REF);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The same for the one more read, of what a plan task's words cite: the task's words come to cite
 // one issue more, and the read of the two issues fails. The name that read gave before stands,
 // beside the first read's names, while the view says the read failed; a read under that key that
@@ -1192,12 +1256,12 @@ function refreshedNames(event: DispatchEvent, held: readonly string[][]): string
   );
 }
 
-/** Names reads whose key names the issue, each under another form of its address. */
-const NAMING_ISSUE = [
-  [`dispatch://${KEY}`],
-  [`dispatch://${KEY}/comment/comment-1`, "dispatch://ACME-2"],
-  [TASK_REF],
-];
+/** Names reads whose key names an address under the issue, each under another form of it. */
+const NAMING_ISSUE = [[`dispatch://${KEY}/comment/comment-1`, "dispatch://ACME-2"], [TASK_REF]];
+
+/** A names read whose key names the issue by its own address alone, as a child's page names its
+ *  parent. The read answers that address with the issue's title and nothing else. */
+const NAMING_KEY = [[`dispatch://${KEY}`]];
 
 /** Names reads whose key names no address of the issue: another issue's, and a document of the
  *  issue's project, which is no address of the issue. */
@@ -1209,12 +1273,13 @@ const NAMING_ELSEWHERE = [
 // A names read is keyed by the addresses it names, so only words that change under an address
 // already named need a rule - a comment's edit, an ask's edit and a document's new version - and
 // so do a document's rename and its removal, which rename or empty every address to it, and an
-// issue's write that changes its title, which renames the issue's address. The feed is the
-// workspace's, so each refreshes only the names reads whose key names the issue the event is on,
-// under any address of it: an event on an issue no read names changes no name that read holds. A
-// new comment is a new address, which the tree reads under a key of its own, a person's edit of a
-// document is the notice after the versions that already refreshed them, and an issue's write
-// that leaves its title alone renames nothing.
+// issue's write that changes its title, which renames the issue's own address. The feed is the
+// workspace's, so each refreshes only the names reads whose key names an address it can change of
+// the issue the event is on: an event on an issue no read names changes no name that read holds,
+// and only a title change changes the name of the issue's own address. A new comment is a new
+// address, which the tree reads under a key of its own, a person's edit of a document is the
+// notice after the versions that already refreshed them, and an issue's write that leaves its
+// title alone renames nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
@@ -1222,20 +1287,50 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
     feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
     feedEvent("artifact.renamed", { artifact: plan }),
     feedEvent("artifact.removed", { artifact: plan }),
-    feedEvent("issue.updated", { changed: ["title"] }),
   ];
   for (const event of editsWords) {
     expect(refreshedNames(event, [...NAMING_ISSUE, ...NAMING_ELSEWHERE]), event.type).toEqual(
       NAMING_ISSUE
     );
   }
+  expect(
+    refreshedNames(feedEvent("issue.updated", { changed: ["title"] }), [
+      ...NAMING_KEY,
+      ...NAMING_ISSUE,
+      ...NAMING_ELSEWHERE,
+    ])
+  ).toEqual(NAMING_KEY);
   const editsNoWords = [
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
     feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
     feedEvent("issue.updated", { changed: ["status"] }),
   ];
   for (const event of editsNoWords) {
-    expect(refreshedNames(event, NAMING_ISSUE), event.type).toEqual([]);
+    expect(refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE]), event.type).toEqual([]);
+  }
+});
+
+// The names read answers an issue's own address with the issue's title and nothing else, so of
+// an issue's events only a change of its title moves that name. A child's page names its parent
+// by that address, and the parent's documents take new versions often: none of those, nor any
+// other change under the parent, reads the child's names again, where the parent's new title,
+// and an older server's update that names none of its changes, does.
+test("a new version of an issue's document leaves a read naming only the issue's key alone, a title change refreshes it", () => {
+  const underTheIssue = [
+    feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
+    feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
+    feedEvent("artifact.renamed", { artifact: plan }),
+    feedEvent("artifact.removed", { artifact: plan }),
+  ];
+  for (const event of underTheIssue) {
+    expect(refreshedNames(event, NAMING_KEY), event.type).toEqual([]);
+  }
+  for (const event of [
+    feedEvent("issue.updated", { changed: ["title"] }),
+    feedEvent("issue.updated", {}),
+  ]) {
+    expect(refreshedNames(event, NAMING_KEY)).toEqual(NAMING_KEY);
   }
 });
 
@@ -1247,7 +1342,7 @@ test("an event on CORE-1 leaves a names read naming only CORE-12 alone", () => {
     "dispatch://CORE-12/comment/comment-1",
     "dispatch://CORE-12/spec#b-s1",
   ];
-  const own = [`dispatch://${KEY}/spec#b-s1`];
+  const own = [`dispatch://${KEY}`, `dispatch://${KEY}/spec#b-s1`];
   for (const event of [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
     feedEvent("issue.updated", { changed: ["title"] }),
@@ -1262,10 +1357,12 @@ const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
 });
 
 // A project document's event is on the document and what it owns, each written under
-// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal and a comment's edit carry the slug,
-// so they leave a read naming another document of the project alone too, `roadmap-md-2` among
-// them; a new version and an ask's edit name the document by its id alone, so they are held to
-// the project's documents, which leaves another project's documents and every issue alone.
+// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit and the edit of an
+// ask its anchor or its typed block puts on the document carry the slug, so they leave a read
+// naming another document of the project alone too, `roadmap-md-2` among them; a new version and
+// the edit of an ask asked of the document as a whole name the document by its id alone, so they
+// are held to the project's documents, which leaves another project's documents and every issue
+// alone.
 test("a project document's event refreshes the names reads naming that document, and none naming another", () => {
   const onDocument = { artifact_id: roadmap.id, issue_key: null };
   const naming = [
@@ -1290,6 +1387,32 @@ test("a project document's event refreshes the names reads naming that document,
         ask_id: null,
         id: "comment-1",
         project_key: "CORE",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "ask.edited",
+      {
+        anchor: { artifact_id: roadmap.id, mark_id: "ask-2", quote: "Ship it." },
+        anchor_artifact: {
+          name: roadmap.name,
+          primary: false,
+          project: "CORE",
+          slug: roadmap.slug,
+        },
+        artifact_id: roadmap.id,
+        id: "ask-2",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "ask.edited",
+      {
+        anchor: null,
+        artifact_id: roadmap.id,
+        block_artifact: { id: roadmap.id, primary: false, slug: roadmap.slug },
+        block_id: "q1",
+        id: "ask-3",
       },
       onDocument
     ),
