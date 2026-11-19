@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -132,6 +133,10 @@ type testServerOptions struct {
 	// testHookTimeout replaces the test hooks' acknowledgement timeout (Deps.TestHookTimeout);
 	// zero keeps the production ten seconds.
 	testHookTimeout time.Duration
+	// tracer is installed on every connection of the server's pool (storetest.Traced), so a test
+	// sees each statement the server runs; nil leaves the pool untraced. The xid window tests
+	// (xid_window_test.go) pass a storetest.XidTracer.
+	tracer pgx.QueryTracer
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
@@ -148,6 +153,13 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
+	// mention's send waits for the earlier events of its owner the outbox still owes its session.
+	// False is the deployment with no outbox, which every test that runs none is.
+	outboxPublishes bool
+	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
+	// none, as every test that reads no gauge leaves it.
+	metrics *metrics.Registry
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -230,6 +242,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if database == nil {
 		database = storetest.Open(t)
 	}
+	if options.tracer != nil {
+		database = &store.Store{Pool: storetest.Traced(t, database.Pool, options.tracer, nil)}
+	}
 	broker := events.NewBroker()
 	var documentPersistence docs.VersionedStore
 	if options.persistence != nil {
@@ -289,6 +304,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:             options.files,
 		DashboardEntry:    options.dashboardEntry,
 		BuildCommit:       options.buildCommit,
+		OutboxPublishes:   options.outboxPublishes,
+		Metrics:           options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -1764,9 +1781,8 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 		t.Fatalf("begin status lock: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var lockedKey string
-	if err := lock.QueryRow(context.Background(), `select key from issues where key = $1 for update`, child.Key).Scan(&lockedKey); err != nil {
-		t.Fatalf("lock child: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.IssueOwner(child.Key)); err != nil {
+		t.Fatalf("take the child's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1843,14 +1859,16 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 		t.Fatalf("create state: status=%d body=%s", initial.Code, initial.Body.String())
 	}
 
+	// The project's owner lock, the one putUserState takes before it reads the row: both writes
+	// queue behind it, and each reads the row only once the write before it has committed, so the
+	// second keeps the field the first wrote.
 	lock, err := database.Pool.Begin(context.Background())
 	if err != nil {
-		t.Fatalf("begin user state lock: %v", err)
+		t.Fatalf("begin the project lock's holder: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var login string
-	if err := lock.QueryRow(context.Background(), `select login from user_issue_state where login = 'alice' and issue_key = $1 for update`, issue.Key).Scan(&login); err != nil {
-		t.Fatalf("lock user state: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.ProjectOwner("TEST")); err != nil {
+		t.Fatalf("hold the project's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1866,7 +1884,7 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 	}()
 	waitForDatabaseLocks(t, lock, 2)
 	if err := lock.Commit(context.Background()); err != nil {
-		t.Fatalf("release user state lock: %v", err)
+		t.Fatalf("release the project's owner lock: %v", err)
 	}
 	for range 2 {
 		response := awaitResponse(t, responses)

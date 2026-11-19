@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // holdingListener is a fake Envoy listener that holds the first send of every idempotency key
@@ -807,5 +808,60 @@ func TestTheSweepsKeyedSendReadUsesItsPartialIndex(t *testing.T) {
 	}
 	if generic := explain("execute owed_keyed_sends(60, 86400, 100)"); !planReadsIndex(t, generic, "request_keys_owed_sends") {
 		t.Errorf("the generic plan reads no request_keys_owed_sends:\n%s", generic)
+	}
+}
+
+// The sweep settles a mention attempt nothing can send under the comment's owner lock, taken
+// before the attempt's update (settleUndeliverableMention), so a writer of the comment that holds
+// that lock - an edit that puts the mention back - is waited for, and the settle waits for it
+// holding no transaction id. The test holds the lock and requires exactly that, then lets the
+// settle through and requires the attempt settled failed.
+func TestTheSweepSettlesAnUndeliverableMentionBehindItsOwnersLockHoldingNoTransactionID(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	rig := sweepRig{t: t, database: database}
+	issue := createTestIssue(t, handler, "STUCK", "A mention that is gone")
+	gone := rig.strandMentions(issue, 1, "10 minutes", false)
+	ctx := context.Background()
+	owed, _, err := served.undeliverableDeliveries(ctx)
+	if err != nil || len(owed) != 1 {
+		t.Fatalf("the pass reads %v (%v), want the one attempt whose mention is gone", owed, err)
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue)); err != nil {
+		t.Fatalf("hold the comment's owner lock: %v", err)
+	}
+	type settle struct {
+		settled bool
+		err     error
+	}
+	settled := make(chan settle, 1)
+	go func() {
+		ok, err := served.settleUndeliverableMention(ctx, owed[0])
+		settled <- settle{settled: ok, err: err}
+	}()
+	if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the sweep's settle", settled); answered {
+		t.Fatalf("the settle answered (%v, %v) while this test held the comment's owner lock", early.settled, early.err)
+	} else if holdingXid != 0 {
+		t.Fatalf("the settle waits for the comment's owner lock with a transaction id already open: it failed the " +
+			"attempt before it took that lock, under a writer holding the comment's owner")
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the owner lock: %v", err)
+	}
+	select {
+	case got := <-settled:
+		if got.err != nil || !got.settled {
+			t.Fatalf("the settle once the lock was released = %v (%v), want the attempt settled", got.settled, got.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the settle never answered once the owner lock was released")
+	}
+	if failed := rig.count(`select count(*) from comment_deliveries where comment_id = any($1::uuid[]) and state = 'failed'`, gone); failed != 1 {
+		t.Fatalf("%d attempts of the stranded mention are failed, want its one", failed)
 	}
 }

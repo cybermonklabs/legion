@@ -871,6 +871,30 @@ function changesCollaborators(event: DispatchEvent): boolean {
   }
 }
 
+/**
+ * Whether the event comes with the Legion daemon writing a step record of the issue. A step write
+ * appends no event of its own (packages/envoy/internal/dispatch/api/steps.go), so the Steps tab
+ * is refreshed by what the daemon writes beside it as a phase moves: a claim or a release, as a
+ * role's run starts or ends; a handoff, the report a role writes as its step ends; a close, which
+ * ends the merge; and an issue write that moved the status or the route, or that does not say
+ * what it moved.
+ */
+function changesSteps(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "handoff.recorded":
+    case "issue.claimed":
+    case "issue.closed":
+    case "issue.released":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("status") || changes.has("route");
+    }
+    default:
+      return false;
+  }
+}
+
 /** What a project document's event refreshes: an ask, a comment, a version or a review on a
  *  document that belongs to no issue. */
 function documentTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
@@ -1094,6 +1118,10 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // claim's among them, and a claim is what makes a Legion agent a collaborator.
     targets.push({ exact: true, queryKey: ["issue", key, "collaborators"] });
   }
+  if (changesSteps(event)) {
+    // The Steps tab's read, named here for the same two reasons as the collaborators above.
+    targets.push({ exact: true, queryKey: ["issue", key, "steps"] });
+  }
   if (event.type === "decision.kept") {
     // A Keep moves one decision's row of the issue's Decisions view and nothing else: it writes
     // no document version, no ask and no issue field.
@@ -1115,9 +1143,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     event.type === "issue.deployed"
   ) {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
-    // detail, the log, the project lists that render the claim, and the collaborators the
-    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
-    // is a line in the issue's log and nothing the lists or rollups read.
+    // detail, the log, the project lists that render the claim, and the collaborators and the
+    // steps the branches above named. No rollup, ask count or component attachment moves with it.
+    // A deploy is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
@@ -1265,7 +1293,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   if (event.type === "handoff.recorded") {
     // A handoff write lands in the issue's handoff list; its log line is the `["events", key]`
-    // target above.
+    // target above, and the step it ended the steps target above.
     targets.push({ queryKey: ["handoffs", key] });
     return targets;
   }
@@ -1331,7 +1359,7 @@ const TRUNCATED_KIND_READS: Readonly<Partial<Record<string, readonly RefreshTarg
 };
 
 /**
- * The reads that carry a changed target's backlinks, which `refs.ReplaceCounted` names in the
+ * The reads that carry a changed target's backlinks, which `refs.CountedChanges` names in the
  * transaction that appends the event: an issue's detail (its count), its references tab and its
  * panel; an ask's read, its thread, the list its row lives in (its issue's asks, or its
  * document's), the Inbox row showing its count, and its panel; a document's panel; a block's
@@ -1451,12 +1479,180 @@ function askThreadsOn(issue: string): RefreshTarget {
 }
 
 /**
+ * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
+ * one of `next`, the characters that may stand after an owner of that kind in an address
+ * (`buildDispatchReference`), so that `dispatch://CORE-1` is never read as the start of
+ * `dispatch://CORE-12`.
+ */
+function addressUnder(address: string, owner: string, next: string): boolean {
+  return (
+    address.startsWith(owner) &&
+    (address.length === owner.length || next.includes(address.charAt(owner.length)))
+  );
+}
+
+/** The slug of the project document `event` is on, where its payload carries it: a renamed or
+ *  removed document's own, an edited comment's document's (`artifact_slug`), and an edited
+ *  ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through the
+ *  ask's own route the one that holds its typed block (`block_artifact`), or for an approval
+ *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
+ *  of the event log attaches to every ask event carrying `approval`), each the document the ask
+ *  is on. Four events carry none, and name the document by its id alone, which no address is
+ *  written with: a new version, a comment's edit written before `artifact_slug` existed, the
+ *  edit of a question asked of the document as a whole, with no anchor, no block and no
+ *  approval, and a document version's rewording of a block ask, whose event the document's
+ *  settlement writes without `block_artifact`. */
+function projectDocumentSlug(event: DispatchEvent): string | undefined {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+      return event.payload.artifact.slug;
+    case "ask.edited":
+      return (
+        event.payload.anchor_artifact?.slug ??
+        event.payload.block_artifact?.slug ??
+        event.payload.approval_artifact?.slug
+      );
+    case "comment.edited":
+      return event.payload.artifact_slug;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Which addresses `event` can change the words or the name under, or undefined for an event on
+ * neither an issue nor a project document. An issue's event is on the issue or on something it
+ * owns - a comment, an ask, a message, a document and its blocks - each written under
+ * `dispatch://<KEY>`, with `/` or `#` next. The issue's own address, `dispatch://<KEY>`, is
+ * named by the issue's title and by nothing else, since the names read names an issue by its
+ * title alone and every other target by its own words, a document by its name and a block by its
+ * text (the server's `refs.TargetNames`). So a write that changes the title (`issue.updated`) is
+ * on that one address, and every other event is on the addresses under it and never on that one,
+ * since none of them changes the title: a child's page cites its parent by its bare address, and
+ * a new version of the parent's spec leaves the name of that address as it was. A project
+ * document's event is on the document or on an ask, a comment or a block of it, each written
+ * under `dispatch://<PROJECT>/artifact/<slug>`, with `@`, `/` or `#` next. An event whose payload
+ * carries that slug (`projectDocumentSlug`) is on those addresses, and one that names the
+ * document by its id alone, as `projectDocumentSlug` lists, is on the addresses of every document
+ * of the project.
+ */
+function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | undefined {
+  if (event.issue_key !== null) {
+    const issue = buildDispatchReference({ key: event.issue_key, kind: "issue" });
+    if (event.type === "issue.updated") {
+      return (address) => address === issue;
+    }
+    return (address) => address !== issue && addressUnder(address, issue, "/#");
+  }
+  const project = event.project;
+  if (event.artifact_id === null || event.artifact_id === undefined || project === undefined) {
+    return undefined;
+  }
+  const slug = projectDocumentSlug(event);
+  if (slug === undefined) {
+    const documents = buildDispatchReference({ kind: "document", project, slug: "" });
+    return (address) => address.startsWith(documents);
+  }
+  const document = buildDispatchReference({ kind: "document", project, slug });
+  return (address) => addressUnder(address, document, "@/#");
+}
+
+/**
+ * Every names read whose key (`["reference-targets", <sorted addresses>]`) holds an address
+ * `event` can change the words under (`eventAddresses`), or one written in a form other than
+ * `dispatch://` and its owner, which could name anything and so is refreshed for rather than
+ * missed. An event on neither an issue nor a project document refreshes every names read.
+ */
+function namesReadsNaming(event: DispatchEvent): RefreshTarget {
+  const touched = eventAddresses(event);
+  if (touched === undefined) {
+    return { queryKey: ["reference-targets"] };
+  }
+  return {
+    queryKey: ["reference-targets"],
+    when: (_data, query) =>
+      rowsOf<unknown>(query.queryKey[1]).some(
+        (address) =>
+          typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+      ),
+  };
+}
+
+/**
+ * Which names reads (`referenceTargetsQuery`, `["reference-targets", <sorted addresses>]`) an
+ * event refreshes: those whose key holds an address it changes the words under, on a comment's
+ * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
+ * and none on any other event. The issue page's names reads are kept fresh by events
+ * (`useIssueTree`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
+ * addresses it names, so a page that comes to hold another set reads again under a key of its
+ * own: only a change of words under the same address needs a rule.
+ * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
+ * naming none, as an older server sends it) renames the issue's own address, since a names read
+ * names an issue by its title, so it refreshes the reads naming that address, and only those
+ * (`eventAddresses`).
+ * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
+ * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
+ * name nothing (`gone`), so each refreshes them too.
+ *
+ * Of the names reads the app holds, each event refreshes those whose key holds an address it can
+ * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
+ * query's key, not the page's issue, since a page's words can cite another issue's target. Every
+ * address the issue page names a read by is written `dispatch://` and its owner
+ * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
+ * issue's own address, and an item id or a block id written short still under its owner, so the
+ * key alone ties each address to what owns it. An event of these kinds on neither an issue nor a
+ * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
+ * refreshes every read the app holds.
+ *
+ * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
+ * once the document has been quiet after those edits, each of which wrote a version that sent
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
+ * is a message: the feed has no `message.edited` (its message events are `message.created`,
+ * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
+ * changes under its address.
+ *
+ * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
+ * project document of the workspace, a document's new version above all, and one that can
+ * change no address a names read the app holds names costs nothing. One that can change an
+ * address a read's key holds - an event of the open issue itself, whose tree holds its
+ * addresses, or of an issue or a project document its words cite - costs one read per such
+ * query the app holds and renders (one request per batch of its addresses, which no ordinary
+ * issue passes), at most two for an open issue page - the tree's own and the one naming what a
+ * typed block's words cite (`useIssueTree`) - and marks stale one the app holds and renders not.
+ * A project document's event that names the document by its id alone (`projectDocumentSlug`)
+ * reaches a read naming any document of its project, since it does not carry the slug its
+ * addresses are written with (`eventAddresses`). It refreshes through the same `refreshQueries`
+ * every other rule does, so a read already out, or begun under a second ago, is fetched again
+ * once those rules allow; since the rule tests the read's key against the answer that lands, a
+ * first read out at the event that then fails holds no answer to test and is not read again by
+ * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
+ */
+function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+    case "artifact.version":
+    case "ask.edited":
+    case "comment.edited":
+      return [namesReadsNaming(event)];
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("title") ? [namesReadsNaming(event)] : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
  * viewer's: the per-viewer events and the Replies rule read it.
  */
 export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string): RefreshTarget[] {
   const targets = [...ownerTargets(event, signedInLogin), ...changedReferenceTargets(event)];
+  targets.push(...referenceNameTargets(event));
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));

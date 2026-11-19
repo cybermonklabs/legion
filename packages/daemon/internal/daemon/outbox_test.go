@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -141,6 +142,8 @@ type outboxDispatch struct {
 	gatedSteps    [][]string
 	gatedStepsOf  []string
 	gatedStepsErr error
+	// recordErr is what a step record's write and a plan's write answer.
+	recordErr error
 }
 
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -195,6 +198,15 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 	d.gatedStepsOf = append(d.gatedStepsOf, project)
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
 	return d.gatedStepsErr
+}
+func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return d.recordErr
+}
+func (d *outboxDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return d.recordErr
+}
+func (d *outboxDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return d.recordErr
 }
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -2770,6 +2782,9 @@ type outboxClaimStore struct {
 	mu         sync.Mutex
 	claims     map[claim.Token]supervise.Claim
 	deliveries map[claim.Token]supervise.Delivery
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 	// refused is the error every claim write answers while it is set, which is how a case drives
 	// a decision the store would not take (the stall backstop's own relaunch).
 	refused error
@@ -2793,6 +2808,10 @@ func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error 
 	}
 	s.claims[c.Token] = c
 	return nil
+}
+
+func (s *outboxClaimStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (s *outboxClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
@@ -3358,6 +3377,122 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 	}
 	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)
+	}
+}
+
+// The router's 404 of a Dispatch with no route for a write ("no route for …", dispatch.NoRoute)
+// ends a status write, a message post and a claim release on their first attempt, each with its
+// follow-up, as any coded 404 does (dispatch.PermanentRefusal): their routes stand on every
+// Dispatch, so that answer means a dispatch_url that reaches no Dispatch of the project's, and a
+// status write left waiting would hold every later status write of its issue behind it (the
+// store's outboxInOrder). The status write's finish queues the architect's notice that the status
+// is not set, the message post's the architect's notice of the message it did not post, and the
+// claim release's tells nobody; each logs its line. A step record that meets the same answer in the
+// same run waits (waitsForTheRoute): it stays for its retry, logged as a wait and never as a
+// failure, since a Dispatch older than the record lane serves no route of it yet.
+func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    record.OutboxKind
+		payload record.OutboxPayload
+		// route is the request the write makes, and meets gives that request the router's 404.
+		route string
+		meets func(d *outboxDispatch, noRoute error)
+		// logged is the line the finish logs, and told a part of the architect's notice it queues,
+		// "" where it queues none.
+		logged, told string
+	}{
+		{name: "a status write", kind: record.OutboxKindDispatchStatus, payload: record.OrdinaryStatusWrite("done", "in_progress", ""),
+			route: "PATCH /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.statusErr = noRoute },
+			logged: "outbox status write refused by Dispatch; its architect is told what the issue holds now", told: "The status done is not set"},
+		{name: "a message post", kind: record.OutboxKindDispatchMessage, payload: record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"},
+			route: "POST /api/v1/issues/LEGION-2/messages", meets: func(d *outboxDispatch, noRoute error) { d.postErr = noRoute },
+			logged: "outbox Dispatch message refused and dropped; its architect is told", told: "READY #42 at head"},
+		{name: "a claim release", kind: record.OutboxKindClaimRelease, payload: record.ClaimRelease{},
+			route: "GET /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.getErr = noRoute },
+			logged: claimRefusedLine},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			now := time.Now().UTC()
+			noticeTree(t, pool, records, true)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+			started := now.Add(-time.Minute)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", tc.payload, now))
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
+				Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+				Agent: "legion-legion-legion-2-implementer", Generation: 1, StartedAt: &started}, now))
+			noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for " + tc.route}
+			noStepRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
+				Message: "no route for PUT /api/v1/issues/LEGION-2/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b"}
+			client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, recordErr: noStepRoute}
+			tc.meets(client, noRoute)
+			logs := &syncBuffer{}
+			runner := &outbox{
+				project: "legion", dispatchProject: "LEGION", log: slog.New(slog.NewJSONHandler(logs, nil)),
+				pool: pool, records: records, dispatch: client, notices: &holderPublisher{}, supervisor: sup,
+				now: func() time.Time { return now },
+			}
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the outbox: %v", err)
+			}
+
+			attemptsOf := func(kind record.OutboxKind) []int {
+				t.Helper()
+				rows, err := pool.Query(ctx, `select attempts from outbox where kind = $1 order by id`, string(kind))
+				if err != nil {
+					t.Fatalf("read the %s rows: %v", kind, err)
+				}
+				attempts, err := pgx.CollectRows(rows, pgx.RowTo[int])
+				if err != nil {
+					t.Fatalf("read the %s rows: %v", kind, err)
+				}
+				return attempts
+			}
+			if left := attemptsOf(tc.kind); len(left) != 0 {
+				t.Errorf("the row of %s stands after the router's 404 with attempts %v, want it ended on its first attempt", tc.name, left)
+			}
+			if lines := loggedLines(t, logs.String(), tc.logged); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["error"]), noRoute.Message) {
+				t.Errorf("logged %q %d times, want once naming the router's %q: %s", tc.logged, len(lines), noRoute.Message, logs.String())
+			}
+			rows, err := pool.Query(ctx, "select payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
+			if err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+			if err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			var told []record.Notice
+			for _, payload := range payloads {
+				var notice record.Notice
+				if err := json.Unmarshal(payload, &notice); err != nil {
+					t.Fatalf("decode a notice: %v", err)
+				}
+				told = append(told, notice)
+			}
+			switch {
+			case tc.told == "" && len(told) != 0:
+				t.Errorf("notices queued = %+v, want none: the finish of %s tells nobody", told, tc.name)
+			case tc.told != "" && (len(told) != 1 || told[0].Kind != "message-refused" || told[0].Role != claim.RoleArchitect ||
+				!strings.Contains(told[0].Reason, tc.told) || !strings.Contains(told[0].Reason, noRoute.Message)):
+				t.Errorf("notices queued = %+v, want the architect's one message-refused notice saying %q, naming %q", told, tc.told, noRoute.Message)
+			}
+
+			if left := attemptsOf(record.OutboxKindStepRecord); !slices.Equal(left, []int{1}) {
+				t.Errorf("the step record's rows after the router's 404 have attempts %v, want the one row kept for its retry after 1", left)
+			}
+			waited := loggedLines(t, logs.String(), `"msg":"outbox row waits"`)
+			if len(waited) != 1 || !strings.Contains(fmt.Sprint(waited[0]), "step_record") {
+				t.Errorf("logged %d waits, want the step record's one: %s", len(waited), logs.String())
+			}
+			if failed := loggedLines(t, logs.String(), "outbox row failed"); len(failed) != 0 {
+				t.Errorf("logged %d failed attempts, want none: the row of %s ended and the step record waits: %s", len(failed), tc.name, logs.String())
+			}
+		})
 	}
 }
 

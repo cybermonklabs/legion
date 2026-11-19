@@ -2,34 +2,46 @@ package cireconcile
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// The GraphQL half of the GitHub stand-in: it answers the pass's one query (headsQuery) out of
-// the same open pull requests, check runs and check suites the REST half answers, so one test
-// says what GitHub holds once and both reads of it agree.
+// The GraphQL half of the GitHub stand-in: it answers the pass's one query (headsQuery, or
+// headsQueryWithStatuses) out of the same open pull requests, check runs, check suites and
+// commit statuses the REST half answers, so one test says what GitHub holds once and both reads
+// of it agree.
 //
 // The answer is built as GitHub builds it rather than as the pass wants it. A commit's check
 // runs hang under the check suite that created them, a suite's app is the app of its runs, a
 // status and a conclusion are upper-case enums and a conclusion a run does not have yet is
 // null, the connections page at the sizes the query asks for and say whether a page follows,
 // and a query with no `filterBy: {checkType: ALL}` answers the latest run of each name alone,
-// which is GitHub's own default and the thing this pass must never read by.
+// which is GitHub's own default and the thing this pass must never read by. A commit's status
+// is answered only to a query that asks for it, null for a commit no status was posted to, and
+// null beside an errors entry against its path where the token may not read it.
 
 // fakeQuery is one GraphQL query the stand-in was asked: the repository it named, the page
-// cursor it carried, the ordinal of the page that cursor names, and when the stand-in began and
-// finished answering it. A test reads these back to say which pages a pass asked for, in what
-// order, and how much of GitHub's own time the pass took.
+// cursor it carried, the ordinal of the page that cursor names, the document it was, and when
+// the stand-in began and finished answering it. A test reads these back to say which pages a
+// pass asked for, in what order, with which document, and how much of GitHub's own time the
+// pass took.
 type fakeQuery struct {
 	repository string
 	after      string
 	page       int
+	text       string
 	started    time.Time
 	ended      time.Time
 }
@@ -145,7 +157,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, started: time.Now()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: time.Now()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
@@ -215,6 +227,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	})
 	to := min(from+pullsPerQuery, len(pulls))
 	all := strings.Contains(request.Query, "checkType: ALL")
+	asksStatus := strings.Contains(request.Query, "status { contexts {")
 	nodes := make([]any, 0, to-from)
 	var errors []any
 	for index, pull := range pulls[from:to] {
@@ -243,6 +256,20 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 			})
 		} else {
 			commit["checkSuites"] = f.checkSuiteNodes(repository, pull.sha, all)
+		}
+		if asksStatus {
+			if f.statusesReadable(r, repository, pull.sha) {
+				commit["status"] = f.statusNode(repository, pull.sha)
+			} else {
+				// GitHub refusing one head's status: the field is null and an errors entry names
+				// its path, the rest of the head and of the page standing.
+				commit["status"] = nil
+				errors = append(errors, map[string]any{
+					"type":    "FORBIDDEN",
+					"path":    []any{"repository", "pullRequests", "nodes", index, "commits", "nodes", 0, "commit", "status"},
+					"message": "Resource not accessible by integration",
+				})
+			}
 		}
 		node["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": commit}}}
 		nodes = append(nodes, node)
@@ -382,6 +409,29 @@ func (f *fakeGitHub) checkSuiteNodes(repository, sha string, all bool) map[strin
 		"pageInfo": map[string]any{"hasNextPage": len(groups) > suitesPerQuery},
 		"nodes":    nodes,
 	}
+}
+
+// statusNode is one commit's status field as GitHub answers it: null for a commit no status was
+// posted to, and otherwise the newest status of each context, its state the upper-case enum and
+// a link or a description it does not have null.
+func (f *fakeGitHub) statusNode(repository, sha string) any {
+	f.mu.Lock()
+	statuses := append([]object(nil), f.statuses[repository+"@"+sha]...)
+	f.mu.Unlock()
+	if len(statuses) == 0 {
+		return nil
+	}
+	contexts := make([]any, 0, len(statuses))
+	for _, status := range statuses {
+		contexts = append(contexts, map[string]any{
+			"context":     status["context"],
+			"state":       enum(status["state"]),
+			"createdAt":   status["created_at"],
+			"targetUrl":   nullable(status["target_url"]),
+			"description": nullable(status["description"]),
+		})
+	}
+	return map[string]any{"contexts": contexts}
 }
 
 // latestOfEachName is the runs GitHub answers a check-runs connection with when the query does
@@ -614,5 +664,37 @@ func (f *fakeGitHub) answerQueryWith(repository, body string) {
 			}
 			f.cursorsGiven[cursor] = at
 		}
+	}
+}
+
+// A query GitHub answers with a status other than 200 is an error that words the answer as the
+// client's own errors do (githubapp.StatusText): the status and GitHub's body, and the status
+// alone, with no `: ` after it, when GitHub answered no body.
+func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
+	for _, answer := range []string{"", `{"message":"Server Error"}`} {
+		name := "no body"
+		if answer != "" {
+			name = "GitHub's body"
+		}
+		t.Run(name, func(t *testing.T) {
+			base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				fmt.Fprint(w, answer)
+			}})
+			_, pemText := githubapptest.Key(t)
+			client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: pemText}, base)
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			reconciler := &Reconciler{GitHub: client}
+			_, err = reconciler.query(context.Background(), reconciled{owner: "acme", repo: "web", token: "ghs_test"}, "", &counts{})
+			want := "the GraphQL query for acme/web answered status 502"
+			if answer != "" {
+				want += ": " + answer
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("the query GitHub answered 502 gave %v, want %q", err, want)
+			}
+		})
 	}
 }

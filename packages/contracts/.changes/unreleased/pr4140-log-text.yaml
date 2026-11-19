@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+    `@legion/contracts/log-text` holds the one rule every client of this workspace names a
+    configured value by in an error, log line, notice or link, the rule of the Go clients'
+    `internal/redact`: the Dispatch client and its commands, the Envoy client and its listener
+    calls, Claude Code's session hook, and the broker client's trades. `urlForText(url, setting)`
+    prints a URL whole where `isCleanUrl` passes it (printable ASCII with no `@`, `%`, `?`, `#` or
+    `\`, an http(s) scheme, a DNS, IPv4 or bracketed IPv6 host, a port and a plain path), and any
+    other value, one that does not parse included, as `<setting> (not printed: it carries a
+    credential or is not a plain http(s) URL)`, never by any part of it.
+    `requestForText(base, requestUrl, setting)` prints a request URL a client built on `base` as
+    built where `base` is clean and the URL continues it, and the base's phrase otherwise.
+    `errorClass(error)` names an error a library or the runtime threw by its class
+    (`getaddrinfo ENOTFOUND`, `ECONNREFUSED`, `TypeError (message withheld)`), never by its
+    message, which repeats what it was handed. `isHttpUrl(value)` is the check a client makes of a
+    configured server address. `withoutUserinfo` (`@legion/envoy-client/errors`) and
+    broker-client's own `urlForText` are gone.
+time: 2026-11-17T01:39:50Z
+custom:
+    Issue: pr4140

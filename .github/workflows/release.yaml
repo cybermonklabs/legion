@@ -46,9 +46,9 @@ on:
       - ".github/workflows/worker-image.yaml"
   workflow_dispatch:
 
-# Every job declares its own permissions (legion_build, pi_envoy_build, pi_legion_build,
-# claude_envoy_build, publish,
-# worker_image, worker_image_attest, worker_image_release below); nothing runs under this
+# Every job declares its own permissions (legion_build, legion_names, pi_envoy_build,
+# pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names,
+# publish, worker_image, worker_image_attest, worker_image_release below); nothing runs under this
 # workflow-level default, so it stays empty rather than becoming an unreviewed grant to a job
 # added later with no block of its own.
 #
@@ -56,17 +56,23 @@ on:
 # versions, installs, packs, builds and tests: it runs the dependencies' code and every third-party
 # module it links, so it holds no write scope and no secret, uploads what it made as an artifact,
 # and ends in a tripwire (`release-push.sh no-credential`) that fails when a credential is reachable
-# from it anyway. The publish job holds the credentials and runs no dependency code: only
+# from it anyway. Each build job's names job (legion_names, pi_envoy_names, pi_legion_names,
+# claude_envoy_names), between it and publish, checks what that build hands publish for private
+# names with the deployment's term list, which no build job holds: the changelog entries publish
+# writes into the release's body, and claude_envoy_names the plugin's packed build too. A names
+# job runs no dependency code, and publish runs a package's release only when its names job
+# succeeded. The publish job holds the credentials and runs no dependency code: only
 # release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of a handed tarball) and the
 # pinned actions below, with no cache restored (`cache-mode: none`) and the deploy key in the env
 # of the steps that push. release-push.sh handed checks what each build job handed over before
 # anything acts on it.
 #
-# So a release waits for a runner three times: for the four build jobs together; for publish beside
-# worker_image's build; and for worker_image_attest's attestation beside worker_image_release. Each
-# stage holds what the one before it may not: publish cannot run in a job that built what it
-# publishes, the image build needs the plugin pair legion_build decides, and the attestation, which
-# holds id-token and attestations: write, cannot run in the job that ran the Dockerfile.
+# So a release waits for a runner four times: for the four build jobs together; for their names
+# jobs; for publish beside worker_image's build; and for worker_image_attest's attestation beside
+# worker_image_release. Each stage holds what the one before it may not: publish cannot run in a
+# job that built what it publishes, a names job holds the term list no build job may, the image
+# build needs the plugin pair legion_build decides, and the attestation, which holds id-token and
+# attestations: write, cannot run in the job that ran the Dockerfile.
 #
 # Every job condition downstream of a skippable job takes one shape: `always() &&
 # needs.<job>.result == 'success' && …` before it reads that job's outputs. GitHub gives an `if:`
@@ -177,10 +183,10 @@ env:
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/fold/
-    packages/envoy/internal/googleidentity/ packages/envoy/internal/redact/
-    packages/envoy/internal/redirects/ packages/envoy/listenfd/ packages/envoy/migrationid/
-    packages/envoy/natsversion/ packages/envoy/roleholder/ packages/envoy/sessiontiming/
-    packages/envoy/subjectforms/
+    packages/envoy/internal/googleidentity/ packages/envoy/internal/id/ packages/envoy/internal/redact/
+    packages/envoy/internal/redirects/ packages/envoy/listenerwire/ packages/envoy/listenfd/
+    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
+    packages/envoy/sessiontiming/ packages/envoy/steprecord/ packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 
@@ -370,6 +376,25 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries legion_build rendered, over the very file
+  # publish writes into the GitHub release's body, through
+  # .github/workflows/release-notes-names.yaml, whose header says why it is a job of its own and
+  # what it runs. It runs whenever legion_build released, and checks when that release rendered
+  # entries. publish needs this job, and its legion steps run only when it succeeded, so a finding
+  # releases nothing of legion.
+  legion_names:
+    needs: legion_build
+    if: always() && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: legion-notes
+      notes: ${{ needs.legion_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # The Envoy Oh My Pi plugin, @sjawhar/pi-envoy. pi_envoy_build versions it, installs the
   # workspace and packs it (the dependencies' code, so no write scope and no secret), and hands the
   # tarball to publish, which publishes those bytes to npm, tags the release and creates the
@@ -510,6 +535,21 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries pi_envoy_build rendered, as legion_names says;
+  # publish's pi-envoy steps run only when it succeeded.
+  pi_envoy_names:
+    needs: pi_envoy_build
+    if: always() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-envoy-notes
+      notes: ${{ needs.pi_envoy_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
   pi_legion_build:
     # Only main publishes, as pi_envoy_build says.
@@ -631,11 +671,30 @@ jobs:
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
 
+  # The private-name check of the changelog entries pi_legion_build rendered, as legion_names
+  # says; publish's pi-legion steps run only when it succeeded.
+  pi_legion_names:
+    needs: pi_legion_build
+    if: always() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true'
+    # contents: read is for the called workflow's checkout.
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-notes-names.yaml
+    with:
+      artifact: pi-legion-notes
+      notes: ${{ needs.pi_legion_build.outputs.notes }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
   # The Claude Code plugin, @sjawhar/claude-envoy, built and published as the two Oh My Pi plugins
   # are. The difference is what it packs: the plugin's own tree carries no built file, so this job
   # builds dist/ and legion/ with packages/claude-envoy/scripts/verify-build.sh — the one
   # statement of what the published plugin must hold, which ci.yaml runs on every pull request —
   # puts that checked build into the checkout and packs it with the rest of the package.
+  # It also packs the Codex CLI plugin, @sjawhar/codex-envoy, from that same checked
+  # dist/ and at the same version: the two hosts' plugin rules cannot both hold in one package
+  # (packages/claude-envoy/scripts/build.ts, CODEX_SOURCES), so the Codex one is a package of its
+  # own, built from the same source and released with this one.
   # .claude-plugin/marketplace.json names this package as an `npm` source with the range
   # `>=1.0.0`, so Claude Code installs the newest release and never the 0.0.0 placeholder that
   # `latest` points at until the first one.
@@ -702,12 +761,15 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # All three manifests, and for different readers. package.json's version is what npm
+          # All five manifests, and for different readers. package.json's version is what npm
           # publishes and what the MCP server reports. .claude-plugin/plugin.json's is what Claude
           # Code calls the installed plugin's version: it reads the manifest, never the registry,
           # and an install whose manifest declares none lands in a plugin-cache directory named
           # `unknown` and never updates, since one `unknown` is indistinguishable from the next
-          # (measured on Claude Code 2.1.311). .omp-plugin/plugin.json's is what Oh My Pi reports,
+          # (measured on Claude Code 2.1.311). The Codex CLI names its plugin cache directory by
+          # codex/.codex-plugin/plugin.json's and reinstalls when it changes (measured on Codex CLI
+          # 0.154.0), and the Codex package's package.json is what npm publishes it
+          # at. .omp-plugin/plugin.json's is what Oh My Pi reports,
           # and tests/envoy-channel-server.test.ts holds it equal to package.json's, so a release
           # that rewrote the first two alone would publish a plugin naming two versions. The
           # committed .claude-plugin manifest declares none, which is what keeps a checkout from
@@ -715,7 +777,9 @@ jobs:
           # rewrites below.
           for manifest in packages/claude-envoy/package.json \
             packages/claude-envoy/.claude-plugin/plugin.json \
-            packages/claude-envoy/.omp-plugin/plugin.json; do
+            packages/claude-envoy/.omp-plugin/plugin.json \
+            packages/claude-envoy/codex/package.json \
+            packages/claude-envoy/codex/.codex-plugin/plugin.json; do
             jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json && mv tmp.json "$manifest"
           done
 
@@ -728,14 +792,14 @@ jobs:
           # repository; this writes whichever one the job runs in, and this job's tree is
           # discarded.
           url=$(.github/scripts/repo-paths.sh repository_url)
-          jq --arg u "$url" '.repository.url = $u' \
-            packages/claude-envoy/package.json > tmp.json \
-            && mv tmp.json packages/claude-envoy/package.json
+          for manifest in packages/claude-envoy/package.json packages/claude-envoy/codex/package.json; do
+            jq --arg u "$url" '.repository.url = $u' "$manifest" > tmp.json && mv tmp.json "$manifest"
+          done
 
       # What it builds and checks: packages/claude-envoy/scripts/verify-build.sh, which builds the
       # plugin twice into scratch directories outside the checkout, compares the two byte for
-      # byte, runs the private-name check over the build and packs it into the tar
-      # `release-push.sh check-built` then checks member by member.
+      # byte and packs it into the tar `release-push.sh check-built` then checks member by member.
+      # The private-name check of the build is claude_envoy_names's, below.
       - name: Build, check and pack the plugin
         if: steps.version.outputs.skip != 'true'
         run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
@@ -800,8 +864,85 @@ jobs:
           path: packages/claude-envoy/*.tgz
           if-no-files-found: error
 
+      # The Codex plugin's package, built from the checked dist/ the step above packed rather than
+      # bundled again, with the manifests and skills of this tree (scripts/build.ts --codex-out).
+      # It is written outside the checkout, as every build here is.
+      - name: Build and pack the Codex plugin
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          bun scripts/build.ts --codex-out "$RUNNER_TEMP/codex-envoy" --dist dist
+          mkdir "$RUNNER_TEMP/codex-envoy-tarball"
+          cd "$RUNNER_TEMP/codex-envoy" && bun pm pack --destination "$RUNNER_TEMP/codex-envoy-tarball"
+        working-directory: packages/claude-envoy
+
+      - name: Check the packed Codex tarball names the publishing repository and the release, and holds the build and the skills
+        if: steps.version.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The Claude Code tarball's checks above, over the Codex package: its repository, the
+          # version npm and Codex read, the bundle its MCP server runs, the hooks file Codex reads
+          # by default, and the skills as real files.
+          tgz=("$RUNNER_TEMP"/codex-envoy-tarball/*.tgz)
+          url=$(.github/scripts/repo-paths.sh repository_url)
+          tar -xzOf "${tgz[0]}" package/package.json | jq -e --arg u "$url" '.repository.url == $u'
+          for manifest in package/package.json package/.codex-plugin/plugin.json; do
+            tar -xzOf "${tgz[0]}" "$manifest" | jq -e --arg v "$VERSION" '.version == $v'
+          done
+          members=$(tar -tzf "${tgz[0]}")
+          for member in package/dist/envoy-channel.js package/hooks/hooks.json; do
+            if ! printf '%s\n' "$members" | grep -qxF "$member"; then
+              echo "::error::the packed Codex tarball holds no $member, which the installed plugin runs from"
+              exit 1
+            fi
+          done
+          packages/claude-envoy/scripts/check-packed-skills.sh "${tgz[0]}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.version.outputs.skip != 'true'
+        with:
+          name: codex-envoy-tarball
+          path: ${{ runner.temp }}/codex-envoy-tarball/*.tgz
+          if-no-files-found: error
+
       - name: Check this job holds no credential (tripwire)
         run: .github/scripts/release-push.sh no-credential
+
+  # The private-name checks of what claude_envoy_build hands publish: the plugin it packed, over
+  # the tarball publish will hand npm (its dist/ and legion/, the very bytes verify-build.sh tarred
+  # and extract-built put into the package before the pack), and the changelog entries it rendered,
+  # as legion_names says. A job of its own, because the check reads the deployment's term list
+  # (PRIVATE_NAME_TERMS) and no build job holds it: this one checks out the .github cone and runs
+  # .github/actions/private-names-packed-plugin, which downloads the tarball, lays its two
+  # directories out at their repository path and runs the check, and
+  # .github/actions/private-names-release-notes when the release rendered entries, and no
+  # dependency code (.github/scripts/check-release-credentials.sh reads the actions' steps). The
+  # check fails a push's run without the list. publish needs this job, and its claude-envoy steps
+  # run only when it succeeded.
+  claude_envoy_names:
+    needs: claude_envoy_build
+    if: always() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # contents: read is for the checkout.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      - uses: ./.github/actions/private-names-packed-plugin
+        with:
+          artifact: claude-envoy-tarball
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
+
+      - uses: ./.github/actions/private-names-release-notes
+        if: needs.claude_envoy_build.outputs.notes == 'true'
+        with:
+          artifact: claude-envoy-notes
+          private-name-terms: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # Publishes what the four build jobs made, in one job for all four packages, so their release
   # waits for a runner once: pi-envoy, pi-legion, claude-envoy, then legion, which links the two
@@ -818,16 +959,18 @@ jobs:
   # It runs on main even when nothing releases: its pair_ok output decides
   # whether worker_image_attest attests the image, and each step decides for its own package.
   #
-  # A package's first step runs when its build released, and each later step when the one before it
-  # in the same package succeeded (`steps.<id>.outcome`, under `!cancelled()`). So a failed step
-  # stops the rest of its own package and no other: one package's failure never holds back another
-  # whose build released. Each package starts from the run's commit (`git checkout --force --detach
+  # A package's first step runs when its build released and its names job succeeded, and each later
+  # step when the one before it in the same package succeeded (`steps.<id>.outcome`, under
+  # `!cancelled()`). So a private name in a package's changelog entries, or a failed step, stops
+  # the rest of its own package and no other: one package's failure never holds back another
+  # whose build released (legion, which links the two Oh My Pi plugins, waits for both). Each
+  # package starts from the run's commit (`git checkout --force --detach
   # "$GITHUB_SHA"` and `git clean -ffdx`, in its hand-over check), and nothing of a release is
   # committed: `release-push.sh tag` tags $GITHUB_SHA itself, which main already holds, and
   # `tagged` finds a tag only on HEAD. So no package's steps move main, and a re-run of this job
   # reads the same tags its first attempt pushed.
   publish:
-    needs: [pi_envoy_build, pi_legion_build, claude_envoy_build, legion_build]
+    needs: [pi_envoy_build, pi_envoy_names, pi_legion_build, pi_legion_names, claude_envoy_build, claude_envoy_names, legion_build, legion_names]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -869,7 +1012,7 @@ jobs:
       # package's reset of the checkout removes it and no git command sees it.
       - name: "pi-envoy: Download the tarball"
         id: pi_envoy_download
-        if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs.skip != 'true' && needs.pi_envoy_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pi-envoy-tarball
@@ -893,7 +1036,7 @@ jobs:
           name=$(jq -r .name packages/pi-envoy/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed pi-envoy-v "$VERSION" "$RUNNER_TEMP/pi-envoy-tarball" "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-envoy-v "$VERSION" "$RUNNER_TEMP/pi-envoy-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       # The tarball is pi_envoy_build's bytes, never a repack here: npm publish is handed the .tgz,
@@ -918,7 +1061,8 @@ jobs:
         env:
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh tag "$VERSION" "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
 
       # The deploy key reaches this step alone of this package's. release-push.sh push-tag writes
       # it to a directory of its own, pushes over SSH to GitHub's pinned host keys, and removes the
@@ -930,7 +1074,8 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       - name: "pi-envoy: Create GitHub release"
         id: pi_envoy_release
@@ -940,7 +1085,8 @@ jobs:
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
           VERSION: ${{ needs.pi_envoy_build.outputs.version }}
           STEM: ${{ steps.pi_envoy_handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Pi Envoy v$VERSION" "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Envoy v$VERSION" "$RUNNER_TEMP/pi-envoy-tarball/$STEM.tgz"
 
       # The entries pi_envoy_build rendered from this release's fragments, under the runner's
       # temporary directory as the tarball is, outside the checkout.
@@ -962,13 +1108,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.pi_envoy_handed.outputs.tag }}
         run: |
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/pi-envoy-notes/release-notes.md"
 
       # pi-legion: what pi_legion_build packed, published as pi-envoy's above is.
       - name: "pi-legion: Download the tarball"
         id: pi_legion_download
-        if: ${{ !cancelled() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.pi_legion_build.result == 'success' && needs.pi_legion_build.outputs.skip != 'true' && needs.pi_legion_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pi-legion-tarball
@@ -985,7 +1131,7 @@ jobs:
           name=$(jq -r .name packages/pi-legion/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed pi-legion-v "$VERSION" "$RUNNER_TEMP/pi-legion-tarball" "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed pi-legion-v "$VERSION" "$RUNNER_TEMP/pi-legion-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       - name: "pi-legion: Publish to npm"
@@ -1008,7 +1154,8 @@ jobs:
         env:
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh tag "$VERSION" "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
 
       # The deploy key reaches this step alone of this package's, as for pi-envoy.
       - name: "pi-legion: Push tag"
@@ -1017,7 +1164,8 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       - name: "pi-legion: Create GitHub release"
         id: pi_legion_release
@@ -1027,7 +1175,8 @@ jobs:
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
           VERSION: ${{ needs.pi_legion_build.outputs.version }}
           STEM: ${{ steps.pi_legion_handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Pi Legion v$VERSION" "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Pi Legion v$VERSION" "$RUNNER_TEMP/pi-legion-tarball/$STEM.tgz"
 
       # pi-legion's entries, written into its release body as pi-envoy's are above.
       - name: "pi-legion: Download the changelog entries"
@@ -1045,7 +1194,7 @@ jobs:
           TAG: ${{ steps.pi_legion_handed.outputs.tag }}
         run: |
           # pi_legion_build's one rendered file, written into the body as pi-envoy's is above.
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/pi-legion-notes/release-notes.md"
 
       # claude-envoy: what claude_envoy_build packed, published as the two Oh My Pi plugins above
@@ -1054,10 +1203,11 @@ jobs:
       # reads this one, which Claude Code installs for itself from the marketplace. So a run whose
       # steps for this plugin fail still releases legion, in the steps after them. This job does
       # need claude_envoy_build, as it needs every build job, so a legion release waits for that
-      # build to finish, whatever it decided.
+      # build to finish, whatever it decided; and it needs claude_envoy_names, whose private-name
+      # check of the packed plugin must pass before the plugin is published.
       - name: "claude-envoy: Download the tarball"
         id: claude_envoy_download
-        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' && needs.claude_envoy_names.result == 'success' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: claude-envoy-tarball
@@ -1074,7 +1224,7 @@ jobs:
           name=$(jq -r .name packages/claude-envoy/package.json)
           stem="${name#@}"
           stem="${stem//\//-}-$VERSION"
-          tag=$(.github/scripts/release-push.sh handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/claude-envoy-tarball" "$stem.tgz")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/claude-envoy-tarball" "$stem.tgz")
           { echo "tag=$tag"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
 
       - name: "claude-envoy: Publish to npm"
@@ -1097,7 +1247,8 @@ jobs:
         env:
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh tag "$VERSION" "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
 
       # The deploy key reaches this step alone of this package's, as for pi-envoy.
       - name: "claude-envoy: Push tag"
@@ -1106,7 +1257,8 @@ jobs:
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
-        run: .github/scripts/release-push.sh push-tag "$TAG"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       - name: "claude-envoy: Create GitHub release"
         id: claude_envoy_release
@@ -1116,7 +1268,8 @@ jobs:
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
           VERSION: ${{ needs.claude_envoy_build.outputs.version }}
           STEM: ${{ steps.claude_envoy_handed.outputs.stem }}
-        run: .github/scripts/release-push.sh release "$TAG" "Claude Envoy v$VERSION" "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz"
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "Claude Envoy v$VERSION" "$RUNNER_TEMP/claude-envoy-tarball/$STEM.tgz"
 
       # claude-envoy's entries, written into its release body as pi-envoy's are above.
       - name: "claude-envoy: Download the changelog entries"
@@ -1134,8 +1287,62 @@ jobs:
           TAG: ${{ steps.claude_envoy_handed.outputs.tag }}
         run: |
           # claude_envoy_build's one rendered file, written into the body as pi-envoy's is above.
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/claude-envoy-notes/release-notes.md"
+
+      # codex-envoy: the Codex CLI plugin claude_envoy_build packed beside claude-envoy, from the
+      # same build and at the same version, published to npm on its own name and tagged with
+      # claude-envoy's tag alone. npm's trusted publishing cannot create a package, so until an
+      # owner of the @sjawhar scope has published the name once by hand and named this workflow
+      # its trusted publisher, this step says so and publishes nothing; any other failure of the
+      # registry read is an error. Like claude-envoy's steps, none of these gates the legion
+      # release below. Its first step also needs claude_envoy_names: the Codex package's dist/ is
+      # the checked dist/ that job's packed-plugin check reads, copied byte for byte
+      # (scripts/build.ts --codex-out --dist), and the rest of it is written from this tree's
+      # codex/, skills/ and scripts/build.ts, which the merge queue's private-names job read, so a
+      # finding there stops both packages.
+      - name: "codex-envoy: Download the tarball"
+        id: codex_envoy_download
+        if: ${{ !cancelled() && needs.claude_envoy_build.result == 'success' && needs.claude_envoy_build.outputs.skip != 'true' && needs.claude_envoy_names.result == 'success' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-envoy-tarball
+          path: ${{ runner.temp }}/codex-envoy-tarball
+
+      - name: "codex-envoy: Check the hand-over"
+        id: codex_envoy_handed
+        if: ${{ !cancelled() && steps.codex_envoy_download.outcome == 'success' }}
+        env:
+          VERSION: ${{ needs.claude_envoy_build.outputs.version }}
+        run: |
+          git checkout --force --detach "$GITHUB_SHA"
+          git clean -ffdx
+          name=$(jq -r .name packages/claude-envoy/codex/package.json)
+          stem="${name#@}"
+          stem="${stem//\//-}-$VERSION"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed claude-envoy-v "$VERSION" "$RUNNER_TEMP/codex-envoy-tarball" "$stem.tgz" >/dev/null
+          { echo "name=$name"; echo "stem=$stem"; } >> "$GITHUB_OUTPUT"
+
+      - name: "codex-envoy: Publish to npm"
+        if: ${{ !cancelled() && steps.codex_envoy_handed.outcome == 'success' }}
+        env:
+          VERSION: ${{ needs.claude_envoy_build.outputs.version }}
+          NAME: ${{ steps.codex_envoy_handed.outputs.name }}
+          STEM: ${{ steps.codex_envoy_handed.outputs.stem }}
+        run: |
+          if ! read_name=$(npm view "$NAME" name 2>&1); then
+            if grep -q E404 <<<"$read_name"; then
+              echo "::warning::npm has no package $NAME yet, and trusted publishing cannot create one: an owner of its scope publishes it once by hand and names this workflow its trusted publisher. Not publishing $VERSION."
+              exit 0
+            fi
+            echo "::error::reading $NAME from npm failed: $read_name"
+            exit 1
+          fi
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "npm already has $NAME $VERSION; skipping publish"
+          else
+            npm publish "$RUNNER_TEMP/codex-envoy-tarball/$STEM.tgz" --access public --provenance
+          fi
 
       # The plugin pair npm carries for this run, which legion links and the worker image installs:
       # for each Oh My Pi plugin, the version its build released when "Create GitHub release", the
@@ -1170,7 +1377,7 @@ jobs:
               [ "$3" = success ] || return 0
               released=$4
             fi
-            .github/scripts/release-push.sh pair-version "$5" "$released"
+            "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" pair-version "$5" "$released"
           }
           pi_envoy=$(pair_member "$PI_ENVOY_RESULT" "$PI_ENVOY_SKIP" "$PI_ENVOY_RELEASED" "$PI_ENVOY_VERSION" pi-envoy-v)
           pi_legion=$(pair_member "$PI_LEGION_RESULT" "$PI_LEGION_SKIP" "$PI_LEGION_RELEASED" "$PI_LEGION_VERSION" pi-legion-v)
@@ -1189,12 +1396,13 @@ jobs:
             echo "pi_legion_version=$pi_legion"
           } >> "$GITHUB_OUTPUT"
 
-      # legion: what legion_build built and smoke-tested. It goes only once both plugins it links
-      # are on npm, and this first step refuses archives that link any pair but the one npm now
-      # carries: the binary installs that pair from npm on a stale-plugin relaunch.
+      # legion: what legion_build built and smoke-tested, once legion_names found no private name in
+      # its changelog entries. It goes only once both plugins it links are on npm, and this first
+      # step refuses archives that link any pair but the one npm now carries: the binary installs
+      # that pair from npm on a stale-plugin relaunch.
       - name: "legion: Check the linked plugin pair"
         id: legion_pair
-        if: ${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && needs.legion_build.outputs.skip != 'true' && needs.legion_names.result == 'success' }}
         env:
           LINKED_PI_ENVOY: ${{ needs.legion_build.outputs.pi_envoy_version }}
           LINKED_PI_LEGION: ${{ needs.legion_build.outputs.pi_legion_version }}
@@ -1238,7 +1446,7 @@ jobs:
             arch=${target#*/}
             archives+=("legion-$os-$arch.tar.gz")
           done
-          tag=$(.github/scripts/release-push.sh handed legion-v "$VERSION" "$dir" "${archives[@]}")
+          tag=$("$GITHUB_WORKSPACE/.github/scripts/release-push.sh" handed legion-v "$VERSION" "$dir" "${archives[@]}")
           (cd "$dir" && sha256sum -- "${archives[@]}" > SHA256SUMS)
           {
             echo "tag=$tag"
@@ -1262,8 +1470,8 @@ jobs:
           TAG: ${{ steps.legion_assets.outputs.tag }}
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         run: |
-          .github/scripts/release-push.sh tag "$VERSION" "$TAG"
-          .github/scripts/release-push.sh push-tag "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
 
       # Build provenance for the archives a mise pin installs, which the release below uploads
       # exactly, so a downloaded asset is checked against a run of this workflow on main rather than
@@ -1299,7 +1507,7 @@ jobs:
           while IFS= read -r file; do
             [ -z "$file" ] || assets+=("$file")
           done <<< "$FILES"
-          .github/scripts/release-push.sh release "$TAG" "legion v$VERSION" "${assets[@]}"
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release "$TAG" "legion v$VERSION" "${assets[@]}"
           { echo "version=$VERSION"; echo "tag=$TAG"; } >> "$GITHUB_OUTPUT"
 
       # legion's entries, written into its release body as the plugins' are above.
@@ -1318,7 +1526,7 @@ jobs:
           TAG: ${{ steps.legion_assets.outputs.tag }}
         run: |
           # legion_build's one rendered file, written into the body as the plugins' are above.
-          .github/scripts/release-push.sh release-section "$TAG" '## Changelog' \
+          "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$TAG" '## Changelog' \
             "$RUNNER_TEMP/legion-notes/release-notes.md"
 
   # The worker image, built from this run's commit with the plugin pair legion_build decided (empty
@@ -1459,4 +1667,4 @@ jobs:
           test -n "$REF"
           # shellcheck disable=SC2016 # literal Markdown backticks, no expansion wanted
           printf '`%s`\n' "$REF" |
-            .github/scripts/release-push.sh release-section "$RELEASE_TAG" '## Worker image' -
+            "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" release-section "$RELEASE_TAG" '## Worker image' -

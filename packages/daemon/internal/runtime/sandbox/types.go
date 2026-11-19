@@ -268,12 +268,6 @@ type Options struct {
 	// working directory and with the environment Oh My Pi gets — through the start wrapper
 	// (startArgv); Oh My Pi starts only once it exits 0. Nil runs none.
 	Setup []string
-	// SkillsRepository is the deployment's skills marketplace (runtime.kubernetes.skills_repository):
-	// the GitHub repository an issue pod's third init container, skills-fetch, clones shallow into
-	// the pod's skills volume at SkillsDir, and which every role's start wrapper then installs from
-	// before Oh My Pi starts. The zero repository runs no such container and installs nothing,
-	// which is every deployment that names no skills repository.
-	SkillsRepository ghrepo.Repository
 	// TestPostgres is runtime.kubernetes.test_postgres: every issue pod serves its own PostgreSQL
 	// for tests, started by the roles container's launcher before it accepts a role start and
 	// started again whenever the postmaster exits (launcher.Config.TestPostgres), and every role
@@ -293,6 +287,16 @@ type Options struct {
 	// pod is built from it, since a launcher is told it on every hello, a reconnect after a
 	// daemon restart included, so a changed setting reaches every pod without replacing one.
 	MemoryGuard *shimwire.LauncherMemoryGuard
+	// VolumeTrim is what the launcher of an issue pod is told its cache trimmer should run by,
+	// handed to it on the daemon's answer to its hello (LauncherResolver). Nil is a deployment
+	// that runs no trimmer, which is the absence the launcher reads as "run none". The
+	// controller's pod takes none however this is set: its launcher never reaches the block that
+	// would run one, and the volume it works on is no issue's.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): nothing of a running
+	// pod is built from it — a launcher is told it on every hello, a reconnect after a daemon
+	// restart included — so a pod whose shape predates it has drifted from nothing.
+	VolumeTrim *shimwire.LauncherVolumeTrim
 	// BootTimeout bounds each wait of a relaunch, its wait for the API server to answer one of its
 	// requests other than overloaded included (resend), and is how long a pod may stay unscheduled
 	// before it counts as gone (worker_boot_timeout_seconds).
@@ -379,6 +383,13 @@ type Options struct {
 	// daemon sets this field, and drops it; it never closes the connection on it, since the
 	// launcher would redial a second later and send its waiting reports into the same refusal.
 	MemoryGuardKilled runtime.MemoryGuardKilled
+	// VolumeReported takes one sweep of an issue pod's volume as that pod's launcher reported it
+	// (runtime.VolumeReported): the daemon turns it into the fact that tells the issue's
+	// architect its volume is filling. A runtime given none reads the frame, logs a warning naming
+	// where the daemon sets this field, and drops it; what it must never do is close the
+	// connection on it, since the launcher would redial the one connection that carries its
+	// reports once a second (ServeLauncher's switch).
+	VolumeReported runtime.VolumeReported
 	// LeakCheck reads the shared public leak check at the tag a pod's launcher names in its hello
 	// (shimwire.LauncherHello.LeakCheckTag), which the runtime pushes to that launcher before it
 	// starts any role of it (launchers.serveLeakCheck): the launcher installs the check once for

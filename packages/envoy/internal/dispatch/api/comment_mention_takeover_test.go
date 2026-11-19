@@ -445,3 +445,107 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 			waited.Round(time.Millisecond), takeoverFirstBackoff)
 	}
 }
+
+// A send taken from a held lane starts its take-over window when its whole delivery starts, not
+// before its wait: the wait for an earlier event has no bound, and a window that started before it
+// would close before the try it paces, so the listener's first take-over answer ("no live
+// session") would settle the attempt failed with no try again, and the session would get the
+// outbox's plain copy instead of the mention. Two comments to s1 wait behind the issue's earlier
+// events on one held lane - the first's send parked, the second's queued behind it - and the
+// events are then published. In one row the first's send meets one take-over answer, in the other
+// the second's does, each after a wait longer than the window: each send must try again and be
+// sent, and s1 takes the two in order. The control in the same run waits no time. The code before
+// started the first's window when its send parked and the second's when its comment was written,
+// so both rows past the window settle that attempt failed.
+func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.T) {
+	const window = 2 * time.Second
+	for _, row := range []struct {
+		name string
+		wait time.Duration
+		// refused is the body of the comment whose send the listener answers once as a listener
+		// being replaced.
+		refused string
+	}{
+		{name: "control: the first's send, after no wait", wait: 0, refused: "the first"},
+		{name: "the first's send, parked past the window", wait: window + 500*time.Millisecond, refused: "the first"},
+		{name: "the second's send, queued past the window", wait: window + 500*time.Millisecond, refused: "the second"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var took []string
+			answered := false
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
+					writeSessionRecord(t, w, `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`, "s1")
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+					var request struct {
+						Message string `json:"message"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Errorf("decode mention send: %v", err)
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					if request.Message == row.refused && !answered {
+						answered = true
+						w.WriteHeader(http.StatusNotFound)
+						_, _ = w.Write([]byte(`{"error":"no live session s1"}`))
+						return
+					}
+					took = append(took, request.Message)
+					_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer listener.Close()
+			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+				envoyURL: listener.URL, outboxPublishes: true, takeoverWindow: window,
+			})
+			served.mentions.wait()
+			sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
+			timers := make(chan func(), 4)
+			sender.mu.Lock()
+			sender.after = func(_ time.Duration, f func()) { timers <- f }
+			sender.mu.Unlock()
+			served.mentions = sender
+
+			// No outbox runs, so the issue's earlier events stay unsent: the first comment's send
+			// parks behind them, its timer left to the test, and the second queues behind it on
+			// the held lane.
+			issue := createInteractionIssue(t, handler, "TEST", "A held lane's take-over windows", "before")
+			first := postMentionOfS1(t, handler, issue.Key, "the first")
+			unpark := <-timers
+			second := postMentionOfS1(t, handler, issue.Key, "the second")
+			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
+			waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
+				sender.mu.Lock()
+				defer sender.mu.Unlock()
+				return len(sender.lanes[held]) == 2
+			})
+			time.Sleep(row.wait)
+			publishIssueEvents(t, database, issue.Key)
+			unpark()
+			settledCommentDeliveries(t, database, first)
+			settledCommentDeliveries(t, database, second)
+
+			states := append(attemptStates(t, database, "comment_deliveries", "comment_id", first),
+				attemptStates(t, database, "comment_deliveries", "comment_id", second)...)
+			mu.Lock()
+			bodies, refused := slices.Clone(took), answered
+			mu.Unlock()
+			t.Logf("after a wait of %v, %q met one take-over answer (%t); the attempts %v; s1 took %q",
+				row.wait, row.refused, refused, states, bodies)
+			if !refused {
+				t.Fatalf("no send of %q met the take-over answer, want one", row.refused)
+			}
+			if !slices.Equal(states, []string{"1:sent", "1:sent"}) || !slices.Equal(bodies, []string{"the first", "the second"}) {
+				t.Fatalf("after a wait of %v and one take-over answer to %q, the attempts are %v and s1 took %q, "+
+					"want both sent, the first first: the send's take-over window closed before its try",
+					row.wait, row.refused, states, bodies)
+			}
+		})
+	}
+}

@@ -115,8 +115,8 @@ const convergeEntrySweep = 2 * time.Second
 
 // convergeOwedBound is how long a step waits for a task the daemon sends by itself. It outlasts
 // the longest wait either run can owe: the outbox's own retry backoff, which doubles to a minute
-// and is capped there (retryBackoff), for the start row run one leaves waiting behind the task the
-// claim already holds, and one sweep period for run two.
+// and is capped there (record.RetryBackoffMost), for the start row run one leaves waiting behind the
+// task the claim already holds, and one sweep period for run two.
 const convergeOwedBound = 2 * time.Minute
 
 // phaseEntryConvergeLive is one run of the proof: the booted daemon, the one issue it drives, the
@@ -254,20 +254,20 @@ type convergeClaimant struct {
 func (r *phaseEntryConvergeLive) servedClaimant(role claim.Role, session string) *convergeClaimant {
 	r.t.Helper()
 	c := &convergeClaimant{liveSession: r.register(role, session), prompts: make(chan shimwire.Prompt, 8)}
-	go c.serve()
+	c.sh.serve(c.serve)
 	c.ready()
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt — answering it and starting the turn, as Oh My Pi does — for the step to read. It runs
-// for the claim's whole life, because a step that left the connection unread would have the
-// daemon's own requests time out and the task it was sending wait for a retry.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs), and takes each prompt — answering it and starting the turn, as Oh My Pi
+// does — for the step to read. It runs for the claim's whole life, because a step that left the
+// connection unread would have the daemon's own requests time out and the task it was sending wait
+// for a retry.
 func (c *convergeClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -292,7 +292,11 @@ func (c *convergeClaimant) serve() {
 			c.turn, c.prompt = true, f.ID
 			c.mu.Unlock()
 			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			c.prompts <- f
+			select {
+			case c.prompts <- f:
+			case <-c.sh.stopping:
+				return
+			}
 		}
 	}
 }

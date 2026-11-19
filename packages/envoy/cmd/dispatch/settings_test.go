@@ -478,6 +478,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: IdentityHeader = %q, want cookie identity", boot.IdentityHeader)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_IDENTITY": "basic"}, "DISPATCH_IDENTITY")
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(nil))); err != nil || iap.IAPAudience != testIAPAudience {
+				t.Errorf("iap: IAPAudience = %q, %v", iap.IAPAudience, err)
+			}
 			// The identity main builds for the router: a header server names the person the
 			// header names, lowercased, and records them.
 			t.Run("router", func(t *testing.T) {
@@ -487,6 +490,49 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				routerFor(t, header, routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"login":"alice@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=header:X-Dispatch-User: GET /auth/whoami answered %d %s, want alice@example.com", response.Code, response.Body.String())
+				}
+			})
+			// An IAP server names the person of a verified assertion IAP signed for its audience,
+			// lowercased, admits only an account of DISPATCH_SIGNIN_DOMAIN, records the member,
+			// and never takes IAP's unsigned email header for a person.
+			t.Run("iap router", func(t *testing.T) {
+				keys, signing := iapKeySet(t)
+				people := peopleStore(t)
+				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
+				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
+					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
+				}
+				if _, found, err := people.Membership(context.Background(), "a.person@example.com"); err != nil || !found {
+					t.Errorf("DISPATCH_IDENTITY=iap: the member was not recorded: found %t, %v", found, err)
+				}
+				for name, response := range map[string]*httptest.ResponseRecorder{
+					"an account of another domain": iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "other.example"), nil),
+					"a forged assertion":           iapWhoami(handler, iapAssertion(t, keys, oidctest.NewES256Key(t, signing.KeyID()), testIAPAudience, "example.com"), nil),
+					"IAP's unsigned email header":  iapWhoami(handler, "", map[string]string{"X-Goog-Authenticated-User-Email": "accounts.google.com:a.person@example.com"}),
+				} {
+					if response.Code != http.StatusUnauthorized {
+						t.Errorf("DISPATCH_IDENTITY=iap: %s: GET /auth/whoami answered %d %s, want 401", name, response.Code, response.Body.String())
+					}
+				}
+			})
+		},
+		"DISPATCH_IAP_AUDIENCE": func(t *testing.T) {
+			iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": " " + testIAPAudience + " "})))
+			if err != nil || iap.IAPAudience != testIAPAudience {
+				t.Errorf("IAPAudience = %q, %v", iap.IAPAudience, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}, "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap")
+			// The audience the router's identity holds each assertion to: one IAP signed for
+			// another backend service is refused, the same assertion for this one admitted.
+			t.Run("router", func(t *testing.T) {
+				keys, signing := iapKeySet(t)
+				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
+					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
+				}
+				if response := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil); response.Code != http.StatusOK {
+					t.Errorf("the same assertion for DISPATCH_IAP_AUDIENCE: GET /auth/whoami answered %d %s, want 200", response.Code, response.Body.String())
 				}
 			})
 		},
@@ -878,12 +924,36 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
 			}
 		},
+		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "missing")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			}
+			token := writeFile(t, "token", "a.b.c\n")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+				t.Errorf("beside a seed: err = %v, want both named", err)
+			}
+		},
+		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
+			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
+			}
+		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
+			boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"})
+			if !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"}); boot.NATSDisabled {
+			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
+			}
+			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
+			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
@@ -1327,11 +1397,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("AgentSecretsURL = %q", boot.AgentSecretsURL)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/v1", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}, "DISPATCH_AGENT_SECRETS_URL")
-			// The broker the router relays credential requests to; without one it has none, and the
-			// pending list answers null.
+			// The broker the router relays credential requests to, which it asks for alice's
+			// pending and expired requests; without one it has none, and the pending list answers
+			// null.
 			t.Run("router", func(t *testing.T) {
-				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice ") {
-					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending list", got)
+				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice&state=pending&state=expired ") {
+					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending and expired requests", got)
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
@@ -1836,6 +1907,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}); !boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1: ArchitectureImportAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "true"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=true: ArchitectureImportAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -1853,6 +1936,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_CI_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_REDELIVERY_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.RedeliveryInterval != 0 {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL unset: RedeliveryInterval = %v, want 0 (redeliver.Interval's two minutes)", boot.RedeliveryInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_REDELIVERY_INTERVAL": quick.String(),
+			})
+			if boot.RedeliveryInterval != quick {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL: RedeliveryInterval = %v, want %v", boot.RedeliveryInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_REDELIVERY_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_REDELIVERY_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_REDELIVERY_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.DeliveryReconcileInterval != 0 {

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -213,15 +214,10 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if err != nil {
 		return Project{}, nil, err
 	}
-	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		if value.Content[index].Value == "deploys" {
-			warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
-			break
-		}
+	if namesKey(value, "deploys") {
+		warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
 	}
 	var project Project
 	if channels := fields["slack_channels"]; channels != nil {
@@ -319,12 +315,10 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		// A present merge is refused whatever its value, null included, as the shipped loader
-		// refuses it (parseGates, config.ts).
-		if value.Content[index].Value == "merge" {
-			return nil, errors.New(gatesMergeMessage)
-		}
+	// A present merge is refused whatever its value, null included, as the shipped loader
+	// refuses it (parseGates, config.ts).
+	if namesKey(value, "merge") {
+		return nil, errors.New(gatesMergeMessage)
 	}
 	fields, err := describedMembers(value, key, "gates")
 	if err != nil {
@@ -648,16 +642,18 @@ func daemonEnvironment() []string {
 	return filtered
 }
 
+// commandError is a configured command's failure: how it ended (its exit, or the signal that ended
+// it, procgroup.Ended) and the stderr its run kept, or that it could not run at all.
 func commandError(field string, err error) error {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		stderr := strings.TrimSpace(string(exit.Stderr))
-		if stderr != "" {
-			return fmt.Errorf("%s failed (exit %d): %s", field, exit.ExitCode(), stderr)
-		}
-		return fmt.Errorf("%s failed (exit %d)", field, exit.ExitCode())
+	var ended *exec.ExitError
+	if !errors.As(err, &ended) {
+		return fmt.Errorf("%s could not run: %w", field, err)
 	}
-	return fmt.Errorf("%s could not run: %w", field, err)
+	end := procgroup.Ended(err)
+	if stderr := strings.TrimSpace(string(ended.Stderr)); stderr != "" {
+		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
+	}
+	return fmt.Errorf("%s failed (%s)", field, end)
 }
 
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {

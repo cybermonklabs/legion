@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -285,10 +286,10 @@ type IssuePullRequestAttributionEventPayload struct {
 // appendAttributionChange appends the move's event on each issue it concerns, in tx, and answers
 // the appended events for the caller to publish once tx commits.
 //
-// One AppendAll of both events rather than an Append each: a transaction that appends for two
-// owners must take both owner rows in one order or two such transactions moving a pull request
-// in opposite directions would wait on each other's row (events.Broker.LockOwners), and
-// AppendAll takes them in its own sorted order.
+// Both owners are locked in one call before the first append rather than each Append taking its
+// own as it reaches it: a transaction that appends for two owners must take them in one order or
+// two such transactions moving a pull request in opposite directions would each hold the lock
+// the other waits for (events.Broker.LockOwners, which sorts them by lock key).
 //
 // Neither issue can be missing by the time this runs: pull_request_heads.issue_key references
 // issues on delete set null, so the row's own lock, taken by headIssueBefore before the write,
@@ -311,9 +312,16 @@ func appendAttributionChange(
 			IssueKey: &key, Type: AttributionEventType, Actor: AttributionEventActor, Payload: payload,
 		})
 	}
-	appended, err := broker.AppendAll(ctx, tx, moved)
-	if err != nil {
+	if err := broker.LockOwners(ctx, tx, moved...); err != nil {
 		return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+	}
+	appended := make([]model.Event, 0, len(moved))
+	for _, event := range moved {
+		written, err := broker.Append(ctx, tx, event)
+		if err != nil {
+			return nil, fmt.Errorf("record the attribution of %s#%d: %w", head.Repo, head.Number, err)
+		}
+		appended = append(appended, written)
 	}
 	return appended, nil
 }
@@ -848,7 +856,9 @@ func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFac
 // complete: the caller's write adds no issue, deletes none (UpsertPullRequestHead), and leaves
 // the row unstamped where the caller can, for the reconcile to read again. A rate limit is
 // returned rather than swallowed, so no caller persists a weaker attribution and then stamps
-// the row read.
+// the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
+// the reconcile's leased pass carries: the intakes and the results routes call this too, and
+// their contexts carry none, so the note changes nothing there.
 func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
 	attributed, err := headAttribution(ctx, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
@@ -865,6 +875,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 		}
 		slog.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
 			"repo", facts.Repo, "number", number, "error", readErr)
+		githubreads.NoteFailuref(ctx, "attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr)
 		attributed.complete = false
 		return attributed, nil
 	}

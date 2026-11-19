@@ -58,7 +58,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
+import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -806,20 +806,20 @@ function AgentRowDetails({
 }): ReactNode {
   const sendKey = useMemo(() => agentSendKey(agent.session_id), [agent.session_id]);
   const hold = useSending(sendKey);
-  const capabilities = agent.capabilities ?? [];
+  // The delivery modes the session lists, and only those: a capability that is no mode carries no
+  // message, so a list of those alone takes none, as an empty one does.
+  const modes = deliveryModesOf(agent.capabilities ?? []);
   return (
     <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
       <div
         className={`mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${textMutedOnCanvas}`}
       >
-        {capabilities.length === 0 ? (
-          // A session that advertises no mode refuses every message: nothing can carry one into
-          // its conversation while its plugin cannot reach it.
+        {modes.length === 0 ? (
+          // A session that advertises no mode refuses every message: an empty list says its plugin
+          // cannot reach its conversation, and a list of unknown capabilities names no mode to use.
           <span>Takes no messages</span>
         ) : (
-          capabilities.map((capability) => (
-            <span key={capability}>{capabilityLabel(capability)}</span>
-          ))
+          modes.map((mode) => <span key={mode}>{MODE_LABELS[mode]}</span>)
         )}
         <span>
           Seen <Timestamp at={new Date(agent.last_seen).toISOString()} />

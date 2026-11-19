@@ -86,8 +86,18 @@ export class FakeNats implements ChannelConnection {
 
   /** When set, a flush never settles, as on a stalled connection. */
   stallFlush = false
+  /** How many flushes reject with nats.js's DISCONNECT, as every pending flush does each time the
+   *  connection redials, before flushes succeed again. */
+  failFlushes = 0
+  /** Every flush asked for, the failed ones included. */
+  flushes = 0
 
   flush(): Promise<void> {
+    this.flushes += 1
+    if (this.failFlushes > 0) {
+      this.failFlushes -= 1
+      return Promise.reject(new Error("DISCONNECT"))
+    }
     return this.stallFlush ? new Promise<void>(() => undefined) : Promise.resolve()
   }
 
@@ -422,6 +432,7 @@ export function sessionOptions(
     configFile: sessionConfigFile("claude", process.env),
     stateDirectory,
     clientInstanceID: randomBytes(16).toString("hex"),
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
     ...extra,
   }

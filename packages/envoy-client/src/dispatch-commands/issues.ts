@@ -6,6 +6,7 @@ import type {
   CheckCI,
   CheckPassStands,
   CheckResult,
+  CheckResultRecorded,
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
@@ -22,6 +23,7 @@ import {
   DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
 } from "../dispatch-http";
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
@@ -43,6 +45,7 @@ import {
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
+import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { notSubscribed } from "./results";
 
@@ -188,7 +191,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
         ...(componentGuidance === undefined ? [] : [componentGuidance]),
       ];
     });
-    const href = new URL(`/issues/${encodeURIComponent(created.key)}`, linkBase).toString();
+    const href = linkFor(`/issues/${encodeURIComponent(created.key)}`, linkBase);
     // Dispatch picks the assignee when the call names none (the creating person, the personal
     // token's owner, the parent's, or the project's default), so the line says whom it
     // answered.
@@ -211,7 +214,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
           ? relatedCheckLines(created.advice?.suggestions, {
               project: created.project,
               text: title,
-              configUrl: linkBase,
+              linkBase,
             })
           : []),
         ...adviceLines,
@@ -230,7 +233,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       text: [
         `Not created: "${title}" is a near copy of an open issue.`,
         ...candidates.map((candidate) => {
-          const href = new URL(candidate.href, linkBase).toString();
+          const href = linkFor(candidate.href, linkBase);
           return `${candidate.key} [${candidate.status}] ${candidate.title} → ${href}`;
         }),
         "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",
@@ -360,12 +363,20 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     if (error instanceof DispatchWriteLandedError) throw error;
     // A URL links exactly one issue. A server from before EXTERNAL_LINK_TAKEN answers the
     // unique-index violation with 500 INTERNAL, which names nothing; say what it means. A
-    // gateway's 500 page is not that answer, and gets no such reading.
+    // gateway's 500 page is not that answer, and gets no such reading. A 500 can also come after
+    // the update committed, so the client ends such a write unsettled (write-outcome.ts), with
+    // that answer as `last`: the hint reads it there and joins the unsettled account.
+    const answered = error instanceof DispatchWriteUnsettledError ? error.last : error;
     const taken =
-      dispatchAnswered(error, 500) && newLinks.length > 0
+      dispatchAnswered(answered, 500) && newLinks.length > 0
         ? `one of ${newLinks.join(", ")} may already be linked from another issue (a URL links exactly one issue)`
         : "";
-    if (closingNote === undefined) throw refusalWithCode(error, taken);
+    if (closingNote === undefined) {
+      if (taken !== "" && !(error instanceof DispatchServiceError)) {
+        throw withAccount(error, taken);
+      }
+      throw refusalWithCode(error, taken);
+    }
     // The reason is on the issue, so a blind retry would post it a second time: the error
     // says where the first one is, and whether the close may have landed anyway. A gateway's
     // timeout or rate limit refused nothing there is to fix.
@@ -378,7 +389,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
       : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
     if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
-    throw withAccount(error, landed);
+    throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
   refuseUnsavedRepository("updated", after, repo);
   const links = after.external_links ?? [];
@@ -551,7 +562,7 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
     text: relatedCheckLines(suggestions, {
       project,
       text: [title, text].filter((part) => part !== undefined).join("\n"),
-      configUrl: linkBase,
+      linkBase,
     }).join("\n"),
     details: { project, suggestions },
   };
@@ -870,14 +881,31 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     ...defined("excluded", optionalNumber(args, "excluded")),
     ...defined("screenshots", optionalStringArray(args, "screenshots")),
   };
-  const recorded = await client.recordResult(issue, {
-    actor,
-    check: stringArg(args, "check"),
-    role: stringArg(args, "role"),
-    verdict: stringArg(args, "verdict") as "pass" | "fail",
-    commit: stringArg(args, "commit"),
-    ...optional,
-  });
+  let recorded: CheckResultRecorded;
+  try {
+    recorded = await client.recordResult(issue, {
+      actor,
+      check: stringArg(args, "check"),
+      role: stringArg(args, "role"),
+      verdict: stringArg(args, "verdict") as "pass" | "fail",
+      commit: stringArg(args, "commit"),
+      ...optional,
+    });
+  } catch (error) {
+    // CHECK_CONTENDED is the one refusal of this route that asks for nothing but the same
+    // call again: a document version reworded the check at both of the write's attempts, so
+    // nothing was recorded and the next call resolves the check afresh. Every other refusal
+    // it can give asks the caller to change something first, and reaches them as Dispatch
+    // wrote it. Untouched, this one reaches them as prose with its code hidden, which reads
+    // as a failure to work out rather than a write to repeat.
+    if (dispatchAnswered(error, 409) && error.code === "CHECK_CONTENDED") {
+      throw refusalWithCode(
+        error,
+        "the check moved twice while this result was being written, and nothing was recorded: run the same dispatch result command again"
+      );
+    }
+    throw error;
+  }
   return {
     text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,
     details: {

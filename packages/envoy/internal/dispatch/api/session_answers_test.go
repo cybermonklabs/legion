@@ -1,9 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,6 +18,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -141,6 +148,34 @@ func (f *answersFixture) route(t *testing.T, route string) {
 	}
 }
 
+// follow puts session among ask's followers (PUT) or takes it out of them (DELETE), as session
+// itself.
+func (f *answersFixture) follow(t *testing.T, method, askID, session string) {
+	t.Helper()
+	response := sessionRequest(t, f.handler, method, "/api/v1/asks/"+askID+"/followers/"+session, map[string]any{
+		"actor": answersActor(session),
+	})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("%s %s as a follower of ask %s: status=%d body=%s", method, session, askID, response.Code, response.Body.String())
+	}
+}
+
+// credit writes a version of the fixture issue's spec as session through the document edit route,
+// so the issue's primary document credits session (artifact_versions.authors): a person's comment
+// on the issue, while it has no route and no claim, then reaches session on its own topic (the
+// outbox's addPrimaryDocumentAuthors).
+func (f *answersFixture) credit(t *testing.T, session string) {
+	t.Helper()
+	response := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/artifacts/spec/edits", map[string]any{
+		"ops":     []map[string]string{{"op": "insert", "after": "end", "markdown": "A line " + session + " wrote."}},
+		"summary": session + "'s line",
+		"actor":   answersActor(session),
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("%s writes a version of %s's spec: status=%d body=%s", session, f.issue, response.Code, response.Body.String())
+	}
+}
+
 // unclaimedRoles is the role reader the fixture's outbox resolves a role route through: no role
 // is claimed here, so such a destination counts as reached with nothing sent and the role's topic
 // is what the publisher records (outbox's roleForward). An outbox with no reader at all leaves
@@ -162,12 +197,19 @@ func (unclaimedRoles) LastSeen(string) int64 { return 0 }
 // is published, so each one's published_destinations holds every topic the publisher reached.
 func (f *answersFixture) publishOutbox(t *testing.T) {
 	t.Helper()
+	f.publishOutboxThrough(t, acceptingPublisher{})
+}
+
+// publishOutboxThrough is publishOutbox handing every envelope to publisher, for a test that reads
+// what each topic was handed (recordingOutboxPublisher).
+func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		outbox.New(outbox.Deps{
-			Store: f.database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+			Store: f.database, Publisher: publisher, Broker: events.NewBroker(),
 			Listen:     f.database.Pool.Listener,
 			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
 		}).Run(ctx)
@@ -630,7 +672,8 @@ func TestSessionAnswersListsAnEditedCommentAtItsCurrentBody(t *testing.T) {
 
 // A reply in the session's ask's thread that mentions the session would reach it twice, by the
 // mention and as the ask's follower; the outbox leaves the follower copy to the delivered mention,
-// and the list holds the reply once, as a mention.
+// and the list holds the reply once, as a reply on the session's own ask, which outranks the
+// mention.
 func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(t *testing.T) {
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
@@ -646,8 +689,8 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 	}
 
 	item := f.only(t, answersSession)
-	if item.ID != reply || item.Relation != model.SessionAnswerRelationMentionedYou || item.Ask == nil || item.Ask.ID != askID {
-		t.Fatalf("item = %+v, want the reply once, as a mention in the ask's thread", item)
+	if item.ID != reply || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk || item.Ask == nil || item.Ask.ID != askID {
+		t.Fatalf("item = %+v, want the reply once, as a reply on the session's own ask", item)
 	}
 }
 
@@ -983,5 +1026,531 @@ func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 	}
 	if _, err := f.database.Pool.Exec(context.Background(), "analyze events"); err != nil {
 		t.Fatalf("analyze the seeded events: %v", err)
+	}
+}
+
+// The sessions of the ask-ownership cases, each by the part it plays: A asks, B hears of the ask
+// for a reason of its own (the issue's primary document credits it, or the issue is routed to it),
+// C follows the ask, and D has no reason to hear of it at all. Being constants, they stand as they
+// are in the fixture the reply case writes.
+const (
+	askSessionA = "session-a"
+	askSessionB = "session-b"
+	askSessionC = "session-c"
+	askSessionD = "session-d"
+)
+
+// copiesOf is each envelope of the eventType event about id (its payload's id) that the outbox
+// handed p, by the topic it was handed on, failing when one topic was handed it twice.
+func (p *recordingOutboxPublisher) copiesOf(t *testing.T, eventType, id string) map[string]contracts.Envelope {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	copies := map[string]contracts.Envelope{}
+	for _, item := range p.items {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID any `json:"id"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope handed on %s: %v", item.Topic, err)
+		}
+		if event.Type != eventType || event.Payload.ID != id {
+			continue
+		}
+		if _, twice := copies[item.Topic]; twice {
+			t.Fatalf("the %s about %s was handed on %s twice", eventType, id, item.Topic)
+		}
+		copies[item.Topic] = item
+	}
+	return copies
+}
+
+// handedOn is every envelope the outbox handed p on topic, of whichever event.
+func (p *recordingOutboxPublisher) handedOn(topic string) []contracts.Envelope {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var handed []contracts.Envelope
+	for _, item := range p.items {
+		if item.Topic == topic {
+			handed = append(handed, item)
+		}
+	}
+	return handed
+}
+
+// copyAskSessions is the ask_sessions the event an envelope carries holds in its payload, failing
+// when it holds none.
+func copyAskSessions(t *testing.T, item contracts.Envelope) []string {
+	t.Helper()
+	var event struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+		t.Fatalf("decode the envelope handed on %s: %v", item.Topic, err)
+	}
+	sessions, present := askSessionsOf(t, event.Payload)
+	if !present {
+		t.Fatalf("the copy handed on %s carries no ask_sessions: %s", item.Topic, item.Payload)
+	}
+	return sessions
+}
+
+// refusingOutboxPublisher is a recordingOutboxPublisher behind a server whose maximum payload is
+// refusedPast bytes: it refuses every envelope whose payload is longer, with bus.ErrTooLarge (an
+// ErrRefused), as the bus refuses one past the server's max payload, and records each envelope it
+// accepts. The outbox then sends the refused event's stand-in in its place (outbox's
+// standInEnvelope), which it accepts and records.
+type refusingOutboxPublisher struct {
+	*recordingOutboxPublisher
+	refusedPast int
+}
+
+func (p *refusingOutboxPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+
+func (p *refusingOutboxPublisher) PublishAsync(item contracts.Envelope) <-chan error {
+	if len(item.Payload) <= p.refusedPast {
+		return p.recordingOutboxPublisher.PublishAsync(item)
+	}
+	refused := make(chan error, 1)
+	refused <- fmt.Errorf("%w: a payload of %d bytes against a maximum of %d", bus.ErrTooLarge, len(item.Payload), p.refusedPast)
+	return refused
+}
+
+func (p *refusingOutboxPublisher) Request(_ string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
+	return p.PublishAsync(item)
+}
+
+func (p *refusingOutboxPublisher) PublishStoredAsync(_ string, item contracts.Envelope, _ string) <-chan error {
+	return p.PublishAsync(item)
+}
+
+// askReplyFixture is packages/contracts/fixtures/ask-reply-recipients.json, which
+// TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes; that test's doc says what each
+// field holds.
+type askReplyFixture struct {
+	IssueKey string            `json:"issue_key"`
+	AskID    string            `json:"ask_id"`
+	Sessions map[string]string `json:"sessions"`
+	Copies   []askReplyCopy    `json:"copies"`
+	StandIn  askReplyStandIn   `json:"stand_in"`
+}
+
+// askReplyCopy is one copy of a reply the fixture holds.
+type askReplyCopy struct {
+	Reply    string             `json:"reply"`
+	Reader   *string            `json:"reader"`
+	Topic    string             `json:"topic"`
+	Relation *string            `json:"relation"`
+	Envelope contracts.Envelope `json:"envelope"`
+}
+
+// askReplyStandIn is the fixture's stand_in section: a reply on an ask of many owners, too large
+// for the bus, as the stand-ins the outbox sent in its place.
+type askReplyStandIn struct {
+	AskID  string                `json:"ask_id"`
+	Owners []string              `json:"owners"`
+	Copies []askReplyStandInCopy `json:"copies"`
+}
+
+// askReplyStandInCopy is one stand-in of that reply the fixture holds.
+type askReplyStandInCopy struct {
+	Reader   string             `json:"reader"`
+	Topic    string             `json:"topic"`
+	Relation string             `json:"relation"`
+	Envelope contracts.Envelope `json:"envelope"`
+}
+
+// askReplyRecipientsFixture is where that fixture is committed, from this package's directory.
+var askReplyRecipientsFixture = filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "ask-reply-recipients.json")
+
+// askReplyVarying matches, in the encoded fixture, each value that differs from one run of the
+// case to the next, the value alone being the one group that matched: a uuid; a time, in RFC 3339
+// or as an envelope's issued_at in Unix milliseconds; an event's id, which an envelope carries in
+// dispatch-<id> (event_id, dedupe_key, trace_id), in source_event_id and in its payload (the event
+// as a JSON string, whose quotes the fixture escapes) as id; and the event's seq on its issue.
+var askReplyVarying = regexp.MustCompile(`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` +
+	`|(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))` +
+	`|"issued_at": (\d+)` +
+	`|dispatch-(\d+)|"source_event_id": "(\d+)"|\\"id\\":(\d+)` +
+	`|\\"seq\\":(\d+)`)
+
+// askReplyVaryingKinds is the kind of value each group of askReplyVarying matches, by group.
+var askReplyVaryingKinds = []string{1: "uuid", 2: "time", 3: "millis", 4: "event", 5: "event", 6: "event", 7: "seq"}
+
+// normalizeAskReplyFixture replaces each value of encoded that askReplyVarying matches with a
+// placeholder of the same form, numbered within its kind in order of first appearance, so a value
+// that recurs gets the same placeholder each time and every run writes the same bytes: the nth
+// uuid is 00000000-0000-4000-8000-<n in 12 digits>, the nth time n seconds past
+// 2026-01-01T00:00:00Z (an RFC 3339 time and an issued_at counting on together), and the nth event
+// id, or seq, n.
+func normalizeAskReplyFixture(encoded []byte) []byte {
+	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	placeholders := map[string]string{}
+	counts := map[string]int{}
+	placeholder := func(kind, value string) string {
+		if known, ok := placeholders[kind+" "+value]; ok {
+			return known
+		}
+		counter := kind
+		if kind == "millis" {
+			counter = "time"
+		}
+		counts[counter]++
+		n := counts[counter]
+		var stand string
+		switch kind {
+		case "uuid":
+			stand = fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
+		case "time":
+			stand = epoch.Add(time.Duration(n) * time.Second).Format(time.RFC3339)
+		case "millis":
+			stand = strconv.FormatInt(epoch.Add(time.Duration(n)*time.Second).UnixMilli(), 10)
+		default:
+			stand = strconv.Itoa(n)
+		}
+		placeholders[kind+" "+value] = stand
+		return stand
+	}
+	var normalized []byte
+	last := 0
+	for _, match := range askReplyVarying.FindAllSubmatchIndex(encoded, -1) {
+		for group := 1; group < len(askReplyVaryingKinds); group++ {
+			start, end := match[2*group], match[2*group+1]
+			if start < 0 {
+				continue
+			}
+			normalized = append(normalized, encoded[last:start]...)
+			normalized = append(normalized, placeholder(askReplyVaryingKinds[group], string(encoded[start:end]))...)
+			last = end
+			break
+		}
+	}
+	return append(normalized, encoded[last:]...)
+}
+
+// The report's case (dispatch://INFRA-4344): a person's reply in the thread of A's ask, on an issue
+// with no route and no claim whose spec B wrote a version of, reaches B by that credit, as it
+// reaches A, which asked, and C, which follows the ask, and never D. Every copy names A and C as
+// the sessions that own the ask (ask_sessions), and the answers read tells A and C that the reply
+// is on their own ask and B only that a person commented on an issue. An asker that left its ask
+// is no longer sent a reply as a follower; once it has a reason of its own again (it writes a
+// version of the spec too), the reply reaches it and still reads as a reply on its own ask, since
+// it wrote the ask.
+//
+// The same holds for a reply too large for the bus, which the outbox sends each destination as a
+// stand-in (payload_omitted) in its place. On a second ask, which seven sessions own, each named
+// by a 36-character id, ask_sessions encodes past the 256 bytes a stand-in keeps of any other
+// field; every stand-in of a person's reply in its thread still names all seven, and the answers
+// read tells each of them that the reply is on its own ask and B, which the reply reaches by its
+// credit, that a person commented on an issue.
+//
+// The test writes the copies it read into packages/contracts/fixtures/ask-reply-recipients.json,
+// which envoy-client's ask-reply-recipients.test.ts renders, so the live card is held to the same
+// bytes the outbox published. Its shape:
+//
+//	{
+//	  "issue_key": the fixture's issue,
+//	  "ask_id":    A's ask,
+//	  "sessions":  {"A": ..., "B": ..., "C": ..., "D": ...}, each session's id,
+//	  "copies": [{
+//	    "reply":    "first" or "third", the reply the copy is of,
+//	    "reader":   "A", "B" or "C", the session whose own topic the copy was handed on, or null
+//	                on the issue's own topic,
+//	    "topic":    the topic the copy was handed on,
+//	    "relation": what the reader's answers read calls that reply, or null on the issue's topic,
+//	    "envelope": the contracts.Envelope as the outbox handed it to the bus, which is the JSON
+//	                renderInbound takes as its raw argument
+//	  }, ...],
+//	  "stand_in": {
+//	    "ask_id": the ask the seven sessions own,
+//	    "owners": their ids, as its ask_sessions names them: the asker, then each follower in
+//	              the order it joined,
+//	    "copies": [{
+//	      "reader":   the id of the session whose own topic the stand-in was handed on: each
+//	                  owner's, then B's,
+//	      "topic":    that topic,
+//	      "relation": what the reader's answers read calls the reply,
+//	      "envelope": the stand-in as the outbox handed it to the bus, as above
+//	    }, ...]
+//	  }
+//	}
+//
+// The copies are the first reply's on A's, B's, C's and the issue's topics, then the third
+// reply's on A's. Every value that differs between runs is a placeholder of its own form
+// (normalizeAskReplyFixture), the same one wherever the value recurs, so each ask_id is the id the
+// envelopes carry; the session ids are constants and stand as they are, which is why no owner's
+// id has a uuid's shape.
+// `go test ./internal/dispatch/api -run '^TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers$' -update`
+// rewrites it.
+func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
+	f := newAnswersFixture(t)
+	f.credit(t, askSessionB)
+	const question = "Which database backs the queue?"
+	askID := f.ask(t, askSessionA, question)
+	f.follow(t, http.MethodPut, askID, askSessionC)
+	owners := []string{askSessionA, askSessionC}
+	topicOf := contracts.LegacyAgentSubject
+	issueTopic := contracts.LegacyDispatchIssueSubject(f.issue, "comment.created")
+	published := &recordingOutboxPublisher{}
+
+	first := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")
+	f.publishOutboxThrough(t, published)
+	reached := f.destinations(t, "comment.created", first)
+	for _, session := range []string{askSessionA, askSessionB, askSessionC} {
+		if !slices.Contains(reached, topicOf(session)) {
+			t.Fatalf("the first reply reached %v, want %s's own topic", reached, session)
+		}
+	}
+	if slices.Contains(reached, topicOf(askSessionD)) {
+		t.Fatalf("the first reply reached %v, want nothing of %s, which has no reason to hear of it", reached, askSessionD)
+	}
+	firstCopies := published.copiesOf(t, "comment.created", first)
+	for _, topic := range []string{topicOf(askSessionA), topicOf(askSessionB), topicOf(askSessionC), issueTopic} {
+		handed, ok := firstCopies[topic]
+		if !ok {
+			t.Fatalf("the first reply was handed on no copy of %s", topic)
+		}
+		if got := copyAskSessions(t, handed); !slices.Equal(got, owners) {
+			t.Fatalf("the first reply's copy on %s names %v as the ask's own sessions, want %v", topic, got, owners)
+		}
+	}
+	relations := map[string]string{}
+	for _, session := range []string{askSessionA, askSessionC} {
+		item := f.only(t, session)
+		if item.ID != first || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk ||
+			item.Ask == nil || item.Ask.ID != askID || item.Ask.Question != question {
+			t.Fatalf("%s's item = %+v, want the first reply %s on its own ask %s", session, item, first, askID)
+		}
+		relations[session] = item.Relation
+	}
+	// B neither asked nor follows: it reads the reason that delivered the reply, a person's comment
+	// on an issue whose spec credits it, and still the ask the reply is in.
+	credited := f.only(t, askSessionB)
+	if credited.ID != first || credited.Relation != model.SessionAnswerRelationCommentedOnIssue ||
+		credited.Ask == nil || credited.Ask.ID != askID || credited.Ask.Question != question {
+		t.Fatalf("%s's item = %+v, want the first reply %s as a comment on the issue, in ask %s", askSessionB, credited, first, askID)
+	}
+	relations[askSessionB] = credited.Relation
+	f.empty(t, askSessionD)
+
+	// A leaves its own ask: the next reply is not sent to it as a follower, and its list does not
+	// gain the reply, while B and C hear it as they heard the first.
+	f.follow(t, http.MethodDelete, askID, askSessionA)
+	second := f.comment(t, map[string]any{"body": "Or is the default enough?", "ask_id": askID}, "alice")
+	f.publishOutboxThrough(t, published)
+	reached = f.destinations(t, "comment.created", second)
+	if slices.Contains(reached, topicOf(askSessionA)) {
+		t.Fatalf("the second reply reached %v, want nothing of %s, which left its ask", reached, askSessionA)
+	}
+	if _, handed := published.copiesOf(t, "comment.created", second)[topicOf(askSessionA)]; handed {
+		t.Fatalf("the second reply was handed on %s's own topic after it left its ask", askSessionA)
+	}
+	if item := f.only(t, askSessionA); item.ID != first {
+		t.Fatalf("%s's item = %+v, want the first reply %s alone", askSessionA, item, first)
+	}
+	for _, reader := range []struct{ session, relation string }{
+		{askSessionB, model.SessionAnswerRelationCommentedOnIssue},
+		{askSessionC, model.SessionAnswerRelationRepliedOnYourAsk},
+	} {
+		if !slices.Contains(reached, topicOf(reader.session)) {
+			t.Fatalf("the second reply reached %v, want %s's own topic", reached, reader.session)
+		}
+		listed := f.list(t, reader.session, "")
+		if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != second || listed.Items[1].ID != first {
+			t.Fatalf("%s's answers = %+v, want the second reply then the first", reader.session, listed)
+		}
+		if item := listed.Items[0]; item.Relation != reader.relation || item.Ask == nil || item.Ask.ID != askID {
+			t.Fatalf("%s's item = %+v, want the second reply as %s, in ask %s", reader.session, item, reader.relation, askID)
+		}
+	}
+
+	// A gets a reason of its own, a version of the spec, and the third reply reaches it by that
+	// credit. A wrote the ask, so the copy still names it first, and its list reads the reply as
+	// one on its own ask.
+	f.credit(t, askSessionA)
+	third := f.comment(t, map[string]any{"body": "Four connections will do.", "ask_id": askID}, "alice")
+	f.publishOutboxThrough(t, published)
+	if reached := f.destinations(t, "comment.created", third); !slices.Contains(reached, topicOf(askSessionA)) {
+		t.Fatalf("the third reply reached %v, want %s's own topic by its credit on the spec", reached, askSessionA)
+	}
+	thirdCopy, handed := published.copiesOf(t, "comment.created", third)[topicOf(askSessionA)]
+	if !handed {
+		t.Fatalf("the third reply was handed on no copy of %s's own topic", askSessionA)
+	}
+	if got := copyAskSessions(t, thirdCopy); !slices.Equal(got, owners) {
+		t.Fatalf("the third reply's copy names %v as the ask's own sessions, want %v: %s wrote the ask", got, owners, askSessionA)
+	}
+	listed := f.list(t, askSessionA, "")
+	if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != third || listed.Items[1].ID != first {
+		t.Fatalf("%s's answers = %+v, want the third reply then the first", askSessionA, listed)
+	}
+	returned := listed.Items[0]
+	if returned.Relation != model.SessionAnswerRelationRepliedOnYourAsk || returned.Ask == nil || returned.Ask.ID != askID {
+		t.Fatalf("%s's item = %+v, want the third reply on its own ask %s", askSessionA, returned, askID)
+	}
+
+	// D heard of none of it.
+	f.empty(t, askSessionD)
+	if handed := published.handedOn(topicOf(askSessionD)); len(handed) != 0 {
+		t.Fatalf("%s's own topic was handed %d envelopes, want none", askSessionD, len(handed))
+	}
+
+	// The reply as a stand-in. A second ask has seven owners, the asker and six followers, each
+	// named by a 36-character id with no uuid's shape, so the fixture keeps it as it is. Their
+	// ask_sessions encodes past the 256 bytes a stand-in keeps of any other field (outbox's
+	// standInPayloadFieldBytes).
+	standInOwners := make([]string, 7)
+	for i := range standInOwners {
+		standInOwners[i] = fmt.Sprintf("session-owner-of-the-stand-in-ask-%02d", i+1)
+		if len(standInOwners[i]) != 36 {
+			t.Fatalf("owner %q is %d characters, want 36", standInOwners[i], len(standInOwners[i]))
+		}
+	}
+	if encoded, err := json.Marshal(standInOwners); err != nil || len(encoded) <= 256 {
+		t.Fatalf("the %d owners' ids encode to %d bytes (%v), want more than the 256 a stand-in keeps of another field",
+			len(standInOwners), len(encoded), err)
+	}
+	const standInQuestion = "Which region do we ship to first?"
+	standInAskID := f.ask(t, standInOwners[0], standInQuestion)
+	for _, follower := range standInOwners[1:] {
+		f.follow(t, http.MethodPut, standInAskID, follower)
+	}
+	// This publisher refuses an event longer than refusedPast, as the bus refuses one past the
+	// server's maximum payload, and alice's reply is longer: every destination refuses its event,
+	// and the outbox sends each the stand-in instead, which the publisher takes.
+	refusing := &refusingOutboxPublisher{recordingOutboxPublisher: &recordingOutboxPublisher{}, refusedPast: 4096}
+	standInBody := strings.Repeat("Ship to the region whose queue is nearest. ", 150)
+	if len(standInBody) <= refusing.refusedPast {
+		t.Fatalf("a body of %d bytes fits the publisher's %d, so its event is not refused", len(standInBody), refusing.refusedPast)
+	}
+	standInReply := f.comment(t, map[string]any{"body": standInBody, "ask_id": standInAskID}, "alice")
+	f.publishOutboxThrough(t, refusing)
+	standInHanded := refusing.copiesOf(t, "comment.created", standInReply)
+	var standInCopies []askReplyStandInCopy
+	for _, reader := range append(slices.Clone(standInOwners), askSessionB) {
+		want := model.SessionAnswerRelationRepliedOnYourAsk
+		if reader == askSessionB {
+			want = model.SessionAnswerRelationCommentedOnIssue
+		}
+		topic := topicOf(reader)
+		handed, ok := standInHanded[topic]
+		if !ok {
+			t.Fatalf("the long reply was handed on no copy of %s's own topic", reader)
+		}
+		var event struct {
+			Payload map[string]any `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(handed.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope handed on %s: %v", topic, err)
+		}
+		if _, body := event.Payload["body"]; event.Payload["payload_omitted"] != true || body {
+			t.Fatalf("the long reply's copy on %s is no stand-in: payload_omitted %v, body kept %t",
+				topic, event.Payload["payload_omitted"], body)
+		}
+		if got := copyAskSessions(t, handed); !slices.Equal(got, standInOwners) {
+			t.Fatalf("the stand-in on %s names %v as the ask's own sessions, want all %d: %v", topic, got, len(standInOwners), standInOwners)
+		}
+		listed := f.list(t, reader, "")
+		index := slices.IndexFunc(listed.Items, func(item model.SessionAnswer) bool { return item.ID == standInReply })
+		if index < 0 {
+			t.Fatalf("%s's answers = %+v, want the long reply %s among them", reader, listed, standInReply)
+		}
+		if item := listed.Items[index]; item.Relation != want || item.Ask == nil || item.Ask.ID != standInAskID || item.Ask.Question != standInQuestion {
+			t.Fatalf("%s's item = %+v, want the long reply as %s, in ask %s", reader, item, want, standInAskID)
+		}
+		standInCopies = append(standInCopies, askReplyStandInCopy{Reader: reader, Topic: topic, Relation: want, Envelope: handed})
+	}
+
+	fixture := askReplyFixture{
+		IssueKey: f.issue,
+		AskID:    askID,
+		Sessions: map[string]string{"A": askSessionA, "B": askSessionB, "C": askSessionC, "D": askSessionD},
+		StandIn:  askReplyStandIn{AskID: standInAskID, Owners: standInOwners, Copies: standInCopies},
+	}
+	for _, reader := range []struct{ name, session string }{{"A", askSessionA}, {"B", askSessionB}, {"C", askSessionC}} {
+		topic := topicOf(reader.session)
+		fixture.Copies = append(fixture.Copies, askReplyCopy{
+			Reply: "first", Reader: new(reader.name), Topic: topic, Relation: new(relations[reader.session]), Envelope: firstCopies[topic],
+		})
+	}
+	fixture.Copies = append(fixture.Copies,
+		askReplyCopy{Reply: "first", Topic: issueTopic, Envelope: firstCopies[issueTopic]},
+		askReplyCopy{Reply: "third", Reader: new("A"), Topic: topicOf(askSessionA), Relation: new(returned.Relation), Envelope: thirdCopy},
+	)
+	encoded, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		t.Fatalf("encode the fixture: %v", err)
+	}
+	got := normalizeAskReplyFixture(append(encoded, '\n'))
+	if *updateFixtures {
+		if err := os.WriteFile(askReplyRecipientsFixture, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("wrote %s", askReplyRecipientsFixture)
+		return
+	}
+	const rewrite = "go test ./internal/dispatch/api -run '^TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers$' -update"
+	want, err := os.ReadFile(askReplyRecipientsFixture)
+	if err != nil {
+		t.Fatalf("read %s (%s writes it): %v", askReplyRecipientsFixture, rewrite, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s differs from the copies this run published; when the change is meant, rewrite it with %s:\n%s",
+			askReplyRecipientsFixture, rewrite, got)
+	}
+}
+
+// An answer and a decline of A's asks reach B too, by the issue's route, but only A, which asked,
+// and C, which follows both asks, read them as their own: answered_your_ask, and declined_your_ask
+// with the words Dispatch wrote for the asking agent beside the person's note. B reads
+// answered_an_ask, and declined_an_ask with the person's note alone: those words tell the asker
+// to decide its next step, and B asked nothing.
+func TestAnAnswerAndADeclineAreTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
+	f := newAnswersFixture(t)
+	f.route(t, "session:"+askSessionB)
+	answeredID := f.ask(t, askSessionA, "Which database backs the queue?")
+	declinedID := f.ask(t, askSessionA, "Which region do we ship to first?")
+	for _, askID := range []string{answeredID, declinedID} {
+		f.follow(t, http.MethodPut, askID, askSessionC)
+	}
+	f.answer(t, answeredID, []string{"Postgres"}, "Postgres, for the pool.", nil)
+	const note = "The vendor owns that date; I do not."
+	written := note
+	f.decline(t, declinedID, &written)
+	f.publishOutbox(t)
+	if reached := f.destinations(t, "ask.answered", answeredID); !slices.Contains(reached, contracts.LegacyAgentSubject(askSessionB)) {
+		t.Fatalf("the answer reached %v, want %s's own topic by the issue's route", reached, askSessionB)
+	}
+	if reached := f.destinations(t, "ask.resolved", declinedID); !slices.Contains(reached, contracts.LegacyAgentSubject(askSessionB)) {
+		t.Fatalf("the decline reached %v, want %s's own topic by the issue's route", reached, askSessionB)
+	}
+
+	for _, reader := range []struct {
+		session, answered, declined, words string
+	}{
+		{askSessionA, model.SessionAnswerRelationAnsweredYourAsk, model.SessionAnswerRelationDeclinedYourAsk, model.DeclineDispatchWords},
+		{askSessionC, model.SessionAnswerRelationAnsweredYourAsk, model.SessionAnswerRelationDeclinedYourAsk, model.DeclineDispatchWords},
+		{askSessionB, model.SessionAnswerRelationAnsweredAnAsk, model.SessionAnswerRelationDeclinedAnAsk, ""},
+	} {
+		listed := f.list(t, reader.session, "")
+		// Newest first: the decline, then the answer.
+		if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != declinedID || listed.Items[1].ID != answeredID {
+			t.Fatalf("%s's answers = %+v, want the decline of %s then the answer to %s", reader.session, listed, declinedID, answeredID)
+		}
+		// Each item is checked on its own, so a session that reads both wrongly is told both.
+		declined, answered := listed.Items[0], listed.Items[1]
+		if answered.Kind != model.SessionAnswerKindAnswer || answered.Relation != reader.answered ||
+			answered.Text != "Postgres, for the pool." || answered.DispatchWords != "" || answered.Ask == nil || answered.Ask.ID != answeredID {
+			t.Errorf("%s's answer item = kind %s, relation %s, text %q, dispatch_words %q, ask %+v; want the answer to %s as %s, with no dispatch_words",
+				reader.session, answered.Kind, answered.Relation, answered.Text, answered.DispatchWords, answered.Ask, answeredID, reader.answered)
+		}
+		if declined.Kind != model.SessionAnswerKindDeclined || declined.Relation != reader.declined ||
+			declined.Text != note || declined.DispatchWords != reader.words || declined.Ask == nil || declined.Ask.ID != declinedID {
+			t.Errorf("%s's decline item = kind %s, relation %s, text %q, dispatch_words %q, ask %+v; want the decline of %s as %s, with the note and dispatch_words %q",
+				reader.session, declined.Kind, declined.Relation, declined.Text, declined.DispatchWords, declined.Ask, declinedID, reader.declined, reader.words)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import {
   UNRESPONSIVE_RULE,
 } from "@legion/envoy-client/transport"
 import { captureEnvironment } from "@legion/test-fixtures/environment"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server } from "bun"
 import {
@@ -414,7 +415,7 @@ test("a dispatch_* call is an unknown tool even with Dispatch configured, and re
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "test-token"
+    process.env["DISPATCH_TOKEN"] = fixtureSecret("dsp")
     const runtime: ChannelToolRuntime = {
       identity,
       client: {} as EnvoyClient,

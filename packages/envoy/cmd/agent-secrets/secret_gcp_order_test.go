@@ -77,7 +77,7 @@ func writeServiceAccountFile(t *testing.T, path, email, tokenURI string) {
 	}
 	data, err := json.Marshal(map[string]string{
 		"type":           "service_account",
-		"project_id":     "acme-agent-infra",
+		"project_id":     "acme-deployment",
 		"private_key_id": "test-key",
 		"private_key":    string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 		"client_email":   email,
@@ -117,7 +117,7 @@ func startMetadataServer(t *testing.T, email string) *metadataServer {
 		metadataTokenPath: `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`,
 		"/computeMetadata/v1/instance/service-accounts/default/email":    email,
 		"/computeMetadata/v1/instance/service-accounts/default/identity": "metadata-identity-token",
-		"/computeMetadata/v1/project/project-id":                         "acme-agent-infra",
+		"/computeMetadata/v1/project/project-id":                         "acme-deployment",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()

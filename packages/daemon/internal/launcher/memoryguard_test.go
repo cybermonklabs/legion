@@ -20,9 +20,10 @@ import (
 
 // useContainerInit has every launcher this test starts take its test process for the container's
 // first process, or not, until the test's end (containerInit). No test of this package runs as
-// PID 1, so every other test's launcher runs no memory guard and no git lock sweep at all; a test
-// of the guard stands its process in for PID 1, and points the guard at a pod of its own
-// (useGuardPod), and a test of the sweep does the same (useSweepingLauncher).
+// PID 1, so every other test's launcher runs no memory guard, no git lock sweep and no cache
+// trimmer at all; a test of the guard stands its process in for PID 1, and points the guard at a
+// pod of its own (useGuardPod), and a test of the sweep and one of the trimmer as the launcher
+// runs it do the same (useSweepingLauncher, useLauncherTrimmer).
 func useContainerInit(t *testing.T, first bool) {
 	t.Helper()
 	previous := containerInit
@@ -313,9 +314,21 @@ type guardRig struct {
 // the role of each process the test gives one, over the classifier's answer: a launcher started
 // with no role's generation has no role-init the classifier could find a role by, and what the
 // classifier answers on its own is TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace's.
+//
+// A launcher taken for the container's first process builds the pod's cache trimmer too
+// (serveVolumeTrim), over VolumeRoot and the machine's /proc, and an answer carrying trimmer
+// settings would set it sweeping the volume this test runs on, which in an issue pod is the
+// roles' own. So the trimmer's loop is held to the launcher's context and runs nothing, unless
+// the case puts a fixture into it (useLauncherTrimmer, which calls this first and sets the loop
+// after it). Measured at e8356e5d in an issue pod without this: a guard case answered with
+// trimmer settings logged "volume trim: started: … volume /legion" and read the pod's volume
+// once a second.
 func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	t.Helper()
 	useContainerInit(t, true)
+	previousTrimmer := podTrimmer
+	podTrimmer = func(ctx context.Context, _ *trimmer) { <-ctx.Done() }
+	t.Cleanup(func() { podTrimmer = previousTrimmer })
 	rig := &guardRig{t: t, pod: pod, clock: newGuardClock(), signal: &guardSignal{proc: pod.proc}}
 	previous := newMemoryGuard
 	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
@@ -333,10 +346,15 @@ func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 
 // useGuestPod is useGuardPod for a microVM pod's launcher: every guest watch a launcher builds from
 // here to the test's end reads pod and its cgroup directory and waits on the rig's clock, with the
-// launcher's own classifier and sink, roles named over the classifier's answer.
+// launcher's own classifier and sink, roles named over the classifier's answer. The launcher is
+// taken for the container's first process here too, so the pod's cache trimmer it builds is held
+// to the launcher's context and runs nothing, for useGuardPod's reason.
 func useGuestPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	t.Helper()
 	useContainerInit(t, true)
+	previousTrimmer := podTrimmer
+	podTrimmer = func(ctx context.Context, _ *trimmer) { <-ctx.Done() }
+	t.Cleanup(func() { podTrimmer = previousTrimmer })
 	rig := &guardRig{t: t, pod: pod, clock: newGuardClock()}
 	previous := newGuest
 	newGuest = func(cfg memoryguard.GuestConfig) *memoryguard.Guest {
@@ -816,7 +834,7 @@ func TestMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.
 		guardProcess{pid: held, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "held.py"}, anon: 800 * guardMiB},
 	)
 	rig := useGuardPod(t, pod, nil)
-	f := launchFleet(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
 	rig.started()
 	defaults := memoryguard.Defaults()
 	want := fmt.Sprintf("launcher: memory guard: started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d",
@@ -870,7 +888,7 @@ func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 		panic("a launcher that is not the container's first process built a memory guard")
 	}
 	t.Cleanup(func() { newMemoryGuard = previous })
-	f := launchFleet(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
 	f.role("tester").acknowledgeWith(memoryGuardAck(90, 20, 7, 250))
 	f.role("reviewer").acknowledgeWith(defaultsAck())
 	want := fmt.Sprintf("launcher: memory guard: off reason=the launcher is pid %d, not the container's first process, so it neither sees nor owns every process of the container",
@@ -997,7 +1015,7 @@ func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing
 		guardProcess{pid: reviewers, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py", "--reviewer"}, anon: 700 * guardMiB},
 	)
 	rig := useGuardPod(t, pod, map[int]string{testers: "tester", reviewers: "reviewer"})
-	f := launchFleet(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester", "reviewer")
 	rig.started()
 	for _, role := range []string{"tester", "reviewer"} {
 		f.role(role).acknowledgeWith(defaultsAck())
@@ -1057,7 +1075,7 @@ func TestMemoryGuardHoldsAReportWhileTheConnectionIsDown(t *testing.T) {
 		guardProcess{pid: dropped, ppid: 1, exe: "/usr/bin/python3.13", args: []string{"python3", "dropped.py"}, anon: 800 * guardMiB},
 	)
 	rig := useGuardPod(t, pod, map[int]string{sent: "tester", dropped: "tester"})
-	f := launchFleet(t, Config{StopGrace: 2 * time.Second}, "tester")
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester")
 	rig.started()
 	f.role("tester").acknowledgeWith(defaultsAck())
 
@@ -1094,7 +1112,7 @@ func TestMemoryGuardKeepsThirtyTwoWaitingReportsAndDropsTheOldest(t *testing.T) 
 	}
 	pod := newGuardPod(t)
 	rig := useGuardPod(t, pod, roles)
-	f := launchFleet(t, Config{StopGrace: 2 * time.Second}, "tester")
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second}, "tester")
 	rig.started()
 	f.role("tester").acknowledgeWith(defaultsAck())
 
@@ -1400,7 +1418,7 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	pod.setKernelKills(0, guardGiB, 32*guardMiB)
 	noGuard(t, "a microVM pod's launcher built a memory guard")
 	rig := useGuestPod(t, pod, map[int]string{testers: "tester", reviewers: "reviewer"})
-	f := launchFleet(t, Config{StopGrace: 2 * time.Second, MicroVM: true}, "tester", "reviewer")
+	f := newFleetDialedOf(t, Config{StopGrace: 2 * time.Second, MicroVM: true}, "tester", "reviewer")
 	rig.started()
 	kernelKills := func(ack shimwire.LauncherHelloAck) shimwire.LauncherHelloAck {
 		ack.KernelKills = true

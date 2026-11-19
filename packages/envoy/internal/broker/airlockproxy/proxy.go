@@ -21,7 +21,6 @@ package airlockproxy
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -43,7 +42,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
-	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -125,7 +124,9 @@ type Options struct {
 	// of megabytes the real budget takes to fill.
 	HashBudget int64
 	// Log is where the line for each call to a bound host goes, and the line for each refusal of
-	// this port. Nil is slog.Default().
+	// this port. Nil is slog.Default(), which in the broker writes through the placeholder mask
+	// (cmd/broker's setUpLogging, logmask.Writer): a line can name a placeholder a command wrote
+	// into its own text, so a logger given here must write through that mask too.
 	Log *slog.Logger
 	// Answers is broker_answers_total (answer.NewAnswers), which each answer a handler of this
 	// port writes is counted on under caller class airlock, beside the API port's answers; an
@@ -160,6 +161,14 @@ type Options struct {
 	// services on loopback reachable, and the broker's own loopback port still refused.
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW is it.
 	DialAllow []string
+	// ClusterRanges is BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service, pod and
+	// node ranges. Such a range can be global unicast - a GKE Service range such as
+	// 34.118.224.0/20 is - so none of localRule's fixed rules refuses an address in it, and a
+	// tunnel there reaches a ClusterIP of the cluster the broker runs in. An address inside any
+	// of them is refused as a private one is, after those fixed rules; DialAllow still opens
+	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
+	// cluster.
+	ClusterRanges []netip.Prefix
 	// KeepValues keeps a grant's values across the reread of one of its names and past the
 	// five-minute margin of a minted token's expiry, so a run can show what the airlock does
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
@@ -199,6 +208,9 @@ type Server struct {
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
+	// refuses after its fixed rules.
+	clusterRanges []netip.Prefix
 	// hashBudget is the bytes of AWS body the proxy may hold at once to hash
 	// (hashedBodyBudget, aws.go). One semaphore for the whole Server, because what it bounds
 	// is the pod's memory, which every connection shares.
@@ -217,9 +229,21 @@ type Server struct {
 	outer   *http.Server
 	inner   *http.Server
 	innerLn *chanListener
-	// upstream carries every request to a service. Its TLSClientConfig trusts the host's roots
-	// as any client does, or Options.UpstreamRoots when a caller named roots of its own.
+	// upstream carries every request to a bound host's service, and the Azure token exchange.
+	// Its TLSClientConfig trusts the host's roots as any client does, or Options.UpstreamRoots
+	// when a caller named roots of its own. forward carries every plain-HTTP request the proxy
+	// forwards, a socket of its own for each (New).
 	upstream *http.Transport
+	forward  *http.Transport
+	// errorLog is the log.Logger both servers' ErrorLog and both ReverseProxies' (servePlain,
+	// serveBound) are: the lines net/http's servers and httputil write of their own go through
+	// log, so each is the airlock's own line, cut and with its peer bytes hidden (slogWriter), and
+	// an error httputil logs can quote what a service sent, its trailers among it. net/http's
+	// Transport has no ErrorLog: what it logs - what a service sent on an idle connection, which
+	// it quotes - it writes with log.Printf to the standard logger, which cmd/broker writes through
+	// its own handler in the same way (logmask.StandardLog), and which is the one place a line of
+	// the proxy's goes that is not this logger.
+	errorLog *log.Logger
 	serveOne sync.Once
 
 	// conns is the CONNECT target and the grant of each decrypted connection, which
@@ -287,23 +311,24 @@ type decryptedKey struct{}
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
 func New(o Options) *Server {
 	s := &Server{
-		rules:      o.Rules,
-		grants:     o.Grants,
-		ca:         o.CA,
-		idle:       o.Idle,
-		watch:      o.Watch,
-		log:        o.Log,
-		answers:    o.Answers,
-		dial:       o.Dial,
-		now:        o.Now,
-		resolve:    o.Resolve,
-		dialAllow:  o.DialAllow,
-		keepValues: o.KeepValues,
-		noKind:     o.NoKind,
-		innerLn:    newChanListener(),
-		open:       map[io.Closer]struct{}{},
-		values:     map[string]*grantValues{},
-		access:     map[accessKey]*accessHeld{},
+		rules:         o.Rules,
+		grants:        o.Grants,
+		ca:            o.CA,
+		idle:          o.Idle,
+		watch:         o.Watch,
+		log:           o.Log,
+		answers:       o.Answers,
+		dial:          o.Dial,
+		now:           o.Now,
+		resolve:       o.Resolve,
+		clusterRanges: o.ClusterRanges,
+		dialAllow:     o.DialAllow,
+		keepValues:    o.KeepValues,
+		noKind:        o.NoKind,
+		innerLn:       newChanListener(),
+		open:          map[io.Closer]struct{}{},
+		values:        map[string]*grantValues{},
+		access:        map[accessKey]*accessHeld{},
 	}
 	if o.HashBudget <= 0 {
 		o.HashBudget = hashedBodyBudget
@@ -341,10 +366,29 @@ func New(o Options) *Server {
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
 	}
+	// The transport an absolute-URL request is forwarded on, built here rather than cloned from
+	// upstream so that nothing of upstream's can make it speak HTTP/2: dialled by dialForwarded,
+	// which writes the line of each socket it opens, with upstream's TLS configuration, keeping
+	// no connection for a later request, and speaking HTTP/1.1 alone. A kept connection would
+	// carry the next request to its host with no dial and so with no line, a request of another
+	// caller's among them, so each request opens a socket of its own and its line names its own
+	// caller. HTTP/2 would undo that: with keep-alives off an h2 connection still carries every
+	// request the transport hands it while it is open, and a request of another caller can be
+	// handed one a first request dialled. TLSNextProto is an empty map, never nil, since net/http
+	// negotiates h2 over TLS only when it is nil, and Protocols names HTTP/1 alone.
+	var forwardProtocols http.Protocols
+	forwardProtocols.SetHTTP1(true)
+	s.forward = &http.Transport{
+		DialContext:       s.dialForwarded,
+		TLSClientConfig:   s.upstream.TLSClientConfig.Clone(),
+		DisableKeepAlives: true,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+		Protocols:         &forwardProtocols,
+	}
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
-	errorLog := log.New(slogWriter{log: s.log}, "", 0)
+	s.errorLog = log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): a CONNECT the
 		// proxy takes over answers 200 on the connection itself. net/http's own answers, which
@@ -353,7 +397,7 @@ func New(o Options) *Server {
 		Handler:           s.record(http.StatusOK, s.serveProxy),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
-		ErrorLog:          errorLog,
+		ErrorLog:          s.errorLog,
 	}
 	s.inner = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): an upgrade
@@ -364,7 +408,7 @@ func New(o Options) *Server {
 		Handler:           s.record(http.StatusSwitchingProtocols, s.serveBound),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
-		ErrorLog:          errorLog,
+		ErrorLog:          s.errorLog,
 		// The two protocols connectBound's TLS offers, named rather than left to net/http's
 		// default, which a TLSNextProto map set beside it would narrow to HTTP/1 alone. The
 		// one switch that still takes HTTP/2 away is GODEBUG=http2server=0, which net/http
@@ -470,6 +514,10 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Every dial below this point is made for this grant, and the lines it writes name it
+	// (dialFields): the CONNECT's own check and its tunnel's dial run under this context, and a
+	// plain-HTTP request's transport dials under it too.
+	r = r.WithContext(withCaller(r.Context(), grant))
 	if r.Method == http.MethodConnect {
 		s.serveConnect(w, r, placeholder, grant)
 		return
@@ -602,13 +650,26 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	}
 	// The authority, with its host ASCII lower-cased: it is the URL and the Host header of
 	// every request this connection carries, and the one string the entry's hosts and the
-	// request's own Host header are compared against.
+	// request's own Host header are compared against. The reason quotes it lowercased too, as
+	// every line names a host the command wrote: a command may write anything here, its own
+	// placeholder among it.
 	host, port, err := net.SplitHostPort(target)
 	if err != nil {
-		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, fold.ASCII(r.Host)+" is no host and port")
 		return
 	}
-	host = fold.ASCII(host)
+	// An address literal written as every address check reads it (netaddr.Host): the bound-host
+	// check, the certificate and the dial below all read this one spelling of the host.
+	host = netaddr.Host(fold.ASCII(host))
+	// And the port as the number it names, in the one spelling of that number, before the check,
+	// the bound-host decision, the dial and the lines read it (portNumber). The refusal names no
+	// port: the text that is no port is the command's own, which may be anything at all.
+	connectPort, ok := portNumber(port)
+	if !ok {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusBadRequest, codeConnectTarget, "the CONNECT to "+host+" names no port from 1 to 65535")
+		return
+	}
+	port = strconv.FormatUint(uint64(connectPort), 10)
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -635,23 +696,26 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
-	connectPort := connectPortOf(port)
 	if len(s.candidates(grant, host, connectPort)) > 0 {
 		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
 	}
-	s.connectTunnel(w, r, hijacker, target, addrs, port)
+	s.connectTunnel(w, r, hijacker, target, host, addrs, port)
 }
 
-// connectPortOf is a CONNECT authority's port as a number, and 0 for a port that is no
-// number at all ("https") or does not fit in 16 bits. Only 443 is a bound host's port, so a
-// port this cannot read is a tunnel's.
-func connectPortOf(port string) uint16 {
+// portNumber is the port a caller wrote as the number it names, and false for text that names no
+// port: anything but decimal digits, 0, or a number past 16 bits. A command writes the port it
+// asks for, and the dialer reads more than one spelling of one port - leading zeros, a service
+// name such as "https", a sign - so a port the proxy did not read for itself could reach a bound
+// host's 443 as a tunnel, or be written on a line as text no query for its number finds. The
+// proxy reads it once, here, and writes it back as strconv.FormatUint spells the number before
+// anything checks it, dials it or logs it.
+func portNumber(port string) (uint16, bool) {
 	number, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return 0
+	if err != nil || number == 0 {
+		return 0, false
 	}
-	return uint16(number)
+	return uint16(number), true
 }
 
 // connectBound answers a CONNECT to a host one of the grant's names is bound to, on port 443:
@@ -708,12 +772,20 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 // read. The dial comes before the hijack, so a service that cannot be reached is a 502 the
 // command's own HTTP client reports, rather than a tunnel that opens and then dies. It dials
 // the addresses serveConnect checked, in order, and resolves nothing of its own.
-func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target string, addrs []netip.Addr, port string) {
-	upstream, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
+//
+// The socket that opened writes one line (logTunnel) as soon as it is open, and a dial that
+// failed writes one (logUnreachable): no request of a tunnel is read, so these are the whole of
+// what the broker knows about where a command went through it. The line comes before the hijack
+// and the 200, so a command that went away between its dial and its answer, whose tunnel never
+// carries a byte, still leaves the line of the socket the proxy opened for it.
+func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target, host string, addrs []netip.Addr, port string) {
+	upstream, dialed, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
 	if err != nil {
+		s.logUnreachable(r.Context(), host, port, addrs, err)
 		fail(w, http.StatusBadGateway, codeUpstream, "dial "+target+": "+err.Error())
 		return
 	}
+	s.logTunnel(r.Context(), host, port, dialed)
 	client, err := hijack(hijacker)
 	if err != nil {
 		upstream.Close()
@@ -768,9 +840,34 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 }
 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
-// for http:// rather than https://.
+// for http:// rather than https://, or that sent an https URL to the proxy as it is rather than
+// as a CONNECT.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := fold.ASCII(r.URL.Hostname())
+	host := netaddr.Host(fold.ASCII(r.URL.Hostname()))
+	// The port as the number it names (portNumber), and the scheme's own for a URL that names
+	// none, which is the port the transport dials for it.
+	port := r.URL.Port()
+	if port == "" {
+		port = "80"
+		if r.URL.Scheme == "https" {
+			port = "443"
+		}
+	}
+	number, ok := portNumber(port)
+	if !ok {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusBadRequest, codeProxyTarget, "the request to "+host+" names no port from 1 to 65535")
+		return
+	}
+	port = strconv.FormatUint(uint64(number), 10)
+	// The authority the transport dials, in the one spelling every check and line here reads:
+	// the host lowercased and without a zone, and the port as its number. The transport dials
+	// the URL's own authority (dialForwarded), so a URL left as the command wrote it would be
+	// dialled, and written on its lines, as that text - its own case, a zone, the port's leading
+	// zeros - rather than as what was checked. It is set on a copy of the URL, since the request
+	// this handler was handed shares its URL with the one the server read.
+	forwarded := *r.URL
+	forwarded.Host = net.JoinHostPort(host, port)
+	r.URL = &forwarded
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a
@@ -784,17 +881,21 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	}
 	// The name's addresses, checked before anything is forwarded so that the refusal is a 403
 	// of this proxy's rather than the transport's 502. The transport below checks and dials
-	// the name again (dialChecked), which is what makes the address it opens a socket to one
+	// the name again (dialForwarded), which is what makes the address it opens a socket to one
 	// it checked itself.
-	if _, err := s.checkedAddresses(r.Context(), host, cmp.Or(r.URL.Port(), "80")); err != nil {
+	if _, err := s.checkedAddresses(r.Context(), host, port); err != nil {
 		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
 		return
 	}
 	// A host no name of this grant is bound to: the proxy forwards it and puts nothing into it,
-	// exactly as the tunnel above carries what it cannot read.
+	// exactly as the tunnel above carries what it cannot read, on a socket of its own whose line
+	// is the tunnel's (Server.forward).
 	proxy := &httputil.ReverseProxy{
-		Transport:     s.upstream,
+		Transport:     s.forward,
 		FlushInterval: -1,
+		// httputil's own lines - a body copy that failed, which quotes what the service sent -
+		// go through this package's log rather than the standard logger (Server.errorLog).
+		ErrorLog: s.errorLog,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
 			pr.Out.Header.Del("Proxy-Authorization")
@@ -805,22 +906,6 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	// The service's answer, which the proxy carries and does not write (record).
 	answerOf(w).carry()
 	proxy.ServeHTTP(w, r)
-}
-
-// upstreamMessage is the message of the line a call the proxy could not carry to its service logs
-// (badGateway).
-const upstreamMessage = "airlock proxy: upstream"
-
-// badGateway answers a service that could not be reached or did not answer: a failure, which it
-// logs and counts, and no refusal. The error is the transport's own and carries no header of the
-// request, so nothing of the grant is in it. The path, and on a plain request the host, are the
-// caller's, and the error may quote the host, so the line passes answer.ClipFields as a call's
-// line does, and stays one Cloud Logging entry whatever the caller sent.
-func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
-	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", err})...)
-		fail(w, http.StatusBadGateway, codeUpstream, host+": "+err.Error())
-	}
 }
 
 // hijack takes the client's connection over from the outer server, with whatever the client
@@ -843,42 +928,6 @@ func hijack(hijacker http.Hijacker) (net.Conn, error) {
 		return &prefixConn{Conn: conn, rest: bytes.NewReader(slices.Clone(ahead))}, nil
 	}
 	return conn, nil
-}
-
-// netHTTPMessage is the message of the line net/http writes through the ErrorLog of either
-// server (slogWriter): for example a connection that failed before a handler saw it, such as a
-// TLS handshake on a bound connection that failed, an accept that failed, and a handler's panic,
-// which net/http recovers and logs with the stack of the goroutine that panicked.
-const netHTTPMessage = "airlock proxy: net/http"
-
-// slogWriter is net/http's ErrorLog as one slog line each, under netHTTPMessage: the first line
-// of net/http's text as its error, and the rest of the text, where there is any, as its stack.
-//
-// The first line can quote what the client sent: a handshake that failed on a bound connection is
-// logged with crypto/tls's error, which for an ALPN list without http/1.1 quotes the client's
-// whole list, up to about 64 KB of protocol names, each byte of which %q may write as four and
-// the JSON handler then escapes again. So the error passes answer.ClipFields as a call's line
-// does.
-//
-// The rest is the stack net/http writes under a handler's panic it recovered, after any further
-// lines of the panic value's own text, and it is kept whole, with no cut of its own: neither
-// server recovers a panic before net/http does (record), so this line is the one record of where
-// the panic happened, and the handler's own frames come after the runtime's, past the first 256
-// bytes of the text. The stack is the server's own text, not the client's - frames, file paths,
-// tabs and newlines, which the JSON handler writes in one or two bytes each - and net/http bounds
-// it at 64 KiB, so it writes at most 128 KiB, and the line stays one Cloud Logging entry whatever
-// the client sent. No handler of the airlock panics with a value that holds a newline: a panic
-// value that did, and quoted the client, would put that text in this field uncut.
-type slogWriter struct{ log *slog.Logger }
-
-func (w slogWriter) Write(p []byte) (int, error) {
-	text, stack, stacked := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
-	fields := answer.ClipFields([]any{"error", text})
-	if stacked {
-		fields = append(fields, "stack", stack)
-	}
-	w.log.Warn(netHTTPMessage, fields...)
-	return len(p), nil
 }
 
 // hostHeaderOf is the Host a request on target carries, and the Host the proxy sends upstream:
