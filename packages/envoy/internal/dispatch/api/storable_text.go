@@ -1,9 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/url"
@@ -49,68 +46,16 @@ func unstorableText(field, value string) *apiError {
 	return nil
 }
 
-// escapedName is a name the caller wrote, a JSON member's, a query parameter's or a multipart
-// field's, as a refusal names it: each U+0000 in it written as the six characters \u0000, so no
-// refusal sends the character back.
-func escapedName(name string) string {
-	return strings.ReplaceAll(name, "\x00", `\u0000`)
-}
-
-// nulEscape is the only way JSON carries U+0000: a decoder refuses the raw control character.
-var nulEscape = []byte(`\u0000`)
-
 // unstorableJSON refuses the first string of the JSON value data opens with - a member name or a
-// value, an object's members read in name order - that holds U+0000, naming it as the caller wrote
-// it under prefix: title, options[1].label, ops[0].attributes.title, or prefix itself, "body" when
-// prefix is empty, for a bare string. A body without the escape is passed over unread. The value is
-// read as a route's own decoder reads it, the first value in data and the last of a repeated member,
-// so what is checked is what is kept; data that does not decode holds nothing a route keeps.
+// value, in the order data writes them - that holds U+0000, naming it as the caller wrote it under
+// prefix (text.NulInJSON, the one walk of a value's strings, which reads every copy of a repeated
+// member and stops where data stops being JSON, which the route's own decoder refuses).
 func unstorableJSON(prefix string, data []byte) *apiError {
-	if !bytes.Contains(data, nulEscape) {
+	place, value, found := text.NulInJSON(prefix, data)
+	if !found {
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var value any
-	if decoder.Decode(&value) != nil {
-		return nil
-	}
-	return unstorableJSONValue(prefix, value)
-}
-
-func unstorableJSONValue(path string, value any) *apiError {
-	switch value := value.(type) {
-	case string:
-		return unstorableText(jsonField(path), value)
-	case []any:
-		for index, element := range value {
-			if refusal := unstorableJSONValue(fmt.Sprintf("%s[%d]", path, index), element); refusal != nil {
-				return refusal
-			}
-		}
-	case map[string]any:
-		for _, name := range slices.Sorted(maps.Keys(value)) {
-			member := escapedName(name)
-			if path != "" {
-				member = path + "." + member
-			}
-			if refusal := unstorableText(member, name); refusal != nil {
-				return refusal
-			}
-			if refusal := unstorableJSONValue(member, value[name]); refusal != nil {
-				return refusal
-			}
-		}
-	}
-	return nil
-}
-
-// jsonField names a JSON value at path, "body" for the body itself.
-func jsonField(path string) string {
-	if path == "" {
-		return "body"
-	}
-	return path
+	return unstorableText(place, value)
 }
 
 // unstorableForm refuses a multipart form field holding text unstorableText refuses, naming the
@@ -118,7 +63,7 @@ func jsonField(path string) string {
 func unstorableForm(values map[string][]string) *apiError {
 	for _, name := range slices.Sorted(maps.Keys(values)) {
 		for _, value := range values[name] {
-			if refusal := unstorableText(escapedName(name), value); refusal != nil {
+			if refusal := unstorableText(text.NulEscaped(name), value); refusal != nil {
 				return refusal
 			}
 		}
@@ -168,7 +113,7 @@ func unstorableQuery(raw string) *apiError {
 	}
 	query, _ := url.ParseQuery(raw)
 	for _, name := range slices.Sorted(maps.Keys(query)) {
-		field := "query parameter " + escapedName(name)
+		field := "query parameter " + text.NulEscaped(name)
 		if refusal := unstorableText(field, name); refusal != nil {
 			return refusal
 		}

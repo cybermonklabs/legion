@@ -436,7 +436,7 @@ names scripts/sessions for.
 
 src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
 asserts an exact file list over the tree it writes, so this job reads that whole
-package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:41-46) that
+package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
 lives outside it. A spawn carries no import, so no derivation of this repository
 sees the reach: both patterns are hand-kept, with their declared reads in
 ci_job_reads.py.
@@ -577,7 +577,7 @@ Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 ## envoy_go: internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 
 internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
-list, which packages/envoy-client holds goBlankPattern to: an edit of the list
+list, which packages/contracts holds goBlankPattern to: an edit of the list
 alone must start both jobs, or the side it disagrees with stays green.
 
 ## envoy_go: The three jobs whose tag steps lean on this job's untagged
@@ -638,7 +638,7 @@ TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
 The seven copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:110) and the troubleshooting page's refusal table's
+backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
 (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
 own check reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
 not match.
@@ -893,13 +893,6 @@ file its steps live in.
 ## envoy_client: The Envoy client's job (envoy-client)
 
 The Envoy client's job (envoy-client).
-
-## envoy_client: `src/__tests__/dispatch-execute.test.ts` holds goBlankPattern to this list, which
-
-`src/__tests__/dispatch-execute.test.ts` holds goBlankPattern to this list, which
-the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
-an edit of the list alone must start both jobs, or the side it disagrees with
-stays green.
 
 ## envoy_client: `src/__tests__/dispatch-who-waits.test.ts`'s `no text states the old rule` reads
 

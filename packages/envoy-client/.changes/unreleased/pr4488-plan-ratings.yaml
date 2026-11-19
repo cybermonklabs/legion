@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `dispatch plans --project <KEY>` (with optional `--since` and `--until` on the close) lists a
+  project's finished issues, newest close first, each with the plan Legion ran it from, each
+  retro's rating of that plan with its reason, its time and its count of failed steps.
