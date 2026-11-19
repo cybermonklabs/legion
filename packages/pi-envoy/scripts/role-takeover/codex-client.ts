@@ -32,8 +32,10 @@
  *   as Codex's own command exits once Codex stored the message. This process then starts a turn
  *   holding it, as the Codex terminal does a few seconds later: the turn's user message goes into
  *   the transcript and the turn ends, with no model reply. `--withhold-queue-answers true` takes
- *   each message and never answers, so `codex queue` never exits, the plugin never answers the
- *   Envoy frame (`done`), and the listener acks nothing (the script's withhold-ack-codex control).
+ *   each message and never answers, so `codex queue` does not exit while the session runs, the
+ *   plugin never answers the Envoy frame (`done`), and the listener acks nothing (the script's
+ *   withhold-ack-codex control). A `codex queue` whose session process has gone exits 1, as one
+ *   with no session to queue for, so none outlives the run.
  *
  * One MCP server, as for a session's first thread: Codex starts one more per `/new` thread, which
  * stands by under the plugin's owner rule (src/codex/codex-owner.ts) while the first one runs, so
@@ -102,6 +104,19 @@ interface Hook {
 const codexHome = process.env["CODEX_HOME"] ?? "";
 if (codexHome === "") throw new Error("codex: CODEX_HOME is required");
 const queueDirectory = join(codexHome, "ncs-standin", "queue");
+/** Which process takes the queue: the session's `codex` process, by its pid and its start, so a
+ *  `codex queue` whose session has gone stops waiting rather than outliving the run. */
+const takerFile = join(codexHome, "ncs-standin", "taker.json");
+
+/** When process `pid` started (field 22 of `/proc/<pid>/stat`), or undefined when it is gone. */
+function startOf(pid: number): string | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+  } catch {
+    return undefined;
+  }
+}
 
 /** Writes `text` to `file` whole: a temporary file renamed into place. */
 function writeWhole(file: string, text: string): void {
@@ -111,7 +126,7 @@ function writeWhole(file: string, text: string): void {
 }
 
 /** `codex queue --thread <id> --message=<text>`: hands the message to the running session and
- *  exits 0 once it took it, 1 when it refused it. */
+ *  exits 0 once it took it, 1 when it refused it or no session process takes the queue. */
 async function queue(args: readonly string[]): Promise<never> {
   let thread: string | undefined;
   let message: string | undefined;
@@ -140,6 +155,17 @@ async function queue(args: readonly string[]): Promise<never> {
         process.exit(0);
       }
       process.stderr.write(`codex queue: ${said.error ?? "refused"}\n`);
+      process.exit(1);
+    }
+    // Read each pass: the session writes it as it starts, and it names the process that answers.
+    let taker: { readonly pid?: unknown; readonly started?: unknown } = {};
+    try {
+      taker = JSON.parse(readFileSync(takerFile, "utf8"));
+    } catch {
+      // No session has started.
+    }
+    if (typeof taker.pid !== "number" || startOf(taker.pid) !== taker.started) {
+      process.stderr.write(`codex queue: no codex session is running for thread ${thread}\n`);
       process.exit(1);
     }
     await Bun.sleep(QUEUE_POLL_MS);
@@ -430,6 +456,8 @@ function answer(reply: Record<string, unknown>): void {
 }
 
 rmSync(queueDirectory, { recursive: true, force: true });
+mkdirSync(queueDirectory, { recursive: true, mode: 0o700 });
+writeWhole(takerFile, JSON.stringify({ pid: process.pid, started: startOf(process.pid) }));
 void takeQueued();
 await request("initialize", {
   protocolVersion: "2025-06-18",
