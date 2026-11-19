@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -1381,7 +1382,7 @@ func TestRequestSignsARequestObject(t *testing.T) {
 	// behavior TestRequestAndExecFormSendSessionIDWithFallbackOrder pins), and a Claude Code or
 	// Envoy-registered session sets the other two the same way.
 	stdout, stderr, exit := runAgentSecrets(t, binary, srv.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME", "--reason", "need it for the build")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1550,7 +1551,23 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 		{name: "pending", resp: helper.Response{LoginState: "pending"}, want: "pending\n", exit: 1},
 		{name: "denied", resp: helper.Response{LoginState: "denied"}, want: "denied\n", exit: 1, remedy: true},
 		{name: "expired", resp: helper.Response{LoginState: "expired"}, want: "expired\n", exit: 1, remedy: true},
-		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true},
+		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it\n"},
+		{name: "none, in identity mode", resp: helper.Response{MachineIdentity: true}, want: "none\n", exit: 1,
+			stderr: prefix + "no machine login since the helper started, and none kept on this machine; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "dropped at its expiry, in identity mode", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper's trade loop is trading this machine's identity for a new credential\n"},
+		{name: "a live credential, the trade loop stopped", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true, IdentityStopped: true},
+			want: "issued\n",
+			stderr: prefix + "nothing renews the launcher credential, which lapses at " + expiresAt + " (in 2d1h59m), and no session enrols under this machine's credential after that; " +
+				"the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
+		{name: "a live credential, the trade loop running", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true},
+			want:   "issued\n",
+			stderr: prefix + "the helper's trade loop renews the launcher credential; without a trade it lapses at " + expiresAt + " (in 2d1h59m)\n"},
+		{name: "dropped, the trade loop stopped", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true, IdentityStopped: true},
+			want: "expired\n", exit: 1,
+			stderr: prefix + "the launcher credential reached its expiry; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed\n"},
 		{name: "pending beside a refused credential", resp: helper.Response{LoginState: "pending", LoginRefused: true}, want: "pending\n", exit: 1},
 		{name: "pending beside a held credential", resp: helper.Response{LoginState: "pending", CredentialHeld: true}, want: "issued\n",
 			stderr: prefix + "a machine login is waiting for approval (code KQ7M-X4PZ); " + held + "\n" + unknown},
@@ -1579,20 +1596,29 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 }
 
 // TestCredentialExpiryLine: login-status's expiry line rounds to the minute with days, names a
-// credential already past its expiry (the helper has not dropped it yet) with the login remedy,
-// and says plainly when the helper's answer carries no expiry or one it cannot read.
+// credential already past its expiry (the helper has not dropped it yet) with the hint of the
+// helper's mode, and says plainly when the helper's answer carries no expiry or one it cannot read.
 func TestCredentialExpiryLine(t *testing.T) {
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
-	for _, tc := range []struct{ expiresAt, want string }{
-		{"2026-10-10T11:59:30Z", "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
-		{"2026-10-03T15:05:00Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
-		{"2026-10-03T12:00:40Z", "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
-		{"2026-10-03T12:00:00Z", "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login"},
-		{"", "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
-		{"next tuesday", `the helper reported an unreadable launcher credential expiry "next tuesday"`},
+	machineLogin, identity := brokerclient.FailureNoMachineLogin, brokerclient.FailureIdentityLapsed
+	for _, tc := range []struct {
+		expiresAt string
+		failure   brokerclient.Failure
+		want      string
+	}{
+		{"2026-10-10T11:59:30Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", identity, "the helper's trade loop renews the launcher credential; without a trade it lapses at 2026-10-10T11:59:30Z (in 6d23h59m)"},
+		{"2026-10-10T11:59:30Z", brokerclient.FailureIdentityStopped, "nothing renews the launcher credential, which lapses at 2026-10-10T11:59:30Z (in 6d23h59m), and no session enrols under this machine's credential after that; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T12:00:00Z", brokerclient.FailureIdentityStopped, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper stopped trading this machine's identity, and its log gives the reason; restart agent-secrets-helper once that is fixed"},
+		{"2026-10-03T15:05:00Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T15:05:00Z (in 3h5m)"},
+		{"2026-10-03T12:00:40Z", machineLogin, "the machine login renews itself; without a refresh it lapses at 2026-10-03T12:00:40Z (in 0m)"},
+		{"2026-10-03T12:00:00Z", machineLogin, "the launcher credential expired at 2026-10-03T12:00:00Z; run: agent-secrets machine login, and have a human approve it"},
+		{"2026-10-03T12:00:00Z", identity, "the launcher credential expired at 2026-10-03T12:00:00Z; the helper's trade loop is trading this machine's identity for a new credential"},
+		{"", machineLogin, "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"},
+		{"next tuesday", machineLogin, `the helper reported an unreadable launcher credential expiry "next tuesday"`},
 	} {
-		if got := credentialExpiry(tc.expiresAt, now); got != tc.want {
-			t.Errorf("credentialExpiry(%q) = %q, want %q", tc.expiresAt, got, tc.want)
+		if got := credentialExpiry(tc.expiresAt, now, tc.failure); got != tc.want {
+			t.Errorf("credentialExpiry(%q, %v) = %q, want %q", tc.expiresAt, tc.failure, got, tc.want)
 		}
 	}
 }
@@ -1666,7 +1692,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 	broker, counters := fakeBroker(t)
 	defer broker.Close()
 	keyDir := newKeyDir(t)
-	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID="}
+	clearFallbacks := []string{"ENVOY_SESSION_ID=", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="}
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir,
 		append([]string{"OMP_SESSION_ID=sess-request-123"}, clearFallbacks...), "request", "GRANT_ME")
@@ -1688,7 +1714,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 
 	// OMP_SESSION_ID unset: the request form falls back to ENVOY_SESSION_ID.
 	stdout, stderr, exit = runAgentSecrets(t, binary, broker.URL, keyDir,
-		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID="},
+		[]string{"OMP_SESSION_ID=", "ENVOY_SESSION_ID=sess-envoy-789", "CLAUDE_CODE_SESSION_ID=", "CODEX_THREAD_ID="},
 		"request", "GRANT_ME")
 	if exit != 0 {
 		t.Fatalf("exit = %d, want 0: stdout=%q stderr=%q", exit, stdout, stderr)
@@ -1703,6 +1729,39 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // set. This process's own environment may already carry one of the three (a Pi session sets its
 // own OMP_SESSION_ID), so every case sets all three explicitly rather than relying on any being
 // unset already.
+// TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
+// and, when both are set, the nearer of the two harness processes decides.
+func TestRequestSessionIDCodex(t *testing.T) {
+	cases := []struct {
+		name          string
+		claude, codex string
+		nearest       string
+		omp           string
+		want          string
+	}{
+		{"CODEX_THREAD_ID alone", "", "thread-codex", "", "", "thread-codex"},
+		{"Codex nearer than Claude Code", "sess-claude", "thread-codex", "codex", "", "thread-codex"},
+		{"Claude Code nearer than Codex", "sess-claude", "thread-codex", "claude", "", "sess-claude"},
+		{"neither found: Claude Code, as before", "sess-claude", "thread-codex", "", "", "sess-claude"},
+		{"OMP_SESSION_ID when Oh My Pi is nearer", "", "thread-codex", "omp", "sess-omp", "sess-omp"},
+		{"CODEX_THREAD_ID when Codex is nearer than Oh My Pi", "", "thread-codex", "codex", "sess-omp", "thread-codex"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("OMP_SESSION_ID", c.omp)
+			t.Setenv("ENVOY_SESSION_ID", "")
+			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", c.codex)
+			saved := nearestHarness
+			nearestHarness = func(...string) string { return c.nearest }
+			t.Cleanup(func() { nearestHarness = saved })
+			if got := requestSessionID(); got != c.want {
+				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
 	cases := []struct {
 		name               string
@@ -1720,6 +1779,7 @@ func TestRequestSessionIDFallbackOrder(t *testing.T) {
 			t.Setenv("OMP_SESSION_ID", c.omp)
 			t.Setenv("ENVOY_SESSION_ID", c.envoy)
 			t.Setenv("CLAUDE_CODE_SESSION_ID", c.claude)
+			t.Setenv("CODEX_THREAD_ID", "")
 			if got := requestSessionID(); got != c.want {
 				t.Fatalf("requestSessionID() = %q, want %q", got, c.want)
 			}

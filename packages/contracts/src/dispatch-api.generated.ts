@@ -972,7 +972,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential requests the caller may decide (?approver=me only): those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides, each secret request carrying approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. */
+    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. */
     get: operations["getApiV1CredentialRequests"];
     put?: never;
     post?: never;
@@ -1027,6 +1027,23 @@ export interface paths {
     put?: never;
     /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/credential-requests/{id}/dismiss": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. */
+    post: operations["postApiV1CredentialRequestsByIdDismiss"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1731,7 +1748,7 @@ export interface paths {
     /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's text is its words with every link and dispatch:// reference dropped; a caller that sent Dispatch-Trees: 1 is also given text_tree, the check's whole content as the tree a reader is shown, links and references kept, and each result's observed_tree, the tree its observed text is shown as. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
-    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
+    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. A check reworded by a document version at each of the two attempts this write makes is 409 CHECK_CONTENDED with Retry-After: 1, the second the version that moved it needs to land, and nothing recorded: read the check and retry. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
     post: operations["postApiV1IssuesByKeyResults"];
     delete?: never;
     options?: never;
@@ -1748,7 +1765,7 @@ export interface paths {
     };
     /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     get: operations["getApiV1IssuesByKeyRoleHolders"];
-    /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
+    /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under the issue's owner lock, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
     put: operations["putApiV1IssuesByKeyRoleHolders"];
     post?: never;
     delete?: never;
@@ -4252,12 +4269,16 @@ export interface components {
     };
     CredentialPendingRow: {
       approve_url?: string;
+      /** Format: date-time */
+      expires_at?: string;
       identifiers: string[] | null;
       kind: string;
       record_id: string;
       /** Format: date-time */
       requested_at: string;
       session: components["schemas"]["CredentialSession"];
+      /** @enum {string} */
+      state?: "pending" | "expired";
     };
     CredentialSession: {
       enrollment: null | string;
@@ -4667,6 +4688,12 @@ export interface components {
       concluded: number;
       rate: null | number;
       reached_production: number;
+    };
+    DismissResponse: {
+      /** Format: date-time */
+      dismissed_at: string;
+      dismissed_by: string;
+      record_id: string;
     };
     DispatchLimits: {
       ask_options: number;
@@ -9117,6 +9144,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["StateResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1CredentialRequestsByIdDismiss: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DismissResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14446,6 +14507,7 @@ export type DeliveryWaitingPR = components["schemas"]["DeliveryWaitingPR"];
 export type DeliveryWindowView = components["schemas"]["DeliveryWindowView"];
 export type DeployFrequency = components["schemas"]["DeployFrequency"];
 export type DeployRunSuccess = components["schemas"]["DeployRunSuccess"];
+export type DismissResponse = components["schemas"]["DismissResponse"];
 export type DispatchLimits = components["schemas"]["DispatchLimits"];
 export type DispatchUser = components["schemas"]["DispatchUser"];
 export type DocumentRead = components["schemas"]["DocumentRead"];

@@ -102,7 +102,7 @@ It carries:
   The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write; or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
-  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
+  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
@@ -1369,7 +1369,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
 an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Issue pods in microVMs](#issue-pods-in-microvms)).
-The pod holds two init containers — three where the deployment names a `skills_repository` ([Operator configuration](#operator-configuration)) — and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
+The pod holds two init containers and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
 — `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
 Every role of the issue shares the issue's checkout, the pod's own disk it sits on, the temporary directory every role's agent is told (`TMPDIR=/legion/scratch/tmp`, one directory of the issue's scratch, below) and the pod's network, and every one of their sessions is a row in the session database rather than a file any of them holds;
@@ -2852,7 +2852,6 @@ runtime:
       refresh_minutes: 10       # default 10; how long between the cache's fetches from GitHub
       retain_hours: 168         # default 168; how long a cache outlives its repository leaving the mapping
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
-    skills_repository: <owner>/<name>   # optional: the Oh My Pi plugin marketplace every issue pod's roles install their skills from, cloned in an init container of the pod's own (below)
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, Memory in a microVM pod, below)
@@ -2867,7 +2866,7 @@ capabilities:                   # optional: the deployment capabilities decided 
 
 Every container of every Legion pod carries a cpu and memory limit and a request no greater than it, and an ephemeral-storage limit, its bound on the node's disk, over a smaller ephemeral-storage request.
 `runtime.kubernetes.resources` takes exactly two keys:
-`issue`, the one reservation every issue pod's `roles` container and both its init containers carry — the third too, where the deployment names a `skills_repository` — and `controller`, the daemon-launched controller's pod's, only under `controller: daemon`.
+`issue`, the one reservation every issue pod's `roles` container and both its init containers carry, and `controller`, the daemon-launched controller's pod's, only under `controller: daemon`.
 Each takes the six fields `cpu` and `memory` (the limits), `cpu_request` and `memory_request`, `ephemeral_storage` (the limit) and `ephemeral_storage_request`, any of them.
 A limit the file leaves out takes the daemon's default (`config.DefaultResources()`, `packages/daemon/internal/config/kubernetes.go`);
 a `cpu_request` or `memory_request` it leaves out takes the file's limit where it set one, else the default's request (`settledRequest`), so a file that raises `memory` alone is requested in full.
@@ -3018,14 +3017,14 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - `agent_secrets.operator`, removed with LEGION-664:
   the daemon logs in with its own ServiceAccount token (`token_file`), which no person approves, so it names no approver;
 
+- `skills_repository`, removed: a role installs its skills with Oh My Pi's own commands in `setup` (below);
+  it is refused whatever its value, a key with no value included: `runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key`;
+
 - an image that is not pinned by digest;
 
 - a `setup` that is not a list of non-empty strings (`runtime.kubernetes.setup must be an array
   of non-empty strings`), or an empty list (`runtime.kubernetes.setup must name a command: leave it
   out to run none`);
-
-- a `skills_repository` that is not `<owner>/<name>` (`runtime.kubernetes.skills_repository must be
-  "owner/name" (got "…")`), read as every other repository the file names is;
 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;
@@ -3099,7 +3098,15 @@ A non-zero exit ends the start with `legion setup: runtime.kubernetes.setup exit
 the daemon reads the role as gone, charges a launch failure, and retries until the budget ends the claim in a `worker-died`, as it does an install that fails.
 Its run counts against the launch's registration deadline (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 360 s by default) and adds to every start's time.
 The container's filesystem keeps what an earlier start in the same pod wrote, so a command that installs something should succeed when it is already there.
-An Oh My Pi plugin from a marketplace repository, for example:
+
+**A role's `setup` may install an Oh My Pi plugin marketplace from GitHub, with the role's own App token.**
+`omp plugin marketplace add` clones into a temporary directory and renames it into place.
+On the role's home overlay, gVisor marks a renamed directory opaque by writing the extended attribute `trusted.overlay.opaque`.
+A task in the role's nested user namespace may not write that attribute, and gVisor panicked when that write was refused, which ended the pod's whole sandbox:
+the pod's `roles` container exited 128 (the deployment repository's issue INFRA-1262).
+`kubectl exec` runs outside the role's namespaces, which is why the same command exited 0 there.
+Since legion-v19.18.1 the overlay carries `userxattr`, so the mark goes to the `user.overlay.` attribute namespace, which the role may write ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+This `setup` installs one plugin of a marketplace, and stops no role when a step fails:
 
 ```yaml
 runtime:
@@ -3107,95 +3114,41 @@ runtime:
     setup:
       - /bin/sh
       - -c
-      - '{ omp plugin marketplace update acme-skills || omp plugin marketplace add acme/agent-skills; } && omp plugin install agent-skills@acme-skills --force'
+      - |
+        [ -z "${LEGION_CONTROLLER:-}" ] || exit 0
+        cd "$HOME" || { echo "setup: cd $HOME failed" >&2; exit 0; }
+        repo=acme/agent-skills marketplace=acme-skills plugin=agent-skills
+        omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+        if ! timeout 120 omp plugin marketplace add "$repo"; then
+          echo "setup: omp plugin marketplace add $repo failed" >&2
+        elif ! timeout 60 omp plugin install "$plugin@$marketplace" --force; then
+          echo "setup: omp plugin install $plugin@$marketplace failed" >&2
+        elif ! omp plugin enable "$plugin@$marketplace"; then
+          echo "setup: omp plugin enable $plugin@$marketplace failed" >&2
+        fi
+        omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+        exit 0
 ```
 
-`acme-skills` is the `name` the repository's marketplace file gives;
-`omp plugin marketplace add` refuses a name already added, and `omp plugin install` an installed plugin without `--force`.
-On a container's first start the `update` finds no such marketplace, so the role's log shows one `Failed to update marketplace … not found` line before the `add` succeeds; that line is expected.
+- It skips the daemon-launched controller (`LEGION_CONTROLLER` is set in the controller's agent and nowhere else).
+  The controller's shim runs in its container's own namespaces, with no role home overlay (`command`, `packages/daemon/internal/launcher/launcher.go`), and no measurement covers a clone there.
 
-**Under this runtime a role's `setup` may install nothing from GitHub.**
-A clone in a role's launch context ends the pod's gVisor sandbox about four seconds after it starts, on every launch observed, and the pod's `roles` container exits 128 (the deployment repository's issue INFRA-1262).
-The same command run by `kubectl exec` in the same pod exits 0, and why the launch-time clone ends the sandbox is not known.
-So the example above is what `skills_repository` replaces, and a `setup` that still fetches is a `setup` that kills its pod.
-What a deployment should run in `setup` instead is a check that the install the pod already made is there:
+- It runs from `$HOME`.
+  A role's `setup` runs in the issue's workspace, and from `$HOME` a project-scope plugin registry of the issue's repository (`omp plugin --scope project`) takes no part.
 
-```yaml
-runtime:
-  kubernetes:
-    setup:
-      - /bin/sh
-      - -c
-      - '[ -n "${LEGION_CONTROLLER:-}" ] || omp plugin list | grep -q agent-skills || { echo "agent-skills is not installed" >&2; exit 1; }'
-```
+- `acme-skills` is the `name` the repository's marketplace file gives, and `agent-skills` is a plugin that file names.
 
-It fails the launch with a clear line in the `roles` log rather than starting an architect without its skills.
-The `LEGION_CONTROLLER` guard is not optional: `setup` runs for every role of every pod, the daemon-launched controller's included, and the controller's pod carries no skills volume and installs no skill, so an unguarded check would fail its launch (`LEGION_CONTROLLER` is set in the controller's agent and nowhere else).
+- It removes the marketplace first, because `omp plugin marketplace add` refuses a name already added, and a start that ended before its last step leaves the name added.
+  It removes it again at the end, which deletes the clone from the role's home and keeps the installed plugin: a clone is the marketplace repository's whole tree (49 MB for one measured marketplace), and each role of a pod has a home of its own.
 
-`skills_repository` is the skills marketplace every issue pod's roles install from, as `<owner>/<name>`:
+- It installs only after the `add` succeeded, because an install of `<plugin>@<name>` whose `<name>` is no registered marketplace goes to npm.
 
-```yaml
-runtime:
-  kubernetes:
-    skills_repository: acme/agent-skills
-```
+- It enables the plugin after the forced install, because `omp plugin install --force` keeps a disabled plugin disabled.
 
-With it, every issue pod runs a third init container, `skills-fetch`, between `workspace-fetch` and `workspace-init`.
-It runs `legion workspace-init skills --repo <owner>/<repo> --dir /var/run/legion/skills` and clones the repository's default branch shallow (`git clone --depth 1 --single-branch`) into `/var/run/legion/skills/repo`, then writes four records beside the clone: `COMMIT`, the commit it cloned; `MARKETPLACE`, the marketplace catalog's own `name`; `PLUGINS`, one plugin name per line; and `TREES`, each plugin's tree digest, which a role's own check compares its installed plugin against (below).
-The clone's directory is that fixed name and never the repository's own, so a repository called `COMMIT`, `MARKETPLACE` or `PLUGINS` cannot land on a record's path, and changing the repository changes no path a role names.
-The branch is the repository's **default** branch as GitHub names it, not a branch called `main`: Legion holds no opinion about what a repository calls its default branch, and the container's last line says which branch and which commit a pod's skills came from, so a deployment whose skills must come from another branch needs a repository whose default branch is that one.
-It reads the repository with the **provisioning token**, the one `workspace-fetch` uses, through the same one-shot credential: a helper for `https://github.com` alone, no askpass, no terminal prompt, and neither the system's nor the image user's git configuration.
-So a private marketplace repository needs the project's GitHub App installed on it and nothing else; no credential of the operator's is added anywhere.
-A clone that fails fails the container by name, and the daemon replaces the pod as it does for any failed init container; so does a catalog that is missing, does not parse, names no plugin, names no owner with a name (which Oh My Pi's own reader of it requires), or carries a name or a plugin source a role could not install from without fetching:
-a name that is not one word of ASCII letters, digits, hyphens, underscores and dots beginning with a letter; a marketplace name Oh My Pi reads after an `@` as an npm dist-tag (`latest`, `next`, `beta`, `alpha`, `canary`, `rc`, `dev`, `stable`, `nightly`, `experimental`), which would send a role's install to npm; and a plugin whose `source` is anything but a `./` path resolving inside the clone — a `github`, `url`, `git-subdir` or `npm` source, or a path that leaves the clone through `..` or a symlink, each of which `omp plugin install` fetches itself, in the role's launch context.
-The catalog's own `metadata.pluginRoot` is joined in front of each source before that check, as Oh My Pi joins it, so the directory checked is the directory installed.
+- It bounds each step that can wait on the network with `timeout`, 120 s for the clone and 60 s for the install, so the whole command stays well inside the launch's registration deadline (360 s by default).
 
-A catalog whose keys would mean one thing to Legion and another to Oh My Pi is refused too, and that is not a nicety.
-Go's decoder matches a field to a key case-insensitively when none matches exactly, and the later key wins; Oh My Pi reads the same file with JavaScript's parser, which destructures `source` and nothing else.
-So a plugin carrying both `source` (a github repository) and `Source` (a local path) validates here as local and installs there as a clone — in the role's launch, before anything checks what was installed.
-Every object the container reads is therefore checked first, before any of it is decoded, for a key repeated and for a key differing only by case from one it reads (`name`, `owner`, `metadata`, `plugins`; a plugin's `name`, `source`, `version`, `description`; `metadata.pluginRoot`; the owner's `name`), and either is a refusal naming both spellings.
-A key the container does not read is its own business: a catalog carries fields nobody here reads, and refusing those would fail every pod of a deployment on a field somebody added for a reason of their own.
-
-The digest is length-prefixed, each field as its byte count, a newline and then exactly that many bytes, and a file name holding a newline or a NUL is refused.
-Both matter: with the fields merely separated, the two-file tree `{a: "x", b: "Y"}` and the one-file tree `{"a\n1\nxb": "Y"}` write the same bytes, so a check over the one would pass the other.
-It covers each file's executable bit as well, which is safe because Oh My Pi's install of a local marketplace preserves the mode — measured in a pod of the pinned image, a 0644 file and a 0755 file installed as 0644 and 0755.
-
-Then every role's start wrapper, before Oh My Pi and before the `setup` command, registers that clone as a **local** marketplace and installs every plugin the catalog named:
-
-```sh
-market=$(cat /var/run/legion/skills/MARKETPLACE)
-omp plugin marketplace add /var/run/legion/skills/repo || {
-  omp plugin marketplace remove "$market" && omp plugin marketplace add /var/run/legion/skills/repo
-}
-# then, for each line of /var/run/legion/skills/PLUGINS:
-omp plugin install "$plugin@$market" --force
-omp plugin enable  "$plugin@$market"
-```
-
-On a relaunch an existing registration of that name is removed and added again from the pod's own local directory; it is never updated through an older source URI, which may still name GitHub.
-That is the difference that matters: `omp plugin marketplace update` fetches the registry record's own source, so updating a record a previous generation added as `owner/repo` would clone from GitHub in the role's launch context — the one thing this whole arrangement exists to avoid.
-The `enable` after the forced install is there because Oh My Pi keeps a plugin's disabled flag across a forced reinstall (read in its source at omp 18.16, not measured on the pinned 18.13.3), so a role that disabled the plugin once would otherwise come up without it.
-Nothing here reaches GitHub, which is the point:
-a local marketplace's registry record is a path with no git remote, so neither this step nor Oh My Pi's own refresh of a marketplace whose cache is more than 24 hours old fetches anything — measured on the pinned omp 18.13.3, where a stale local marketplace's refresh re-reads the directory and runs no git at all, while the same refresh of an `owner/repo` marketplace clones.
-Every step is guarded: a missing directory or record, an empty marketplace name, a failed add and re-add, a failed install or enable, and a `PLUGINS` record that installed nothing each print `legion skills: the skills marketplace in <dir> is not installable; not starting Oh My Pi` and end the start, as the `setup` command's own failure does.
-The whole block reads from `/dev/null`, and each install, enable and check again, so none of it touches the RPC frame stream the shim and Oh My Pi share or eats a line of the `PLUGINS` record.
-
-**Then the wrapper proves that what Oh My Pi would load is the commit the pod cloned**, with `legion skills-check --dir /var/run/legion/skills --omp /opt/omp/bin/omp`, the last thing before the `setup` command and the harness.
-The install's own success says only that a marketplace resolved a plugin of that version.
-The check compares bytes: `skills-fetch` digests each plugin's directory of the clone it made — sha256 over every file's path, size and content, a tree holding anything but directories and regular files refused — and writes those digests as a fourth record, `TREES`, one `<sha256>  <plugin>` line per plugin.
-The check then asks Oh My Pi itself where it installed each plugin (`omp plugin list --json`, whose `marketplace[].entries[].installPath` is that directory) and digests what is there.
-A plugin whose tree differs, one the install left nowhere, one installed that the records do not name, and an Oh My Pi that cannot be asked each print `legion skills: what Oh My Pi would load is not the commit this pod's skills clone in <dir> recorded; not starting Oh My Pi` with the detail on the line before it, and end the start.
-So an install that resolved something else, a tree something wrote into the plugin cache afterwards, and a volume whose clone changed under a retry each fail the launch rather than reaching an agent.
-The check reaches no network, takes no lock and writes nothing; it reads the pod's own records and runs one local command.
-It is what stands in for an image pin on these pods: a pod cannot be built with its skills baked in, so instead it records which commit it took them from and refuses to start a role whose loaded bytes are not that commit's.
-
-The premise is that Oh My Pi's install of a local marketplace leaves the plugin's directory as it found it, which is measured rather than assumed: in a pod of the pinned image, the installed directory and the clone's plugin directory compared equal (`diff -r` silent, 110 files each, no entry that is not a directory or a regular file).
-
-The pod's skills volume is read-write in `skills-fetch` alone and **read-only** in the `roles` container, so no role writes what the token-holding container cloned, and `skills-fetch` carries no operator mount, as no init container does.
-It is mounted at `/var/run/legion/skills`, which is neither under `/var/run/legion/roles` nor under `/var/run/legion/home`, the two directories a role's namespaces cover, so every role of the pod reads it at that one path.
-Each pod's skills are therefore the repository's default branch as of **that pod's start**, with no image rebuild;
-a pod keeps the commit it started with until it is replaced, and `kubectl exec <pod> -c roles -- cat /var/run/legion/skills/COMMIT` says which commit that is.
-The project controller's pod runs no `skills-fetch` and installs no skill: it has no init container at all.
+- A failed step prints one line that names it, and the command exits 0 in every case.
+  So the role starts with the plugins its home already has, and its next start tries again.
 
 Under `runtime: kubernetes` it also requires `daemon_url`, `envoy_url`, `nats_urls`, `envoy_token_file`, `operator_token_file`, `dispatch_url`, `github_apps` and `projects`.
 It refuses `omp_invocation` and `omp_launch_prefix`: every pod runs the worker image's Oh My Pi.
@@ -4077,7 +4030,7 @@ The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leave
 Each Sandbox carries `legion.dev/project`, `legion.dev/tree` and `legion.dev/issue` (`names.go`):
 one Sandbox per issue, shared by every role that works it, owning its pod and the role Secrets and no volume at all.
 A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Issue pods in microVMs](#issue-pods-in-microvms)).
-The pod template (`manifest.go`) has two init containers, three with a `skills_repository`, and one container, `roles`, which runs every workflow role (`claim.Roles`:
+The pod template (`manifest.go`) has two init containers and one container, `roles`, which runs every workflow role (`claim.Roles`:
 architect, planner, implementer, tester, reviewer, merger):
 
 1. `workspace-fetch` fills the pod's feed, the bare repository at `/legion/feed/<owner>/<repo>.git` on the issue's own volume.
@@ -4113,13 +4066,9 @@ architect, planner, implementer, tester, reviewer, merger):
      The fetch's waits, transfers and checks end within 190 minutes (`workspace.FetchBudget`) however long it waited, and the few local git commands around them take moments;
      a step with nothing left fails the fetch, naming the bound.
      Each transfer from GitHub is tried again up to four times after a transient failure, within that bound.
-     It holds the provisioning token, and, where the deployment names a `skills_repository`, so does the container below; no other process of the pod does ([Trust model](#trust-model-the-provisioning-token)).
+     It holds the provisioning token, and no other process of the pod does ([Trust model](#trust-model-the-provisioning-token)).
 
-2. `skills-fetch`, where the deployment names a `skills_repository` ([Operator configuration](#operator-configuration)), clones that Oh My Pi plugin marketplace shallow into the pod's skills volume at `/var/run/legion/skills` and records the commit, the marketplace's name and its plugins beside it.
-   It holds the provisioning token too, mounts nothing of the issue's volume, and the volume it fills is read-only in every container after it, so what a role installs from it is never what a role wrote.
-   A deployment that names no such repository runs no such container.
-
-3. `workspace-init` provisions the issue's clone and its jj workspace on the pod's own disk from the read-only feed, taking no lock and waiting on no other pod: no other pod mounts that disk.
+2. `workspace-init` provisions the issue's clone and its jj workspace on the pod's own disk from the read-only feed, taking no lock and waiting on no other pod: no other pod mounts that disk.
    The clone is a local `git clone --no-checkout` of the feed, so it holds no working tree at all: nothing in it but `.git` and `.jj`.
    Git hard-links the feed's object files when the filesystem allows, but the clone owns those links, so replacing the feed cannot remove history its refs need;
    it has no `.git/objects/info/alternates`.
@@ -4145,9 +4094,9 @@ architect, planner, implementer, tester, reviewer, merger):
    a lock it cannot remove, and a clone whose `.git` or `.git/worktrees` is a symlink (git never makes either one, and it would take the removal outside the clone), fail the container naming the path.
    jj's own locks are `flock(2)` locks, which end with their holder, so it leaves them.
    The `roles` container's launcher sweeps the same files for the life of the pod.
-   A lock made while the pod runs is removed there, under rules of its own (item 5 below).
+   A lock made while the pod runs is removed there, under rules of its own (item 4 below).
 
-4. The `roles` container's PID 1 is one `legion launcher` in multi-role mode:
+3. The `roles` container's PID 1 is one `legion launcher` in multi-role mode:
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
    set>:<worker_stream_port> --sandbox <name> --roles-dir /var/run/legion/roles --role architect
    --role planner --role implementer --role tester --role reviewer --role merger --stop-grace <d>`, the pod's uid from `POD_UID` (the downward API).
@@ -4169,14 +4118,14 @@ architect, planner, implementer, tester, reviewer, merger):
    - It runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
      In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
-   - It sweeps the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
+   - It sweeps the clone's stale git locks (item 4): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
      A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
 
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
 
-5. As well as the roles, the launcher, as the container's PID 1 alone (item 4), sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+4. As well as the roles, the launcher, as the container's PID 1 alone (item 3), sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
    The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.WorkspaceOf`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
    the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
@@ -4312,7 +4261,7 @@ When that reason is `OOMKilled`, each role whose turn the end cut off gets its t
 a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
-the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default), and the third init container, where the deployment names a `skills_repository`, that same reservation.
+the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default).
 At the default every request equals its limit and the pod is `Guaranteed`; a `cpu_request` or `memory_request` below its limit makes the pod `Burstable`.
 The pod is bounded on the node's disk, and Legion sets no affinity on it (GKE Autopilot adds its own, below;
 [Issue sizing](#issue-sizing-one-reservation-per-pod)).
@@ -5417,7 +5366,7 @@ Narrowing the identity to a per-project one is dispatch://INFRA-153's work, not 
 ### Issue sizing: one reservation per pod
 
 Every container of a Legion pod carries a cpu and memory limit with a request no greater than it (`requirements`, `internal/daemon/kubernetes.go`), and an ephemeral-storage limit over a smaller ephemeral-storage request (the node-disk bound, below):
-an issue pod's `roles` container and both its init containers — three where the deployment names a `skills_repository` — the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
+an issue pod's `roles` container and both its init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, the daemon's default where the file sets none
 — [Configuration](#configuration)), the controller's launcher the controller's (`runtime.kubernetes.resources.controller`), and the image probe's one container the probe's own fixed 250m / 1Gi, request equal to limit (`probeReservation`, [Configuration](#configuration)).
 At the default an issue pod reserves 3 CPU and 19 GiB, the init containers adding nothing:
 a pod's effective request is the larger of its containers' sum and its largest init container, and they carry the same reservation.
@@ -6194,8 +6143,8 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
 - pod carrying a `deletionTimestamp`, or in phase `Succeeded` or `Failed` → **dead (gone)**;
   for a `Failed` pod the last 20 log lines of the failing container (the init container when it exited non-zero, else the main one) are quoted in the daemon log;
 
-- `Pending` with the `workspace-fetch`, `skills-fetch` or `workspace-init` init container **running** → **alive**, whatever the pod's age:
-  the pod is provisioning its working copy (`workspace-fetch`'s wait for the repository cache, then its stream and verification under one `workspace.FetchTimeout` and its delta under another, rather than `workspace.CommandTimeout`, all within `workspace.FetchBudget` ([Trust model](#trust-model-the-provisioning-token)), then `skills-fetch`'s one shallow clone under `workspace.CommandTimeout`, then `workspace-init`'s shared clone of the feed, whose steps that follow the repository's size share one `workspace.CloneTimeout`, the issue's own checkout under `workspace.CheckoutTimeout`, and its other commands, each up to `workspace.CommandTimeout`;
+- `Pending` with the `workspace-fetch` or `workspace-init` init container **running** → **alive**, whatever the pod's age:
+  the pod is provisioning its working copy (`workspace-fetch`'s wait for the repository cache, then its stream and verification under one `workspace.FetchTimeout` and its delta under another, rather than `workspace.CommandTimeout`, all within `workspace.FetchBudget` ([Trust model](#trust-model-the-provisioning-token)), then `workspace-init`'s shared clone of the feed, whose steps that follow the repository's size share one `workspace.CloneTimeout`, the issue's own checkout under `workspace.CheckoutTimeout`, and its other commands, each up to `workspace.CommandTimeout`;
   it waits on no other pod and takes no lock, since the clone it provisions is the issue's own, on the issue's own volume), and a live initialiser is a live process
   — as the tmux runtime's own in-process provisioning is.
   The launch that created the pod waits for the role's launcher, which starts only once every init container has finished.
@@ -6205,7 +6154,7 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   each term is the real bound of one step whose duration follows the repository's size, and the three run one after the other, `workspace-fetch`'s whole fetch, then `workspace-init`'s shared clone of the feed, then the issue's own checkout.
   The fetch started no later than that first sighting, the shared clone after the fetch ended and the checkout after the clone, so the three end inside the bound, each failing on its own, naming why, when it runs out of its own
   — the fetch's failure naming the repository cache's state — while the commands between them take the moments they do.
-  The sum counts no term for the commands that keep `workspace.CommandTimeout`, `skills-fetch`'s clone and `workspace-init`'s other commands among them:
+  The sum counts no term for the commands that keep `workspace.CommandTimeout`, `workspace-init`'s other commands among them:
   the boot timeout past the sum is what covers them, so the sum is no worst case, and when the fetch and the clone each run their whole bound, whatever those commands take comes out of the checkout's hour and that boot timeout.
   A launch that gives up while `workspace-fetch` still runs says so, with the cache's state.
   A pod that provisions for twenty minutes is one launch, not a launch failure per boot timeout, and a launcher that has not connected the boot timeout after provisioning ended still fails the launch.
@@ -6324,7 +6273,7 @@ A deployment whose Apps are configured by `token_command` (docs/deployment.md, "
 `ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`) and takes what that release holds, be it narrower or wider than the five reads it asks for with a key, and no wider token is asked for in its place.
 Such a command must therefore release a read-only token for every owner it serves: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
 
-The Go coordinator's pods (`packages/daemon`) keep to that rule with two init containers, and with a third where the deployment names a `skills_repository`:
+The Go coordinator's pods (`packages/daemon`) keep to that rule with two init containers:
 
 - **`workspace-fetch`** mounts the provisioning Secret, an in-memory `TMPDIR` of its own, and the issue volume's `feed` directory alone (a `subPath`, at `/legion/feed`), which every other container of the pod mounts read-only, and runs `legion workspace-init fetch --repo
   <owner>/<repo> --feed /legion/feed`: a fresh feed is the repository cache's tar unpacked into a feed of its own making (`git init --bare`) and a `git fetch` of the delta from `https://github.com/<owner>/<repo>`;
@@ -6355,16 +6304,11 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name
   — fails the fetch at once (`transientCloneFailure`, `internal/workspace/fetch.go`).
   The launch waits for the pod's launchers while any init container runs, up to `sandbox.Runtime.ProvisionBound` (280 minutes) plus its boot timeout from when it first sees one running (above, "Liveness rules"), so the fetch, its wait and retries included, spends no launch failure.
-  After a fetch that ran its whole budget, the shared clone's 30 minutes and the issue's checkout's hour are what is left of the sum, and `skills-fetch`'s clone and `workspace-init`'s other commands come out of that hour and the boot timeout beyond it.
+  After a fetch that ran its whole budget, the shared clone's 30 minutes and the issue's checkout's hour are what is left of the sum, and `workspace-init`'s other commands come out of that hour and the boot timeout beyond it.
   The fetch reads the token from its file anew as every transfer attempt from GitHub starts, taking the file as it stands then, and the gh refresher's minute brings every live issue pod's provisioning Secret to the implement App's current lease (`refreshProvisioningToken`, `internal/runtime/sandbox/ghcredential.go`), Pending or Running, whatever its fetch has already done, the cache's token beside it kept, logging `sandbox
   runtime: provisioning token refreshed`; the daemon re-mints a lease once less than 20 minutes of it remain (`internal/appauth/appauth.go`) and the kubelet rewrites the projected file within its sync period, so a delta after a long wait on the repository cache, or a retry late in a long fetch, presents a token that is still good.
   A pod whose fetch has finished is refreshed for the same reason: a pod's init containers can run again at any point in its life — the kubelet runs them afresh whenever it rebuilds the pod's sandbox, after a node event or a kill of another container, while a relaunch that replaces the pod provisions it anew (`relaunch`) — and that fetch reads the token's file as it stands then, so a Secret left at the pod's boot token would hand it one GitHub expired an hour after the pod started.
   The lease is minted once for each repository a tick, however many of that repository's pods the walk holds, and a repository whose mint fails is logged once (`sandbox runtime: provisioning token mint failed`) and left to the next tick, where its pods are tried again.
-
-- **`skills-fetch`**, where the deployment names a `skills_repository`, mounts the provisioning Secret, an in-memory `TMPDIR` of its own — not `workspace-fetch`'s, since a `TMPDIR` two token holders shared would be one each could read the other's one-shot credential in — and the pod's skills volume alone, at `/var/run/legion/skills`, which the `roles` container mounts read-only, and runs `legion workspace-init skills --repo <owner>/<repo> --dir /var/run/legion/skills`:
-  a `git clone --depth 1 --single-branch` of the repository's default branch under the same one-shot credential and the same pinned, isolated git configuration as the fetch above, then `git rev-parse HEAD` and a read of the clone's marketplace catalog, with no credential.
-  A retry of the container in the same pod removes the clone its killed first attempt left before cloning again.
-  It mounts no part of the issue's volume, no config home and no operator volume, and nothing in the pod writes the skills volume after it, so what a role installs from it is never what a role wrote ([Operator configuration](#operator-configuration)).
 
 - **`workspace-init`** mounts the issue's volume, the feed read-only over it, and the config home
   — never the Secret — and runs `legion workspace-init provision --issue <KEY> --repo <owner>/<repo>

@@ -141,6 +141,101 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 	}
 }
 
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares is one row for each spelling of a host that
+// binds no secret, so that the entry binds nothing; airlock-check refuses each as the boot does.
+// An IP address binds none in any spelling: a client sends no TLS server name for one, so the
+// canonical form is refused "sni mismatch", and the proxy, which takes a CONNECT host's port and
+// brackets off and writes an address as netaddr.Host writes it, compares no other form at all;
+// each is refused with the one reason, before airlock.Validate, whose refusal would quote the
+// host. A host that is no address is refused naming no form. No refusal repeats the host as
+// written, whose zone or label is any text. The control is a file of host names in upper or
+// mixed case, which fold.ASCII alone changes and HostBound folds on both sides: it is valid.
+func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
+	const ipAddress = "binds no secret in any spelling"
+	// bindsNothing is what each row says but the wildcard's, which binds addresses by their text.
+	bindsNothing := func(want ...string) []string { return append([]string{"binds nothing"}, want...) }
+	noDNSName := []string{"is no DNS name", "binds it nowhere", "host name"}
+	for _, c := range []struct {
+		name   string
+		host   string
+		want   []string
+		absent string
+	}{
+		// An address in its canonical form, and in a form netaddr.Host rewrites.
+		{"an IPv4 address", "192.0.2.10", []string{ipAddress, "sni mismatch", "host name"}, "192.0.2.10"},
+		{"an IPv6 address", "2001:db8:7::1", []string{ipAddress, "sni mismatch", "host name"}, "2001:db8:7::1"},
+		{"an IPv6 address in upper case", "2001:DB8:8::1", []string{ipAddress, "host name"}, "DB8"},
+		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", []string{ipAddress, "host name"}, "2001:db8:7:0::1"},
+		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", []string{ipAddress, "host name"}, "0db8"},
+		{"an IPv4-mapped IPv6 address", "::ffff:192.0.2.10", []string{ipAddress, "host name"}, "::ffff:"},
+		{"an IPv6 address with an embedded IPv4 part", "2001:db8::192.0.2.10", []string{ipAddress, "host name"}, "::192.0"},
+		{"an IPv6 address with a zone", `2001:db8:7::1%eth0 \"x`, []string{ipAddress, "host name"}, "eth0"},
+		// An address in a spelling netaddr.Host does not read.
+		{"an IPv6 address in brackets", "[2001:db8:7::1]", []string{ipAddress, "host name"}, "[2001"},
+		{"an IPv6 address with a zone in brackets", `[2001:db8:7::1%eth0 \"x]`, []string{ipAddress, "host name"}, "eth0"},
+		{"an IPv4-mapped IPv6 address in brackets", "[::ffff:192.0.2.10]", []string{ipAddress, "host name"}, "::ffff:"},
+		{"an IPv6 address after an opening bracket alone", "[2001:db8:7::1", []string{ipAddress, "host name"}, "[2001"},
+		{"an IPv4 address with a trailing dot", "192.0.2.10.", []string{ipAddress, "host name"}, "2.10."},
+		{"an IPv6 address with a trailing dot", "2001:db8:7::1.", []string{ipAddress, "host name"}, "::1."},
+		{"an IPv4 address with a port", "192.0.2.10:443", []string{ipAddress, "host name"}, ":443"},
+		{"an IPv6 address in brackets with a port", "[2001:db8:7::1]:443", []string{ipAddress, "host name"}, "]:443"},
+		// A host that holds no address.
+		{"a host name with a port", "api.github.com:443", bindsNothing("holds a port", "write the host name alone"), ":443"},
+		{"a host name in brackets", "[api.github.com]", bindsNothing("bracket or a %", "no IP address"), "[api"},
+		{"a host name holding a %", "api%x.github.com", bindsNothing("bracket or a %", "no IP address"), "%x"},
+		{"a colon in no IP address", "2001:db8::g", bindsNothing("holds a colon", "no IP address"), "::g"},
+		{"an IPv4 address with a leading zero", "093.184.216.34", bindsNothing("ends in a number", "leading zero"), "093.184"},
+		{"an IPv4 address of fewer than four parts", "93.184.54818", bindsNothing("ends in a number", "fewer than four parts"), "184.54818"},
+		{"an IPv4 address written as one number", "1572395042", bindsNothing("ends in a number", "fewer than four parts"), "1572395042"},
+		{"an IPv4 address written in hex", "0x5db8d822", bindsNothing("ends in a number", "hex part"), "0x5db8"},
+		{"a wildcard over the last labels of an address", "*.216.34", []string{"wildcard", "last label is a number", "match addresses by their text"}, "*.216"},
+		// A host name with a trailing dot matches only a request that writes the dot, which no
+		// client does for a name it was given without one; the form named is the folded name.
+		{"a host name with a trailing dot", "api.github.com.", bindsNothing("trailing dot", "write it as api.github.com"), "github.com."},
+		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", bindsNothing("trailing dot", "write it as api.github.com"), "GitHub"},
+		{"a wildcard with a trailing dot", "*.googleapis.com.", bindsNothing("trailing dot", "write it as *.googleapis.com"), "googleapis.com."},
+		{"a trailing dot after text that is no host name", "api github.com.", noDNSName, "api github"},
+		{"an underscore before a trailing dot", "a_b.example.com.", noDNSName, "a_b"},
+		{"an empty host", "", bindsNothing("is empty"), `""`},
+		// A host airlock.HostShapeOK refuses for any other reason is refused as no DNS name,
+		// naming nothing of it, ahead of airlock.Validate, whose refusal quotes the host; and a
+		// scheme is read as a scheme, not as the "host" net.SplitHostPort would make of it.
+		{"a host with a scheme", "https://slack.com", bindsNothing("holds a scheme"), "https"},
+		{"a host with a path", "slack.com/x", noDNSName, "slack.com/"},
+		{"a bare wildcard", "*", noDNSName, "*"},
+		{"a wildcard alone with a trailing dot", "*.", noDNSName, "*."},
+		{"a leading dot", ".slack.com", noDNSName, ".slack"},
+		{"an empty label", "slack..com", noDNSName, "slack.."},
+		{"a label opening with a hyphen", "-slack.com", noDNSName, "-slack"},
+		{"a label closing with a hyphen", "slack-.com", noDNSName, "slack-."},
+		{"an underscore", "slack_com", noDNSName, "slack_com"},
+		{"a wildcard inside a name", "*.*.com", noDNSName, "*.*"},
+		{"a character no label holds", "sl\u212aack.com", noDNSName, "\u212a"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "`+c.host+`"]}]}`)
+			code, stdout, stderr := runAirlockCheck(t, path)
+			if code != 1 || stdout != "" {
+				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
+			}
+			for _, want := range append([]string{`secrets[0] "GITHUB"`, "hosts[1]"}, c.want...) {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("the refusal does not say %q: %q", want, stderr)
+				}
+			}
+			if strings.Contains(stderr, c.absent) {
+				t.Fatalf("the refusal repeats %q as the file writes it: %q", c.absent, stderr)
+			}
+		})
+	}
+	t.Run("the control: host names in the form the proxy compares, in any case", func(t *testing.T) {
+		path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "API.GitHub.com", "*.googleapis.com", "s3.us-east-1.amazonaws.com", "xn--bcher-kva.example"]}]}`)
+		if code, _, stderr := runAirlockCheck(t, path); code != 0 || stderr != "" {
+			t.Fatalf("a file of host names in the form the proxy compares = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+		}
+	})
+}
+
 // TestAirlockCheckReportsWhatChangedAgainstTheOldFile is the report a reviewer reads: a host
 // added, a header added, an entry removed with the host it held, and the three fields that
 // decide the rest of where a credential may go, each as old → new.
