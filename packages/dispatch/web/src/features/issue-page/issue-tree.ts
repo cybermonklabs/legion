@@ -468,10 +468,11 @@ export function nodeWords(node: TreeNode): string {
  * ``Add `x` flag`` its backticks and `Fix <script> handling` its tag, where a parse would read
  * the first as a list item with no label and leave out the marks of the other two, and the
  * address of ``Fix `x` for dispatch://CORE-3`` is written short beside the backticks it keeps:
- * ``Fix `x` for CORE-3``. A chip naming the issue or a child of it, and the name the page
- * publishes for it, are these words too (`titleWords`), read from the whole title the issue read
- * holds, so a link to a child draws the title its row draws; another issue is named by the head
- * of its title the names read gives, its first 240 characters.
+ * ``Fix `x` for CORE-3``. A chip naming a child of the issue, and the name the page publishes
+ * for it, are these words too (`titleWords`), read from the whole title the issue read holds, so
+ * a link to a child draws the title its row draws. A chip naming the issue itself is its title's
+ * words by the same rule, without the key its own line opens with; another issue is named by the
+ * head of its title the names read gives, its first 240 characters.
  *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first

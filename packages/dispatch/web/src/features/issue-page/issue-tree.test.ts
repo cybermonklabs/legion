@@ -912,7 +912,8 @@ test("a task needed by a pinned and an unpinned pointer is one needs chip", () =
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
 // which is the chip's by one rule (`targetNaming`) - draws its plain words and no `**`, backtick
-// or link mark. An issue's name is its title, which is no markdown, and stands as written.
+// or link mark. An issue's name is its title, which is no markdown and is drawn as written, but
+// for each bare address in it, which reads as its target's short form (`titleWords`).
 test("a chip naming an ask, a comment or a message draws its plain words, an issue its title", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
