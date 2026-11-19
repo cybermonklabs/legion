@@ -74,7 +74,7 @@ func keptFrameSequence(msgID string) (string, bool) {
 }
 
 // takeoverFaultSet holds the takeover copy's test seams; production runs with none
-// (takeoverFaults). Each names a point a row forces: a crash or a refusal at that point.
+// (takeoverFaultHooks). Each names a point a row forces: a crash or a refusal at that point.
 type takeoverFaultSet struct {
 	// beforeClaimTry runs after a try's takeover record and before the try's claim write, with
 	// the role, the previous holder the record names and the try's number from 0; an error ends
@@ -100,13 +100,19 @@ type takeoverFaultSet struct {
 	claimRecordWrite func(role, previous string) error
 }
 
-// takeoverFaults is the takeover copy's seam set, nil outside the tests that force a fault.
-var takeoverFaults atomic.Pointer[takeoverFaultSet]
+// takeoverFaultHooks is one listener's takeover-copy seam set (listenerDeliveryHandlerConfig's
+// takeoverFaults), which a test replaces while the listener runs. A nil holder, main.go's, forces
+// no fault.
+type takeoverFaultHooks struct {
+	set atomic.Pointer[takeoverFaultSet]
+}
 
-// faults is the seam set in force, never nil.
-func faults() *takeoverFaultSet {
-	if set := takeoverFaults.Load(); set != nil {
-		return set
+// faults is the seam set in force on h, never nil.
+func (h *takeoverFaultHooks) faults() *takeoverFaultSet {
+	if h != nil {
+		if set := h.set.Load(); set != nil {
+			return set
+		}
 	}
 	return &takeoverFaultSet{}
 }
@@ -153,7 +159,7 @@ func (t *takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) err
 		}
 		t.unrecorded, t.unrecordedErr = previous, err
 	}
-	if hook := faults().beforeClaimTry; hook != nil {
+	if hook := t.cfg.takeoverFaults.faults().beforeClaimTry; hook != nil {
 		return hook(t.role, previous, t.try)
 	}
 	return nil
@@ -186,7 +192,7 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 	if _, ok := bus.SessionConsumerName(previous); !ok {
 		return nil
 	}
-	if refuse := faults().claimRecordWrite; refuse != nil {
+	if refuse := cfg.takeoverFaults.faults().claimRecordWrite; refuse != nil {
 		if err := refuse(role, previous); err != nil {
 			return fmt.Errorf("record role %s's takeover from %s: %w", role, previous, err)
 		}
@@ -204,7 +210,7 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 // role's guard and the handover's window, it runs the passes of the role's takeover records and
 // then hands its kept lane over (handOverTakenRole).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
-	if skip := faults().skipClaimHandover; skip != nil && skip(role) {
+	if skip := cfg.takeoverFaults.faults().skipClaimHandover; skip != nil && skip(role) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
@@ -362,7 +368,7 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		}
 		if !message.Time.Before(since) {
 			if item, ok := takenRoleMessage(message.Data, record.Role); ok {
-				if hook := faults().beforeCopy; hook != nil {
+				if hook := cfg.takeoverFaults.faults().beforeCopy; hook != nil {
 					if err := hook(record.Role, record.Previous, message.Sequence); err != nil {
 						return stop(err)
 					}
@@ -396,7 +402,7 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 // stored-message read by start time), or 0 for a subject that holds none: the floor is unknown,
 // and what the previous holder read in that hour is copied too.
 func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, record bus.TakeoverRecord, agent string, since time.Time) (uint64, bool, error) {
-	if refuse := faults().floorRead; refuse != nil {
+	if refuse := cfg.takeoverFaults.faults().floorRead; refuse != nil {
 		if err := refuse(record.Previous); err != nil {
 			return 0, false, err
 		}
@@ -424,7 +430,7 @@ func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, recor
 // writeTakeoverRecord writes record on its own subject (bus.Client.WriteTakeoverRecord), within
 // takeoverRecordWindow of ctx.
 func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig, subject string, record bus.TakeoverRecord) error {
-	if hook := faults().beforeRecordWrite; hook != nil {
+	if hook := cfg.takeoverFaults.faults().beforeRecordWrite; hook != nil {
 		hook(record.Role, record.Previous, record.Next, record.Finished)
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, takeoverRecordWindow)
@@ -568,7 +574,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 // relayClaimHolder is the session role's claim names for the session relay
 // (readRoleClaimHolder), or the error the relayClaimRead seam forces.
 func relayClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	if refuse := faults().relayClaimRead; refuse != nil {
+	if refuse := cfg.takeoverFaults.faults().relayClaimRead; refuse != nil {
 		if err := refuse(role); err != nil {
 			return "", err
 		}
@@ -579,7 +585,7 @@ func relayClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // relayCopyFrame is the session relay's copy of a frame (keepTakenRoleFrame) within
 // roleKeepPublishWindow, or the error the relayCopy seam forces.
 func relayCopyFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, seq uint64) error {
-	if refuse := faults().relayCopy; refuse != nil {
+	if refuse := cfg.takeoverFaults.faults().relayCopy; refuse != nil {
 		if err := refuse(role, seq); err != nil {
 			return err
 		}

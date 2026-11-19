@@ -99,6 +99,10 @@ type listenerDeliveryHandlerConfig struct {
 	// holder's unread role messages are not copied for the role's next holder. nil in a test that
 	// builds a config without it, which counts nothing.
 	roleTakeoverUnrecorded *metrics.Counter
+	// takeoverFaults holds the takeover copy's test seams (takeoverFaultSet), shared by every copy
+	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
+	// fault.
+	takeoverFaults *takeoverFaultHooks
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
 	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).

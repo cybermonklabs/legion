@@ -65,7 +65,7 @@ func TestATakeoverClaimLandsWhenTheStreamIsFullAndSaysSo(t *testing.T) {
 		if recorder := claim(previous, role); recorder.Code != http.StatusOK {
 			t.Fatalf("the previous holder's claim: %d %s", recorder.Code, recorder.Body.String())
 		}
-		setTakeoverFaults(t, takeoverFaultSet{claimRecordWrite: func(r, _ string) error {
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{claimRecordWrite: func(r, _ string) error {
 			if r != role {
 				return nil
 			}
@@ -140,7 +140,7 @@ func TestATakeoverClaimLandsWhenTheStreamIsFullAndSaysSo(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tries := 0
-		setTakeoverFaults(t, takeoverFaultSet{beforeClaimTry: func(r, _ string, _ int) error {
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeClaimTry: func(r, _ string, _ int) error {
 			if r != role {
 				return nil
 			}

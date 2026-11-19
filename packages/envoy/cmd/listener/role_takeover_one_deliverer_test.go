@@ -79,7 +79,7 @@ func newDelivererRig(t *testing.T) *delivererRig {
 	relays.setOwned(true)
 	consumers.deps.confirmed = newConfirmedRecord(t)
 	rig := &delivererRig{relayRig: &relayRig{sessionConsumerRig: consumers, relays: relays, url: url}, clock: clock}
-	setTakeoverFaults(t, takeoverFaultSet{
+	setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 		relayClaimRead: func(string) error {
 			rig.claimReads.Add(1)
 			if rig.refuseClaimRead.Load() {

@@ -555,7 +555,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 	t.Run("3 a forward that resolved the previous holder before the claim moved and was stored after the claim's pass", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		passWrote := make(chan struct{}, 1)
-		setTakeoverFaults(t, takeoverFaultSet{
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 			relayCopy: copiesRelayCopyHeld(copiesRole),
 			beforeRecordWrite: func(role, previous string, _ uint64, _ bool) {
 				if role == copiesRole && previous == copiesHolder {
@@ -607,7 +607,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 
 	t.Run("4 more than roleKeepScanMax messages to the session with role messages of the role behind them", func(t *testing.T) {
 		rig := newCopiesRig(t)
-		setTakeoverFaults(t, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(copiesRole)})
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(copiesRole)})
 		holder := rig.startHolder(t, copiesHolder)
 		rig.claim(t, copiesHolder, copiesRole, false)
 		ahead := roleKeepScanMax + 50
@@ -654,7 +654,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 			t.Fatalf("the holder's subject holds the old message at %v (%v) and the fresh one at %v (%v); want both, 10ms or more apart", oldStored.at, okOld, freshStored.at, okFresh)
 		}
 		takeoverAt := oldStored.at.Add(freshStored.at.Sub(oldStored.at) / 2).Add(roleKeepWindow)
-		setTakeoverFaults(t, takeoverFaultSet{
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 			relayCopy: copiesRelayCopyHeld(copiesRole),
 			beforeClaimTry: func(role, _ string, _ int) error {
 				if role == copiesRole {
@@ -728,7 +728,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 	t.Run("6b the previous holder's consumer was removed by the server with no resume record", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		passWrote := make(chan struct{}, 1)
-		setTakeoverFaults(t, takeoverFaultSet{
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 			beforeRecordWrite: func(role, previous string, _ uint64, _ bool) {
 				if role == copiesRole && previous == copiesHolder {
 					copiesSignal(passWrote)
@@ -779,7 +779,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 		var refusing atomic.Bool
 		refusing.Store(true)
 		refused := make(chan struct{}, 1)
-		setTakeoverFaults(t, takeoverFaultSet{
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{
 			relayCopy: copiesRelayCopyHeld(copiesRole),
 			floorRead: func(previous string) error {
 				if previous != copiesHolder || !refusing.Load() {
@@ -836,7 +836,7 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 // session.
 func copiesUnreadRoleMessagesRow(t *testing.T, soft bool) {
 	rig := newCopiesRig(t)
-	setTakeoverFaults(t, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(copiesRole)})
+	setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(copiesRole)})
 	holder := rig.startHolder(t, copiesHolder)
 	rig.claim(t, copiesHolder, copiesRole, false)
 	rig.claim(t, copiesHolder, copiesOther, false)
