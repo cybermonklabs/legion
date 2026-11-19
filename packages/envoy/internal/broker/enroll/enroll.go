@@ -184,6 +184,12 @@ type SessionBinder interface {
 type Service struct {
 	Store *store.Store
 	Lease time.Duration
+	// Carry is BROKER_SESSION_CARRY_SECONDS: how long a dormant enrollment holds what it held for
+	// the next enrollment of its session name (endEnrollment) before the carry sweep ends it for
+	// good (EndCarried), and so the end of the window Carried answers for a dormant row. One field
+	// for both, so the window the sweep keeps and the window a launcher is told of are one
+	// window. 0 is no carry: the next sweep ends every dormant enrollment it finds.
+	Carry time.Duration
 	// Pod verifies the cluster's projected ServiceAccount tokens against BROKER_K8S_OIDC_ISSUER and
 	// BROKER_K8S_OIDC_AUDIENCE; nil on a broker that trusts no Kubernetes token issuer, which enrolls
 	// no pod and serves no Kubernetes token login.
@@ -647,7 +653,9 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		in.launcher = cred.Subject
 	}
 	in.ID = uuid.New()
-	in.LeaseExpires = time.Now().Add(s.Lease)
+	// To the microsecond, as Postgres stores it (pgx truncates a time it encodes), so the lease end
+	// this answers is the row's own and not a moment after it.
+	in.LeaseExpires = time.Now().Add(s.Lease).Truncate(time.Microsecond)
 
 	// The row that conflicts with our insert can stop blocking it before the recovery lookup
 	// runs — a concurrent Revoke racing this Create — or turn out to be dead already, its lease
@@ -823,23 +831,26 @@ func namePrincipal(cred Credential, in Enrollment) *string {
 }
 
 // holdsForItsSession is the one SQL text for "enrollment e still holds something for its
-// session": a live grant, or a request nobody has answered yet. Three statements read it, and
+// session": a live grant, or a request nobody has answered yet. Four statements read it, and
 // they must read it identically — endEnrollment's probe, which decides whether an end leaves the
 // row dormant instead of revoking what it holds, adopt's predecessor query, which decides which
-// ended rows the next enrolment of the name takes a grant or a request from, and
+// ended rows the next enrolment of the name takes a grant or a request from, Carried, which
+// answers a dormant row only while it holds something adopt would take (Carried's own test
+// TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing binds its answer to adopt's), and
 // requests.enrollmentWouldGoDormant, the requests package's copy of endEnrollment's probe
 // character for character, which decides whether an approval on a lapsed row the sweep has not
 // ended yet mints a grant. Were one wider than another, an end could leave a row dormant that no
 // successor ever adopts (its grants standing until the carry sweep finds them), adopt could take
-// from a row an end revoked under it, or an approval could be granted onto a row the sweep then
-// revokes. What holds this text and that copy together is
-// requests.TestTheLapsedRowGrantRuleAnswersWhatTheEndThatFollowsDoes, which runs the copy and
-// Service.EndLapsed over every shape of row and compares their answers, so an edit here that
-// leaves the copy behind fails that test. All three splice it in with e as the enrollment, and
+// from a row an end revoked under it, Carried could leave out a row adopt takes from, or an
+// approval could be granted onto a row the sweep then revokes. What holds this text and that copy
+// together is requests.TestTheLapsedRowGrantRuleAnswersWhatTheEndThatFollowsDoes, which runs the
+// copy and Service.EndLapsed over every shape of row and compares their answers, so an edit here
+// that leaves the copy behind fails that test. All four splice it in with e as the enrollment, and
 // each reads the whole pair beside it: the two probes test that the row names a session and
-// records a principal, and adopt matches on both. adopt adds the withheld names outside this
-// text, because a withhold follows the session too but is no part of what makes an end carry: it
-// outlives an end of either kind (adopt's second part).
+// records a principal, adopt matches on both, and Carried on the session and the principal of the
+// caller's login. adopt adds the withheld names outside this text, because a withhold follows the
+// session too but is no part of what makes an end carry: it outlives an end of either kind
+// (adopt's second part).
 const holdsForItsSession = `exists (select 1 from grants g where g.enrollment_id=e.id and g.revoked_at is null and (g.expires_at is null or g.expires_at > now()))
 				or exists (select 1 from requests r where r.enrollment_id=e.id and r.state='pending')`
 
@@ -1275,11 +1286,11 @@ type DormantEnrollment struct {
 // carriedBatch is how many dormant enrollments EndCarried ends in one transaction.
 const carriedBatch = 100
 
-// EndCarried ends, for good, every dormant enrollment that has been dormant for carry or longer:
-// it revokes the grants and cancels the pending requests that were left for the session to take
-// (endEnrollment's terminal path, actor "broker"), with an enrollment.carry_expired audit row
-// naming why. carry is BROKER_SESSION_CARRY_SECONDS, which requests.Sweeper holds; 0 ends every
-// dormant enrollment the next sweep finds, which is how a deployment turns the carry off.
+// EndCarried ends, for good, every dormant enrollment that has been dormant for s.Carry or
+// longer: it revokes the grants and cancels the pending requests that were left for the session
+// to take (endEnrollment's terminal path, actor "broker"), with an enrollment.carry_expired audit
+// row naming why. A Carry of 0 ends every dormant enrollment the next sweep finds, which is how a
+// deployment turns the carry off.
 //
 // Dormant is dormant_since is not null: an ended enrollment still holding what the next
 // enrollment of its session name may take (endEnrollment). The column returns to null the moment
@@ -1291,10 +1302,10 @@ const carriedBatch = 100
 // It follows EndLapsed's shape, for the same reasons: batches of carriedBatch, each one
 // transaction, rows a concurrent writer has locked skipped for the next sweep, and what it ended
 // returned so the sweeper can log each one.
-func (s *Service) EndCarried(ctx context.Context, carry time.Duration) ([]DormantEnrollment, error) {
+func (s *Service) EndCarried(ctx context.Context) ([]DormantEnrollment, error) {
 	var ended []DormantEnrollment
 	for {
-		batch, err := s.endCarriedBatch(ctx, carry)
+		batch, err := s.endCarriedBatch(ctx, s.Carry)
 		ended = append(ended, batch...)
 		if err != nil || len(batch) < carriedBatch {
 			return ended, err
@@ -1473,7 +1484,7 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 		}
 		renewal.WithoutPodToken = true
 	}
-	renewal.LeaseExpires = time.Now().Add(s.Lease)
+	renewal.LeaseExpires = time.Now().Add(s.Lease).Truncate(time.Microsecond) // as stored, as in Create
 	if _, err := tx.Exec(ctx, `update enrollments set lease_expires_at=$2,
 		pod_token_renewed_at = case when $3 then coalesce(pod_token_renewed_at, now()) else pod_token_renewed_at end
 		where id=$1`, id, renewal.LeaseExpires, kind == "pod" && withToken); err != nil {

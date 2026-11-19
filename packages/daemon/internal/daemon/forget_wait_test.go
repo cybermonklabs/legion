@@ -90,7 +90,7 @@ func TestARetryHeldForItsRoleIsAWait(t *testing.T) {
 
 	t.Run("the controller keeper, the role held under the session", func(t *testing.T) {
 		logs := keeper(t, namesTaken)
-		held := lineOf(logs, "waits for the Envoy listener to free its role")
+		held := lineOf(logs, "waits for the Envoy listener to free its role, or to answer who holds it")
 		if len(held) != 1 {
 			t.Fatalf("the keeper logged the wait %d times over three retries, want once:\n%s", len(held), logs)
 		}

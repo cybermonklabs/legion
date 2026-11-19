@@ -517,6 +517,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
+	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/release-names", s.operator(s.releaseNames))
 	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
 
 	// The catch-all answers every unrouted request, including a known path asked for with the

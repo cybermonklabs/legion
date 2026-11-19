@@ -11,7 +11,8 @@
 -- claims row keeps only the session a claim resumes now and the one it last
 -- abandoned, so nothing recorded which names the other claims had recorded before: this table
 -- does, one row per project, kind and name, written when a claim first records the name
--- (supervise's holdRecorded, through Store.HoldSessions), and never deleted, so a retired, failed or
+-- (supervise's holdRecorded, through Store.HoldSessions), and deleted only by an operator's release
+-- of its own claim (`legion claims release-names`), so a retired, failed or
 -- suspended claim keeps every name it recorded. A registration, a resume or an enrollment under a
 -- name another claim of the project holds is refused.
 --
@@ -46,7 +47,10 @@
 -- Warn each it leaves as it was, being queued, launching uncertainly, failed or retired
 -- (internal/daemon's suspendSessionConflicts). An operator records the rightful holder by hand:
 --   update claim_sessions set claim = '<token>'
---     where project = '<project>' and kind = '<kind>' and name = '<name>' and claim = '';
+--     where project = E'<project>' and kind = E'<kind>' and name = E'<name>' and claim = ''
+--       and '<token>' in (<the line's claims>);
+-- (the line writes each value as an escape string literal, which reads the same whatever
+-- standard_conforming_strings the operator's session sets)
 -- and gives every other claim the line's `claims` names a new session with `legion claims
 -- forget-session`, as its state allows: a suspended one is then resumed (`legion claims resume`), a
 -- queued one launches by itself, a failed one is retried (`legion claims retry`) unless it is the
@@ -75,8 +79,8 @@ create table claim_sessions (
   recorded_at timestamptz not null default now(),
   primary key (project, kind, name));
 
--- A claim holds at most supervise.MaxHeldNamesPerClaim names: nothing deletes a hold, so without a
--- bound one role could grow the table without end. A registration that adds names counts the
+-- A claim holds at most supervise.MaxHeldNamesPerClaim names: a hold ends only by an operator's
+-- release, so without a bound one role could grow the table without end. A registration that adds names counts the
 -- claim's rows (store.HoldSessions), which this index serves.
 create index claim_sessions_claim on claim_sessions (project, claim);
 

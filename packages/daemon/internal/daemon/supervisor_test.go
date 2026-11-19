@@ -226,6 +226,10 @@ func (s *relaunchingStore) PutClaim(_ context.Context, c supervise.Claim) error 
 	return nil
 }
 
+func (s *relaunchingStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
+}
+
 func (s *relaunchingStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
 	return c, s.PutClaim(ctx, c)
 }
@@ -536,6 +540,10 @@ func (e *recordingEnroller) Revoke(_ context.Context, enrollment string) error {
 	defer e.mu.Unlock()
 	e.revoked = append(e.revoked, enrollment)
 	return nil
+}
+
+func (*recordingEnroller) Carried(context.Context, []string) ([]supervise.CarriedEnrollment, error) {
+	return nil, errors.New("unexpected carry question")
 }
 
 func (e *recordingEnroller) revocations() []string {

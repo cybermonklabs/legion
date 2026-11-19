@@ -25,9 +25,9 @@ var errHeldElsewhere = errors.New("a name is held for another claim")
 // records all of holds or none: a name another claim holds rolls back every row this call wrote,
 // and so does a call whose new rows take token's claim past supervise.MaxHeldNamesPerClaim, which
 // answers an error wrapping supervise.ErrHeldNamesCap. A call of names the claim holds already adds
-// no row, so it is never refused for the bound. Only an operator's release statement deletes a row
-// (supervise.ReleaseOldNamesStatement), and nothing but an operator settling a held-for-none name
-// moves one, so the answer about a name never changes while it names a claim.
+// no row, so it is never refused for the bound. A row is deleted only by an operator's release of
+// its own claim (ReleaseHolds), and nothing but an operator settling a held-for-none name moves one,
+// so the answer about a name never changes while it names a claim.
 //
 // Each name is an insert and then a read, two statements of one transaction, so two claims
 // registering one new name at once cannot both take it: the second's insert waits on the first's
@@ -42,7 +42,7 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 		order[i] = i
 	}
 	slices.SortFunc(order, func(a, b int) int {
-		return cmp.Or(cmp.Compare(holds[a].Kind, holds[b].Kind), cmp.Compare(holds[a].Name, holds[b].Name))
+		return supervise.CompareHolds(holds[a], holds[b])
 	})
 	holders := make([]claim.Token, len(holds))
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -84,6 +84,70 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 	return holders, nil
 }
 
+// ClaimHolds is every name the table holds for token's claim within project, in kind and then
+// name order (supervise.Store.ClaimHolds): what an operator's release reads before it asks the
+// secrets broker which of them it still carries.
+func (s *Store) ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error) {
+	rows, err := s.pool.Query(ctx, `select kind, name from claim_sessions where project = $1 and claim = $2
+		order by kind collate "C", name collate "C"`, project, string(token))
+	if err != nil {
+		return nil, fmt.Errorf("read the names %s holds: %w", token, err)
+	}
+	holds, err := pgx.CollectRows(rows, scanHold)
+	if err != nil {
+		return nil, fmt.Errorf("read the names %s holds: %w", token, err)
+	}
+	return holds, nil
+}
+
+// ReleaseHolds is an operator's release, in one transaction (supervise.Store.ReleaseHolds): it
+// deletes every one of holds the table holds for c's claim within c's project, writes c, the claim
+// as the release leaves it, and answers the names it deleted in kind and then name order. A name
+// held for another claim, or for none, is not this claim's to free and stays as it is.
+//
+// The delete and the claim write commit together or not at all, because each says half of one
+// fact. The claim's record says which session it last abandoned and whether a release freed it
+// (supervise.AbandonedSession.Released), and the boot holds that session's names for the claim
+// again unless it was freed (recordedNames, HoldRecordedSessions). A delete committed without the
+// claim write, by a daemon that stopped between them, would free names other claims may then
+// take, while the next boot takes back for this claim every one nobody took: a release undone with
+// no line that says so (review of #4355). A claim write the store refuses rolls the delete back
+// with it, so every name stays held, and the operator runs the release again.
+func (s *Store) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	kinds, names := make([]string, len(holds)), make([]string, len(holds))
+	for i, h := range holds {
+		kinds[i], names[i] = string(h.Kind), h.Name
+	}
+	var freed []supervise.Hold
+	var queued bool
+	if err := s.Tx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `delete from claim_sessions h
+			using unnest($3::text[], $4::text[]) as f(kind, name)
+			where h.project = $1 and h.claim = $2 and h.kind = f.kind and h.name = f.name
+			returning h.kind, h.name`, c.Project, string(c.Token), kinds, names)
+		if err != nil {
+			return err
+		}
+		if freed, err = pgx.CollectRows(rows, scanHold); err != nil {
+			return err
+		}
+		queued, err = s.putClaim(ctx, tx, c)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("release the names of %s: %w", c.Token, err)
+	}
+	s.committedClaim(c, queued)
+	slices.SortFunc(freed, supervise.CompareHolds)
+	return freed, nil
+}
+
+// scanHold reads a row of kind and name as a supervise.Hold.
+func scanHold(row pgx.CollectableRow) (supervise.Hold, error) {
+	var kind, name string
+	err := row.Scan(&kind, &name)
+	return supervise.Hold{Kind: supervise.HoldKind(kind), Name: name}, err
+}
+
 // SessionConflict is one name of a session (supervise.Hold) that claims of a project record without
 // holding it: a name the table holds for no claim (Holder empty), or one it holds for another claim,
 // Holder. Claims is every claim not holding it whose current session records it, which the daemon
@@ -103,12 +167,17 @@ type SessionConflict struct {
 
 // recordedNames is every name a claim of project records (supervise.RecordedHolds), each with the
 // claims recording it, in token order: current is the names of each claim's current session, and
-// abandoned the names only the session it last abandoned gives it. unholdable is every name of a
-// claim's current session no row can hold (supervise.UnholdableNames), with the claims recording
-// it; one only an abandoned session records is left out, since nothing resumes or enrolls it.
+// abandoned the names only the session it last abandoned gives it. An abandoned session an
+// operator's release freed (supervise.AbandonedSession.Released) gives none: the release deleted
+// its holds once the secrets broker carried nothing of it, and the claim keeps the record only to
+// say where the session went, so another claim may take its names since. unholdable is every name
+// of a claim's current session no row can hold (supervise.UnholdableNames), with the claims
+// recording it; one only an abandoned session records is left out, since nothing resumes or
+// enrolls it.
 func recordedNames(ctx context.Context, q pgx.Tx, project string) (current, abandoned, unholdable map[supervise.Hold][]claim.Token, err error) {
 	rows, err := q.Query(ctx, `select token, session, session_file,
-			coalesce(abandoned_session ->> 'session', ''), coalesce(abandoned_session ->> 'sessionFile', '')
+			case when coalesce(abandoned_session ->> 'released', '') = '' then coalesce(abandoned_session ->> 'session', '') else '' end,
+			case when coalesce(abandoned_session ->> 'released', '') = '' then coalesce(abandoned_session ->> 'sessionFile', '') else '' end
 		from claims where project = $1 order by token collate "C"`, project)
 	if err != nil {
 		return nil, nil, nil, err
@@ -152,21 +221,20 @@ func sortedHolds(recorders ...map[supervise.Hold][]claim.Token) []supervise.Hold
 			}
 		}
 	}
-	slices.SortFunc(holds, func(a, b supervise.Hold) int {
-		return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
-	})
+	slices.SortFunc(holds, supervise.CompareHolds)
 	return holds
 }
 
 // HoldRecordedSessions holds every name a claim of project records that the table holds for no
 // one yet, as the claim_sessions migration's backfill held every name recorded before the table
 // existed: for the one claim recording it, of its current session or the one it abandoned, or for
-// none where several do. It answers how many names it held. The daemon runs it at every boot
-// (internal/daemon's suspendSessionConflicts), because a claim records a name without holding it
-// whenever a daemon from before the hold runs on this database, as one rolled back to an earlier
-// release does: such a daemon applies only the migrations it has and never writes claim_sessions,
-// and the migration's own backfill has run by then. On a database only daemons with the hold have
-// run, every recorded name is held already and this holds nothing.
+// none where several do. It answers how many names it held. The daemon runs it at every boot,
+// before restore builds any machine (internal/daemon's holdRecordedSessions), because a claim
+// records a name without holding it whenever a daemon from before the hold runs on this database,
+// as one rolled back to an earlier release does: such a daemon applies only the migrations it has
+// and never writes claim_sessions, and the migration's own backfill has run by then. On a
+// database only daemons with the hold have run, every recorded name is held already and this
+// holds nothing.
 //
 // It is one read of the claims and one insert of every name, whatever the project's size, both
 // inside the boot's budget: a statement per name was one round trip per name, which at a project

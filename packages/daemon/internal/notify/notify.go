@@ -410,7 +410,11 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // decode, a 404 naming no holder under any reason but unclaimed, and any status but 200, 404 and
 // the transient ones — is a *RoleLookupRefused, a fault an operator fixes; a listener it cannot
 // reach, an answer whose body could not be read to its end (unreadAnswer), and a 429, 502, 503
-// or 504 (writeBusUnavailable's 503 among them) are plain errors that asking again can clear.
+// or 504 (writeBusUnavailable's 503 among them) are plain errors that asking again can clear. The
+// listener answers from a direct get of its role-claim bucket, which a lagging copy of the bucket
+// can answer for the milliseconds after a claim write: the race any read of the bucket has, and
+// a forget made on such an answer is no worse than one made a moment earlier (review round 16 of
+// #4220, #64).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)

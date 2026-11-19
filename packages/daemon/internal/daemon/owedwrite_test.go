@@ -129,6 +129,14 @@ func (s *switchStore) HoldSessions(ctx context.Context, project string, token cl
 	return s.now().HoldSessions(ctx, project, token, holds)
 }
 
+func (s *switchStore) ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error) {
+	return s.now().ClaimHolds(ctx, project, token)
+}
+
+func (s *switchStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.now().ReleaseHolds(ctx, c, holds)
+}
+
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
 // with the claim-write deadline off it. The bound a row names is the bound of a store that
 // withholds its answer, and a healthy write to a real database is not that store. One value
@@ -163,6 +171,15 @@ func (s detachedWrites) PutClaimAndDelivery(ctx context.Context, c supervise.Cla
 
 func (s detachedWrites) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
 	return withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) error { return s.Store.RetireDelivery(ctx, c, deliveryID) })
+}
+
+func (s detachedWrites) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	var freed []supervise.Hold
+	err := withoutTheClaimWriteDeadline(ctx, func(ctx context.Context) (err error) {
+		freed, err = s.Store.ReleaseHolds(ctx, c, holds)
+		return err
+	})
+	return freed, err
 }
 
 // withoutTheClaimWriteDeadline runs call on a context that keeps the values of ctx and drops

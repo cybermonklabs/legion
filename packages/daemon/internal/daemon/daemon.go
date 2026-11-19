@@ -1855,10 +1855,11 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // holds is held (holdRecordedSessions): restore builds each machine with its timers armed, and a
 // timer decides on its own goroutine the moment it fires, so a restored claim's deadline could
 // otherwise relaunch it into a name the hold had not yet given to no claim, and keep it (review
-// round 9 of #4220). Then every claim recording a name it does not hold is suspended before
-// anything can relaunch it into the hold's refusal (suspendSessionConflicts). The steps before the
-// relaunches run on boot, settle on budgets of its own, and the relaunches on the machines'
-// context; the daemon's stop ends all three (run).
+// round 9 of #4220). Then every claim recording a name it does not hold is suspended
+// (suspendSessionConflicts); a restored timer that fires between restore and that suspension
+// relaunches its claim into the hold's refusal, which holdRecorded refuses before anything starts
+// and charges one launch failure. The steps before the relaunches run on boot, settle on budgets
+// of its own, and the relaunches on the machines' context; the daemon's stop ends all three (run).
 func (s *supervision) start(boot context.Context, settle func() error) error {
 	if err := s.holdRecordedSessions(boot); err != nil {
 		return err

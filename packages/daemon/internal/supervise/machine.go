@@ -752,10 +752,17 @@ type Store interface {
 	// the project has recorded it, and answers, in holds' order, the claim that holds each: token
 	// itself when it recorded the name before or none had, another claim when that one recorded it
 	// first, and the empty token for a name held for no claim. It records all of holds or none: a
-	// name another claim holds leaves every other name unrecorded. Only an operator's release
-	// statement deletes a hold (ReleaseOldNamesStatement), whatever becomes of the claim holding it
-	// (holdRecorded).
+	// name another claim holds leaves every other name unrecorded. A hold ends only by an
+	// operator's release (ReleaseHolds), whatever becomes of the claim holding it (holdRecorded).
 	HoldSessions(ctx context.Context, project string, token claim.Token, holds []Hold) ([]claim.Token, error)
+	// ClaimHolds is every name token's claim holds within project, in kind and then name order.
+	ClaimHolds(ctx context.Context, project string, token claim.Token) ([]Hold, error)
+	// ReleaseHolds deletes every one of holds the table holds for c's claim within c's project and
+	// writes c, in one transaction, and answers the names it deleted, in kind and then name order:
+	// the operator's release (Machine.ReleaseNames), the one way a hold ends. A refused claim write
+	// frees nothing, so the claim's record of which abandoned session a release freed never
+	// disagrees with the names the store still holds for it.
+	ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -1413,10 +1420,9 @@ type Machine struct {
 	enrollmentSent bool
 	// heldNames is every name of the session the claim records that the store answered as this
 	// claim's (holdRecorded): such a name is not asked again while the claim records that session.
-	// An operator's release keeps the names of the recorded file and id, and may free one of an
-	// earlier file of the session whose name contains no id, which the cache still holds; that moves
-	// no grant, since the broker enrolls a session by its id (holdRecorded says more).
-	// forgetSession empties it. Memory only: a restarted machine asks once more.
+	// An operator's release keeps the names of the recorded file and id, may free one of an earlier
+	// file of the session whose name contains no id, and takes each name it frees out of the cache
+	// (ReleaseNames). forgetSession empties it. Memory only: a restarted machine asks once more.
 	heldNames map[Hold]bool
 	// unheldDelivery is the pending delivery sendPending last held back because the claim records a
 	// session it does not hold, so its Error line is written once per delivery rather than at every
@@ -1434,6 +1440,10 @@ type Machine struct {
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
 	// writes it again at its shim's first hello to the new daemon.
 	registration *podRegistration
+	// registrationRefused is the incarnation and session ensureRegistered last wrote a hold's
+	// refusal at Error for, so a refusal asked again at every observation is written once; a
+	// registration the hold admits clears it. Memory only.
+	registrationRefused registrationKey
 	// helloKey is the thumbprint the first hello of the claim's current incarnation named, which
 	// every registration of that incarnation is bound to (ensureRegistered); a later hello of the
 	// same incarnation naming another key is logged and changes nothing. A machine with no
@@ -2998,6 +3008,10 @@ type AbandonedSession struct {
 	// (dispatch://INFRA-714).
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
+	// Released is when an operator's release freed the names of this session (Machine.ReleaseNames),
+	// zero while the table holds them: the boot holds no name of a released session again (store's
+	// recordedNames), and the record of where the session went stays.
+	Released time.Time `json:"released,omitzero"`
 }
 
 // Tells is whether a prompt to this claim's agent must still name the session the claim
@@ -3126,9 +3140,9 @@ func (m *Machine) forgetSession(why string) {
 	}
 	m.claim.Session, m.claim.SessionFile = "", ""
 	// The names the machine knows it holds are of the session it just let go, which an operator's
-	// release may free later (ReleaseOldNamesStatement) and another claim then take: kept, they would
-	// let this claim register that session again without asking the store. So the cache holds only
-	// the names of the session the claim records now (review F2 of #4220's round 4).
+	// release may free later (ReleaseNames) and another claim then take: kept, they would let this
+	// claim register that session again without asking the store. So the cache holds only the
+	// names of the session the claim records now (review F2 of #4220's round 4).
 	m.heldNames = nil
 	m.admitted.Store(nil)
 	m.freshRun()

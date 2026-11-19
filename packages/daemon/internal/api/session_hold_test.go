@@ -257,11 +257,16 @@ func podLocator(token claim.Token, podUID string, generation uint64) runtime.Loc
 // enrollmentRecorder is the secrets broker's enrollment routes as the daemon calls them,
 // recording each enrollment and counting every call, revocations too. An enrollment naming
 // another claim's session is the grant move itself: the broker binds the session to the pod's
-// account and moves onto it every other enrollment's grants of that account and session.
+// account and moves onto it every other enrollment's grants of that account and session. carried
+// is what POST /v1/enrollments/carried answers for each session id (Carried), and carriedErr,
+// when set, the error it answers instead.
 type enrollmentRecorder struct {
 	mu          sync.Mutex
 	enrollments []supervise.PodEnrollment
 	revocations int
+	carried     map[string][]supervise.CarriedEnrollment
+	carriedErr  error
+	asked       int
 }
 
 func (e *enrollmentRecorder) Enroll(_ context.Context, p supervise.PodEnrollment) (string, error) {
@@ -278,11 +283,48 @@ func (e *enrollmentRecorder) Revoke(context.Context, string) error {
 	return nil
 }
 
-// calls is how many calls the daemon made of the broker, of either route.
+func (e *enrollmentRecorder) Carried(_ context.Context, sessionIDs []string) ([]supervise.CarriedEnrollment, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.asked++
+	if e.carriedErr != nil {
+		return nil, e.carriedErr
+	}
+	answer := []supervise.CarriedEnrollment{}
+	for _, id := range sessionIDs {
+		answer = append(answer, e.carried[id]...)
+	}
+	return answer, nil
+}
+
+// carry makes Carried answer c for its session id; endCarry makes it answer nothing for it.
+func (e *enrollmentRecorder) carry(c supervise.CarriedEnrollment) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.carried == nil {
+		e.carried = map[string][]supervise.CarriedEnrollment{}
+	}
+	e.carried[c.SessionID] = append(e.carried[c.SessionID], c)
+}
+
+// failCarried makes Carried answer err instead of its rows; nil gives them back.
+func (e *enrollmentRecorder) failCarried(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.carriedErr = err
+}
+
+func (e *enrollmentRecorder) endCarry(sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.carried, sessionID)
+}
+
+// calls is how many calls the daemon made of the broker, of any route.
 func (e *enrollmentRecorder) calls() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return len(e.enrollments) + e.revocations
+	return len(e.enrollments) + e.revocations + e.asked
 }
 
 // enrolledAs is the session of every enrollment the claim's role made, in order: an issue pod's

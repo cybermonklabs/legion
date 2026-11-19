@@ -213,6 +213,47 @@ func (s *memStore) HoldSessions(ctx context.Context, _ string, token claim.Token
 	return holders, nil
 }
 
+// ClaimHolds is the store's.
+func (s *memStore) ClaimHolds(_ context.Context, _ string, token claim.Token) ([]Hold, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var holds []Hold
+	for h, holder := range s.holds {
+		if holder == token {
+			holds = append(holds, h)
+		}
+	}
+	slices.SortFunc(holds, CompareHolds)
+	return holds, nil
+}
+
+// ReleaseHolds is the store's one transaction: it writes c and deletes every one of holds held
+// for c's claim, and answers the names it deleted, in kind and then name order. A claim write the
+// store refuses (fail("PutClaim")) frees nothing, as the store's rollback does.
+func (s *memStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error) {
+	if err := s.PutClaim(ctx, c); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var freed []Hold
+	for _, h := range holds {
+		if s.holds[h] == c.Token {
+			delete(s.holds, h)
+			freed = append(freed, h)
+		}
+	}
+	slices.SortFunc(freed, CompareHolds)
+	return freed, nil
+}
+
+// fillHolds holds n session ids of earlier sessions for token, to bring it toward the cap.
+func (s *memStore) fillHolds(token claim.Token, n int) {
+	for i := range n {
+		s.setHold(sessionID(fmt.Sprintf("ses_earlier_%d", i)), token)
+	}
+}
+
 // heldBy is how many names the store holds for token.
 func (s *memStore) heldBy(token claim.Token) int {
 	s.mu.Lock()
@@ -1124,7 +1165,9 @@ func adoptRefusal(reason string) error {
 // fakeEnroller is the broker as the machine sees it: it records every enrollment and revocation,
 // mints ids, and fails what the test told it to. It verifies the pod token's expiry against now
 // as the broker does (enroll.Service.Create): an expired token is refused POD_TOKEN_EXPIRED and
-// one whose expiry cannot be read POD_IDENTITY_MISMATCH.
+// one whose expiry cannot be read POD_IDENTITY_MISMATCH. carried is what Carried answers for each
+// session id it is asked (the broker's POST /v1/enrollments/carried), and asked every list of ids
+// it was asked, in order.
 type fakeEnroller struct {
 	mu          sync.Mutex
 	enrollments []PodEnrollment
@@ -1135,6 +1178,47 @@ type fakeEnroller struct {
 	calls       int // every Revoke call, failed or not
 	next        int
 	now         func() time.Time
+	carried     map[string][]CarriedEnrollment
+	carriedErr  error
+	asked       [][]string
+}
+
+func (f *fakeEnroller) Carried(_ context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, slices.Clone(sessionIDs))
+	if f.carriedErr != nil {
+		return nil, f.carriedErr
+	}
+	answer := []CarriedEnrollment{}
+	for _, id := range sessionIDs {
+		answer = append(answer, f.carried[id]...)
+	}
+	return answer, nil
+}
+
+// carry makes Carried answer c for its session id.
+func (f *fakeEnroller) carry(c CarriedEnrollment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.carried == nil {
+		f.carried = map[string][]CarriedEnrollment{}
+	}
+	f.carried[c.SessionID] = append(f.carried[c.SessionID], c)
+}
+
+// endCarry makes Carried answer nothing for sessionID, as once its carry ends.
+func (f *fakeEnroller) endCarry(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.carried, sessionID)
+}
+
+// askedCarried is every list of session ids Carried was asked, in order.
+func (f *fakeEnroller) askedCarried() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.asked)
 }
 
 func (f *fakeEnroller) Enroll(_ context.Context, e PodEnrollment) (string, error) {

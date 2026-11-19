@@ -172,7 +172,10 @@ func (k *controllerKeeper) keep() error {
 	var refusedLookup *notify.RoleLookupRefused
 	switch {
 	case err != nil && errors.Is(err, supervise.ErrForgetWaitsForRole):
-		k.held(slog.LevelWarn, "controller: the retry of the daemon's controller waits for the Envoy listener to free its role", token, err)
+		// The wait covers both of forgetWait's causes, a role held under the recorded session and
+		// a lookup the listener did not answer; the reason says which (review round 16 of #4220,
+		// #63).
+		k.held(slog.LevelWarn, "controller: the retry of the daemon's controller waits for the Envoy listener to free its role, or to answer who holds it", token, err)
 		return nil
 	case err != nil && errors.As(err, &refusedLookup):
 		k.held(slog.LevelError, "controller: the retry of the daemon's controller is refused: the Envoy listener refuses the lookup of its role's holder", token, err,

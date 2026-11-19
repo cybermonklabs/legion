@@ -301,13 +301,14 @@ func SessionNameTooLong(what string, bytes int) Refusal {
 }
 
 // SessionFileNotClean refuses a registration whose session file is not the clean path it names
-// (filepath.Clean of it differs): a last part of `.` or `..`, a doubled or trailing `/`. A last
-// part of `.` or `..` gives a base name that is not the session's file name, so the file-name hold
-// would hold the wrong name; a doubled or trailing `/` is refused too, so that one file has one
+// (filepath.Clean of it differs): a `.` part, a `..` part after a name or at the root, a doubled or
+// trailing `/`. Clean keeps a `..` that leads a relative path, so such a path is clean and is not
+// refused. A last part of `.` or `..` gives a base name that is not the session's file name, so the
+// file-name hold would hold the wrong name; the rest is refused too, so that one file has one
 // recorded spelling. It is a 400: the plugins send the clean path of the file they wrote.
 func SessionFileNotClean(file string) Refusal {
 	return Refusal{Status: http.StatusBadRequest, Message: fmt.Sprintf(
-		"the session file %q is not a clean path; a session file is the path of the file the agent writes, with no `.` or `..` part and no doubled or trailing `/`", file)}
+		"the session file %q is not a clean path; a session file is the path of the file the agent writes, as filepath.Clean writes it: no `.` part, no `..` part but at the start of a relative path, and no doubled or trailing `/`", file)}
 }
 
 // SessionNameUnheldRefusal refuses a claim that records a session name the daemon cannot hold: one
@@ -321,17 +322,17 @@ func SessionNameUnheldRefusal(what string) Refusal {
 }
 
 // HeldNamesCapRefusal refuses a registration whose new session names would take its claim past
-// the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): only an operator's release
-// statement deletes a hold, so without a bound one role could grow the daemon's record of held
-// names without end. It is a 409, as SessionHeldRefusal is: the request is well formed, but the
-// claim's own record refuses it.
-// Nothing of the registration is recorded, and the claim keeps every name it holds. So a claim that
-// records a session still resumes that one, but a claim that needs a new session, one that records
-// none after a fresh start, starts none until an operator frees the names of its older sessions
-// (supervise.ReleaseOldNamesStatement, which the daemon's log line gives).
+// the most one claim may hold, max (supervise.MaxHeldNamesPerClaim): a hold ends only by an
+// operator's release, so without a bound one role could grow the daemon's record of held names
+// without end. It is a 409, as SessionHeldRefusal is: the request is well formed, but the claim's
+// own record refuses it. Nothing of the registration is recorded, and the claim keeps every name it
+// holds. So a claim that records a session still resumes that one, but a claim that needs a new
+// session, one that records none after a fresh start, starts none until an operator frees the
+// names of its other sessions with `legion claims release-names` (supervise.Machine.ReleaseNames,
+// which the daemon's log line names).
 func HeldNamesCapRefusal(max int) Refusal {
 	return Refusal{Status: http.StatusConflict, Message: fmt.Sprintf(
-		"this claim holds the most session names one claim may (%d), so it registers no new session: a session it records still resumes, but a new one waits until an operator frees the names of its older sessions (the daemon's log gives the statement)", max)}
+		"this claim holds the most session names one claim may (%d), so it registers no new session: a session it records still resumes, but a new one waits until an operator frees the names of its other sessions (`legion claims release-names`, which the daemon's log names)", max)}
 }
 
 // staleContract renders the opening sentence a stale-caller refusal shares: got is the contract

@@ -229,9 +229,10 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // (review rounds 13 to 16 of #4220). Such a publish is not made and answers notify.ErrNoHolder,
 // which every executor already answers its own way — a notice is held for its architect, a
 // merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
-// prompt and an update ask finish undelivered — so an operator's settle of the name lets the next
-// attempt through. A store that does not answer publishes nothing and fails the attempt, which the
-// row's backoff retries.
+// prompt and an update ask finish undelivered — so an operator's settle of the name lets a held
+// row's next attempt through (a notice, a merge-queue removal, a controller notice), while a row
+// that finished undelivered is not sent again (review round 13 of #4220, note 36). A store that
+// does not answer publishes nothing and fails the attempt, which the row's backoff retries.
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
@@ -1678,8 +1679,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	var denied notify.ErrPublishDenied
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
-		r.log.Info("outbox role message finished undelivered: its role has no live holder",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		r.log.Info("outbox role message finished undelivered: its role has no live holder, or its claim records a session it does not hold",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "error", err)
 		return nil
 	case errors.As(err, &refused):
 		r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
@@ -1939,7 +1940,7 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
 	err := r.publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
-		r.log.Info(noHolder, fields...)
+		r.log.Info(noHolder, append(fields, "error", err)...)
 		return false, nil
 	}
 	return err == nil, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -48,9 +49,11 @@ import (
 // failed and retired) is named and left as it is: a retired claim launches nothing, and a queued,
 // uncertain or failed one that launches again is refused each time and fails at its launch budget.
 // The table decides (a *supervise.RefusedError), so a state it later lets a suspension reach is
-// suspended here with no change to this list. A suspension that fails for any other reason — a
-// stop the runtime refuses, a write the store refuses — is logged at Error naming the claim, and
-// the boot goes on. The claim is then contained but not stopped: its hold refuses every relaunch,
+// suspended here with no change to this list. A suspension that fails for any other reason is
+// logged at Error naming the claim, and the boot goes on: a stop the runtime refuses leaves the
+// process running, and a write the store refuses after the stop leaves the process stopped and
+// the claim not yet recorded suspended (review round 13 of #4220, note 37). Either way the claim
+// is contained, and where its process runs on it is not stopped: its hold refuses every relaunch,
 // resume and new enrollment of it before anything starts; the enrollment its process holds is
 // revoked once the broker confirms the revocation, the claim keeping it recorded, handed to no
 // connection, and asking again at each observation until then, and recorded no longer, logged at
@@ -67,28 +70,32 @@ import (
 // record leaves the session bucket at the bucket's maximum age (`ENVOY_SESSION_MAX_AGE`, five
 // minutes on a bucket created with it unset) or reads gone at the gone horizon (an hour) where
 // that age is longer, and the reaper runs every `ENVOY_ROLE_CLAIM_REAP_INTERVAL`, five minutes by
-// default, so the role is free at most `max(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_LIVE_WINDOW) +
-// ENVOY_ROLE_CLAIM_REAP_INTERVAL` after the last registration (ten minutes with the defaults), and
-// later across a listener restart or a reaper read that fails. That holds only while no other
-// live process registers the same session id: where the name is held for another claim whose live
-// process runs under the same id, as after a rollback, the listener keeps the role with that
-// session while it lives, and the role's messages reach that process. That is so for every claim
-// this step names whose session another claim's live process runs under, suspended here or not.
-// The daemon withholds its own messages from such a claim's role only
-// while the claim records that session, so the one decision that would open the role topic, the
-// clear of that session, first asks the listener who holds the claim's role and is refused while
-// the listener names that session in any state (supervise's mayForget); the operator suspends the
-// claim holding the session, which stops its process, forgets once the listener names no holder
-// or another session, within that bound of that process's last registration, and only then
-// resumes the claim it suspended. The contained claim takes no forget while it is live, so the
-// operator stops it (`legion claims suspend`, once its runtime answers, or a stop of its pod or
-// pane by hand) before the steps above, which need a daemon that serves (review rounds 11 to 18
-// of #4220). A
-// statement that makes such a claim the holder of its session writes no claim, and the
-// publication of an issue's role holders follows claim writes, so Dispatch is shown that claim as
-// its role's holder at the next boot, or
-// once the claim is suspended and resumed. A boot whose budget runs out on the suspensions still
-// fails, since every later step would too. A store that refuses
+// default, so the role is free at most `max(min(ENVOY_SESSION_MAX_AGE,
+// ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL` after
+// the last registration (ten minutes with the defaults, about 65 minutes where the bucket keeps
+// records past the gone horizon), and later across a listener restart or a reaper read that fails
+// (supervise.roleFreedBound). That holds only while no other live process registers the same
+// session id: where the name is held for another claim whose live process runs under the same
+// id, as after a rollback, the listener keeps the role with that session while it lives, and the
+// role's messages reach that process. That is so for every claim this step names whose session
+// another claim's live process runs under, suspended here or not. The daemon withholds its own
+// messages from such a claim's role only while the claim records that session, so the one
+// decision that would open the role topic, the clear of that session, first asks the listener
+// who holds the claim's role and is refused while the listener names that session in any state
+// (supervise's mayForget). The operator stops the process under the session: it suspends the
+// claim holding the session if that claim runs, and otherwise only the wait helps, since the
+// process may be the contained claim's own. It forgets once the listener names no holder or
+// another session, within that bound of that process's last registration, resumes the contained
+// claim, and resumes the claim it suspended only once the listener names the contained claim's
+// new session as its role's holder: a holder resumed before then can take that role from a
+// transcript the two claims share (review round 16 of #4220, #59-#61). The contained claim takes
+// no forget while it is live, so the operator stops it (`legion claims suspend`, once its runtime
+// answers, or a stop of its pod or pane by hand) before the steps above, which need a daemon that
+// serves (review rounds 11 to 18 of #4220). A statement that makes such a claim the holder of its
+// session writes no claim, and the publication of an issue's role holders follows claim writes,
+// so Dispatch is shown that claim as its role's holder at the next boot, or once the claim is
+// suspended and resumed. A boot whose budget runs out on the suspensions still fails, since every
+// later step would too. A store that refuses
 // the conflicts' read refuses the boot, naming what failed, as the controller's boot stop does
 // (stopLaunchedController). A suspension the claim holds for later is no failure: a
 // working claim's is held for its turn and stops the process at the operator's stop timeout
@@ -98,7 +105,10 @@ import (
 // asks again.
 //
 // The settle statement is a statement an operator runs, and a session's names are the agent's own
-// text, so each is written into it as a SQL literal (supervise.SQLLiteral), never as it came.
+// text, so each is written into it as an escape string literal (supervise.SQLLiteral), never as it
+// came, which reads the same whatever standard_conforming_strings the operator's session sets. It
+// moves only a name still held for no claim, and only to one of the claims the line names, so a
+// second run answers UPDATE 0 and a token that names none of them moves nothing.
 func (s *supervision) holdRecordedSessions(ctx context.Context) error {
 	held, err := s.supervisor.store.HoldRecordedSessions(ctx, s.plan.project)
 	if err != nil {
@@ -138,8 +148,13 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 				append(line, "bytes", len(c.Hold.Name))...)
 		default:
 			if c.Holder == "" {
+				claims := make([]string, len(c.Claims))
+				for i, token := range c.Claims {
+					claims[i] = supervise.SQLLiteral(string(token))
+				}
 				line = append(line, "settle", "update claim_sessions set claim = '<token>' where project = "+supervise.SQLLiteral(s.plan.project)+
-					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''")
+					" and kind = "+supervise.SQLLiteral(string(c.Hold.Kind))+" and name = "+supervise.SQLLiteral(c.Hold.Name)+" and claim = ''"+
+					" and '<token>' in ("+strings.Join(claims, ", ")+")")
 			}
 			s.log.Error("supervise: a session name is recorded by claims that do not hold it; each of them this daemon supervises is suspended until an operator gives it a new session, or records it as the rightful holder of a name held for none, and resumes it", line...)
 		}
@@ -164,7 +179,7 @@ func (s *supervision) suspendSessionConflicts(ctx context.Context) error {
 			case ctx.Err() != nil:
 				return fmt.Errorf("suspend %s, which records the %s %s it does not hold: %w", token, c.Hold.Kind, c.Hold.Name, err)
 			default:
-				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained but not stopped: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction, but the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
+				s.log.Error("supervise: the suspension of a claim recording a session name it does not hold failed; it is left as it is, contained: its hold refuses every relaunch, resume and new enrollment of it, its process's enrollment is revoked once the broker confirms the revocation (or recorded no longer if the broker refuses that for good), and the daemon publishes nothing to its role and sends it no task and no compaction; where the runtime refused the stop the process runs on, and the Envoy listener does not yet withhold its role, until it is stopped (legion claims suspend, or a stop of its pod or pane by hand); where another claim's live process runs under the same session id, the role stays with that session while it lives; the next boot asks again",
 					"claim", token, "kind", c.Hold.Kind, "name", c.Hold.Name, "error", err)
 			}
 		}

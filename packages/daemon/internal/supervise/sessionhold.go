@@ -1,10 +1,12 @@
 package supervise
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,8 +22,8 @@ var errHoldUnanswered = errors.New("the store did not answer the session's hold"
 
 // MaxHeldNamesPerClaim is the most names of sessions one claim may hold (holdRecorded). Every
 // registration of a new session, and every re-registration naming a new file, holds its names,
-// and nothing deletes a hold, so without a bound one role could grow claim_sessions without end
-// and make every boot that reads it slower (review N2 of #4220).
+// and a hold ends only by an operator's release (ReleaseNames), so without a bound one role could
+// grow claim_sessions without end and make every boot that reads it slower (review N2 of #4220).
 //
 // The number: 10× what the busiest claim in production could hold, rounded up to a power of two.
 // Over 28 days of the daemons' `supervise: launched` lines (2026-10-20 to 2026-11-16: 11,391
@@ -40,104 +42,267 @@ const MaxHeldNamesPerClaim = 2048
 var ErrHeldNamesCap = errors.New("the claim would hold more session names than one claim may")
 
 // heldNamesCapLine is the Warn line of a registration refused at MaxHeldNamesPerClaim. Its
-// `release` field is the claim's ReleaseOldNamesStatement, the operator's way to let it start a new
-// session, and its `release_after` field the earliest time that statement can free anything
-// (ReleaseAfter); an operator reads the line whole, so it is pinned here.
-const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one, once release_after has passed"
+// `release` field is the operator's command that frees the names of the claim's other sessions
+// (ReleaseNamesCommand, Machine.ReleaseNames); an operator reads the line whole, so it is pinned
+// here.
+const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the release command frees the names of its other sessions for a new one once the secrets broker carries nothing of them"
 
-// ReleaseWindow is how long after a claim's last session switch, and after a hold was written,
-// ReleaseOldNamesStatement waits before it frees a hold: the broker's default carry window,
-// 12 hours, plus its longest lease, an hour, plus 5 minutes for the two sweeps between a lease's
-// lapse and its carry's end, each at most BROKER_SWEEP_SECONDS' maximum, 60 seconds
-// (ReleaseOldNamesStatement says why).
-const ReleaseWindow = 13*time.Hour + 5*time.Minute
-
-// ReleaseAfter is the earliest time ReleaseOldNamesStatement can free any of the claim's holds: its
-// last session switch plus ReleaseWindow, rounded up to the second so a time written to the second
-// is never before the statement's own gate, or the zero time for a claim that has never switched.
-// The statement frees a never-switched claim's holds by their own age, and only those whose names
-// contain no id of its session, so no single time is that claim's (heldNamesCapLine's field says
-// so). A claim refused at the cap that needs a new session was usually just given one by an
-// operator's forget-session, so the statement frees nothing for a whole ReleaseWindow after it
-// (review round 5 of #4220); the claim's record does not show the switch on any operator's view, so
-// the refusal's line gives the time.
-func ReleaseAfter(c Claim) time.Time {
-	if c.Abandoned.At.IsZero() {
-		return time.Time{}
-	}
-	after := c.Abandoned.At.Add(ReleaseWindow).UTC()
-	if whole := after.Truncate(time.Second); !whole.Equal(after) {
-		after = whole.Add(time.Second)
-	}
-	return after
+// ReleaseNamesCommand is the operator's command that runs token's claim's release
+// (Machine.ReleaseNames), as the cap's log line gives it.
+func ReleaseNamesCommand(token claim.Token) string {
+	return "legion claims release-names --claim " + string(token) + " --operator-token-file <the daemon's operator_token_file>"
 }
 
-// ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
-// start a new session again: it frees the claim's holds recorded more than ReleaseWindow, 13 hours
-// 5 minutes, ago, and only once the claim's last session switch is more than that ago, except
-// every name of the session it records and of the one it last abandoned. A name of either session
-// is kept when it is that session's id, contains that id, or is a part of that session's recorded
-// file path, so a hold of any of those stays. That keeps the names of the recorded file, and the
-// names of every earlier file of the session whose name contains its id, as an Oh My Pi
-// `<timestamp>_<id>.jsonl` does; an earlier file of the current session whose name contains no id
-// is freed, which frees no grant, since the broker enrolls a session by its id (review round 5 of
-// #4220).
-//
-// The window counts from the switch, not from the hold (review R4-1 of #4220): a hold is written
-// when its session is first registered, and the session may have run long after. A claim changes
-// sessions only by forgetting the one it records (forgetSession), which writes the switch's time
-// into the abandoned session's `at`, and every session before the one it abandoned had ended by
-// then. The broker keeps an ended session's grants for its carry window, which counts from when its
-// enrollment went dormant: that is the daemon's revoke as it lets the process go, or, if that
-// revoke fails, the enrollment's lapse at its lease, at most BROKER_LEASE_SECONDS' maximum, an hour,
-// after the process ended. The broker marks the enrollment dormant at the sweep after that, and
-// ends its carry at a sweep after the carry window, each sweep at most BROKER_SWEEP_SECONDS'
-// maximum, 60 seconds, after its moment. So 13 hours 5 minutes is the default carry window
-// (BROKER_SESSION_CARRY_SECONDS, 43200) plus the longest lease (review F1 of #4220's round 4) plus
-// two sweeps with room (review round 7): a switch older than that means every session the statement
-// frees went dormant, and lost its carry, longer ago than the window, and the broker has swept
-// their grants. A claim that later takes a freed name takes no grant of it, and a transcript
-// within the project is readable to its roles anyway. A claim that has never switched, whose
-// abandoned session is empty, frees by its holds' age alone, and never frees a name that contains
-// its session's id: such a claim at the cap needs one forget-session, a second switch, and the
-// window after it.
-//
-// Two cases the window does not cover (review rounds 5, 6 and 7 of #4220), both while no broker is
-// serving, since a lease does not run then. During an outage the old leases stay live and the
-// carry has not begun, so the statement must not run at all while no broker serves. When a broker
-// serves again, it caps every running lease at its return plus one lease, BROKER_LEASE_SECONDS
-// (envoy's enroll.ServingClock, which logs `broker: gave back the time no broker was serving to
-// every lease still running when the last broker served`), so an enrollment whose revoke the
-// daemon missed goes dormant up to one lease, and a sweep, after the broker's return; if the broker
-// came back later than an hour less one lease after the claim's last switch, the switch plus the
-// window is too soon. The daemon cannot see either, and its own missed revoke may log nothing,
-// since it can exit between tries and its boot does not retry them. So an operator runs the
-// statement only while a broker serves, and one who finds that broker line after the claim's last
-// switch waits the window after the line, not after the switch.
-//
-// The daemon is not told the broker's settings: they are the broker's own (envoy's broker/config),
-// read by its sweeper and answered on no route the daemon calls, so the statement writes the
-// defaults, and a deployment with a longer carry window puts that window plus an hour and five
-// minutes in both intervals. The project and token are written as SQL literals, their quotes
-// doubled.
-func ReleaseOldNamesStatement(project string, token claim.Token) string {
-	window := fmt.Sprintf("interval '%d seconds'", int64(ReleaseWindow/time.Second))
-	return "delete from claim_sessions h using claims c" +
-		" where c.project = h.project and c.token = h.claim" +
-		" and h.project = " + SQLLiteral(project) + " and h.claim = " + SQLLiteral(string(token)) +
-		" and h.recorded_at < now() - " + window +
-		" and coalesce((c.abandoned_session ->> 'at')::timestamptz, '-infinity') < now() - " + window +
-		" and h.name <> c.session and h.name <> coalesce(c.abandoned_session ->> 'session', '')" +
-		" and (c.session = '' or strpos(h.name, c.session) = 0)" +
-		" and (coalesce(c.abandoned_session ->> 'session', '') = '' or strpos(h.name, c.abandoned_session ->> 'session') = 0)" +
-		" and strpos(c.session_file || ' ' || coalesce(c.abandoned_session ->> 'sessionFile', ''), h.name) = 0"
+// ReleasedNames is what a release freed (Machine.ReleaseNames): the names it deleted, how it knew
+// no grant follows one of them, and the session the claim last abandoned whose names it freed,
+// which the claim's record now marks released.
+type ReleasedNames struct {
+	Freed []Hold
+	// Checked is CheckedByBroker when the secrets broker answered that it carries nothing of the
+	// names, CheckedNoBroker when this daemon has no broker configured to ask, and CheckedNothing
+	// when the release had no name to free and asked nobody.
+	Checked   string
+	Abandoned string
 }
 
-// SQLLiteral is s as a PostgreSQL string literal under standard_conforming_strings, the default
-// since PostgreSQL 9.1: quoted, with each quote doubled, so no text of s ends the literal. The
-// statements the daemon prints for an operator to run write every name an agent chose this way.
+const (
+	// CheckedByBroker is a release the secrets broker answered: no enrollment this daemon's login
+	// launched carries anything for a freed name.
+	CheckedByBroker = "the secrets broker carries nothing of them"
+	// CheckedNoBroker is a release by a daemon with no secrets broker configured (no agent_secrets
+	// block): no broker was asked. It says that and no more, since a daemon that enrolled pods
+	// while the block was on may still have enrollments that carry grants (ReleaseNames).
+	CheckedNoBroker = "this daemon has no secrets broker configured, so no broker was asked"
+	// CheckedNothing is a release that had no name to free, so it asked no broker; it may still
+	// have marked the abandoned session released (ReleaseNames).
+	CheckedNothing = "it held no name to free, so no broker was asked"
+)
+
+// ErrCarryUnanswered is a release the secrets broker did not answer: the release frees nothing,
+// since nothing else can say that no grant follows a name it would free. A run again can change
+// it.
+var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of the names it still carries")
+
+// ErrCarryRefused is a release whose question the secrets broker refused for good (a
+// PermanentError, a 4xx): the release frees nothing, and a run again answers the same until the
+// refusal is fixed, but for a broker from before the question, which answers it 404 or 405 and
+// may be one replica of several while the broker rolls.
+var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
+
+// UnlistedCarryError is an answer of the secrets broker's too long for the daemon to read whole
+// (agentsecrets' CarriedAnswerTooLargeError): the broker answered, and an answer that long names
+// at least one enrollment, so a release reads it as a carry it cannot list (NamesCarriedError's
+// Unlisted), never as an outage (side review of #4355).
+type UnlistedCarryError interface{ UnlistedCarry() bool }
+
+// NamesCarriedError refuses a release: the secrets broker still carries something for some of the
+// names it would free, under an enrollment this daemon's login launched, so the next enrollment of
+// that name by any claim of this daemon would take it (envoy's adopt). Carried is each such
+// enrollment, as the broker answered it; Unlisted, when set, is the broker's answer that was too
+// long to list (UnlistedCarryError), and Carried is then empty. The release frees nothing.
+// ReleaseNames returns it inside a RefusedError, which the operator's route answers 409.
+type NamesCarriedError struct {
+	Claim    claim.Token
+	Carried  []CarriedEnrollment
+	Unlisted error
+}
+
+func (e *NamesCarriedError) Error() string {
+	if e.Unlisted != nil {
+		return fmt.Sprintf("the secrets broker still carries grants or requests for names the release of %s would free, so it frees none: %v; run it again once fewer of them carry, or each has ended",
+			e.Claim, e.Unlisted)
+	}
+	parts := make([]string, len(e.Carried))
+	for i, c := range e.Carried {
+		switch c.State {
+		case CarriedLive:
+			parts[i] = fmt.Sprintf("%s (enrollment %s, live: its lease ends at %s unless its process renews it)", c.SessionID, c.EnrollmentID, c.EndsAt.UTC().Format(time.RFC3339))
+		default:
+			parts[i] = fmt.Sprintf("%s (enrollment %s, %s: its carry ends at %s)", c.SessionID, c.EnrollmentID, c.State, c.EndsAt.UTC().Format(time.RFC3339))
+		}
+	}
+	return fmt.Sprintf("the secrets broker still carries grants or requests for %d of the names the release of %s would free, so it frees none: %s; run it again once each has ended",
+		len(e.Carried), e.Claim, strings.Join(parts, "; "))
+}
+
+// ReleaseNames is the operator's release (`legion claims release-names`): it frees every name the
+// claim holds except those of the session it records now, which it still resumes, so a claim at
+// MaxHeldNamesPerClaim can start a new session. A name of the current session is its id, a name
+// containing that id, or a part of its recorded file's path (the names RecordedHolds gives it, and
+// an earlier file of it named for its id); and so is the session id the claim's live pod-session
+// registration names, the id a launch chose before its agent registered.
+//
+// It frees them only when nothing can follow a freed name to a grant. The daemon enrolls a
+// session's process with the secrets broker by its session id, and the broker hands what an ended
+// enrollment still carries — its live grants and its pending requests — to the next enrollment of
+// the same session id that this daemon's login launches (envoy's adopt); another claim registering
+// a freed name would be that enrollment. So the release first asks the broker which of the names
+// it would free name an enrollment of this daemon's that is live or still carries something
+// (Enroller.Carried), and any answer refuses the whole release with a RefusedError holding a
+// NamesCarriedError, naming each enrollment and when its lease or its carry ends, or saying the
+// answer was too long to list (UnlistedCarryError); a broker that does not answer refuses it with
+// ErrCarryUnanswered, and one that refuses the question for good with ErrCarryRefused. Nothing is
+// freed in any of them. The broker's own rows answer every case a time window only estimated: a
+// revoke the daemon missed, a lease a broker outage held live, a sweep that ran late or kept
+// failing, a longer BROKER_SESSION_CARRY_SECONDS.
+//
+// A daemon with no broker configured (Deps.Secrets nil) asks none, frees with no check, and says
+// so (CheckedNoBroker). That is safe only for a daemon that never enrolled a pod with a broker. A
+// pod enrolled while agent_secrets was on keeps an enrollment its own shim renews for as long as
+// it runs, which no daemon revokes once the block is off (RevokeEnrollment leaves it to its lease),
+// and a stopped one carries its grants for BROKER_SESSION_CARRY_SECONDS from its lease's lapse. No
+// bound an operator can work out covers a pod that still runs, so such a daemon's names are
+// released only with agent_secrets on (docs/kubernetes.md; review of #4355).
+//
+// A release with no name to free asks no broker (CheckedNothing), and still marks an abandoned
+// session the record does not yet mark released. Every name of that session is freed or is a name
+// of the current session by then, so the mark frees nothing; it repairs a mark that a release's
+// commit made and its lost answer kept out of memory, which the claim's next write then erased
+// (review of #4355).
+//
+// It runs under the machine's lock, so no decision of this claim — a registration of one of the
+// names among them — falls between the broker's answer and the delete, and no other claim can take
+// a name before the delete, since the table holds it for this one. So nothing between the answer
+// and the commit can give a name it frees an enrollment that carries anything: the daemon enrolls
+// a session only for a claim the table holds every name of it for (holdRecorded comes before
+// every enrollment), which for a name this release frees is this claim alone until the commit,
+// and this claim's decisions wait on this lock.
+//
+// The delete and the claim write are one transaction (Store.ReleaseHolds): the session the claim
+// last abandoned has its names freed with the rest, and its record is marked released
+// (AbandonedSession.Released) in that same transaction, so the boot holds none of its names again
+// (store's recordedNames) and the claim keeps the record of where that session went. The two
+// commit together or not at all: a daemon that stopped between them would leave names other
+// claims may take while the next boot took back for this claim every one nobody took. The mark
+// joins memory's claim only once the transaction commits, so a refused write leaves the claim as
+// it was. The names it would free leave the machine's cache (heldNames) whatever the write
+// answers: a commit whose answer was lost freed them all the same, and a name left cached would
+// let this claim register it again without asking the store, after another claim took it
+// (review of #4355). A name dropped from the cache that the store still holds costs one store
+// call at the claim's next registration of it.
+//
+// The broker is asked before that transaction, outside it, and never after it. No transaction
+// or row lock is held while the broker answers, so a slow broker holds only this claim's lock, as
+// every other call the machine makes to the broker does (Enroll, Revoke). And no failure of the
+// broker can follow a commit: a broker that fails or still carries something leaves nothing
+// committed, and a commit that fails after the broker's answer may or may not have freed the
+// names, which the operator's next run, asking the broker again, settles either way. The commit
+// is the release's last step, so a release that committed is whole.
+//
+// A claim that never switched sessions and needs a new one is given one by forget-session, and
+// this then frees the forgotten session's names once the broker's carry of it ends: no second
+// switch is needed.
+func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	// The read is bounded as a claim write is, as HoldsItsSession bounds its own, so a database
+	// that has stopped answering does not hold the machine's lock for the outage.
+	reading, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
+	holds, err := m.deps.Store.ClaimHolds(reading, m.claim.Project, m.claim.Token)
+	cancel()
+	if err != nil {
+		return ReleasedNames{}, err
+	}
+	free := releasable(holds, m.claim.Session, m.claim.SessionFile)
+	// The session the claim's live pod-session registration names is current too: before its
+	// agent registers, a launch's chosen session id is held and registered for the pod to trade
+	// under (ensureRegistered) while the claim records no session yet (review of #4355).
+	if r := m.registration; r != nil && r.session != m.claim.Session {
+		free = releasable(free, r.session, "")
+	}
+	a := m.claim.Abandoned
+	mark := a.Session != "" && a.Released.IsZero()
+	released := ReleasedNames{Checked: CheckedNothing}
+	switch {
+	case len(free) == 0:
+		if !mark {
+			return released, nil
+		}
+	case m.deps.Secrets == nil:
+		released.Checked = CheckedNoBroker
+	default:
+		names := make([]string, len(free))
+		for i, h := range free {
+			names[i] = h.Name
+		}
+		slices.Sort(names)
+		names = slices.Compact(names)
+		asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
+		carried, err := m.deps.Secrets.Carried(asking, names)
+		cancel()
+		var unlisted UnlistedCarryError
+		var permanent PermanentError
+		switch {
+		case errors.As(err, &unlisted) && unlisted.UnlistedCarry():
+			return ReleasedNames{}, m.refuseCarried(&NamesCarriedError{Claim: m.claim.Token, Unlisted: err}, len(free))
+		case errors.As(err, &permanent) && permanent.Permanent():
+			return ReleasedNames{}, fmt.Errorf("release the names of %s: %w: %w", m.claim.Token, ErrCarryRefused, err)
+		case err != nil:
+			return ReleasedNames{}, fmt.Errorf("release the names of %s: %w: %w", m.claim.Token, ErrCarryUnanswered, err)
+		case len(carried) > 0:
+			return ReleasedNames{}, m.refuseCarried(&NamesCarriedError{Claim: m.claim.Token, Carried: carried}, len(free))
+		}
+		released.Checked = CheckedByBroker
+	}
+	c := m.stored()
+	if mark {
+		c.Abandoned.Released, released.Abandoned = m.deps.Clock.Now(), a.Session
+	}
+	err = m.write(ctx, func(ctx context.Context) error {
+		var err error
+		released.Freed, err = m.deps.Store.ReleaseHolds(ctx, c, free)
+		return err
+	})
+	// The names leave the cache whatever the write answered (the doc above).
+	for _, h := range free {
+		delete(m.heldNames, h)
+	}
+	if err != nil {
+		return ReleasedNames{}, err
+	}
+	// The write was the claim as memory holds it, the mark aside, so it is also any claim write
+	// the machine owed (settleOwedWrite).
+	m.claim.Abandoned.Released = c.Abandoned.Released
+	m.settleOwedWrite("ReleaseHolds")
+	m.log.Info("supervise: released the names of a claim's other sessions",
+		"claim", m.claim.Token, "freed", len(released.Freed), "checked", released.Checked, "abandoned", released.Abandoned)
+	return released, nil
+}
+
+// refuseCarried is a release refused because the secrets broker still carries something for some
+// of the names it would free, names of them: logged at Warn, and answered as a RefusedError, which
+// the operator's route answers 409 (operatorFailure).
+func (m *Machine) refuseCarried(refusal *NamesCarriedError, names int) error {
+	m.log.Warn("supervise: refused a release of a claim's names: the secrets broker still carries some of them",
+		"claim", m.claim.Token, "names", names, "carried", len(refusal.Carried), "error", refusal.Error())
+	return &RefusedError{State: m.claim.State, Request: "release-names", Err: refusal}
+}
+
+// releasable is every one of holds that is not a name of the session a claim records, session and
+// sessionFile (ReleaseNames): its id, a name containing the id, or a part of the file's path. In
+// holds' order.
+func releasable(holds []Hold, session, sessionFile string) []Hold {
+	var free []Hold
+	for _, h := range holds {
+		current := session != "" && strings.Contains(h.Name, session) || sessionFile != "" && strings.Contains(sessionFile, h.Name)
+		if !current {
+			free = append(free, h)
+		}
+	}
+	return free
+}
+
+// SQLLiteral is s as a PostgreSQL escape string literal (E'…'): each backslash and each quote
+// doubled, so no text of s ends the literal. An escape string reads its backslashes as escapes
+// whatever standard_conforming_strings the session sets, so the literal means s under both
+// settings; a plain '…' literal with only its quotes doubled means s only with the setting on,
+// and with it off a name such as `\' or true --` ends the literal and turns the statement's
+// guard into a comment (review of round 11 of #4220, F1). The statement the daemon's boot prints
+// for an operator to settle a name held for no claim writes every name an agent chose, and every
+// other value, this way (internal/daemon's session conflicts); the daemon runs no statement it
+// builds so, and binds its own statements' values as parameters.
 func SQLLiteral(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	return "E'" + strings.NewReplacer(`\`, `\\`, `'`, `''`).Replace(s) + "'"
 }
 
 // HoldKind is which of a session's names a hold keeps (Hold): each is a key some resume path
@@ -170,6 +335,12 @@ type Hold struct {
 	Name string
 }
 
+// CompareHolds orders holds as the store answers them: kind, then name, byte for byte (the
+// `collate "C"` order ClaimHolds reads in).
+func CompareHolds(a, b Hold) int {
+	return cmp.Or(cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Name, b.Name))
+}
+
 // RecordedHolds is every name a claim's record of session and sessionFile gives its session, each
 // a key some resume path or the secrets broker finds a session by (HoldKind), so that no claim
 // registers, relaunches into or enrolls another claim's session by any of them: the session id;
@@ -181,8 +352,12 @@ type Hold struct {
 // a session id or file name longer than claim.MaxSessionNameBytes names nothing either: a
 // registration of one is refused (checkSessionNames), and holdRecorded refuses a claim whose
 // record an earlier daemon wrote with one (UnholdableNames), so nothing is held for it and nothing
-// takes it. The claim_sessions migration's backfill spells the same rule in SQL, and its test
-// holds the two to one answer.
+// takes it. Nor does a file whose last part is `.` or `..` name a file: its base name is not the
+// file's, and holding it would hold, for no claim where two records end so, a name whose settle
+// statement the boot would print (review round 12 of #4220); a registration of such a file is
+// refused as not clean, and holdRecorded refuses a claim recording one. The claim_sessions
+// migration's backfill spells the rule in SQL, and its test holds the two to one answer; it holds
+// such a base name, the one difference, which no clean path gives and no claim's names include.
 func RecordedHolds(session, sessionFile string) []Hold {
 	var holds []Hold
 	if session != "" && len(session) <= claim.MaxSessionNameBytes {
@@ -192,7 +367,7 @@ func RecordedHolds(session, sessionFile string) []Hold {
 		return holds
 	}
 	base := filepath.Base(sessionFile)
-	if len(base) > claim.MaxSessionNameBytes {
+	if len(base) > claim.MaxSessionNameBytes || base == "." || base == ".." {
 		return holds
 	}
 	holds = append(holds, Hold{Kind: HoldFileName, Name: base})
@@ -207,10 +382,11 @@ func RecordedHolds(session, sessionFile string) []Hold {
 	return holds
 }
 
-// invalidName is one name of a session that no hold can cover, with the refusal a registration of
-// it answers.
+// invalidName is one name of a session that no hold can cover, with what makes it one (why, as a
+// refusal's error and log line say it) and the refusal a registration of it answers.
 type invalidName struct {
 	hold    Hold
+	why     string
 	refusal claim.Refusal
 }
 
@@ -224,18 +400,23 @@ type invalidName struct {
 func invalidSessionNames(session, sessionFile string) []invalidName {
 	var invalid []invalidName
 	if len(session) > claim.MaxSessionNameBytes {
-		invalid = append(invalid, invalidName{Hold{Kind: HoldSessionID, Name: session}, claim.SessionNameTooLong("session id", len(session))})
+		invalid = append(invalid, invalidName{Hold{Kind: HoldSessionID, Name: session}, pastTheBound(len(session)), claim.SessionNameTooLong("session id", len(session))})
 	}
 	if sessionFile == "" {
 		return invalid
 	}
 	if filepath.Clean(sessionFile) != sessionFile {
-		return append(invalid, invalidName{Hold{Kind: HoldFileName, Name: sessionFile}, claim.SessionFileNotClean(sessionFile)})
+		return append(invalid, invalidName{Hold{Kind: HoldFileName, Name: sessionFile}, "that is not a clean path", claim.SessionFileNotClean(sessionFile)})
 	}
 	if base := filepath.Base(sessionFile); len(base) > claim.MaxSessionNameBytes {
-		invalid = append(invalid, invalidName{Hold{Kind: HoldFileName, Name: base}, claim.SessionNameTooLong("session file's name", len(base))})
+		invalid = append(invalid, invalidName{Hold{Kind: HoldFileName, Name: base}, pastTheBound(len(base)), claim.SessionNameTooLong("session file's name", len(base))})
 	}
 	return invalid
+}
+
+// pastTheBound is why a name of n bytes is one no hold can cover, as invalidName says it.
+func pastTheBound(n int) string {
+	return fmt.Sprintf("of %d bytes, past the bound of %d", n, claim.MaxSessionNameBytes)
 }
 
 // checkSessionNames refuses a registration of a session name no hold can cover, with the first
@@ -278,29 +459,26 @@ func UnholdableNames(session, sessionFile string) []Hold {
 //
 // A name of the current session the store answered as this claim's is kept and not asked again
 // while the claim records that session: the enrollment that follows a registration asks nothing
-// more, and forgetSession empties the cache (Machine.heldNames). An operator's release may free a
-// cached name the current session's recorded file no longer gives, an earlier file of it whose name
-// contains no id; the cache keeps that name until the forget, which moves no grant, since the broker
-// enrolls a session by its id, and the claim's own resume and enrollment use the recorded file and
-// id, whose names the release keeps. A refusal
-// is asked again every time, because an operator settles a name held for no claim by recording its
-// rightful holder, and that claim's next decision on this same machine must see it. A hold that
-// would take the claim past MaxHeldNamesPerClaim is refused with claim.HeldNamesCapRefusal and
-// records nothing; one of names the claim holds already adds none, so a claim that records a
-// session still resumes it, while one that needs a new session starts none until an operator runs
-// the line's ReleaseOldNamesStatement after its `release_after` (ReleaseAfter).
-// A store that does not answer refuses nothing: its error
-// wraps errHoldUnanswered, which a launch tries again at the probe interval charging nothing
+// more, forgetSession empties the cache (Machine.heldNames), and an operator's release takes out
+// of it every name it frees (ReleaseNames). A refusal is asked again every time, because an
+// operator settles a name held for no claim by recording its rightful holder, and that claim's
+// next decision on this same machine must see it. A hold that would take the claim past
+// MaxHeldNamesPerClaim is refused with claim.HeldNamesCapRefusal and records nothing; one of names
+// the claim holds already adds none, so a claim that records a session still resumes it, while
+// one that needs a new session starts none until an operator runs the command the line gives
+// (ReleaseNamesCommand). A store that does not answer refuses nothing: its error wraps
+// errHoldUnanswered, which a launch tries again at the probe interval charging nothing
 // (launchNow), and any other decision is asked again by the next one.
 func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string) error {
-	if unheld := UnholdableNames(session, sessionFile); len(unheld) > 0 {
+	if invalid := invalidSessionNames(session, sessionFile); len(invalid) > 0 {
+		n := invalid[0]
 		what := "session id"
-		if unheld[0].Kind == HoldFileName {
+		if n.hold.Kind == HoldFileName {
 			what = "session file"
 		}
 		m.warnRefusal("supervise: refused a session whose name this daemon cannot hold",
-			"kind", unheld[0].Kind, "name", unheld[0].Name, "bytes", len(unheld[0].Name), "claim", m.claim.Token, "holder", "none")
-		return fmt.Errorf("%s as %s of %d bytes: %w", m.claim.Token, what, len(unheld[0].Name), claim.SessionNameUnheldRefusal(what))
+			"kind", n.hold.Kind, "name", n.hold.Name, "bytes", len(n.hold.Name), "why", n.why, "claim", m.claim.Token, "holder", "none")
+		return fmt.Errorf("%s as %s %s: %w", m.claim.Token, what, n.why, claim.SessionNameUnheldRefusal(what))
 	}
 	var ask []Hold
 	for _, h := range RecordedHolds(session, sessionFile) {
@@ -319,13 +497,9 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
-		releaseAfter := "none: the claim has never switched sessions; the statement frees only holds more than 13 hours 5 minutes old whose names contain no id of its session"
-		if after := ReleaseAfter(m.claim); !after.IsZero() {
-			releaseAfter = after.Format(time.RFC3339)
-		}
 		m.log.Warn(heldNamesCapLine,
 			"claim", m.claim.Token, "names", len(ask), "cap", MaxHeldNamesPerClaim, "error", err,
-			"release", ReleaseOldNamesStatement(m.claim.Project, m.claim.Token), "release_after", releaseAfter)
+			"release", ReleaseNamesCommand(m.claim.Token))
 		return fmt.Errorf("hold the session of %s: %w", m.claim.Token, claim.HeldNamesCapRefusal(MaxHeldNamesPerClaim))
 	} else if err != nil {
 		return fmt.Errorf("hold the session of %s: %w: %w", m.claim.Token, errHoldUnanswered, err)
@@ -400,7 +574,8 @@ func (e *heldElsewhereError) Unwrap() error { return e.err }
 // daemon, since a pod or pane stopped by hand is relaunched under the same id (Machine.died).
 //
 // The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
-// so nothing else of this claim waits behind it but the operator who asked.
+// so nothing else of this claim waits behind it but whoever asked: an operator's forget or
+// retry, the controller keeper's retry, or a workflow start row's (review round 16 of #4220, #66).
 func (m *Machine) mayForget(ctx context.Context, request string) error {
 	session := m.claim.Session
 	if session == "" {
@@ -439,14 +614,28 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 	// another name (the file's, or a transcript's id) is held by a claim whose process need not
 	// run under that id, and stopping it would change nothing at the listener.
 	whose := "the process registered under it"
+	stop := "first stop it, through the daemon (a pod or pane stopped by hand is relaunched under the same id)"
 	var held *heldElsewhereError
 	if errors.As(err, &held) && held.holder != "" && held.hold == (Hold{Kind: HoldSessionID, Name: session}) {
-		whose = fmt.Sprintf("the claim that holds it, %s (`legion claims suspend --claim %s`)", held.holder, held.holder)
+		whose = fmt.Sprintf("the claim that holds it, %s", held.holder)
+		// A holder that is suspended, retired or failed runs no process under the session, so
+		// its suspend changes nothing: the process under it may be this claim's own, which only
+		// the wait ends (review round 16 of #4220, #61).
+		stop = fmt.Sprintf("first stop %s's process, through the daemon, if it runs (`legion claims suspend --claim %s`; a pod or pane stopped by hand is relaunched under the same id); if %s is suspended, retired or failed, no process of it runs under %s, and the process under it may be this claim's own, which the wait below ends", held.holder, held.holder, held.holder, session)
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: forgetWait{fmt.Errorf(
-		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach the process under %s: first stop %s, through the daemon (a pod or pane stopped by hand is relaunched under the same id), then ask again once GET /v1/roles/%s answers 404 with no holder (reason unclaimed) or names another session; with the defaults that is at most ten minutes after that process's last registration (max(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL), longer across a listener restart or a reaper read that fails",
-		m.claim.Token, session, err, session, state, session, whose, m.claim.Token)}}
+		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach %s: %s; then ask again once GET /v1/roles/%s answers 404 with no holder (reason unclaimed) or names another session, at most %s after that process's last registration (ten minutes with the defaults, about 65 minutes where the session bucket keeps records past the gone horizon), longer across a listener restart or a reaper read that fails",
+		m.claim.Token, session, err, session, state, whose, stop, m.claim.Token, roleFreedBound)}}
 }
+
+// roleFreedBound is when the Envoy listener frees a role whose holder's session no process
+// registers any longer, after that session's last registration, as the listener's settings name
+// it: the record reads gone at the earlier of the session bucket's maximum age and the gone
+// horizon, the role claim is kept while its renewal is a live window old, and the role claim
+// reaper frees it at its next pass (review round 16 of #4220, #60). With the defaults (a bucket
+// created with no maximum age keeps records five minutes) that is ten minutes; where the bucket
+// keeps records past the gone horizon, an hour plus the reap interval.
+const roleFreedBound = "max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL"
 
 // ErrForgetWaitsForRole is mayForget's refusal of a clear of a session the claim does not hold
 // while the Envoy listener names that session as the claim's role holder, or could not be asked
@@ -485,6 +674,11 @@ type admittedSession struct{ session, file string }
 // (Machine.admitted) when that is the session the view records, so a claim holding its session
 // costs no store call; otherwise it asks the store itself, as holdRecorded would, and logs
 // nothing: the publisher that asked says what it did not publish.
+//
+// Read with no lock, the view can predate a forget-session and a release that ran since, so the
+// store call can hold again for this claim names that release just freed (review of #4355). That
+// is the safe direction: only this claim holds them, no other claim can take them, no grant
+// follows them, and the next release frees them again.
 func (m *Machine) HoldsItsSession(ctx context.Context) error {
 	c := m.View().Claim
 	if a := m.admitted.Load(); a != nil && *a == (admittedSession{c.Session, c.SessionFile}) {

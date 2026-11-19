@@ -99,6 +99,7 @@ func newFakeBroker(t *testing.T) (*fakeBroker, *httptest.Server) {
 	mux.HandleFunc("POST /v1/launcher-credentials/token", b.handleTokenLogin)
 	mux.HandleFunc("POST /v1/enrollments", b.handleEnrollmentRoute)
 	mux.HandleFunc("DELETE /v1/enrollments/{id}", b.handleEnrollmentRoute)
+	mux.HandleFunc("POST /v1/enrollments/carried", b.handleEnrollmentRoute)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return b, server
@@ -833,6 +834,92 @@ func TestRevokeIsIdempotent(t *testing.T) {
 	broker.enrollAnswers = []enrollAnswer{{status: http.StatusServiceUnavailable, body: `{"code":"DATABASE","error":"down"}`}}
 	if err := c.Revoke(context.Background(), "enr-1"); err == nil || IsPermanent(err) {
 		t.Fatalf("503 revoke: err %v, want a transient failure", err)
+	}
+}
+
+// Carried reads the contract's shape alone (review of #4355): `{"carried": []}` is none, a list is
+// its enrollments, and a 200 that names no carried list, or a null one, is an error rather than
+// none, since a release reads none as leave to free. A 4xx is a permanent refusal and a 5xx a
+// transient one, as for every launcher call.
+//
+// The control (the pull request records the run): Carried with no check of a missing list
+// answers "{}" as none.
+func TestCarriedReadsOnlyTheContractsShape(t *testing.T) {
+	broker, c := newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: `{"carried":[{"session_id":"ses_a","enrollment_id":"enr-1","state":"dormant","ends_at":"2026-09-26T12:15:00Z"}]}`}}
+	got, err := c.Carried(context.Background(), []string{"ses_a", "ses_b"})
+	if err != nil || len(got) != 1 || got[0].SessionID != "ses_a" || got[0].EnrollmentID != "enr-1" || got[0].State != "dormant" {
+		t.Fatalf("Carried = %+v, %v; want enr-1 of ses_a, dormant", got, err)
+	}
+	req := broker.lastEnrollRequest()
+	if req.method != http.MethodPost || req.path != "/v1/enrollments/carried" || req.authorization != "" || req.proof == "" {
+		t.Fatalf("request %s %s (authorization %q, proof %q), want a POST to the carried route with a proof alone", req.method, req.path, req.authorization, req.proof)
+	}
+	for _, tc := range []struct {
+		body string
+		none bool
+	}{
+		{`{"carried":[]}`, true},
+		{`{}`, false},
+		{`{"carried":null}`, false},
+	} {
+		broker, c := newIssuedClient(t)
+		broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: tc.body}}
+		got, err := c.Carried(context.Background(), []string{"ses_a"})
+		if tc.none && (err != nil || got == nil || len(got) != 0) {
+			t.Fatalf("Carried answered %s = %v, %v; want none", tc.body, got, err)
+		}
+		if !tc.none && err == nil {
+			t.Fatalf("Carried answered %s = %v, <nil>; want an error, not none", tc.body, got)
+		}
+	}
+	broker, c = newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusForbidden, body: `{"code":"SERVICE_LOGIN_REQUIRED","error":"why"}`}}
+	if _, err := c.Carried(context.Background(), []string{"ses_a"}); !IsPermanent(err) {
+		t.Fatalf("a 403 to Carried = %v, want a permanent refusal", err)
+	}
+	broker, c = newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusServiceUnavailable, body: `{"code":"DATABASE","error":"down"}`}}
+	if _, err := c.Carried(context.Background(), []string{"ses_a"}); err == nil || IsPermanent(err) {
+		t.Fatalf("a 503 to Carried = %v, want a transient failure", err)
+	}
+}
+
+// Carried reads its answer up to carriedAnswerBytes, not the 64 KiB every other call reads (side
+// review of #4355): an answer of 1,000 enrollments, about 150 KB, is read whole, and one longer
+// than the bound is a CarriedAnswerTooLargeError, a carry the machine cannot list
+// (UnlistedCarry), never an answer cut short and read as an outage.
+//
+// The control (the pull request records the run): Carried reading through answerBytes answers the
+// 1,000-row answer "a body that is not the contract's shape".
+func TestCarriedReadsAnAnswerPastTheOtherCallsBound(t *testing.T) {
+	row := func(i int) string {
+		return fmt.Sprintf(`{"session_id":"ses_%036d","enrollment_id":"enr-%036d","state":"dormant","ends_at":"2026-09-26T12:15:00Z"}`, i, i)
+	}
+	rows := make([]string, 1000)
+	for i := range rows {
+		rows[i] = row(i)
+	}
+	long := `{"carried":[` + strings.Join(rows, ",") + `]}`
+	if len(long) <= answerBytes {
+		t.Fatalf("the answer is %d bytes, want more than the %d other calls read", len(long), answerBytes)
+	}
+	broker, c := newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: long}}
+	got, err := c.Carried(context.Background(), []string{"ses_a"})
+	if err != nil || len(got) != 1000 || got[999].EnrollmentID != fmt.Sprintf("enr-%036d", 999) {
+		t.Fatalf("Carried of a %d-byte answer = %d rows, %v; want all 1,000", len(long), len(got), err)
+	}
+
+	for len(rows)*len(row(0)) <= carriedAnswerBytes {
+		rows = append(rows, rows...)
+	}
+	broker, c = newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: `{"carried":[` + strings.Join(rows, ",") + `]}`}}
+	_, err = c.Carried(context.Background(), []string{"ses_a"})
+	var tooLarge *CarriedAnswerTooLargeError
+	if !errors.As(err, &tooLarge) || !tooLarge.UnlistedCarry() || IsPermanent(err) {
+		t.Fatalf("Carried of an answer past %d bytes = %v, want a CarriedAnswerTooLargeError", carriedAnswerBytes, err)
 	}
 }
 

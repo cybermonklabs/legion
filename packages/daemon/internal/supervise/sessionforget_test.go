@@ -67,7 +67,12 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			fileNameOnly = append(fileNameOnly, name)
 		}
 	}
-	const suspendHolder, theBound = "legion claims suspend --claim " + string(holder), "max(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL"
+	// The bound and the remedy are spelled here rather than read from the code, so a wrong bound
+	// or a remedy that sends the operator to suspend a claim that runs nothing fails the rows
+	// (review round 16 of #4220, #60 and #61).
+	const suspendHolder, theBound, holderRunsNothing = "legion claims suspend --claim " + string(holder),
+		"max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL",
+		"if " + string(holder) + " is suspended, retired or failed, no process of it runs"
 	clears := []struct {
 		name  string
 		event func(h *harness) Event
@@ -84,7 +89,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 			unnamed   bool
 			wait      bool // a refused row is a wait: it matches ErrForgetWaitsForRole and wait.ErrWaiting
 		}{
-			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, theBound}, false, true},
+			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, holderRunsNothing, theBound}, false, true},
 			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder}, false, true},
 			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false, true},
 			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false, true},
@@ -141,6 +146,51 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		}
 		if c := h.claim(); c.Session != "" {
 			t.Fatalf("the claim still records %q", c.Session)
+		}
+	})
+	// The rows round 16 of #4220 found missing (#65): a name held for no claim is refused as a
+	// wait naming no claim to suspend; a daemon with no Envoy listener asks nothing and forgets;
+	// and a store that does not answer the hold refuses with its error, which is no wait and no
+	// refusal of the claim's state, and asks the listener nothing.
+	t.Run("a name held for no claim is refused naming no claim", func(t *testing.T) {
+		h, asked := processless(t, nil, answer{session, "live", nil})
+		for _, name := range every {
+			h.store.setHold(name, "")
+		}
+		err := h.handle(RequestForgetSession{Claim: h.token, Session: session})
+		if *asked != 1 || !errors.Is(err, ErrForgetWaitsForRole) || !strings.Contains(err.Error(), "the process registered under it") {
+			t.Fatalf("the forget of a session held for no claim = %v, asked %d; want a wait naming no claim, asked once", err, *asked)
+		}
+		if c := h.claim(); c.Session != session {
+			t.Fatalf("the claim records %q, want %s kept", c.Session, session)
+		}
+	})
+	t.Run("a daemon with no Envoy listener forgets without asking", func(t *testing.T) {
+		h, asked := processless(t, every, answer{session, "live", nil})
+		h.deps.RoleHolder = nil
+		h.restart()
+		h.must(RequestForgetSession{Claim: h.token, Session: session})
+		if *asked != 0 {
+			t.Fatalf("the listener was asked %d times, want none: the daemon has none", *asked)
+		}
+		if c := h.claim(); c.Session != "" {
+			t.Fatalf("the claim still records %q", c.Session)
+		}
+	})
+	t.Run("a store that does not answer the hold refuses with its error", func(t *testing.T) {
+		h, asked := processless(t, every, answer{session, "live", nil})
+		down := errors.New("the database is unreachable")
+		h.store.fail("HoldSessions", down)
+		err := h.handle(RequestForgetSession{Claim: h.token, Session: session})
+		var refused *RefusedError
+		if !errors.Is(err, down) || errors.As(err, &refused) || errors.Is(err, wait.ErrWaiting) {
+			t.Fatalf("the forget while the store fails = %v; want the store's error, no refusal and no wait", err)
+		}
+		if *asked != 0 {
+			t.Fatalf("the listener was asked %d times, want none: the hold was never answered", *asked)
+		}
+		if c := h.claim(); c.Session != session {
+			t.Fatalf("the claim records %q, want %s kept", c.Session, session)
 		}
 	})
 }

@@ -2799,6 +2799,10 @@ func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error 
 	return nil
 }
 
+func (s *outboxClaimStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
+}
+
 func (s *outboxClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
 	return c, s.PutClaim(ctx, c)
 }

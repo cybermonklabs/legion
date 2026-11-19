@@ -128,6 +128,10 @@ func (s *memoryClaims) PutClaim(_ context.Context, c supervise.Claim) error {
 	return nil
 }
 
+func (s *memoryClaims) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
+}
+
 func (s *memoryClaims) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
 	return c, s.PutClaim(ctx, c)
 }
@@ -607,6 +611,27 @@ func TestClaimsForgetSessionPostsToTheClaimRoute(t *testing.T) {
 	// refusals (supervise.Claim.PendingCause).
 	if want := "legion-legion-legion-208-architect architect LEGION-208 failed died 3 " + thisBinarysContract + " - - - -\n"; out != want {
 		t.Fatalf("forget-session stdout = %q, want %q", out, want)
+	}
+}
+
+// release-names posts to the claim's release route with no body and prints the release as one
+// line: how many names it freed and how it knew no grant follows one. The ready claim holds only
+// the names of the session it records, which the release keeps, so it frees none and says it
+// asked no broker.
+func TestClaimsReleaseNamesPostsToTheClaimRoute(t *testing.T) {
+	d := newOperatorDaemon(t)
+	d.succeed(d.spawnArgs()...)
+	d.ready(architectClaim)
+
+	out := d.succeed(append(append([]string{"release-names"}, d.reach()...), "--claim", string(architectClaim))...)
+
+	seen := d.lastOperatorRequest()
+	wantOperatorRequest(t, seen, http.MethodPost, "/legion/v1/operator/claims/"+string(architectClaim)+"/release-names")
+	if len(seen.body) != 0 {
+		t.Fatalf("release-names sent the body %q, want none", seen.body)
+	}
+	if want := string(architectClaim) + ": freed 0 names of its other sessions; " + supervise.CheckedNothing + "\n"; out != want {
+		t.Fatalf("release-names stdout = %q, want %q", out, want)
 	}
 }
 
