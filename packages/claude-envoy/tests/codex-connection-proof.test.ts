@@ -20,11 +20,14 @@ import {
   until,
 } from "./codex-server-process"
 
-const makeDirectory = temporaryDirectories("codex-connection-proof")
 const stops: (() => Promise<void> | void)[] = []
+// Registered before the directories' removal below, which bun runs after it: a server still alive
+// in its directory slows that removal past the removal hook's 5 s. Twenty seconds here, since a
+// server's stop alone may take 5 s, SIGTERM to its SIGKILL (`CodexServer.stop`).
 afterEach(async () => {
   for (const stop of stops.splice(0).reverse()) await stop()
-})
+}, 20_000)
+const makeDirectory = temporaryDirectories("codex-connection-proof")
 
 /** One part of a compact JWS as JSON. */
 function part(compact: string, at: number): Record<string, unknown> {

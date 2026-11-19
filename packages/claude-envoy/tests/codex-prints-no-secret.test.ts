@@ -10,11 +10,14 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { codexHomes, recordFor, startCodexServer, until } from "./codex-server-process"
 
-const makeDirectory = temporaryDirectories("codex-prints-no-secret")
 const stops: (() => Promise<void> | void)[] = []
+// Registered before the directories' removal below, which bun runs after it: a server still alive
+// in its directory slows that removal past the removal hook's 5 s. Twenty seconds here, since a
+// server's stop alone may take 5 s, SIGTERM to its SIGKILL (`CodexServer.stop`).
 afterEach(async () => {
   for (const stop of stops.splice(0).reverse()) await stop()
-})
+}, 20_000)
+const makeDirectory = temporaryDirectories("codex-prints-no-secret")
 
 /** The refusal the broker's own library writes for a subject token minted for another audience,
  *  one of the refusals a client prints as written (`KNOWN_BROKER_REFUSALS`), naming `shown`. */
