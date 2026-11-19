@@ -985,7 +985,8 @@ func personDeclinesNothing() error {
 // and no machine can move another's. It names its fleet's service and no person, whatever the
 // fleet's entry says: secret authority follows the access token, so a machine's sessions reach
 // its service's secrets and the shared agent-tier ones and no person's. The person a fleet entry
-// names reaches the Dispatch token's claims alone; a person reaches their own secrets on that
+// names reaches the Dispatch token's claims and no secret (the request machine also lists that
+// fleet's shared secrets' requests in their Inbox); a person reaches their own secrets on that
 // machine only through their own sign-in.
 //
 // A key another live credential holds is invalid_grant rather than a server error: the broker's

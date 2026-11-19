@@ -82,7 +82,7 @@ It carries:
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints as a read lease on theorem-labs (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints as a read lease on that repository's owner (`leakCheckToken`, `internal/daemon/kubernetes.go`).
   The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
   It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
   The launcher installs it once per launcher process, before any role starts:
@@ -117,12 +117,12 @@ It carries:
   A listener bound to `0.0.0.0` is also reachable on the pod IP from inside the cluster, unless the deployment's NetworkPolicy denies that ingress;
 
 - `unzip` from Debian trixie's archive, at `/usr/bin/unzip`:
-  `model-gateway/apply_test.sh` of theorem-labs/agent-infra calls it, and no package runner in the image reaches it.
+  `model-gateway/apply_test.sh` of example-org/deployment calls it, and no package runner in the image reaches it.
   A role cannot install it in its pod either:
   the pod's `/usr/local/bin` and `/opt` are read-only, and `apt-get` cannot take dpkg's lock;
 
 - `busybox` from Debian trixie's archive, `/usr/bin/busybox` alone:
-  the `broker/` tests of theorem-labs/agent-infra run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
+  the `broker/` tests of example-org/deployment run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
   The package installs no applet links, so `wget` and `sh` stay GNU wget and dash, and a role runs an applet as `busybox <applet>`.
   Its `wget` and `ssl_client` applets check no TLS certificate, so no applet may become the image's `wget`, and the TLS probe holds no busybox client.
   The TLS probe's `wget` client holds GNU wget to the compromised chains, and an applet that became `wget` would fail the probe without reaching them:
@@ -2150,6 +2150,63 @@ After such a release is live, an earlier daemon publishes nothing, and each new 
 So roll Dispatch back first, to the release before that one, and then roll back the daemon.
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release that records each step
+
+This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so it writes the list last on any database.
+A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
+That migration changes no column.
+
+The daemon and Dispatch deploy in either order.
+A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the daemon waits: it runs the row again on its backoff, at most 64 s apart, until Dispatch has the route.
+While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
+That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
+The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
+A refusal no retry changes ends the row (`stepRecordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
+
+The rollback needs no statement for the kind's rows: they stay in the outbox.
+An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
+Nor does such a row hold an issue's pod: the earlier release's idle check counts only the kinds it names (`idleWaitingKinds` in `store/idle.go`).
+Each row waits through the rollback and writes its start or its end at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks, so none of them is lost.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+The tables `step_starts` and `step_starts_rollback` and the function `step_run_witness` (`20261117004117_step_starts`) stay in place: an earlier release names none of them in a statement, so that release boots with them and their rows there.
+`step_starts` holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
+An earlier release starts and ends steps and counts none of them, so the rollback keeps in `step_starts_rollback` what the roll forward needs to tell the runs this release counted from the ones it did not: for each issue with a row in `step_starts`, its tree, its witness (`step_run_witness`) and the moment of the rollback.
+Run this with every daemon of the database stopped, before the earlier image is pinned, and before the block of any older release below, which can drop the phase entries the witness reads:
+
+```sql
+insert into step_starts_rollback (issue, tree, witness, taken_at)
+select key, tree, step_run_witness(key, tree), now() from issues
+where key in (select issue from step_starts)
+on conflict (issue) do nothing;
+delete from schema_version where version = 20261117064152;
+```
+
+The `insert` keeps, for each issue with a counted step, the moment of the rollback and what this release ends or starts a step on (`step_run_witness`, whose definition and reasons stand in the header of `20261117004117_step_starts`): the phase the issue stands in, its generation, its implementer's pass, the phase entry of each of its roles, the generation of its tree's root, and whether that root lingers.
+A second run before any roll forward keeps what the first kept.
+The `delete` re-arms `20261117064152_step_starts_roll_forward`, so the newer image's `Migrate` applies it again at the roll forward, before the daemon serves; where that file carries another identifier in the release you roll back from, use that one.
+
+The roll forward reads each issue again and decides each of its rows on its own (its header says the whole rule).
+A step that was running at the rollback ended under the earlier release, which wrote no end, where that release did what ends it in this release: the issue moved, the role that works the step had its entry raised, or the step's root lingered or was re-admitted; a merge runs on through those two until its merger starts again, it lands, or the linger's close that release applied retires it, which is a close whose expiry is marked processed, that handed the member to nobody, of a member whose pull request is not open.
+The roll forward ends the record of such a step `stopped`, at the moment of the rollback, when Legion stopped recording it: the moment it really ended is nowhere to be read, and a record with no end would read `running` for good.
+Each place where the earlier release may have started a step reads `uncounted` from then on: the role that works it had its entry raised, the issue moved on to accepting or to the merge, or moved back to it, whose starts raise no entry, or the issue's or its root's generation changed.
+A step the earlier release ended where it started none reads `ended`, so a late completion of it writes its report on the record this release counted, and every other row stands as it was.
+Where the rollback went below `20261111225552_phase_entry`, whose block drops the entries and whose migration numbers them from 1 again at the roll forward, the roll forward reads no entry, and a step's place reads as started again wherever the issue moved or its root was re-admitted.
+A step the earlier release started, where its issue still stands when the newer image boots, gets an open row at that boot, before the daemon serves: the count after its place's last, or 0 where its place has no row, with the agent its start would have named and the start time its role's entry records (`OpenUncountedRuns` in `internal/workflow/uncounted_runs.go`, `upgradedStart` in `internal/workflow/steps.go`).
+The boot opens only a step this release's own end rule holds open (`uncountedRunOpen` in `internal/workflow/run_end.go`): a member of a lingering or closed tree, a member of a tree the operator holds, and every issue of a tree whose root waits for the promotion that opens it — a root a hand-over carried in, and the members of a tree admitted again — get no row and no record.
+Its record reaches Dispatch with its end, under that count, and a request of its agent waits for that agent's stream before it applies a fact, as a request of the agent of a step this release started does.
+A step running at the rollback that the earlier release did not end is still the step this release counted, and its end ends the record its start wrote.
+What the rollback costs is the record of each step that both starts and ends under the earlier release, and the true end and result of each step running at the rollback that ends under it.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `step_starts`, `step_starts_rollback` and `schema_version` are one table each for all of them.
+The block above witnesses every project's issues with a row in `step_starts`, and its `delete` re-arms `20261117064152_step_starts_roll_forward` for the whole database, so the next daemon of that database to boot on this release applies the roll forward to every project's rows and then deletes every witness.
+A daemon left on this release while another rolls back would read the other project's witnesses as its own: it would end a run of its own that started after the rollback at the moment of that rollback, before its own start, and a later end would land on an earlier record's id.
+No statement can scope the roll forward to one project, since the database records each migration once.
+Roll back and roll forward every daemon of one database in the same change, and run the block above only when all of them are stopped.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.
@@ -2607,6 +2664,7 @@ Neither has cybermonklabs/legion#3983, which landed after it at the same contrac
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
 Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
+A rollback of the release that records each step to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
 The block below is the way back of those four migrations, and the header of each carries it:
 
 ```sh
@@ -2722,12 +2780,17 @@ The migrations recorded above this one are these.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982 too, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
-20261113181500_architect_stalled_notices adds the table that 20261113182000_architect_entry_upgrade marks, and that upgrade writes into three of the six, so the contract 146 block above reverses both first.
+20261113181500_architect_stalled_notices and 20261113182000_architect_entry_upgrade: the first adds the table the second marks, and the second writes into three of the six, so the contract 146 block above reverses both first.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).
 20261116234034_phase_reviewed_head adds `phases.reviewed_head` and `pending_task_deliveries.round_named`, and appends the review round's two sentences to each task a reviewer's row stores in `phases.entry_task`, one of the six, building nothing on it; a rollback past it runs that migration's own way back too ([Rolling back the release that keeps the commit a reviewer last read](#rolling-back-the-release-that-keeps-the-commit-a-reviewer-last-read)), so that the roll-forward adds the two columns again at their defaults and, after this block's own roll-forward fills the tasks afresh, appends the sentences to them.
+20261117000528_outbox_kinds_with_the_step_record writes the outbox's kind check again with `step_record` added to the role-holders publication's list and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step).
+20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads `phases.entry` and writes none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement; the way back of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), runs before the block, while `phases.entry` stands.
+20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
+20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
+20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -4192,10 +4255,10 @@ architect, planner, implementer, tester, reviewer, merger):
    its first 64 KiB is written as a line of its own and the rest follows on a new line behind the prefix again.
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
-   As the container's PID 1 the launcher does three things no other process of the pod does:
+   As the container's PID 1 the launcher does three things:
 
    - It reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-     Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `waitid: no such process`, which for the leak-check install refuses the role's launch.
+     Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`, which for the leak-check install refuses the role's launch.
 
    - It runs a gVisor pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
      In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
@@ -7154,7 +7217,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
   Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
-  The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
+  The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (deployment `shared/broker.ExchangeAudience`).
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
   it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
   Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM, since the pool's token is the pod's launcher's alone ([Issue pods in microVMs](#issue-pods-in-microvms) lists this refusal with the loader's others).

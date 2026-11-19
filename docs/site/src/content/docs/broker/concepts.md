@@ -37,8 +37,10 @@ broker's token exchange, which answers a Dispatch access token and the machine l
 minted, and the machine enrols with that login. That login names the machine's fleet and no
 person, so the session acts for the fleet's service: it reads the secrets that service owns and
 the shared agent-tier ones, and no person's. The person a fleet's
-`BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token alone; that person reaches
-their own secrets on the machine only by signing in on it.
+`BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token and no secret, and is the
+person whose Inbox lists a request the machine makes for a shared human-tier secret
+([Approvals](#approvals)); that person reaches their own secrets on the machine only by signing in
+on it.
 
 A person signs in on a machine with `agent-secrets login`, which runs Google's device flow and then
 trades the person's own identity token at the exchange with the machine's as the actor token. That
@@ -56,7 +58,8 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
+service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
 `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No
@@ -1055,9 +1058,23 @@ The broker checks the signed-in person against the record's approver: anyone els
 saying who may decide it, with a link to sign in as someone else, and no buttons. A request for a
 shared
 human-tier secret, or for a shared agent-tier secret its session's operator withheld from it,
-names the approver `anyone`: it waits in every person's Inbox, anyone who signs in to the broker may
-decide it, and the
-broker records the email of whoever did. A withheld secret is its owner's to approve for that
+names the approver `anyone`: anyone who signs in to the broker may decide it, and the
+broker records the email of whoever did. It waits in the Inbox of the person responsible for the
+agent that asked, which the broker records when the request is made, in this order: the session's
+operator (the person of an `agent-secrets login` sign-in, or the person who approved its machine
+login); for a fleet machine's own session, the person its `BROKER_VM_EXCHANGE_ACCOUNTS` entry
+names; for a Legion worker pod, the assignee of the Dispatch issue its claim names, which the broker
+reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
+names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
+answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
+every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
+out of its three seconds is logged at WARN, naming the issue
+([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
+is seen to list those requests for everyone. Who is asked changes nobody's right
+to decide: anyone signed in still decides it from its page. That is also why the broker takes the
+claim and the assignee as they come: a claim is the launcher's word, so a launcher that states a
+Legion claim naming some issue, and anyone who reassigns that issue in Dispatch, chooses whose
+Inbox lists the request, and neither gains a right to decide it. A withheld secret is its owner's to approve for that
 session even in a request that was already waiting when the operator withheld it: a request that
 waited on anyone for a shared human-tier secret and the operator's own withheld secret is then the
 operator's alone to approve, and anyone else's approval is refused `NOT_APPROVER`. While the broker
@@ -1211,12 +1228,15 @@ within each one's seconds, so a forged record, and one a rules change left behin
 nothing either. What the reason says is the judge's to read against the guidance, and no part of
 that check.
 
-The judge's reads of Dispatch are its only ones: the issue a reason names and the text of its spec
-document, and the ask it cites, with the broker's own projected ServiceAccount token, read again
-from its file once the copy it holds is 30 seconds old. The broker writes nothing there — no ask,
-no comment, no status. It reaches its model at the endpoint its settings name, presenting the
-broker machine's own Google identity token for the audience they name. Those settings are
-all-or-none, and the
+The judge's reads of Dispatch are the issue a reason names and the text of its spec document, and
+the ask it cites, with the broker's own projected ServiceAccount token, read again from its file
+once the copy it holds is 30 seconds old. Another, with the same token, is one GET of the issue a
+Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the token
+exchange's reads of a person's project access are the last, at `BROKER_PROJECT_ACCESS_URL`
+([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
+ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at
+the endpoint its settings name, presenting the broker machine's own Google identity token for the
+audience they name. Those settings are all-or-none, and the
 [configuration reference](/legion/broker/reference/config/) gives each one.
 
 ## The audit record

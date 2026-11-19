@@ -227,7 +227,8 @@ limit. `ENVOY_SENDER_MESSAGE_BURST` is how many it may send at once, a whole num
 and unset it equals the rate. A burst with no rate, or any other value, stops the start with an
 error that names the variable (`parseSenderLimit`). The start logs one line,
 `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session in this
-process`, or `listener sender limit: none`.
+process`, or `listener sender limit: none`. Where the rate is 1, the line reads
+`1 message a minute`.
 
 The listener keeps one count for each sending session, for both routes together
 (`ratelimit.Keyed`). The count starts at the burst and gains one message every 60 seconds divided
