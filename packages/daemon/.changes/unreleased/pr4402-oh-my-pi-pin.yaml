@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The worker image carries Oh My Pi `18.18.6-sami.20261119-075528` of cybermonklabs/oh-my-pi,
+    The worker image carries Oh My Pi `18.18.6-sami.20261119-102642` of cybermonklabs/oh-my-pi,
     which `.omp-pin` names. That build knows `secrets.maskSessionStore`, refuses to open its SQL
     session store under a login whose default is read-only, on a hot standby, or on tables that
     carry a column, a default, a trigger, a rule or row-level security it does not declare, that
@@ -21,17 +21,16 @@ body: |-
     `runtime.tmux.pane_env`, `runtime.kubernetes.pod.env` and either runtime's `provider_keys`
     refuse `OMP_SESSION_EXCLUSIVE` and `OMP_CONFIG_ROOT`, and `legion controller start` drops
     `OMP_SESSION_EXCLUSIVE` from the environment it inherits. Under `runtime: tmux`, the boot now
-    refuses a `provider_keys` name that `pane_env` refuses whatever its value, naming the
-    variable and why: a variable that places the session a resume reads (`OMP_CONFIG_ROOT`,
-    `PI_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, `OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
+    refuses, naming the variable and the reason `pane_env` gives, a `provider_keys` name that is a
+    variable that places the session a resume reads (`OMP_CONFIG_ROOT`, `PI_CONFIG_DIR`,
+    `PI_CODING_AGENT_DIR`, `OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
     `OMP_SESSION_SQL_DSN_FILE`), one the runtime tells a Claude Code pane (`CLAUDE_CONFIG_DIR`,
     `CLAUDE_CODE_DISABLE_CRON`) or a resumed Oh My Pi pane (`OMP_SESSION_EXCLUSIVE`) after the
-    operator's variables, and a launch secret's pointer (`ENVOY_TOKEN_FILE`,
-    `NATS_NKEY_SEED_FILE`). Before, such a deployment booted: a key that places the session moved
-    its panes' sessions off where the runtime places them, and the shim of a pane the runtime
-    tells one of the other names refused to start over the key. The image build fails when the
-    pinned `omp --help` lists no `--session-id`. Every bash call of a role's or the controller's
-    Oh My Pi now starts with
+    operator's variables, or a launch secret's pointer (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`).
+    Before, such a deployment booted: a key that places the session moved its panes' sessions off
+    where the runtime places them, and the shim of a pane the runtime tells one of the other names
+    refused to start over the key. The image build fails when the pinned `omp --help` lists no
+    `--session-id`. Every bash call of a role's or the controller's Oh My Pi now starts with
     `set +e +u +o pipefail;`, so a `set -e`, `set -u` or `set -o pipefail` in one call no longer
     cuts a later call, and the daemon's own worker, architect and controller prompts say never to
     set `-e`, `-u` or `pipefail` at the top level of the shell. The worker stream keeps the `code`

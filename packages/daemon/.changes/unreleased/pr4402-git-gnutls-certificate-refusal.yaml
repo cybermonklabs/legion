@@ -1,9 +1,9 @@
 kind: Fixed
 body: |-
     `legion probe-image` reads `SSL certificate verification failed`, which `git` prints through
-    libcurl 8.17.0 or later built with GnuTLS (Ubuntu's `git`), as a certificate refusal. A worker
-    image on such a base whose `git` refused the emSign chain read as unavailable, and the probe
-    failed an image that is safe.
+    libcurl 8.17.0 or later built with GnuTLS (Ubuntu 26.04's `git`), as a certificate refusal. A
+    worker image built on Ubuntu 26.04 whose `git` refused the emSign chain read as unavailable,
+    and the probe failed an image that is safe.
 time: 2026-11-19T10:58:00Z
 custom:
     Issue: pr4402
