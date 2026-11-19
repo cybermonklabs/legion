@@ -1252,11 +1252,13 @@ judge_keys() {
   fi
   # $(cat) drops trailing newlines and keeps a key whose file has none, as the host's key command
   # does with $(<file).
+  # shellcheck disable=SC2016 # the key command's own text: /bin/sh expands it in the container
   (umask 077 && printf '#!/bin/sh\nkey=$(cat %s) && [ -n "$key" ] && printf "%%s\\n" "$key"\n' "$read_from" >"$keys/anthropic-key")
   chmod 0700 "$keys/anthropic-key"
   sed "s#!exec $host_command\"#!exec /opt/key/anthropic-key\"#g" "$agent/models.yml" >"$keys/models.yml"
-  grep -q '!exec /opt/key/anthropic-key"' "$keys/models.yml" && ! grep -qF "$host_command" "$keys/models.yml" ||
+  if ! grep -q '!exec /opt/key/anthropic-key"' "$keys/models.yml" || grep -qF "$host_command" "$keys/models.yml"; then
     fail "judge-omp: $agent/models.yml does not name the key command $host_command"
+  fi
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
 }
 
