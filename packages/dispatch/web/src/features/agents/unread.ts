@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Message,
   MessageRead,
@@ -79,25 +80,16 @@ export function useUnreadAtOpen(
   return next.unread;
 }
 
-/**
- * Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
- * every badge and row reads it at once. A read of that query still out when the PUT lands went
- * out before it, so its answer can hold the session as it stood before the write - a read mark's
- * replies still unread - and would put that back over the PUT's answer when it lands: opening an
- * agent's row reads the query again as the row mounts, and the row's read mark can land first,
- * which left the navigation's badge counting a reply the viewer had just read. That read is given
- * up (`cancelQueries`), and the query keeps what it held with the PUT's answer put in. Giving up
- * takes effect before `cancelQueries` returns (query-core's `onCancel` puts the query back to its
- * state before the read), so the answer put in after it is what stays.
- */
+/** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
+ *  every badge and row reads it at once, over any read of that query still out: such a read was
+ *  asked before the PUT answered, and would put back the count the answer cleared
+ *  (`replaceQueryData`). */
 export function storeAgentState(
   queryClient: QueryClient,
   sessionId: string,
   next: UserAgentState
 ): void {
-  const { queryKey } = userAgentStateQuery();
-  void queryClient.cancelQueries({ exact: true, queryKey });
-  queryClient.setQueryData<UserAgentStates>(queryKey, (current) => ({
+  replaceQueryData<UserAgentStates>(queryClient, userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));
