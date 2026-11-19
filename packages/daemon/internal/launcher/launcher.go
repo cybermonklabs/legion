@@ -84,10 +84,11 @@ type Config struct {
 	// own credentials. The zero value is every other session store: no proxy, and the child's
 	// session storage is whatever its environment names.
 	SessionDatabase ompsessions.Database
-	// SessionDialer builds that proxy's upstream dialer for account, the service account
-	// SessionDatabase names, or "" for the pod itself (sessionproxy.Config.NewDialer). Nil is the
-	// Cloud SQL connector's, which is the only one a pod uses; a test passes a fake.
-	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	// SessionDialer builds that proxy's upstream dialer for signer, which names the service
+	// account that SessionDatabase names, or no account for the pod itself
+	// (sessionproxy.Config.NewDialer). Nil is the Cloud SQL connector's, which is the only one a
+	// pod uses; a test passes a fake.
+	SessionDialer func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.

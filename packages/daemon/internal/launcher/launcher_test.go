@@ -1166,12 +1166,12 @@ func (d *sessionDialer) stallAt(addr string) {
 func (d *sessionDialer) Close() error { return nil }
 
 // build is the Config.SessionDialer a test passes: every generation of its launcher dials through
-// this very fake, and each build records the account it was given. A pod's roles start their
+// this very fake, and each build records the account its signer names. A pod's roles start their
 // generations concurrently, so the record is held under mu.
-func (d *sessionDialer) build(_ context.Context, account string) (sessionproxy.Dialer, error) {
+func (d *sessionDialer) build(_ context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.accounts = append(d.accounts, account)
+	d.accounts = append(d.accounts, signer.Account)
 	return d, nil
 }
 

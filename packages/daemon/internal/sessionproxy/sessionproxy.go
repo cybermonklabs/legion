@@ -1,7 +1,10 @@
 // Package sessionproxy carries one generation's Oh My Pi session database traffic to Cloud SQL
-// with the pod's own cloud credentials, so that no database password is ever written into a pod.
-// The proxy signs in as the pod's own identity, or as a Google service account that the
-// deployment names and that the pod's credentials impersonate (Config.ImpersonateServiceAccount).
+// with cloud credentials, so that no database password is ever written into a pod. The proxy
+// signs in as the pod's own identity, or as a Google service account that the deployment names
+// (Config.ImpersonateServiceAccount). The pod's own credentials impersonate that account, or, with
+// Config.WriterAudience, a token that only the launcher reads does, once Google's security token
+// service has exchanged it. Config.Admit can refuse a connection by the process that made it
+// (Peer) before the proxy dials anything for it.
 // The agent's client (Bun's SQL client over a unix socket) sends a plain Postgres startup packet
 // with a user and a database and no password; this proxy dials Cloud SQL for every accepted
 // connection with automatic IAM database authentication and copies bytes both ways.
@@ -13,20 +16,37 @@
 package sessionproxy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google/externalaccount"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+)
+
+// Google's security token service exchanges a projected ServiceAccount token for a federated
+// token. Two exchanges use it: the proxy's writer token (connectorOptions), and the pod's
+// Workload Identity token in the launcher's pod-local metadata endpoint. STSTokenURL is the
+// service's token endpoint. JWTTokenType is the subject token type that both exchanges name,
+// because a projected ServiceAccount token is a JWT.
+const (
+	STSTokenURL  = "https://sts.googleapis.com/v1/token"
+	JWTTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Dialer is the upstream the proxy dials for each accepted connection: the Cloud SQL connector in
@@ -48,14 +68,26 @@ type Config struct {
 	// domain:project:region:instance for a domain-scoped project (ompsessions.ValidInstance).
 	Instance string
 	// ImpersonateServiceAccount is the email of the Google service account the proxy impersonates
-	// with the pod's own credentials and signs in as (ompsessions.ServiceAccountLogin says which
-	// emails are one). Empty signs in as the pod's own identity.
+	// and signs in as (ompsessions.ServiceAccountLogin says which emails are one). The pod's own
+	// credentials impersonate it, or the writer token does when WriterAudience is set. Empty signs
+	// in as the pod's own identity.
 	ImpersonateServiceAccount string
-	// NewDialer builds the upstream dialer for account, which is ImpersonateServiceAccount. Nil
-	// builds the Cloud SQL connector's: it dials the instance's private IP with automatic IAM
-	// database authentication, and signs in as account, which the pod's own credentials
-	// impersonate, or as the pod itself when account is "".
-	NewDialer func(ctx context.Context, account string) (Dialer, error)
+	// WriterAudience is the audience of the writer token, the projected ServiceAccount token that
+	// only the launcher reads: a workload identity provider's full resource name
+	// (ompsessions.ValidWriterAudience). With it, the proxy exchanges that token at Google's
+	// security token service and impersonates ImpersonateServiceAccount with the federated token,
+	// so it never uses the pod's own credentials. It needs WriterTokenFile and
+	// ImpersonateServiceAccount. Empty impersonates with the pod's own credentials.
+	WriterAudience string
+	// WriterTokenFile is the absolute path of the writer token, which only the launcher reads.
+	// The proxy reads the file again at each exchange, so it sends the token that the kubelet
+	// last rotated. It is set exactly when WriterAudience is.
+	WriterTokenFile string
+	// NewDialer builds the upstream dialer for signer, which carries ImpersonateServiceAccount,
+	// WriterAudience and WriterTokenFile. Nil builds the Cloud SQL connector's (connectorOptions):
+	// it dials the instance's private IP with automatic IAM database authentication, and signs in
+	// as the signer's account, or as the pod itself when the signer names no account.
+	NewDialer func(ctx context.Context, signer Signer) (Dialer, error)
 	// ProofTimeout bounds Start's proof dial, the one upstream connection that proves the
 	// credential path before Start returns. It must be positive: an instance that never answers,
 	// an unreachable address or a peer that stalls its handshake, would otherwise hold Start for as
@@ -66,10 +98,38 @@ type Config struct {
 	// every per-connection dial honours cancellation, as the Cloud SQL connector's does: a client
 	// that never hangs up then holds Close for Drain and no longer.
 	Drain time.Duration
-	// Log takes one line per event: the proxy's start, a connection the upstream refused, an
-	// accept loop that stopped on its own, connections Close closed once the drain was over. Nil
-	// logs nothing.
+	// Log takes one line per event: the proxy's start, a connection the proxy refused (Admit), a
+	// connection the upstream refused, an accept loop that stopped on its own, connections Close
+	// closed once the drain was over. Nil logs nothing.
 	Log io.Writer
+	// Admit decides if the proxy serves an accepted connection, from the process that made it
+	// (Peer). The proxy reads the peer and asks Admit before it dials anything for the
+	// connection. An error refuses the connection, and the log line gives it as the reason. The
+	// proxy closes a connection that Admit refuses, or whose peer it cannot read, and logs it in
+	// one line. That connection costs no dial and no credential work. Nil admits every
+	// connection. The proxy reads a peer on Linux alone, so on another system a set Admit refuses
+	// every connection.
+	Admit func(Peer) error
+}
+
+// Signer is the identity a proxy's dialer signs in to Cloud SQL as, and the credential that signs
+// it in: the Config fields ImpersonateServiceAccount, WriterAudience and WriterTokenFile, which
+// Start has checked. It is comparable, so a test can compare what its dialer factory got.
+type Signer struct {
+	// Account is the service account the dialer impersonates and signs in as. "" signs in as the
+	// pod itself.
+	Account string
+	// WriterAudience and WriterTokenFile name the writer token, which impersonates Account in
+	// place of the pod's own credentials. Both are "", or both are set.
+	WriterAudience, WriterTokenFile string
+}
+
+// Peer is the process at the other end of a connection to the proxy's socket, as the kernel
+// recorded it when that process connected (SO_PEERCRED). PID is in the proxy's own PID
+// namespace, and a connection made from any thread of a process names that process's pid. UID is
+// the process's user id.
+type Peer struct {
+	PID, UID int
 }
 
 // Proxy is a started session database proxy: a bound socket, a dialer whose credential path has
@@ -81,6 +141,8 @@ type Proxy struct {
 	instance string
 	listener net.Listener
 	dialer   Dialer
+	// admit is Config.Admit: nil serves every connection.
+	admit func(Peer) error
 
 	// cancel ends the proxy's own serving context, which the dialer was built with and every
 	// per-connection dial uses, so the dialer's background work lives exactly as long as the proxy
@@ -130,6 +192,19 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 			return nil, fmt.Errorf("sessionproxy: ImpersonateServiceAccount %q is not a Google service account's email", cfg.ImpersonateServiceAccount)
 		}
 	}
+	// The writer token is named whole or not at all, and only with the account it impersonates.
+	switch {
+	case cfg.WriterAudience != "" && cfg.WriterTokenFile == "":
+		return nil, errors.New("sessionproxy: WriterAudience needs WriterTokenFile, the file of the token it is the audience of")
+	case cfg.WriterTokenFile != "" && cfg.WriterAudience == "":
+		return nil, errors.New("sessionproxy: WriterTokenFile needs WriterAudience, the audience of the token it holds")
+	case cfg.WriterAudience != "" && cfg.ImpersonateServiceAccount == "":
+		return nil, errors.New("sessionproxy: WriterAudience and WriterTokenFile need ImpersonateServiceAccount: the writer token signs in only by impersonating that service account")
+	case cfg.WriterAudience != "" && !ompsessions.ValidWriterAudience(cfg.WriterAudience):
+		return nil, fmt.Errorf("sessionproxy: WriterAudience %q is not a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>", cfg.WriterAudience)
+	case cfg.WriterTokenFile != "" && !filepath.IsAbs(cfg.WriterTokenFile):
+		return nil, fmt.Errorf("sessionproxy: WriterTokenFile %q is not an absolute path", cfg.WriterTokenFile)
+	}
 	if cfg.ProofTimeout <= 0 {
 		return nil, fmt.Errorf("sessionproxy: ProofTimeout %s is not positive", cfg.ProofTimeout)
 	}
@@ -151,7 +226,9 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	// The serving context outlives ctx: it carries ctx's values and nothing of its cancellation, and
 	// only Close ends it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	dialer, err := newDialer(runCtx, cfg.ImpersonateServiceAccount)
+	dialer, err := newDialer(runCtx, Signer{
+		Account: cfg.ImpersonateServiceAccount, WriterAudience: cfg.WriterAudience, WriterTokenFile: cfg.WriterTokenFile,
+	})
 	if err != nil {
 		cancel()
 		_ = listener.Close()
@@ -184,14 +261,19 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		instance: cfg.Instance,
 		listener: listener,
 		dialer:   dialer,
+		admit:    cfg.Admit,
 		cancel:   cancel,
 		drain:    cfg.Drain,
 		conns:    make(map[net.Conn]net.Conn),
 		log:      cfg.Log,
 	}
-	if cfg.ImpersonateServiceAccount != "" {
+	// The start line names the identity and the credential that signs it in, and never a token.
+	switch {
+	case cfg.WriterAudience != "":
+		p.logf("sessionproxy: serving %s on %s as %s with the launcher's writer token", cfg.Instance, cfg.Socket, cfg.ImpersonateServiceAccount)
+	case cfg.ImpersonateServiceAccount != "":
 		p.logf("sessionproxy: serving %s on %s as %s", cfg.Instance, cfg.Socket, cfg.ImpersonateServiceAccount)
-	} else {
+	default:
 		p.logf("sessionproxy: serving %s on %s", cfg.Instance, cfg.Socket)
 	}
 	p.inFlight.Add(1)
@@ -297,13 +379,17 @@ func (p *Proxy) accept(ctx context.Context) {
 	}
 }
 
-// serve gives one accepted connection an upstream of its own and copies between them. The dial is
-// per connection on purpose: the connector mints the connection's credential as it dials, from a
-// certificate cache it keeps refreshed, so every connection carries a freshly minted one. serve
-// already runs on a goroutine of its own, so only the other copy direction takes one. The pair is
-// tracked from the dial's success until both copies end, so Close can close it once the drain is
-// over; a pair dialed once Close has begun is closed at once and never copied for.
+// serve gives one accepted connection an upstream of its own and copies between them. With an
+// Admit, the connection's peer is checked first (admitted), so a refused connection costs no dial.
+// The dial is per connection on purpose: the connector mints the connection's credential as it
+// dials, from a certificate cache it keeps refreshed, so every connection carries a freshly minted
+// one. serve already runs on a goroutine of its own, so only the other copy direction takes one.
+// The pair is tracked from the dial's success until both copies end, so Close can close it once
+// the drain is over; a pair dialed once Close has begun is closed at once and never copied for.
 func (p *Proxy) serve(ctx context.Context, client net.Conn) {
+	if p.admit != nil && !p.admitted(client) {
+		return
+	}
 	upstream, err := p.dialer.Dial(ctx, p.instance)
 	if err != nil {
 		// Nothing is written back: a client that reads a Postgres error here would believe the
@@ -337,6 +423,38 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	copies.Wait()
 }
 
+// admitted asks Admit about the process that made client. It closes a connection whose peer it
+// cannot read, or that Admit refuses, and writes nothing back, as for a failed dial. It logs that
+// connection in one line: the peer's pid, its command and the reason, or that the pid could not
+// be read. The command is read before the close, while the peer most likely still runs. The line
+// holds no token, because the proxy reads none from the peer.
+func (p *Proxy) admitted(client net.Conn) bool {
+	peer, err := readPeer(client)
+	if err != nil {
+		_ = client.Close()
+		p.logf("sessionproxy: refused a connection to %s from a process whose pid could not be read: %v", p.instance, err)
+		return false
+	}
+	if err := p.admit(peer); err != nil {
+		command := peerCommand(peer.PID)
+		_ = client.Close()
+		p.logf("sessionproxy: refused a connection to %s from pid %d (%s): %v", p.instance, peer.PID, command, err)
+		return false
+	}
+	return true
+}
+
+// peerCommand is the command name of the process pid as /proc/<pid>/comm holds it, quoted,
+// because that process chooses the name and an unquoted name could break the log line. It is "?"
+// when the name cannot be read, as when the process has already ended.
+func peerCommand(pid int) string {
+	comm, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return "?"
+	}
+	return fmt.Sprintf("%q", strings.TrimSuffix(string(comm), "\n"))
+}
+
 // logf writes one event line, under a lock because connections log concurrently.
 func (p *Proxy) logf(format string, args ...any) {
 	if p.log == nil {
@@ -359,10 +477,10 @@ func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, e
 
 func (c connectorDialer) Close() error { return c.dialer.Close() }
 
-// newConnectorDialer builds the dialer a pod uses, with connectorOptions. It signs in as account,
-// which the pod's own credentials impersonate, or as the pod itself when account is "".
-func newConnectorDialer(ctx context.Context, account string) (Dialer, error) {
-	opts, err := connectorOptions(ctx, account)
+// newConnectorDialer builds the dialer a pod uses, with connectorOptions and Google's own
+// endpoints. It signs in as the signer's account, or as the pod itself when the signer names none.
+func newConnectorDialer(ctx context.Context, signer Signer) (Dialer, error) {
+	opts, err := connectorOptions(ctx, signer, googleEndpoints{})
 	if err != nil {
 		return nil, err
 	}
@@ -383,29 +501,91 @@ const (
 	sqlLoginScope      = "https://www.googleapis.com/auth/sqlservice.login"
 )
 
+// writerTokenEarlyRefresh is how long before its expiry the federated token is exchanged again.
+// The token signs each generateAccessToken call, so with this margin no call that a slow network
+// or a retry holds carries a token that runs out on the way.
+const writerTokenEarlyRefresh = 5 * time.Minute
+
+// writerCallTimeout bounds one request of the writer path: an exchange at the security token
+// service, and a generateAccessToken call with the federated token. Each token source holds its
+// lock through such a request, so one that never answered would hold every later connection's
+// credential with it, for as long as the proxy serves. The metadata endpoint bounds its exchange
+// the same way (internal/launcher's exchangeTimeout).
+const writerCallTimeout = 30 * time.Second
+
+// googleEndpoints is where connectorOptions reaches Google's token services. The zero value is
+// what a pod uses: the IAM Service Account Credentials API over http.DefaultTransport, and the
+// security token service at STSTokenURL. Only this package's tests set a field, to reach fakes.
+type googleEndpoints struct {
+	// iam carries every IAM Credentials API request. With a writer token it is the base transport
+	// under the federated token. With an account alone it is the whole client, which then signs
+	// nothing. Nil is http.DefaultTransport under the federated token, and the client that the
+	// library builds from the pod's own credentials for an account alone.
+	iam http.RoundTripper
+	// stsURL is the token URL of the writer token's exchange. "" is STSTokenURL.
+	stsURL string
+}
+
 // connectorOptions are the Cloud SQL connector's options for a pod. The connector uses automatic
 // IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
 // dials the instance's private IP, which is the only address a pod's network reaches.
 //
-// With account "", the connector signs in as the pod itself, with the pod's own credentials. With
-// an account, the pod's credentials impersonate that account through the IAM Service Account
-// Credentials API. One impersonated source signs the Admin API calls, and the other gives the
-// login token, so the proxy signs in as the account.
+// With no account, the connector signs in as the pod itself, with the pod's own credentials. With
+// an account, a credential impersonates that account through the IAM Service Account Credentials
+// API. One impersonated source signs the Admin API calls, and the other gives the login token, so
+// the proxy signs in as the account. Both sources go to the connector through
+// cloudsqlconn.WithIAMAuthNTokenSources, so the connector itself reads no Application Default
+// Credentials.
+//
+// Without a writer token, the pod's own credentials impersonate the account: the library finds
+// them and builds its client from them. With a writer token, one federated source exchanges the
+// token file's contents at the security token service for a federated token, and the IAM
+// Credentials client that both sources use puts that token on each generateAccessToken call. The
+// pod's own credentials then sign nothing. The library calls its constant IAM Credentials
+// endpoint and ignores option.WithEndpoint, so the client is the only way to give each call the
+// federated token. The federated source reads the file again at each exchange.
 //
 // ctx is the proxy's serving context, which only Close ends. The library builds each source's
-// client and finds the pod's credentials with it, so a credential that fetches its own token with
-// that context keeps doing so for as long as the proxy serves; never Start's own context, which
-// ends once the proof dial is over. Each source refreshes its one-hour token by itself when the
-// connector next asks for one. iam goes to the IAM Credentials API's client: production passes
-// none, and a test passes a fake endpoint.
-func connectorOptions(ctx context.Context, account string, iam ...option.ClientOption) ([]cloudsqlconn.Option, error) {
+// client and finds the pod's credentials with it, and the federated source makes each exchange
+// with it, so a credential that fetches its own token with that context keeps doing so for as
+// long as the proxy serves; never Start's own context, which ends once the proof dial is over.
+// Each source refreshes its one-hour token by itself when the connector next asks for one.
+func connectorOptions(ctx context.Context, signer Signer, google googleEndpoints) ([]cloudsqlconn.Option, error) {
 	opts := make([]cloudsqlconn.Option, 0, 3)
 	opts = append(opts,
 		cloudsqlconn.WithIAMAuthN(),
 		cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPrivateIP()),
 	)
+	account := signer.Account
 	if account == "" {
 		return opts, nil
+	}
+	var iam []option.ClientOption
+	switch {
+	case signer.WriterAudience != "":
+		// The exchange takes its HTTP client from the context (oauth2.HTTPClient), as the
+		// metadata endpoint's does, so the bound reaches it there.
+		exchange := context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: writerCallTimeout})
+		federated, err := externalaccount.NewTokenSource(exchange, externalaccount.Config{
+			Audience:         signer.WriterAudience,
+			SubjectTokenType: JWTTokenType,
+			TokenURL:         cmp.Or(google.stsURL, STSTokenURL),
+			Scopes:           []string{cloudPlatformScope},
+			CredentialSource: &externalaccount.CredentialSource{File: signer.WriterTokenFile},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("exchange the writer token to impersonate %s: %w", account, err)
+		}
+		base := google.iam
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Timeout: writerCallTimeout, Transport: &oauth2.Transport{
+			Source: oauth2.ReuseTokenSourceWithExpiry(nil, federated, writerTokenEarlyRefresh),
+			Base:   base,
+		}})}
+	case google.iam != nil:
+		iam = []option.ClientOption{option.WithHTTPClient(&http.Client{Transport: google.iam})}
 	}
 	api, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: account,
