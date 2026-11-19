@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -187,6 +188,14 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// The role is the settlement's to tell only when this call is what woke it: a wake another
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
+	//
+	// A list of commit statuses the decoder could not read names none, and the pull request keeps
+	// the statuses it holds for the head when the settlement is applied, since a context a
+	// settlement leaves out stays as it is kept (classify.ApplySettlement), so the task names the
+	// failed ones of those, as the CI message does.
+	if fact.StatusesUnread {
+		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
+	}
 	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
 	if err != nil || !woken {
 		return "", err
@@ -196,19 +205,43 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
 // task carries: the checks the settlement names failed, then the ones it names cancelled, and
-// "every check passed" when it names neither.
+// `passed every check` when it names neither. After either of the first two it names each failed
+// commit status of fact.Statuses (record.CommitStatus.Failed), in context order: the
+// settlement's own, or, where the decoder could not read its list, the ones the pull request keeps
+// for the head (wakeOnSettlement). A settlement that names a failed status and neither a failed
+// nor a cancelled check run says the head passed every check run and then names the statuses,
+// since the head did not pass every check. With no failed status the text is the one it was before
+// the daemon read statuses.
 func settlementDetail(fact intake.PullRequestChecks) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
 		head = head[:12]
 	}
+	var failed []string
+	for _, status := range fact.Statuses {
+		if status.Failed() {
+			failed = append(failed, status.Context)
+		}
+	}
+	slices.Sort(failed)
+	var detail string
 	switch {
 	case len(fact.Failing) > 0:
-		return head + " failed " + strings.Join(fact.Failing, ", ")
+		detail = head + " failed " + strings.Join(fact.Failing, ", ")
 	case len(fact.Cancelled) > 0:
-		return head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+		detail = head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+	case len(failed) > 0:
+		detail = head + " passed every check run"
 	default:
 		return head + " passed every check"
+	}
+	switch len(failed) {
+	case 0:
+		return detail
+	case 1:
+		return detail + "; failed commit status " + failed[0]
+	default:
+		return detail + "; failed commit statuses " + strings.Join(failed, ", ")
 	}
 }
 

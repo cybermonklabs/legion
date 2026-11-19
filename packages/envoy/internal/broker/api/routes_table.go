@@ -58,10 +58,10 @@ const (
 	// it is live and what it carries. A resource server needs this and nothing else.
 	readsTokensBack power = 1 << iota
 	// relaysDecisions is reading what a person has to decide and relaying the decisions
-	// themselves — approvals, denials and both revocations by approver — and ending one of the
-	// broker's own access tokens (RFC 7009), which is that same authority over a credential
-	// someone holds. It is an approval credential over every person's secrets, so Dispatch's
-	// server alone holds it.
+	// themselves — approvals, denials, dismissals of an expired request and both revocations by
+	// approver — and ending one of the broker's own access tokens (RFC 7009), which is that same
+	// authority over a credential someone holds. It is an approval credential over every
+	// person's secrets, so Dispatch's server alone holds it.
 	relaysDecisions
 	// readsGrantLog is reading every audit row of a closed period: the whole grant log, each row
 	// naming the session that asked, the person behind it, the service the broker verified, the
@@ -163,10 +163,10 @@ func renewAuth(h func(*server, http.ResponseWriter, *http.Request, string)) rout
 
 // accountAuth is a route for a service calling the broker with its own Kubernetes ServiceAccount
 // token: Dispatch's server, which lists what waits on a person, relays a person's machine-login
-// decisions and revokes, and links the broker's own page for a secret request; and whatever
-// resource server reads a token back through introspection. The token is verified against the
-// broker's Kubernetes issuer and its account must be one BROKER_API_ACCOUNTS lists, and the
-// handler is given that entry's name — the caller's identity, which it logs when it acts.
+// decisions, dismissals and revokes, and links the broker's own page for a secret request; and
+// whatever resource server reads a token back through introspection. The token is verified
+// against the broker's Kubernetes issuer and its account must be one BROKER_API_ACCOUNTS lists,
+// and the handler is given that entry's name — the caller's identity, which it logs when it acts.
 //
 // Each such route declares the power its caller must hold, and the caller's name answers the
 // powers it has (accountPowers), which authenticate checks before the handler runs: being listed
@@ -296,16 +296,23 @@ func routes() []apiRoute {
 		{http.MethodGet, "/v1/enrollments/self", sessionAuth((*server).readSelf)},
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
-		// Read one of the calling session's requests; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
+		// Read a request the calling session's owner made: its person, its Legion claim or its
+		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
 		{http.MethodGet, "/v1/requests/{id}", sessionAuth((*server).readRequest)},
-		// Cancel one of the calling session's pending requests.
+		// Cancel a pending request the calling session's owner made, by the same rule as the read.
 		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
 		// Release a live grant's values to the session that holds it.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
 		// End a grant the calling session holds.
 		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
-		// List the pending requests and machine logins the named person decides, each secret
-		// request with the broker's own page where that person decides it.
+		// List the undecided requests and machine logins the named person decides, each with its
+		// state, pending or expired, and its deadline, and each secret request with the broker's
+		// own page where that person decides it. With no ?state=, it is every record still pending
+		// by what is stored, newest first, an overdue one included until the expiry sweep ends it.
+		// Each ?state=pending or ?state=expired asks for that state: the records a decision may
+		// still settle, and the records whose deadline passed before anybody decided them that
+		// nobody has dismissed, before the sweep and after it, the pending ones first and each
+		// state newest first. Any other state is 400 STATE_INPUT.
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount
@@ -320,6 +327,14 @@ func routes() []apiRoute {
 		// secret request is refused the same way, writing nothing, with 403
 		// DECIDE_ON_BROKER_PAGE naming the page where a person signed in to the broker denies it.
 		{http.MethodPost, "/v1/credential-requests/{record}/deny", accountAuthAfterRecordKind(relaysDecisions, (*server).denyRecord)},
+		// Dismiss an expired credential request, a secret request or a machine login whose deadline
+		// passed before anybody decided it, as the named person, for good: it leaves every list
+		// that asks for expired records, the person's own and, for a shared request, everybody's.
+		// A record that can still be decided is 409 RECORD_PENDING, and one that was decided, or
+		// cancelled before its deadline, is 409 RECORD_TERMINAL. A second dismissal answers the
+		// first one's values and writes nothing. The person is the login the body names, which the
+		// broker takes on the caller's word: a dismissal decides nothing and releases nothing.
+		{http.MethodPost, "/v1/credential-requests/{record}/dismiss", accountAuth(relaysDecisions, (*server).dismissRecord)},
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
 		// List the machine logins the named person may revoke, every service's, such as the Legion

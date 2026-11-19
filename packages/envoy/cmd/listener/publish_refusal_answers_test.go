@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // stalledRoleKV is a role bucket whose claim read does not answer: a Get waits stall, or until the
@@ -112,7 +113,7 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 			if got := recorder.Header().Get("Retry-After"); got != "1" {
 				t.Fatalf("Retry-After = %q, want 1", got)
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -180,7 +181,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 			if got := recorder.Header().Get("Retry-After"); got != "1" {
 				t.Fatalf("Retry-After = %q, want 1", got)
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -259,7 +260,7 @@ func TestADeniedPublishIsRefusedPermanentlyAndNotRecordedAsBusUnavailable(t *tes
 				if got := recorder.Header().Get("Retry-After"); got != tc.wantRetry {
 					t.Fatalf("Retry-After = %q, want %q", got, tc.wantRetry)
 				}
-				var refusal apiError
+				var refusal listenerwire.APIError
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}

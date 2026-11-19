@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 type SessionEntry struct {
@@ -37,7 +38,7 @@ type SessionEntry struct {
 	// stored subscription names (store's mergeForUpsert). No delivery reads Host: a message
 	// reaches the session from its own consumer, relayed by the listener the entry names,
 	// wherever its process runs. Host is empty for a session whose plugin predates this field
-	// (subscribeBody had no "host"), and HostOrMachine falls back to MachineID so every display
+	// (its registration had no "host"), and HostOrMachine falls back to MachineID so every display
 	// caller sees a populated value.
 	Host string `json:"host,omitempty"`
 	// TmuxPlace is where the session's process sits in tmux, as its own client read it and sent
@@ -94,26 +95,10 @@ type SessionEntry struct {
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
-// TmuxPlace is a session's pane and the window and tmux session holding it, in the wire names
-// every side of the hop shares (packages/envoy-client's readTmuxPlace reports it,
-// packages/contracts' TmuxPlace declares it). No delivery reads it: it is what lets Dispatch draw
-// a machine's tmux layout and say which pane runs which session. A session outside tmux is a nil
-// TmuxPlace on the entry, never a place with empty members: every place names a whole pane.
-type TmuxPlace struct {
-	Socket      string `json:"socket"`
-	ServerPID   string `json:"server_pid"`
-	SessionName string `json:"session_name"`
-	WindowID    string `json:"window_id"`
-	WindowIndex int    `json:"window_index"`
-	WindowName  string `json:"window_name"`
-	PaneID      string `json:"pane_id"`
-	PaneIndex   int    `json:"pane_index"`
-	// Layout is tmux's window_layout string, which draws how the window is split. Empty when the
-	// client dropped it: a window split finely enough grows a layout past what a registration
-	// carries, and the other nine members are sent without it rather than the place being lost.
-	Layout string `json:"layout,omitempty"`
-	Zoomed bool   `json:"zoomed"`
-}
+// TmuxPlace is a session's pane and the window and tmux session holding it, as the listener's
+// wire package declares it (listenerwire.TmuxPlace): a session outside tmux is a nil TmuxPlace on
+// the entry, never a place with empty members.
+type TmuxPlace = listenerwire.TmuxPlace
 
 // DeliveryConsumer is SessionEntry.Delivery for a session whose stored messages its session consumer
 // delivers.

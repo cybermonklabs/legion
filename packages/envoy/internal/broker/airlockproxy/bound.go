@@ -254,8 +254,12 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Everything below reads the grant this request was decided for: the names it still
-	// carries, the placeholders behind them, and the ids its line logs.
+	// carries, the placeholders behind them, and the ids its line logs. Every dial made for it -
+	// an Azure exchange's as well as the call's own - runs under that grant too (withCaller), so
+	// its line names the caller the request's own line names, and not the one the CONNECT read,
+	// which a grant that moved since no longer is.
 	info.grant = connection
+	r = r.WithContext(withCaller(r.Context(), connection))
 	request := &airlock.Request{
 		ConnectHost: info.host,
 		// The port the CONNECT named, which is 443 for every connection the proxy decrypts
@@ -813,11 +817,12 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // name the call was handled for as its secrets, once one was chosen, listed and counted by the API
 // port's rule (answer.SecretNames) - and beside them the host, the reason and the path before the
 // caller's correlation id, and the issue the grant was given for and the slot after it. Never the
-// placeholder and never the value, as callFields: the reason is the broker's own words, which name
-// neither. The method, the host and the path are the caller's, and a reason may quote the host
-// (serveConnect's target that is no host and port, and checkedAddresses' name that does not
-// resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the line
-// (answer.ClipFields).
+// value: no field is read from a header the swap puts one in, nor from the body. The method, the
+// host, the path and the correlation id (X-Correlation-Id) are the caller's own text, and a reason
+// may quote the host (serveConnect's target that is no host and port, and checkedAddresses' name
+// that does not resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the
+// line (answer.ClipFields), and the line is written through maskedHandler, which writes each
+// placeholder such text holds as placeholderMark, since a cut is no redaction.
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
 	line := answer.RefusalLine{ID: id, Status: status, Code: code, Method: r.Method,
 		CallerClass: answer.CallerAirlock, Caller: callerOf(c.grant), Correlation: answer.CorrelationID(r)}

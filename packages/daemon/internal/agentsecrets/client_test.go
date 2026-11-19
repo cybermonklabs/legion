@@ -1,6 +1,7 @@
 package agentsecrets
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -762,6 +765,135 @@ func TestEnrollWithoutASessionSendsNull(t *testing.T) {
 	req := broker.lastEnrollRequest()
 	if v, present := req.body["session_id"]; !present || v != nil {
 		t.Fatalf("session_id = %v (present %t), want an explicit null", v, present)
+	}
+}
+
+// plannerClaim is a role claim token as the daemon spells it (claim.NewToken).
+const plannerClaim = "legion-acme-acme-12-planner"
+
+// TestEnrollSendsTheClaim: the claim the process runs for goes to the broker as `claim`, beside
+// every field the contract already carried, so the broker files the pod's requests under it.
+func TestEnrollSendsTheClaim(t *testing.T) {
+	broker, c := newIssuedClient(t)
+	e := podEnrollment
+	e.Claim = plannerClaim
+	if _, err := c.Enroll(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"kind": "pod", "runtime_id": podEnrollment.PodUID, "operator": nil, "thumbprint": podEnrollment.Thumbprint,
+		"session_id": "ses_implementer", "pod_token": podEnrollment.PodToken, "claim": plannerClaim,
+	}
+	if gotJSON, wantJSON := mustJSON(t, broker.lastEnrollRequest().body), mustJSON(t, want); gotJSON != wantJSON {
+		t.Fatalf("body\n got %s\nwant %s", gotJSON, wantJSON)
+	}
+}
+
+// olderEnrollmentBody is POST /v1/enrollments's body as a broker from before the claim declares
+// it: the fields that broker reads, and no other.
+type olderEnrollmentBody struct {
+	Kind       string  `json:"kind"`
+	RuntimeID  string  `json:"runtime_id"`
+	Slot       string  `json:"slot"`
+	Operator   *string `json:"operator"`
+	Thumbprint string  `json:"thumbprint"`
+	SessionID  *string `json:"session_id"`
+	PodToken   *string `json:"pod_token"`
+}
+
+// newOlderBroker is POST /v1/enrollments as a broker from before the claim answers it: it reads
+// the body as that broker's readJSON does, refusing a field it does not declare with
+// 400 INVALID_ENROLLMENT and the decoder's own words, and records every body it was sent.
+func newOlderBroker(t *testing.T) (*Client, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var sent map[string]any
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			t.Errorf("enrollment body is not JSON: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, sent)
+		mu.Unlock()
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		w.Header().Set("Content-Type", "application/json")
+		if err := decoder.Decode(&olderEnrollmentBody{}); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": "INVALID_ENROLLMENT", "error": "body must be one valid JSON object: " + err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"enrollment_id":"enr-older","lease_expires_at":"2026-09-26T12:15:00Z"}`)
+	}))
+	t.Cleanup(server.Close)
+	c := &Client{URL: server.URL, HTTP: server.Client()}
+	withCredential(t, c, "cred-1")
+	return c, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(bodies)
+	}
+}
+
+// TestEnrollRetriesWithoutTheNewFieldsOnAnOlderBroker: a broker from before the claim refuses
+// the field as unknown, and the daemon reads a 4xx as permanent and drops the pod's identity, so
+// one refusal of that shape is retried once without the fields that broker cannot read, and the
+// enrollment it answers is the pod's. Every other 400 is one call and the permanent refusal it was:
+// another code, an INVALID_ENROLLMENT that names no unknown field, one met by a body that carried
+// no new field to leave out, and the retry's own refusal.
+func TestEnrollRetriesWithoutTheNewFieldsOnAnOlderBroker(t *testing.T) {
+	claimed := podEnrollment
+	claimed.Claim = plannerClaim
+	t.Run("an older broker enrols the pod without its claim", func(t *testing.T) {
+		c, sent := newOlderBroker(t)
+		got, err := c.Enroll(context.Background(), claimed)
+		if err != nil || got.ID != "enr-older" {
+			t.Fatalf("Enroll against an older broker = %+v, %v; want its enrollment enr-older", got, err)
+		}
+		bodies := sent()
+		if len(bodies) != 2 {
+			t.Fatalf("the older broker was sent %d bodies, want two: the body, then the body without the claim", len(bodies))
+		}
+		if bodies[0]["claim"] != plannerClaim {
+			t.Fatalf("the first body = %v, want it to state the claim", bodies[0])
+		}
+		withoutClaim := maps.Clone(bodies[0])
+		delete(withoutClaim, "claim")
+		if gotJSON, wantJSON := mustJSON(t, bodies[1]), mustJSON(t, withoutClaim); gotJSON != wantJSON {
+			t.Fatalf("the retry's body\n got %s\nwant the first body without the claim %s", gotJSON, wantJSON)
+		}
+	})
+	unknownField := `{"code":"INVALID_ENROLLMENT","error":"body must be one valid JSON object: json: unknown field \"claim\""}`
+	for _, c := range []struct {
+		name    string
+		in      PodEnrollment
+		answers []enrollAnswer
+		calls   int
+		code    string
+	}{
+		{"another code", claimed, []enrollAnswer{{http.StatusBadRequest, `{"code":"INVALID_CLAIM","error":"a claim is only for a pod a launcher enrols"}`}}, 1, "INVALID_CLAIM"},
+		{"an INVALID_ENROLLMENT naming no unknown field", claimed, []enrollAnswer{{http.StatusBadRequest, `{"code":"INVALID_ENROLLMENT","error":"body must be one valid JSON object: unexpected EOF"}`}}, 1, "INVALID_ENROLLMENT"},
+		{"a body that states no claim", podEnrollment, []enrollAnswer{{http.StatusBadRequest, unknownField}}, 1, "INVALID_ENROLLMENT"},
+		{"the retry refused as well", claimed, []enrollAnswer{{http.StatusBadRequest, unknownField}, {http.StatusBadRequest, unknownField}}, 2, "INVALID_ENROLLMENT"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			broker, client := newIssuedClient(t)
+			broker.enrollAnswers = c.answers
+			_, err := client.Enroll(context.Background(), c.in)
+			var api *APIError
+			if !errors.As(err, &api) || api.Status != http.StatusBadRequest || api.Code != c.code || !IsPermanent(err) {
+				t.Fatalf("Enroll = %v, want the permanent 400 %s", err, c.code)
+			}
+			broker.mu.Lock()
+			calls := len(broker.enrollReqs)
+			broker.mu.Unlock()
+			if calls != c.calls {
+				t.Fatalf("the broker was called %d times, want %d", calls, c.calls)
+			}
+		})
 	}
 }
 
