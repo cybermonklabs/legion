@@ -176,6 +176,18 @@ func (r *repositories) entry(key string) *repositoryEntry {
 	return held
 }
 
+// entryOf is a copy of the entry repo's name holds, compared without case, and the zero entry
+// where none is held: what GitHub last answered for one name, as the rename pass reads it of a
+// configured pair's two names (renameTransfer).
+func (r *repositories) entryOf(repo string) repositoryEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if held := r.entries[strings.ToLower(repo)]; held != nil {
+		return *held
+	}
+	return repositoryEntry{}
+}
+
 // serving is the repository GitHub holds a recorded one under now (ghrepo.Renames.Serving): the
 // other name of its configured pair exactly when the recorded name is that pair's `from`, the
 // pair's `to` is served and its `from` is not (servesLocked); every other recorded name, the
@@ -552,14 +564,26 @@ const repositoryReads = 8
 // the other, each bounded by installReadAttempt, and reads on past a read that fails: apps holds
 // each read that answered, and unread is why the reads did not answer for name, naming the first
 // role App whose read failed, "" when every one answered.
+//
+// A name a configured pair holds is read under that name alone, following no redirect
+// (InstalledUnder): GitHub redirects the name a transfer moved a repository away from to where the
+// repository is now, and a name GitHub redirects is no repository of its own (ghrepo.Renames), so
+// what the rename rule reads of a pair's `from` is GitHub's answer for the `from` itself, not
+// installed once the transfer has happened (servesLocked). Every other name is read as GitHub
+// answers for the repository wherever it is now, a redirect followed, as a repository GitHub
+// renamed with no pair configured is (InstalledOn).
 func (w *workflowRuntime) readInstallations(ctx context.Context, name ghrepo.Repository) (apps appInstallations, unread string) {
+	installed := w.installs.InstalledOn
+	if _, paired := w.repositories.renames.Partner(name.String()); paired {
+		installed = w.installs.InstalledUnder
+	}
 	for _, role := range appauth.Roles {
 		read, cancel := context.WithTimeout(ctx, installReadAttempt)
-		installed, err := w.installs.InstalledOn(read, role, name)
+		answered, err := installed(read, role, name)
 		cancel()
 		switch {
 		case err == nil:
-			*apps.of(role) = appInstallation{answered: true, installed: installed}
+			*apps.of(role) = appInstallation{answered: true, installed: answered}
 		case unread == "":
 			unread = fmt.Sprintf("the %s App's installation on %s could not be read: %v", role, name, err)
 		}
@@ -702,12 +726,9 @@ func (w *workflowRuntime) prepareLive(ctx context.Context, repo ghrepo.Repositor
 	return answer.read, nil
 }
 
-// readPairs reads both role Apps' installations on both names of each configured pair, each under
-// its own name and never through serving, with no read of its name and no webhook App check
-// (prepareName, naming no repository), and keeps each answer in that name's own entry: what GitHub
-// answers there is what the rename rule reads (servesLocked), and until it answers, the rule serves
-// each pair's `to` and not its `from`. With onlyUnanswered set, only the names GitHub has not
-// answered both reads of yet are read (unansweredPairs).
+// readPairs reads both names of each configured pair (readPairNames), or, with onlyUnanswered set,
+// only the names GitHub has not answered both role Apps' installation reads of yet
+// (unansweredPairs).
 func (w *workflowRuntime) readPairs(ctx context.Context, onlyUnanswered bool) {
 	var names []ghrepo.Repository
 	if onlyUnanswered {
@@ -717,6 +738,18 @@ func (w *workflowRuntime) readPairs(ctx context.Context, onlyUnanswered bool) {
 			names = append(names, pair.From, pair.To)
 		}
 	}
+	w.readPairNames(ctx, names)
+}
+
+// readPairNames reads both role Apps' installations on each of names, names a configured pair
+// holds, repositoryReads at a time, each under its own name, following no redirect
+// (readInstallations), and never through serving, with no read of its name and no webhook App
+// check (prepareName, naming no repository), and keeps each answer in that name's own entry: what
+// GitHub answers there is what the rename rule reads (servesLocked), and until it answers, the
+// rule serves each pair's `to` and not its `from`. The refresher reads the pairs so (readPairs),
+// and so does the rename pass for a pair's name the repository state holds no answer for yet
+// (renameTransfer).
+func (w *workflowRuntime) readPairNames(ctx context.Context, names []ghrepo.Repository) {
 	eachRepository(names, func(name ghrepo.Repository) {
 		answer, err := w.prepareName(ctx, name, ghrepo.Repository{}, nil)
 		if err == nil && answer.changed && answer.readError != "" {

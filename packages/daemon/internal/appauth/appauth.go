@@ -184,9 +184,12 @@ type Manager struct {
 	apps    config.GitHubApps
 	baseURL string
 	client  *http.Client
-	now     func() time.Time
-	stderr  io.Writer
-	log     *slog.Logger
+	// noRedirect is client following no redirect, so a 3xx is the answer the caller reads
+	// (InstalledUnder).
+	noRedirect *http.Client
+	now        func() time.Time
+	stderr     io.Writer
+	log        *slog.Logger
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -271,6 +274,8 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -290,6 +295,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		apps:                 apps,
 		baseURL:              baseURL,
 		client:               client,
+		noRedirect:           &noRedirect,
 		now:                  now,
 		stderr:               stderr,
 		log:                  log,

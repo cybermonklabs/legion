@@ -21,10 +21,12 @@ func (r Rename) describe() string { return r.From.String() + " -> " + r.To.Strin
 // The equivalence is read-side only: nothing it answers rewrites a record, and the pair must stay
 // configured for as long as any record names the old repository. This release's one exception is
 // a one-time pass at the daemon's boot and at the end of an issue's pod (the daemon's renamePass,
-// through record.RenameIssueRepository), which writes each pair's `to` over its `from` on the
-// stored records while no pod of the issue is live (dispatch://INFRA-4401 A10) and logs, for each
-// table, the rows still on each `from`: once none is, no record names the old repository and the
-// pair can go. dispatch://INFRA-3532's own change removes the pass.
+// through record.RenameIssueRepository), which writes each pair's `to`, in GitHub's spelling, over
+// its `from` on the stored records once GitHub shows the transfer — both role Apps installed on
+// the `to` and neither on the `from`, each name read under its own name — while no pod of the
+// issue is live (dispatch://INFRA-4401 A10), and logs, for each table, the rows still on each
+// `from`: once none is, no record names the old repository and the pair can go.
+// dispatch://INFRA-3532's own change removes the pass.
 type Renames struct {
 	// pairs are the configured pairs, in configured order.
 	pairs []Rename

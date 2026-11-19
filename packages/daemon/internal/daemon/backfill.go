@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -56,20 +55,6 @@ func leaveUnfilled(log *slog.Logger, key, repo, why string) {
 func leaveUnnamed(log *slog.Logger, key, repo, why string) {
 	log.Warn("workflow backfill: a record is left as it is, without GitHub's spelling of its repository, and the backfill tries it again",
 		"issue", key, "repo", repo, "cause", why, "retryIn", installReadRetry.Initial.String())
-}
-
-// serializedTx runs write in one transaction under the lock every fact applies under
-// (intake.SerializeFacts), so no fact applies with a copy of a record read before write wrote it
-// or read it: the backfill's writes (fillRepositories, nameRepositories), the rename pass's
-// (renamePass.write) and the refresher's read of the live records (refreshLive). A lock not taken
-// is the error what names, wrapping the lock's own.
-func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(ctx, tx); err != nil {
-			return fmt.Errorf("%s: %w", what, err)
-		}
-		return write(tx)
-	})
 }
 
 // fillRepositories fills each record of project written before the record carried its

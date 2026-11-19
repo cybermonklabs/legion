@@ -13,10 +13,10 @@ import (
 
 // The writer of this release's one-time rename pass (dispatch://INFRA-4401 A10): the daemon writes
 // each configured rename's new name (`repository_renames`' `to`) over its old one (`from`) on every
-// stored column that holds a repository name, once, at its boot and at the end of an issue's pod
-// (internal/daemon's renamePass), and dispatch://INFRA-3532's own change removes it with these
-// functions. PutIssue refuses a recorded issue another repository, so the pass writes through
-// RenameIssueRepository and nothing else does.
+// stored column that holds a repository name, once GitHub shows the repository's transfer, at its
+// boot and at the end of an issue's pod (internal/daemon's renamePass), and
+// dispatch://INFRA-3532's own change removes it with these functions. PutIssue refuses a recorded
+// issue another repository, so the pass writes through RenameIssueRepository and nothing else does.
 //
 // The columns are every one the migrations give a repository name: issues.repo and
 // issues.github_repo (0047, 0048), pull_requests.repo (0004), production_checks.repo (0049) and
@@ -25,9 +25,10 @@ import (
 // rows carry no repository, and processed_events.event_id only embeds one in a dedupe key. Every
 // comparison is made without case (`lower(col) = lower(from)`), as every read of a repository
 // name in the record is, so a row in any spelling of the old name is written; the new name is
-// written as the pair configures it. A pair never renames a repository to itself in another case
-// (ghrepo.NewRenames), so a row on the new name never matches the old one, and a second run
-// writes nothing.
+// written as the caller hands it, on every column alike, which the pass hands in GitHub's spelling
+// of the pair's `to` (Issue.GitHubRepo is the spelling GitHub intake's subjects are built from). A
+// pair never renames a repository to itself in another case (ghrepo.NewRenames), so a row on the
+// new name never matches the old one, and a second run writes nothing.
 
 // RenameTable is a table whose columns hold a repository name, as a count by table names it
 // (RenameCandidate.Rows, RenameWrite.Rows).

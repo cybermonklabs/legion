@@ -56,6 +56,10 @@ func (loginTokens) InstalledOn(context.Context, appauth.AppRole, ghrepo.Reposito
 	return true, nil
 }
 
+func (loginTokens) InstalledUnder(context.Context, appauth.AppRole, ghrepo.Repository) (bool, error) {
+	return true, nil
+}
+
 // InstalledOwners answers each App installed on no account, which the boot's proof of each App's
 // key takes (proveAppKeys): opening the workflow builds no gh bundle, and a test that builds one
 // names its owners itself.

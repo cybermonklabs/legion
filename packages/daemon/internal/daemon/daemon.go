@@ -2988,6 +2988,20 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	s.wake(row.Issue, row.Kind)
 }
 
+// serializedTx runs write in one transaction under the lock every fact applies under
+// (intake.SerializeFacts), so no fact applies with a copy of a record read before write wrote it
+// or read it: the backfill's writes (fillRepositories, nameRepositories), the rename pass's
+// (renamePass.write) and the refresher's read of the live records (refreshLive). A lock not taken
+// is the error what names, wrapping the lock's own.
+func serializedTx(ctx context.Context, pool *store.Pool, what string, write func(pgx.Tx) error) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		return write(tx)
+	})
+}
+
 // State is the project's state through tx, and the project's claims it read through tx to build
 // it (api.StateSource): the route reads the caller's plugin contract from those claims, so the
 // body and the contract it is cut to come from one snapshot.

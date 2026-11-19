@@ -144,13 +144,16 @@ func (e *Engine) NoteRepositoryKept(ctx context.Context, tx pgx.Tx, issue record
 }
 
 // noteOnce posts note on the Dispatch issue key unless the issue's last repository note was the
-// same note at the same resolution, and reports whether it posted.
+// same note at the same resolution, and reports whether it posted. The resolutions are compared as
+// every repository name is (sameRepository): the daemon's one-time rename pass writes a configured
+// pair's `to` over the `from` a note was stored under, while Dispatch still resolves the issue to
+// the `from`, and the note it said once is not said again.
 func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note string) (bool, error) {
 	last, err := e.store.RepoNote(ctx, tx, key)
 	if err != nil {
 		return false, err
 	}
-	if last != nil && last.ResolvedRepo == resolved && last.Note == note {
+	if last != nil && e.sameRepository(last.ResolvedRepo, resolved) && last.Note == note {
 		return false, nil
 	}
 	if err := e.enqueue(ctx, tx, key, record.MessagePost{Body: note}); err != nil {

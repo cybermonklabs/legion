@@ -667,7 +667,7 @@ func TestAPersonsOwnTodoIssueOnARepositoryNoRecordNamesAsksGitHubNothing(t *test
 type bootReconcile struct{}
 
 // bootCountedInstallations is installations counting apart, in atBoot, the reads asked under a
-// context bootReconcile marks.
+// context bootReconcile marks, by either form of the read.
 type bootCountedInstallations struct {
 	*installations
 	atBoot atomic.Int64
@@ -678,6 +678,10 @@ func (i *bootCountedInstallations) InstalledOn(ctx context.Context, role appauth
 		i.atBoot.Add(1)
 	}
 	return i.installations.InstalledOn(ctx, role, repo)
+}
+
+func (i *bootCountedInstallations) InstalledUnder(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+	return i.InstalledOn(ctx, role, repo)
 }
 
 // The boot's listing asks GitHub nothing for a repository no record names. It runs inside the

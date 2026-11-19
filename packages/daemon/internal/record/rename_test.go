@@ -68,7 +68,7 @@ func renameLeft(t *testing.T, ctx context.Context, tx pgx.Tx, project, from stri
 	return left
 }
 
-// The writer writes a pair's new name, as the pair configures it, on every stored column of an
+// The writer writes a pair's new name, as its caller hands it, on every stored column of an
 // issue that holds the old name in any spelling — the record's repository and GitHub's spelling,
 // the pull request, the production check and the repository note — and on nothing else: an issue
 // on another repository and an issue of another project on the old name are left as they are.

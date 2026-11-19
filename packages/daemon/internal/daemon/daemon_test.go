@@ -1341,9 +1341,11 @@ func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
 // table names is no gap to warn of, and nothing of the boot or of the refresher's first job says
 // either (dispatch://INFRA-4401 check a-go, item 9). Here the project's commit_issue_trailer_repos
 // names orbit/gadgets and repository_renames pairs sjawhar/legion with cybermonklabs/legion
-// (transferredLegion), and no record names any of them. Control: with either warning back (the
-// boot's warning of a trailer repository, or of a pair naming a repository the project does not
-// serve), a WARN line names it.
+// (transferredLegion), and no record names any of them. The lines are matched by the phrases of
+// the two warnings this change deleted, not by the word rename, since the rename pass and the
+// refresher's read of the pairs log WARN lines of their own that name a rename (renameLeftLine,
+// readPairNames). Control: with either warning back (the boot's warning of a trailer repository,
+// or of a pair naming a repository the project does not serve), a WARN line names it.
 func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
 	if cfg.Projects == nil {
@@ -1361,9 +1363,16 @@ func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
 		return strings.Contains(logged.String(), "legion workflow prepared the repositories its records name")
 	})
 	for line := range strings.SplitSeq(logged.String(), "\n") {
-		lower := strings.ToLower(line)
-		if strings.Contains(line, `"level":"WARN"`) && (strings.Contains(lower, "commit_issue_trailer_repos") || strings.Contains(lower, "rename")) {
-			t.Errorf("WARN line %s names the trailer setting or a rename, want none", line)
+		if !strings.Contains(line, `"level":"WARN"`) {
+			continue
+		}
+		for _, deleted := range []string{
+			"a configured repository rename names a repository this project does not serve",
+			"commit_issue_trailer_repos names a repository",
+		} {
+			if strings.Contains(line, deleted) {
+				t.Errorf("WARN line %s says %q, a boot warning this change deleted, want none", line, deleted)
+			}
 		}
 	}
 }
@@ -1795,6 +1804,12 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 		return false, err
 	}
 	return !r.missing[key], nil
+}
+
+// InstalledUnder answers as InstalledOn does: the recorder answers each name for itself, as GitHub
+// answers a name it redirects nowhere.
+func (r *workflowTokenRecorder) InstalledUnder(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+	return r.InstalledOn(ctx, role, repo)
 }
 
 // InstalledOwners answers each App installed on acme, the account of acme/widgets, which every

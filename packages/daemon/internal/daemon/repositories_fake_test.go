@@ -1,8 +1,6 @@
 package daemon
 
 import (
-	"strings"
-
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -47,15 +45,4 @@ func (r *repositories) fillRead(read ghbranch.Repository) {
 func answerInstalled(repos *repositories, name string, installed bool) {
 	answer := appInstallation{answered: true, installed: installed}
 	repos.keepRead(ghrepo.MustParse(name), appInstallations{implement: answer, review: answer}, "")
-}
-
-// entryOf is a copy of the entry repo's name holds, compared without case, and the zero entry
-// where none is held: what a test reads of GitHub's answers for one name.
-func (r *repositories) entryOf(repo string) repositoryEntry {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if held := r.entries[strings.ToLower(repo)]; held != nil {
-		return *held
-	}
-	return repositoryEntry{}
 }

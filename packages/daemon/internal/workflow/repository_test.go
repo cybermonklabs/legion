@@ -188,6 +188,40 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 	}
 }
 
+// A note stored under a configured pair's `to` is the note said for its `from`: the daemon's
+// one-time rename pass writes the `to` over the `from` a note was stored under
+// (record.RenameIssueRepository), while Dispatch still resolves the issue to the `from`, so the
+// next event resolving it there says nothing again on the issue. Control: with noteOnce comparing
+// the stored resolution exactly, the second event posts the note again.
+func TestARepositoryNoteTheRenamePassRewroteIsNotSaidAgain(t *testing.T) {
+	pool := migratedPool(t)
+	openTree(t, pool)
+	parent := "LEGION-208"
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent,
+		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 2})
+	apply := applyFacts(t, pool, renamedEngine(renamedLegion))
+	moved := func(seq int64) intake.DispatchIssue {
+		event := childTodo(seq, "sjawhar/legion")
+		event.Status = "in_progress"
+		return event
+	}
+	apply("moved-to-the-old-name", moved(3))
+	if _, err := pool.Exec(context.Background(), "update repo_notes set resolved_repo = 'cybermonklabs/legion' where issue = 'LEGION-209'"); err != nil {
+		t.Fatalf("write the pair's new name over the note's resolution, as the rename pass does: %v", err)
+	}
+	apply("moved-to-the-old-name-again", moved(4))
+	want := "Legion keeps acme/tools as this issue's repository; the change to sjawhar/legion in Dispatch is not applied — an issue's repository is fixed when Legion records it. Work on sjawhar/legion needs an issue of its own, which a person decides on."
+	var kept []outboxEntry
+	for _, message := range outboxOf(t, pool, "dispatch_message") {
+		if strings.HasPrefix(message.payload["body"].(string), "Legion keeps") {
+			kept = append(kept, message)
+		}
+	}
+	if len(kept) != 1 || kept[0].issue != "LEGION-209" || kept[0].payload["body"] != want {
+		t.Fatalf("repository notes = %#v, want one saying %q: the note stored under cybermonklabs/legion is the one said for sjawhar/legion", kept, want)
+	}
+}
+
 // A retained event names no repository (ResolvedRepoMissing). A recorded issue's is applied with
 // its record's repository, so it says nothing of a repository change; an unrecorded issue's is
 // refused, so the event is retried until its repository is read, and nothing is recorded on a

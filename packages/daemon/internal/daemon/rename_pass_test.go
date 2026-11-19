@@ -2,20 +2,32 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -116,6 +128,8 @@ type renameLine struct {
 	Failed  int            `json:"failed"`
 	Left    map[string]int `json:"left"`
 	Issue   string         `json:"issue"`
+	From    string         `json:"from"`
+	To      string         `json:"to"`
 	Kept    string         `json:"kept"`
 	Branch  string         `json:"branch"`
 	Reason  string         `json:"reason"`
@@ -157,13 +171,16 @@ func renameTables(t *testing.T, logged string) map[string]renameTableTally {
 	return tables
 }
 
-// renameBoot boots the workflow daemon of cfg logging to logged, and returns once it answers
-// /healthz, which it does only after the boot's rename pass has run (run's renameAtBoot), so its
-// table lines are logged by then.
+// renameBoot boots the workflow daemon of cfg logging to logged over a GitHub after the transfer of
+// INFRA's pair: both role Apps answer not installed on sjawhar/legion and installed on every other
+// repository, and GitHub spells the pair's `to` cybermonklabs/legion, at main. It returns once the
+// daemon answers /healthz, which it does only after the boot's rename pass has run (run's
+// renameAtBoot), so its table lines are logged by then.
 func renameBoot(t *testing.T, cfg config.Config, logged *syncBuffer) *daemon {
 	t.Helper()
 	o := fakeRuntime(fake.NewRuntime(), &built{})
-	o.workflowTokens = &workflowTokenRecorder{}
+	o.workflowTokens = &workflowTokenRecorder{missing: map[string]bool{"implement " + renameFrom: true, "review " + renameFrom: true}}
+	o.githubAPI = newNamedGitHub(t, map[string]string{renameFrom: "301 " + renameTo, renameTo: renameTo + "@main"}).url
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)))
 	if got := renameTables(t, logged.String()); len(got) != len(record.RenameTables) {
 		t.Fatalf("the boot's rename pass logged the tables %+v by /healthz, want each of %v", got, record.RenameTables)
@@ -171,20 +188,35 @@ func renameBoot(t *testing.T, cfg config.Config, logged *syncBuffer) *daemon {
 	return d
 }
 
-// A boot of a daemon that configures a rename writes the pair's new name on every stored column
-// that held the old one, in any spelling: the record's repository and GitHub's spelling, the pull
+// transferredRepositories is the repository state of a daemon that configures INFRA's pair
+// (transferredLegion) once GitHub has answered for its transfer, as the refresher's read of the
+// pairs (readPairs) and a preparation of the pair's `to` leave it: both role Apps installed on the
+// `to`, read as GitHub spells it, and neither on the `from`. A rename pass over it writes the pair
+// from the state alone, with no read of GitHub.
+func transferredRepositories() *repositories {
+	repos := newRepositories("LEGION", transferredLegion)
+	repos.fill(ghrepo.MustParse(renameTo))
+	answerInstalled(repos, renameFrom, false)
+	return repos
+}
+
+// A boot of a daemon that configures a rename, over a GitHub that shows the transfer — both role
+// Apps installed on the pair's `to` and neither on its `from` — writes the pair's new name, as
+// GitHub spells it and not as legion.yaml does (CyberMonkLabs/Legion), on every stored column that
+// held the old one, in any spelling: the record's repository and GitHub's spelling, the pull
 // request, the production check and the repository note, the note of an issue the project never
 // recorded among them. Where the new name would give the pull requests' unique key one repository
 // and branch twice, the row under the new name stays and the other issue's is deleted, one line
 // naming both issues. Each table's line counts the rows written, the rows failed and the rows left
 // on the old name, which is none; an issue on another repository is left alone. A second boot
-// writes nothing. Control: with the pass deleted from the boot (run's renameAtBoot), every row is
-// left on the old name.
+// writes nothing. Controls: with the pass deleted from the boot (run's renameAtBoot), every row is
+// left on the old name; with the configured spelling written (renameTransfer answering the pair's
+// own `to`), every row written holds CyberMonkLabs/Legion, a spelling nothing publishes under.
 func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.RepositoryRenames = transferredLegion
+	cfg.RepositoryRenames = ghrepo.MustRenames(ghrepo.MustRename(renameFrom, "CyberMonkLabs/Legion"))
 	p := cfg.Project
 	seedRenameRecords(t, pool, p,
 		renameSeed{key: p + "-1", repo: renameFrom, branch: "legion/" + p + "-1", check: true, note: true},
@@ -204,7 +236,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	for _, key := range []string{p + "-1", p + "-2", p + "-3", p + "-4", p + "-9"} {
 		stored[key] = storedRepositoryNames(t, pool, key)
 		if names := stored[key]; !namedAll(names, renameTo) {
-			t.Errorf("%s's stored names after the boot = %v, want each on %s", key, names, renameTo)
+			t.Errorf("%s's stored names after the boot = %v, want each on %s, as GitHub spells it", key, names, renameTo)
 		}
 	}
 	if names := stored[p+"-2"]; names["pull_requests.repo"] != "" {
@@ -216,6 +248,9 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	deleted := renameLines(t, logged.String(), renameDeletedLine)
 	if len(deleted) != 1 || deleted[0].Issue != p+"-2" || deleted[0].Kept != p+"-3" || deleted[0].Branch != "release/shared" || deleted[0].Level != "WARN" {
 		t.Errorf("deletion lines = %+v, want one WARN line naming %s-2 deleted and %s-3 kept on release/shared", deleted, p, p)
+	}
+	if left := renameLines(t, logged.String(), renameLeftLine); len(left) != 0 {
+		t.Errorf("lines of a pair left = %+v, want none: GitHub shows the transfer", left)
 	}
 	want := map[string]renameTableTally{"issues": {written: 3}, "pull_requests": {written: 1}, "production_checks": {written: 1}, "repo_notes": {written: 2}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
@@ -322,7 +357,7 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 	var logged syncBuffer
 	rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
-	rig.w.repositories = newRepositories("LEGION", transferredLegion)
+	rig.w.repositories = transferredRepositories()
 	rig.w.launched = map[string]ghbranch.Repository{strings.ToLower(rig.issue.Key): {Name: ghrepo.MustParse(renameFrom), DefaultBranch: "main"}}
 	rt := renamePodRuntime{rig.rt}
 	rig.runner.podEnded = rig.w.podEndsOn(rt)
@@ -352,12 +387,15 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 }
 
-// presenceRuntime answers, by issue, the pod a Kubernetes runtime holds, with no Sandbox of any.
+// presenceRuntime answers, by issue, the pod a Kubernetes runtime holds, with no Sandbox of any,
+// each on the configured image.
 type presenceRuntime struct {
 	*fake.Runtime
 	pods   map[string]string
 	unread map[string]bool
 }
+
+func (r presenceRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
 
 func (r presenceRuntime) IssueSandbox(string) (string, bool) { return "", false }
 
@@ -377,7 +415,7 @@ func TestAnIssueTheRuntimeCannotSayOfKeepsItsNames(t *testing.T) {
 	seedRenameRecords(t, pool, "LEGION",
 		renameSeed{key: "LEGION-1", repo: renameFrom}, renameSeed{key: "LEGION-2", repo: renameFrom}, renameSeed{key: "LEGION-3", repo: renameFrom})
 	var logged syncBuffer
-	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", transferredLegion),
+	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: transferredRepositories(),
 		log: slog.New(slog.NewJSONHandler(&logged, nil))}
 	w.renameAtBoot(context.Background(), presenceRuntime{Runtime: fake.NewRuntime(), unread: map[string]bool{"LEGION-1": true},
 		pods: map[string]string{"LEGION-2": "pod-of-legion-2"}})
@@ -440,7 +478,7 @@ func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *test
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
 	var logged syncBuffer
-	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: stateDir, repositories: newRepositories("LEGION", transferredLegion),
+	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: stateDir, repositories: transferredRepositories(),
 		log: slog.New(slog.NewJSONHandler(&logged, nil))}
 	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st,
 		project: "legion", stateDir: stateDir}
@@ -472,7 +510,7 @@ func TestUnderTmuxAnIssueKeepsItsNamesWhileItsWorkspaceIsUnderTheOldName(t *test
 
 // closingRuntime is a Kubernetes runtime's issue close: it asks the store under its pod lock and
 // stops the pod when the store authorizes it. Its informer still holds the issue's Sandbox, as a
-// Kubernetes runtime's may for a moment after the close.
+// Kubernetes runtime's may for a moment after the close, its pod on the configured image.
 type closingRuntime struct {
 	*fake.Runtime
 	stopped int
@@ -485,6 +523,8 @@ func (r *closingRuntime) SuspendIssue(ctx context.Context, _, _ string, authoriz
 	}
 	return err
 }
+
+func (r *closingRuntime) IssuePodRunsConfiguredImage(string) bool { return true }
 
 func (r *closingRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-of-" + issue, true
@@ -526,7 +566,7 @@ func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
 			rt := &closingRuntime{Runtime: fake.NewRuntime()}
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.Runtime = rt
-			w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: newRepositories("LEGION", transferredLegion),
+			w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: transferredRepositories(),
 				log: quietLogger(), launched: map[string]ghbranch.Repository{strings.ToLower(key): {Name: ghrepo.MustParse(renameFrom), DefaultBranch: "main"}}}
 			runner := &outbox{pool: pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", supervisor: sup,
 				trees: closeAuthority{authorized: tc.authorized}, log: quietLogger()}
@@ -545,5 +585,169 @@ func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
 				t.Fatalf("the repository kept for %s held = %t after the close, want %t", key, held, !tc.authorized)
 			}
 		})
+	}
+}
+
+// renameRuntime is a workflow runtime over pool for the rename pass of INFRA's pair, as a process
+// of its own boots it: its repository state holds no answer yet, its installation reads are
+// installs, and its GitHub, for the pass's read of the pair's `to`, answers at githubAPI.
+func renameRuntime(t *testing.T, pool *store.Pool, installs appauth.Installations, githubAPI string, logged *syncBuffer) *workflowRuntime {
+	t.Helper()
+	repos := newRepositories("LEGION", transferredLegion)
+	return &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), installs: installs, repositories: repos,
+		defaultBranches: newDefaultBranches(roleTokens{}, repos, githubAPI, defaultBranchTTL, time.Now), log: slog.New(slog.NewJSONHandler(logged, nil))}
+}
+
+// A pair configured before its transfer is left as it is: GitHub answers both role Apps still
+// installed on the pair's `from`, as on its `to` (a repository made there before the transfer), so
+// the boot's pass writes no row, and one WARN line names the pair and why. Once GitHub's answers
+// change, the transfer done, a later pass writes it: the refresher's read of the pairs (readPairs)
+// keeps GitHub's new answers, so the end of LEGION-1's pod writes LEGION-1, and the next boot,
+// whose process reads the pair again, writes LEGION-2 (dispatch://INFRA-4401 check a-go, item
+// 10). Control: with the gate taken out (run writing every configured pair, as though
+// renameTransfer left none), the boot writes both issues while the `from` still answers installed.
+func TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom, note: true}, renameSeed{key: "LEGION-2", repo: renameFrom})
+	installs := &installations{}
+	github := newNamedGitHub(t, map[string]string{renameTo: renameTo + "@main"}).url
+	rt := fake.NewRuntime()
+	var logged syncBuffer
+	w := renameRuntime(t, pool, installs, github, &logged)
+
+	w.renameAtBoot(ctx, rt)
+	for _, key := range []string{"LEGION-1", "LEGION-2"} {
+		if names := storedRepositoryNames(t, pool, key); !namedAll(names, renameFrom) {
+			t.Fatalf("%s's stored names after the boot = %v, want them left on %s: GitHub does not show the transfer", key, names, renameFrom)
+		}
+	}
+	left := renameLines(t, logged.String(), renameLeftLine)
+	if want := "the implement and review Apps are still installed on " + renameFrom; len(left) != 1 || left[0].Level != "WARN" ||
+		left[0].From != renameFrom || left[0].To != renameTo || left[0].Reason != want {
+		t.Fatalf("lines of a pair left = %+v, want one WARN line naming %s, %s and %q", left, renameFrom, renameTo, want)
+	}
+	if got := renameTables(t, logged.String()); got["issues"] != (renameTableTally{left: 2}) || got["repo_notes"] != (renameTableTally{left: 1}) {
+		t.Fatalf("the boot's table lines = %+v, want nothing written and every row left", got)
+	}
+
+	installs.setMissing(true, "implement "+renameFrom, "review "+renameFrom)
+	w.readPairs(ctx, false)
+	w.podEndsOn(rt)(ctx, []string{"LEGION-1"})
+	for key, repo := range map[string]string{"LEGION-1": renameTo, "LEGION-2": renameFrom} {
+		if names := storedRepositoryNames(t, pool, key); !namedAll(names, repo) {
+			t.Fatalf("%s's stored names after LEGION-1's pod end = %v, want them on %s", key, names, repo)
+		}
+	}
+
+	renameRuntime(t, pool, installs, github, &logged).renameAtBoot(ctx, rt)
+	if names := storedRepositoryNames(t, pool, "LEGION-2"); !namedAll(names, renameTo) {
+		t.Fatalf("LEGION-2's stored names after the next boot = %v, want each on %s", names, renameTo)
+	}
+	if left := renameLines(t, logged.String(), renameLeftLine); len(left) != 1 {
+		t.Fatalf("lines of a pair left = %+v, want the first boot's alone", left)
+	}
+}
+
+// A pair whose reads GitHub does not answer is left as it is, and one WARN line names the read:
+// both role Apps' installation reads of the pair's `to`, of which the implement App's fails, or,
+// once both Apps answer installed there and neither on the `from`, the read of the `to`'s name and
+// default branch, which GitHub answers with a 502. The next boot reads them again
+// (TestAPairConfiguredBeforeItsTransferIsLeftUntilGitHubShowsIt). Control: with the gate taken out
+// (run writing every configured pair), the boot writes the pair in each case.
+func TestAPairWhoseReadsDoNotAnswerIsLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		github func(t *testing.T) string
+		fail   []string
+		reason string
+	}{
+		{name: "an installation read of the new name", fail: []string{"implement " + renameTo},
+			github: func(t *testing.T) string {
+				return newNamedGitHub(t, map[string]string{renameTo: renameTo + "@main"}).url
+			},
+			reason: "GitHub has not answered both role Apps' installation reads of " + renameTo + ": the implement App's installation on " +
+				renameTo + " could not be read: GitHub answered 502"},
+		{name: "a read of the new name's name and default branch",
+			github: func(t *testing.T) string {
+				return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }})
+			},
+			reason: "the name and default branch of " + renameTo + " could not be read: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom})
+			installs := &installations{missing: map[string]bool{"implement " + renameFrom: true, "review " + renameFrom: true}}
+			installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, tc.fail...)
+			var logged syncBuffer
+			renameRuntime(t, pool, installs, tc.github(t), &logged).renameAtBoot(context.Background(), fake.NewRuntime())
+			if names := storedRepositoryNames(t, pool, "LEGION-1"); !namedAll(names, renameFrom) {
+				t.Fatalf("LEGION-1's stored names = %v, want them left on %s: GitHub's read did not answer", names, renameFrom)
+			}
+			left := renameLines(t, logged.String(), renameLeftLine)
+			if len(left) != 1 || left[0].Level != "WARN" || left[0].From != renameFrom || !strings.HasPrefix(left[0].Reason, tc.reason) {
+				t.Fatalf("lines of a pair left = %+v, want one WARN line naming %s and starting %q", left, renameFrom, tc.reason)
+			}
+		})
+	}
+}
+
+// A GitHub that answers the installation read of the pair's old name as it answers a moved
+// repository's — GET /repos/sjawhar/legion/installation with a 301 to where the repository is now,
+// which answers installed under the App's JWT — and installed for the new name shows the transfer:
+// a pair's names are read under their own names, following no redirect (readInstallations,
+// appauth's InstalledUnder), so neither role App answers installed on the `from`, the rename rule
+// serves a record on the `from` under the `to`, and the boot's pass writes the pair. GitHub is never
+// asked for the installation the redirect names. Control: with a pair's names read following the
+// redirect (readInstallations reading every name by InstalledOn), both Apps answer installed on
+// the `from`, the rule serves it as itself, and the pass leaves the pair.
+func TestAGitHubRedirectOfAPairsOldNameShowsItsTransfer(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	const moved = "/repositories/1146927990/installation"
+	var mu sync.Mutex
+	var asked []string
+	server := githubtest.Serve(t, githubtest.Spec{
+		Record: func(r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			asked = append(asked, r.URL.Path)
+		},
+		Handle: func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/" + renameFrom + "/installation":
+				http.Redirect(w, r, moved, http.StatusMovedPermanently)
+			case moved, "/repos/" + renameTo + "/installation":
+				fmt.Fprint(w, `{"id":77}`)
+			case "/repos/" + renameTo:
+				fmt.Fprint(w, `{"full_name":"`+renameTo+`","default_branch":"main"}`)
+			default:
+				githubtest.Unexpected(t, w, r)
+			}
+		},
+	})
+	installs := appauth.New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "2", PrivateKey: privatePEM},
+	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	pool := isolatedOutboxPool(t)
+	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom, branch: "legion/LEGION-1"})
+	var logged syncBuffer
+	w := renameRuntime(t, pool, installs, server.URL, &logged)
+
+	w.renameAtBoot(context.Background(), fake.NewRuntime())
+	if served := w.repositories.serving(ghrepo.MustParse(renameFrom)); served.String() != renameTo {
+		t.Fatalf("a record on %s is served as %s, want %s: GitHub redirects the old name", renameFrom, served, renameTo)
+	}
+	if names := storedRepositoryNames(t, pool, "LEGION-1"); !namedAll(names, renameTo) {
+		t.Fatalf("LEGION-1's stored names after the boot = %v, want each on %s", names, renameTo)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if slices.Contains(asked, moved) {
+		t.Fatalf("GitHub was asked %v, want no read of the installation its redirect names", asked)
 	}
 }

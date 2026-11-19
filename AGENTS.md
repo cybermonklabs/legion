@@ -630,7 +630,9 @@ the event of an issue on a repository the daemon holds no default branch for is 
 A repository that moved is named in `repository_renames`, a top-level key of `legion.yaml` (`- from: <old owner>/<name>` with `to: <new owner>/<name>`), and the daemon then treats the pair's two names as one repository wherever it compares a name, so the trees it recorded under the old name take the events GitHub sends under the new one, a pull request open at the transfer included.
 A one-time pass of this release writes each pair's `to` over its `from` on the stored records, at boot and when an issue's pod ends, for each issue with no live pod, and logs the rows still `left` on each `from`;
 a record keeps the old name until the pass writes it, so keep the pair configured until no row is left on its `from`.
-A pair serves no repository of its own, which is why it may be configured before the transfer, and `legion config check` prints one line per pair.
+The pass writes a pair only once GitHub shows the transfer, both role Apps installed on the `to` and neither on the `from`, and writes the `to` as GitHub spells it, not as `legion.yaml` does;
+until then it leaves the pair's records as they are and logs one `rename pass: left …` line naming the pair and why.
+A pair serves no repository of its own, which is why it may be configured before the transfer, for the pass as for every other reader of it, and `legion config check` prints one line per pair.
 
 `projects.<KEY>.production_check` decides whether a merge that closes one of the project's issues opens a production check and who works it:
 it takes `off` or `tester`, is `tester` by default, and the loader refuses every other value, naming the key and the value it read.
