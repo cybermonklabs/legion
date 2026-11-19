@@ -797,11 +797,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// into a projected volume of its own, mounted read-only into envoy-dispatch alone, and rewrites
 	// it in place before it expires; ENVOY_ACCOUNT_TOKEN_FILE names that file, which Dispatch reads
 	// at every listener call, and no secret is stored for it. ENVOY_TOKEN stays beside it, the
-	// listener's shared token, which Dispatch presents only on a call the listener refused 401 on
-	// the account token, with no role mark: a listener of the release before verifies no account
-	// token, and the app does not wait for the listener's rollout (a listener in the SOCKS5 mode
-	// waits for the front door, which the app must not wait behind; the comment above
-	// frontDoor), so a new app pod can reach an old listener pod while both roll.
+	// listener's shared token, which Dispatch presents only on a call with no role mark that the
+	// listener refused 401 on the account token twice: a listener of the release before verifies
+	// no account token, and the app does not wait for the listener's rollout (a listener in the
+	// SOCKS5 mode waits for the front door, which the app must not wait behind; the comment above
+	// frontDoor), so a new app pod can reach an old listener pod while both roll. A send for a
+	// role: route is never made on it.
 	appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchAccountTokenFile), secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"))
 	appMounts := append(corev1.VolumeMountArray{}, seedMount...)
 	appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("envoy-listener-account-token"), MountPath: pulumi.String(dispatchAccountTokenDir), ReadOnly: pulumi.Bool(true)})

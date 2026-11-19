@@ -504,12 +504,11 @@ stream carries that lane, no consumer filter takes it and no session may registe
 resume lane. Every claim writes with the revision of the claim record it read, and an outright
 claim reads again and writes again on a conflict until its request's budget ends, then answers
 `503` with `Retry-After: 1` and writes nothing, so the record names the holder the claim really
-replaced. A record the stream refuses because it holds its byte limit lets the claim land with no
-record. A claim that lands so writes the Error line `listener role claim goes on with no takeover
-record`, naming the role, the previous holder and the claimant, once, counted on
-`envoy_role_takeover_unrecorded_total`: that takeover copies nothing for the role's next holder. A
-try that met a conflict and a claim that did not land count nothing. Any other record failure
-writes no claim and answers `503`. A pass of a record first reads the role's claim. While it names
+replaced. A try whose record did not store - a full stream, a write nothing answered within a
+second, a leader election - writes no claim either and answers `503` with `Retry-After: 1`, so a
+claim that lands always has its record; the role stays with the holder the claim read, and the
+Legion claim boot claims again after a wait that starts at one second and doubles up to thirty. A
+pass of a record first reads the role's claim. While it names
 the record's previous holder - the claim did not land yet or at all, or the role went back to it -
 the pass copies nothing, since that holder receives its role messages from its own consumer and a
 copy would come back to the subject it was taken from as a new frame. The first such pass of a
@@ -520,12 +519,19 @@ from the acknowledgement floor of its session consumer on (or the floor the list
 it deleted that consumer, or, with neither, from an hour before the claim, on the sweep's next
 pass), and copies each role message of that role stored less than an hour before the claim or
 after it to the role's kept lane. A record that found its previous holder holding the role again
-writes when it did (at most every fifteen minutes), and counts that hour from then instead, since
-the holder read its messages until then. A role message is one whose topic is the
-role's, or whose `role` field names it. The copy is the envelope without the forward mark, under
-the kept message id followed by `:frame:` and the frame's stream sequence, so two copies of one
-frame are stored once and no copy is dropped as a repeat of an earlier kept copy of the same
-message; the walk forwards it under a forward id naming that sequence too. A pass reads at most
+writes when it did, and counts that hour from then instead, since the holder read its messages
+until then. A pass writes the record when it changed it (a new sequence, a missed floor, the
+record finished) and otherwise only once its last write is fifteen minutes old, so a record nothing
+moves costs four writes an hour however many listeners sweep it, and never ages out while a pass
+needs it. A role message is one whose topic is the role's, or whose `role` field names it. The copy
+is the envelope without the forward mark, with the message's event id and a dedupe key of its own
+in the minted form (`agent.takeover.` and 32 hex digits of the SHA-256 of the message's key and the
+frame's stream sequence), under the kept message id followed by `:frame:` and that sequence, so two
+copies of one frame are stored once and no copy is dropped as a repeat of an earlier kept copy of
+the same message. A minted key names its event, so every walk, a listener of the release before
+included, forwards the copy under that key: a role taken back reaches its previous holder, where
+the role lane's own forward of the message to it would have the stream drop the copy, and a host
+that already showed the message drops the copy by its event id. A pass reads at most
 two hundred messages and writes the record again with the sequence it reached. The claim route's
 handover runs passes before it walks the lane, and the sweep runs passes of every record that is
 not finished every five minutes, so a listener that stopped at any step delays a message and loses

@@ -1418,12 +1418,13 @@ for the listener's URL with `expirationSeconds: 3600` and rewritten before it ex
 `/var/run/secrets/envoy-listener/token`, which `ENVOY_ACCOUNT_TOKEN_FILE` names and Dispatch reads
 at every listener call. The component also generates a shared bearer, keeps it in the Secret
 `<hostname>-listener`, and gives it to the listener as `ENVOY_API_TOKEN` and to `envoy-dispatch`
-as `ENVOY_TOKEN`, which Dispatch presents only on a call the listener refused `401` on the account
-token: a listener of the release before this one verifies no account token, and the app does not
-wait for the listener's rollout (in the SOCKS5 mode the listener waits for the front door, which
-the app must come back without), so while both roll a new app pod can reach an old listener pod,
-and that call is made again on the shared token, with no role mark, rather than refused. The
-listener runs as machine `<hostname>`, so the hub's user for this deployment
+as `ENVOY_TOKEN`, which Dispatch presents only on a call with no role mark that the listener refused
+`401` on the account token twice: a listener of the release before this one verifies no account
+token, and the app does not wait for the listener's rollout (in the SOCKS5 mode the listener waits
+for the front door, which the app must come back without), so while both roll a new app pod can
+reach an old listener pod, and such a call is made again on the shared token rather than refused. A
+send for a `role:` route is never made on it: one an old listener refuses fails its attempt, which
+the delivery records. The listener runs as machine `<hostname>`, so the hub's user for this deployment
 sets `dispatchMachineId` to the component's `hostname`. Both Envoy containers mount the NATS seed
 at `/var/run/secrets/envoy/nats-seed`; the seed remains outside Pulumi state. With
 `agentSecretsUrl` set, the `envoy-dispatch` container alone also mounts its projected
