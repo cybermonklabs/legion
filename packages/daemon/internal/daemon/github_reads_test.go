@@ -102,7 +102,7 @@ func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequ
 // handoff completion do, failing the test on an error.
 func readCapture(t *testing.T, w *workflowRuntime) {
 	t.Helper()
-	if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+	if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 		t.Fatalf("read CAPTURE-1's pull request: %v", err)
 	}
 }
@@ -199,7 +199,7 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 				}
 			}
 			w := readRuntime(pool, mergeableStandIn(t, tc.state).URL, quietLogger())
-			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
 			got, pr := capturePhase(t, pool)
@@ -268,7 +268,7 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 			// The column holds whole microseconds, as every timestamp the store writes does, so
 			// the moment before the read is read to the same precision before it is compared.
 			opened := time.Now().UTC().Truncate(time.Microsecond)
-			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request: %v", err)
 			}
 			got, pr := capturePhase(t, pool)
@@ -284,7 +284,7 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 			if pr.StateReadAt.Before(opened) || pr.StateReadAt.After(time.Now().UTC()) {
 				t.Fatalf("the read is recorded as made at %v, want a moment of the read itself (after %v)", pr.StateReadAt, opened)
 			}
-			if err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
+			if _, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1"); err != nil {
 				t.Fatalf("read the issue's pull request again: %v", err)
 			}
 			_, again := capturePhase(t, pool)

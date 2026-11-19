@@ -103,15 +103,20 @@ type outbox struct {
 	// answer, under the event id it is handed; and mergeStateWait is how long a read row waits
 	// before it reads again. The two rows that read a pull request use them: the merge-queue read
 	// (mergeQueueRead) and the second read of a conflicting head (conflictConfirm), whose every
-	// read is bounded by issueRead. All three are the workflow runtime's own
+	// read is bounded by issueRead. queueMergeStateFollow hands an issue's head to the merge-state
+	// reader to follow GitHub's merge state for, which the second read does when its last attempt
+	// read no answer. All four are the workflow runtime's own
 	// (workflowRuntime.readPullRequest, workflowRuntime.applyMergeability,
-	// workflowRuntime.mergeStateWait), set by attach after newOutbox, so the outbox reads GitHub
-	// and applies its answer as the per-issue read does and a whole-daemon test cuts the wait
-	// through the runtime's own field (mergeStateRetry). A test that builds the outbox by hand
-	// leaves them nil, and a read row then fails with an error that names the missing read.
-	readPullRequest   func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
-	applyMergeability func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
-	mergeStateWait    func() time.Duration
+	// workflowRuntime.mergeStateWait, workflowRuntime.queueMergeStateFollow), set by attach after
+	// newOutbox, so the outbox reads GitHub and applies its answer as the per-issue read does, a
+	// whole-daemon test cuts the wait through the runtime's own field (mergeStateRetry), and the
+	// reads that follow the second read are the runtime's ladder's own. A test that builds the
+	// outbox by hand leaves them nil, and a read row then fails with an error that names the
+	// missing read.
+	readPullRequest       func(context.Context, record.PullRequest) (githubrest.Client, githubPullRequest, error)
+	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
+	mergeStateWait        func() time.Duration
+	queueMergeStateFollow func(issue, head string)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that

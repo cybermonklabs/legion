@@ -105,9 +105,11 @@ const dequeueRetry = 20 * time.Millisecond
 // (readIssuesAtStart), and logs no line when it ends, so the boot waits until GitHub has counted
 // that read and its reviews read, its last call, for every issue before any case publishes. The
 // per-issue read asks again only after a recorded handoff, and the merge-state ladder only after
-// an opened, synchronize, push, check, review or base-push fact, and no case records or applies
-// any of them. Each case then holds the count to the read executor's own lines (one per read), so
-// a read anything else made would fail it.
+// an opened, synchronize, push, check, review or base-push fact, a start read GitHub answered
+// `unknown`, or a second read of a conflicting head that read no answer, and no case records or
+// applies any of them: GitHub answers no read `unknown` and no head conflicting. Each case then
+// holds the count to the read executor's own lines (one per read), so a read anything else made
+// would fail it.
 //
 // Each case has an issue of its own, and each issue but the tenth's and the twelfth's is its own
 // tree root, so the sixteen share one daemon:

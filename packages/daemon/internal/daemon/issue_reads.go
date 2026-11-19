@@ -47,17 +47,23 @@ const issueRead = 30 * time.Second
 // record.PullRequest.StateReadAt), which is what tells a head read a minute ago from one nothing
 // has read for a day. A failed read is returned to the caller, which
 // logs it; the record then stands as it was, and the next read of the issue asks again.
-func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) error {
+//
+// It answers whether GitHub is still computing the merge of the pull request's head: its read
+// found the pull request open with merge state `unknown` or `mergeable` null. The start read
+// queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's read does not.
+// A read whose reviews read must stop - ctx ended, or GitHub's rate limit, which the ladder's reads
+// would meet as well - answers false.
+func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) (bool, error) {
 	recorded, err := w.issuePullRequest(ctx, issue)
 	if err != nil || recorded == nil {
-		return err
+		return false, err
 	}
 	pr := *recorded
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	github, pull, err := w.readPullRequest(read, pr)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("read pull request %s#%d and its mergeability: %w", pr.Repo, pr.Number, err)
+		return false, fmt.Errorf("read pull request %s#%d and its mergeability: %w", pr.Repo, pr.Number, err)
 	}
 	// The moment GitHub's answer was in hand, taken before the head follow below: that follow can
 	// make more GitHub calls and wait on the fact lock, and the stamp is the age of this answer, not
@@ -65,7 +71,7 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	answeredAt := time.Now().UTC()
 	if pr, err = w.followHead(ctx, github, pr, pull); err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return false, nil
 		}
 		// The reads below go on against the record as it stands when a comparison GitHub keeps
 		// failing stops this one following the head: the next read of the issue follows it.
@@ -79,9 +85,9 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 	// A failed apply is logged there, and the next read of the issue applies it again.
 	_ = w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt))
 	if w.readReviews(ctx, prCtx, github, pr) {
-		return nil
+		return false, nil
 	}
-	return nil
+	return pull.State == "open" && (pull.mergeState() == record.MergeStateUnknown || pull.mergeability() == record.MergeabilityUnknown), nil
 }
 
 // issuePullRequest is the open pull request the per-issue read judges for key: the record's, when
@@ -209,6 +215,14 @@ func (w *workflowRuntime) issueRecord(ctx context.Context, key string) (*record.
 // issue's next handoff reads the same pull request; GitHub's rate limit ends the start read there,
 // because every read after it on the same installation meets the same limit, and the panes share
 // it.
+//
+// A read that finds GitHub still computing the merge of an open pull request's head - merge state
+// `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
+// climbs and then follows the head while GitHub goes on answering `unknown` (followMergeState).
+// The reads that followed GitHub's merge state before the daemon stopped were held in memory, and
+// this is what goes on with them after a restart (dispatch://INFRA-4374 R4). GitHub's `unknown` is
+// the whole reason: no rule of classify.MergeStateReadOwed is read for it, and a read that answers
+// a state queues nothing.
 func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 	issues, err := w.issuesInWorkflow(ctx)
 	if err != nil {
@@ -221,8 +235,12 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		err := w.readIssuePullRequest(ctx, issue)
+		computing, err := w.readIssuePullRequest(ctx, issue)
 		if err == nil {
+			if computing {
+				w.log.Info("github: the start read found GitHub's merge state unknown; a ladder reads the pull request again", "issue", issue)
+				w.queueMergeState(issue)
+			}
 			continue
 		}
 		var answer *githubrest.Answer
@@ -275,7 +293,9 @@ func (w *workflowRuntime) handoffCompleted(issue string) {
 // readHandedOff reads the pull request of each issue handoffCompleted queued, until ctx ends: each
 // wake takes every issue queued since the last one, in the order of their keys, and reads each once
 // (readIssuePullRequest). A read that fails is logged and nothing is queued again: the issue's next
-// handoff, and the daemon's next start, read it again.
+// handoff, and the daemon's next start, read it again. Unlike the start read, a read that finds
+// GitHub still computing the head's merge queues no ladder of its own: the merge-state reads a
+// handed-off issue is owed are the workflow's to ask for (classify.MergeStateReadOwed).
 func (w *workflowRuntime) readHandedOff(ctx context.Context) {
 	for {
 		issues, ok := w.handedOff.take(ctx)
@@ -286,7 +306,7 @@ func (w *workflowRuntime) readHandedOff(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := w.readIssuePullRequest(ctx, issue); err != nil {
+			if _, err := w.readIssuePullRequest(ctx, issue); err != nil {
 				w.log.Warn("read the pull request of an issue whose agent handed off; the record stands as it was until the next read",
 					"issue", issue, "error", err)
 			}

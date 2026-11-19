@@ -135,13 +135,15 @@ approves it. The controller, which works no repository, holds a read lease of th
 each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
 commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
 itself reads GitHub with the implement App too, at these moments and at no other: as the workflow
-runtime starts, which covers what arrived while the daemon was down; once an agent's handoff has
+runtime starts, which covers what arrived while the daemon was down, and a start read that finds
+GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
 been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
 ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
 for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
 the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
-reads all answered `unknown`, again and again with a wait that doubles from half a minute to ten
-minutes, until GitHub answers a state, the head moves or the pull request is no longer open, each
+reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
+state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
+answers a state, the head moves or the pull request is no longer open, each
 read logged with its wait; a minute after a read found the head conflicting with its base, to
 read it once more before it acts on the conflict; and once after GitHub reports the pull request
 out of the merge queue. Nothing else runs on a timer, and it reads one issue's own pull request

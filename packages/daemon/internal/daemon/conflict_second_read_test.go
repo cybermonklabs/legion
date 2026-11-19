@@ -222,12 +222,13 @@ func TestAConflictSecondReadCarriesTheBaseRules(t *testing.T) {
 }
 
 // secondReadRunner is an outbox over w's database that runs a second read of a conflicting head
-// (record.ConflictConfirm) as the daemon's outbox runs it: it reads GitHub, applies the answer and
-// waits through w, as attach wires the outbox, applies its facts to w's engine, and logs to w's
-// log.
+// (record.ConflictConfirm) as the daemon's outbox runs it: it reads GitHub, applies the answer,
+// waits and hands a head that read no answer to the merge-state reader to follow through w, as
+// attach wires the outbox, applies its facts to w's engine, and logs to w's log.
 func secondReadRunner(w *workflowRuntime) *outbox {
 	return &outbox{pool: w.pool, records: record.NewStore(), handlers: w.handlers, dispatchProject: w.dispatchProject, log: w.log,
-		readPullRequest: w.readPullRequest, applyMergeability: w.applyMergeability, mergeStateWait: w.mergeStateWait, now: time.Now}
+		readPullRequest: w.readPullRequest, applyMergeability: w.applyMergeability, mergeStateWait: w.mergeStateWait,
+		queueMergeStateFollow: w.queueMergeStateFollow, now: time.Now}
 }
 
 // runSecondReads makes one attempt, with runner's clock at now, of each second read of CAPTURE-1
@@ -264,8 +265,8 @@ func secondReadRow(t *testing.T, pool *store.Pool) (due time.Time, attempts int,
 }
 
 // secondReadRig is CAPTURE-1 in testing on its pull request 86 at head code, GitHub answering its
-// nth read of the pull request as answer says and counting the reads, the base main requiring lint
-// (green nowhere) and pr-checks-result, and the runner of its second read.
+// nth read of the pull request as answer says and counting the reads, listing no review on it, the
+// base main requiring lint (green nowhere) and pr-checks-result, and the runner of its second read.
 type secondReadRig struct {
 	pool   *store.Pool
 	w      *workflowRuntime
@@ -292,6 +293,8 @@ func newSecondReadRig(t *testing.T, answer func(read int32) pullAnswer) *secondR
 				w.WriteHeader(got.status)
 			}
 			_, _ = io.WriteString(w, got.body)
+		case "/repos/acme/widgets/pulls/86/reviews":
+			_, _ = io.WriteString(w, `[]`)
 		case "/repos/acme/widgets/rules/branches/main":
 			_, _ = io.WriteString(w, `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"},{"context":"pr-checks-result"}]}}]`)
 		case "/repos/acme/widgets/branches/main":

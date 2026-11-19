@@ -18,7 +18,9 @@ body: |-
     `HANDOFF_HEAD_MERGED_FORWARD`. The daemon also reads the merge state on a head push of an issue
     in `implementing` through `merging` and on a base push for each issue in `testing` through
     `merging`, and reads again with a wait that doubles to ten minutes after a ladder whose reads
-    all answered `unknown`. The `phase_ended` message is gone; migration
+    all answered `unknown` or a second read whose attempts answered no state; a start read that
+    answers `unknown` starts a ladder, so a restart does not end those reads. The `phase_ended`
+    message is gone; migration
     `20261119003157_conflict_reads_and_merge_forward` deletes its queued rows and keeps the kind in
     the outbox's check for a rollback (`docs/kubernetes.md`, "Rolling back the release that merges a
     conflicting head forward in its phase").

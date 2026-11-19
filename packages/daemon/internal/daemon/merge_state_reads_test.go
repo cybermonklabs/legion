@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -125,9 +126,14 @@ func (rig *followRig) follows(t *testing.T) []map[string]any {
 // running is how many ladders the runtime marks as running, and waiting how many issues wait for
 // one.
 func (rig *followRig) running() (running, waiting int) {
-	rig.w.mergeStateMu.Lock()
-	defer rig.w.mergeStateMu.Unlock()
-	return len(rig.w.mergeStateRunning), rig.w.mergeStates.waiting()
+	return ladders(rig.w)
+}
+
+// ladders is how many ladders w marks as running, and how many issues wait for one.
+func ladders(w *workflowRuntime) (running, waiting int) {
+	w.mergeStateMu.Lock()
+	defer w.mergeStateMu.Unlock()
+	return len(w.mergeStateRunning), w.mergeStates.waiting()
 }
 
 // endedWithNoRead holds that the reads after the ladder end, logging their end, with nothing
@@ -262,6 +268,166 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 			t.Fatalf("GitHub was read %d times after the request, want the climb's %d and the read after it", got, mergeStateLadderReads)
 		}
 	})
+}
+
+// A second read of a conflicting head whose five attempts read no answer - GitHub's UNKNOWN at
+// each, or no read that succeeded - releases the first read (dispatch://INFRA-4374 R2), and the
+// head is then followed as after a ladder that ended on `unknown` (R4): it is read again after
+// twice the ladder's wait, logged as a read after the ladder, and GitHub's CONFLICTING then is
+// recorded as a new first conflicting read of the head, which queues a second read of its own.
+// That one, a minute on, finds GitHub still CONFLICTING: the conflict is confirmed and R0 decides
+// on it. Without the follow nothing would read the head again until its next event, and the
+// record would read whatever the last attempt left.
+func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer pullAnswer
+	}{
+		{name: "GitHub answers unknown at every attempt", answer: unknownPull},
+		{name: "no attempt's read succeeds", answer: unavailablePull},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The read after the second read is held until the test has read what the last
+			// attempt left, so that is the attempt's work alone; readAt is when it arrived.
+			held := make(chan struct{})
+			var once sync.Once
+			release := func() { once.Do(func() { close(held) }) }
+			var readAt atomic.Pointer[time.Time]
+			rig := newSecondReadRig(t, func(read int32) pullAnswer {
+				switch {
+				case read <= mergeStateLadderReads:
+					return tc.answer
+				case read == mergeStateLadderReads+1:
+					now := time.Now()
+					readAt.Store(&now)
+					<-held
+				}
+				return conflictingPull
+			})
+			t.Cleanup(release)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			go rig.w.readMergeStates(ctx)
+
+			first := time.Now().UTC().Truncate(time.Microsecond)
+			rig.firstRead(t, first)
+			at := first.Add(time.Minute)
+			var lastAttempt time.Time
+			for attempt := 1; attempt <= mergeStateLadderReads; attempt++ {
+				lastAttempt = time.Now()
+				if ran := runSecondReads(t, rig.runner, at); ran != 1 {
+					t.Fatalf("attempt %d ran %d second reads, want one", attempt, ran)
+				}
+				at = at.Add(time.Minute)
+			}
+			_, pr := capturePhase(t, rig.pool)
+			if _, _, found := secondReadRow(t, rig.pool); found || pr.ConflictRead != nil || pr.ConflictingHead != "" || pr.MergeForward != nil {
+				t.Fatalf("after the last attempt the row is queued %t, the first read is %+v, %q is held conflicting and the merge forward is %+v; want the first read released and nothing acted on",
+					found, pr.ConflictRead, pr.ConflictingHead, pr.MergeForward)
+			}
+
+			testwait.Eventually(t, "a read of the head after the second read", func() bool { return readAt.Load() != nil })
+			if waited := readAt.Load().Sub(lastAttempt); waited < 2*rig.w.mergeStateWait() {
+				t.Fatalf("GitHub was read again %s after the last attempt began, want at least twice the ladder's wait, %s", waited, 2*rig.w.mergeStateWait())
+			}
+			release()
+			testwait.Eventually(t, "the read after the second read to record GitHub's CONFLICTING and log itself", func() bool {
+				_, pr := capturePhase(t, rig.pool)
+				return pr.ConflictRead != nil && len(loggedLines(t, rig.logs.String(), followRead)) >= 1
+			})
+			follows := loggedLines(t, rig.logs.String(), followRead)
+			if len(follows) != 1 || follows[0]["attempt"] != float64(1) || follows[0]["wait"] != float64(2*rig.w.mergeStateWait()) ||
+				follows[0]["head"] != "code" || follows[0]["answered"] != string(record.MergeStateDirty) {
+				t.Fatalf("the reads after the second read logged %v, want one of head code, after twice the ladder's wait, answering dirty", follows)
+			}
+			// The first read keeps its time to the nanosecond, and the row its due time to the
+			// microsecond.
+			_, pr = capturePhase(t, rig.pool)
+			due, attempts, found := secondReadRow(t, rig.pool)
+			if pr.ConflictRead.Head != "code" || pr.ConflictRead.Base != "main" || pr.ConflictingHead != "" ||
+				!found || attempts != 0 || due.Sub(pr.ConflictRead.At.Add(time.Minute)).Abs() >= time.Microsecond {
+				t.Fatalf("the record holds first read %+v and %q conflicting, and a second read is queued %t, due %s after %d attempts; want a new first read of code with its second read due a minute on",
+					pr.ConflictRead, pr.ConflictingHead, found, due, attempts)
+			}
+
+			if ran := runSecondReads(t, rig.runner, pr.ConflictRead.At.Add(time.Minute)); ran != 1 {
+				t.Fatalf("%d second reads ran a minute after the new first read, want one", ran)
+			}
+			_, pr = capturePhase(t, rig.pool)
+			if pr.ConflictingHead != "code" || pr.ConflictRead != nil {
+				t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
+			}
+			if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != classify.ConflictCheckNotGreen || asked.Phase != phase.Testing {
+				t.Fatalf("the record holds merge forward %+v, want one asked of code in testing for %s: lint is required and green nowhere", asked, classify.ConflictCheckNotGreen)
+			}
+			testwait.Eventually(t, "the follow to end on GitHub's answer", func() bool {
+				running, waiting := ladders(rig.w)
+				return running == 0 && waiting == 0
+			})
+			if got := rig.reads.Load(); got != mergeStateLadderReads+2 {
+				t.Fatalf("GitHub was read %d times, want the second read's %d attempts, the read after them and the new second read", got, mergeStateLadderReads)
+			}
+		})
+	}
+}
+
+// The reads that follow GitHub's merge state are held in memory, so a restart ends them, and the
+// daemon's start read of every issue's pull request is what takes them up again (dispatch://
+// INFRA-4374 R4): a start read that finds GitHub still computing the head's merge - merge state
+// `unknown`, or `mergeable` null - queues a ladder for the issue, which reads GitHub again and
+// records the state it answers then. A start read that answers a state queues none. The issue
+// stands in testing, where none of the facts these reads apply owes a read
+// (classify.MergeStateReadOwed), so a ladder here is the start read's alone.
+func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
+	const pull = `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},`
+	clean := pullAnswer{body: pull + `"mergeable":true,"mergeable_state":"clean"}`}
+	for _, tc := range []struct {
+		name   string
+		answer pullAnswer
+		ladder bool
+	}{
+		{name: "unknown queues a ladder", answer: unknownPull, ladder: true},
+		{name: "mergeable null queues a ladder", answer: pullAnswer{body: pull + `"mergeable":null}`}, ladder: true},
+		{name: "clean queues none", answer: clean},
+		{name: "dirty queues none", answer: conflictingPull},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newSecondReadRig(t, func(read int32) pullAnswer {
+				if read == 1 {
+					return tc.answer
+				}
+				return clean
+			})
+			rig.w.readIssuesAtStart(context.Background())
+			if got := rig.reads.Load(); got != 1 {
+				t.Fatalf("the start read read the pull request %d times, want once", got)
+			}
+			want := 0
+			if tc.ladder {
+				want = 1
+			}
+			if _, waiting := ladders(rig.w); waiting != want {
+				t.Fatalf("the start read queued %d ladders, want a ladder %t", waiting, tc.ladder)
+			}
+			if !tc.ladder {
+				return
+			}
+			if _, pr := capturePhase(t, rig.pool); pr.Mergeability != record.MergeabilityUnknown {
+				t.Fatalf("after the start read the record reads %s, want GitHub's UNKNOWN", pr.Mergeability)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			go rig.w.readMergeStates(ctx)
+			testwait.Eventually(t, "the ladder to read GitHub again and end on its answer", func() bool {
+				running, waiting := ladders(rig.w)
+				return rig.reads.Load() == 2 && running == 0 && waiting == 0
+			})
+			if _, pr := capturePhase(t, rig.pool); pr.MergeState != record.MergeStateClean || pr.Mergeability != record.MergeabilityMergeable {
+				t.Fatalf("after the ladder the record reads %s/%s, want GitHub's MERGEABLE/clean", pr.Mergeability, pr.MergeState)
+			}
+		})
+	}
 }
 
 // The read the ladder makes is the one that moves an approved issue on: GitHub answers the state

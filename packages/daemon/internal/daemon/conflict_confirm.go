@@ -36,13 +36,21 @@ import (
 // its pull request (mergeQueueRead). The bound is on attempts, each making at most one read. When
 // the last attempt's read failed or still answered UNKNOWN, the row applies
 // intake.ConflictConfirmDone (Unread for a failed read), which releases the first read so that the
-// next read that finds the head conflicting starts the two reads again.
+// next read that finds the head conflicting starts the two reads again, and then hands the head to
+// the runtime's merge-state reader to follow (queueMergeStateFollow, dispatch://INFRA-4374 R4):
+// reads of the same head, the first after twice the runtime's wait, each wait twice the one before
+// up to ten minutes, until GitHub answers a state, the record's head moves or the pull request is
+// no longer open (followMergeState). Without them the record would read whatever the last attempt
+// left for as long as GitHub takes, and nothing would read the head again until its next event. A
+// last read that failed starts them too, since the record then follows GitHub no better. Their
+// CONFLICTING answer is applied as every read's is, so it records a first conflicting read of the
+// head and queues a new row of this kind. They are held in memory, as the ladder's own reads are.
 //
-// The read, its apply and the wait are the runtime's, which attach gives the outbox: an outbox a
-// test builds by hand has none of them, and the row fails with an error that names the missing
-// read rather than reading nothing.
+// The read, its apply, the wait and the follow are the runtime's, which attach gives the outbox:
+// an outbox a test builds by hand has none of them, and the row fails with an error that names the
+// missing read rather than reading nothing.
 func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payload record.ConflictConfirm) error {
-	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil {
+	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil || r.queueMergeStateFollow == nil {
 		return errors.New("conflict confirm executor has no read of a pull request from GitHub")
 	}
 	issue, pr, _, err := r.issueRecords(ctx, row.Issue)
@@ -84,14 +92,15 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 			row.Issue, payload.Number, delay, attempt, mergeStateLadderReads, readOutcome(failed)))
 	}
 	if failed != nil {
-		r.log.Error("outbox conflict confirm: the read of the last attempt failed; the first read is released", append(attributes, "error", failed)...)
+		r.log.Error("outbox conflict confirm: the read of the last attempt failed; the first read is released and the merge state reads follow the head", append(attributes, "error", failed)...)
 	} else {
-		r.log.Info("outbox conflict confirm: GitHub answered unknown at the last attempt; the first read is released", attributes...)
+		r.log.Info("outbox conflict confirm: GitHub answered unknown at the last attempt; the first read is released and the merge state reads follow the head", attributes...)
 	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("conflict-confirm-done:%s:%d", row.Issue, row.ID),
 		intake.ConflictConfirmDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {
 		return fmt.Errorf("apply the end of the second read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 	}
+	r.queueMergeStateFollow(row.Issue, payload.Head)
 	return nil
 }
 

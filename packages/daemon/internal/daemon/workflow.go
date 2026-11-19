@@ -263,15 +263,20 @@ type workflowRuntime struct {
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState, by classify.MergeStateReadOwed: a round waiting on GitHub's
 	// answer, a head push in implementing through merging, a base push in testing through
-	// merging) that readMergeStates has not started a ladder for yet, and mergeStateRunning each
-	// issue whose ladder is still reading, a climb or the follow after it (mergeStateRun), which is
-	// why a second fact of an issue already being read starts no second ladder. mergeStateRetry is
-	// how long a ladder waits between reads of a state GitHub answers `unknown` for, the unit the
-	// reads after a ladder wait in, and how long the outbox's merge-queue read and second conflict
-	// read wait before they read again (mergeStateWait, which attach hands the outbox),
-	// mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// merging), each the start read found GitHub still computing (readIssuesAtStart), and each a
+	// second read of a conflicting head left reading no answer (queueMergeStateFollow), that
+	// readMergeStates has not started a ladder for yet; mergeStateQueued is what each of them asked
+	// for, the head its ladder starts by following or "" for a climb (queueLadder); and
+	// mergeStateRunning each issue whose ladder is still reading, a climb or a follow
+	// (mergeStateRun), which is why a second fact of an issue already being read starts no second
+	// ladder. mergeStateRetry is how long a ladder waits between reads of a state GitHub answers
+	// `unknown` for, the unit the reads after a ladder wait in, and how long the outbox's
+	// merge-queue read and second conflict read wait before they read again (mergeStateWait, which
+	// attach hands the outbox), mergeStateLadderWait when zero, which a test shortens
+	// (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
+	mergeStateQueued  map[string]string
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 }
@@ -1226,8 +1231,10 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // request, the merge-queue read and the second read of a conflicting head, read GitHub through
 // this runtime's own read of a pull request, apply its answer as every read of this runtime does,
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
-// read again (readPullRequest, applyMergeability, mergeStateWait), all set before the records'
-// wake can reach the outbox (outboxWake).
+// read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
+// attempt read no answer hands the head to this runtime's merge-state reader to follow
+// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (outboxWake).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1235,6 +1242,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
