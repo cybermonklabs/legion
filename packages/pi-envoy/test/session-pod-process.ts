@@ -20,7 +20,6 @@
  */
 import { roleTopic } from "@legion/contracts";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
-import type { PiApi } from "@legion/pi-shared/pi-types";
 import { logger } from "@oh-my-pi/pi-utils";
 import envoyExtension, { setNatsConnectForTests } from "../extensions/envoy";
 import { REPORT_MARKER, type Report, runSessionPod } from "./session-pod-report";
@@ -139,9 +138,7 @@ const context = {
   },
 };
 
-// The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
-// host supplies, and the cast is that same narrowing.
-envoyExtension(pi as unknown as PiApi);
+envoyExtension(pi);
 const start: EventHandler | undefined = handlers.get("session_start");
 if (start === undefined) throw new Error("the extension registered no session_start handler");
 await start({}, context);

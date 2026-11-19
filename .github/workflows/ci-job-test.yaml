@@ -525,11 +525,17 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
-      # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
-      # test, whose answer is typed to the contract, and the root package pins its TypeScript and
-      # Bun types. The test itself runs in this job's bun test of scripts/e2e/lib.
-      - name: Typecheck the plan ratings read test
+      # scripts/e2e/lib is no workspace either: its tsconfig.json holds every module of the live
+      # proofs' libraries and their tests, and the root package pins its TypeScript and Bun types.
+      # The tests themselves run in this job's bun test of scripts/e2e/lib.
+      - name: Typecheck the live proofs' libraries
         run: bunx tsc --noEmit -p scripts/e2e/lib
+
+      # scripts/tsconfig.json holds the scripts at the top of scripts/ and of scripts/e2e/, which
+      # no workspace holds: the seed, the line-break checker, the notices and their tests, whose
+      # suites run in this job, and the e2e proofs' Bun drivers, which e2e.yaml runs.
+      - name: Typecheck the top-level scripts
+        run: bunx tsc --noEmit -p scripts
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps

@@ -1697,7 +1697,7 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ts-filters.test.sh'
-              # :50 symlinks the script, the engine it borrows the changes job's filters from,
+              # :54 symlinks the script, the engine it borrows the changes job's filters from,
               # the path model both import and the Go build-tag module the engine imports into
               # every fixture.
               - '.github/scripts/check-ts-filters.sh'
@@ -1815,6 +1815,20 @@ jobs:
               # The priorities seed's Bun test, which runs on every run of this job.
               - 'scripts/priorities-seed.ts'
               - 'scripts/priorities-seed.test.ts'
+              # The typecheck of the top-level scripts (tsc -p scripts) compiles
+              # scripts/e2e/plan-pointer-drive.ts, which imports the Dispatch e2e client and the
+              # pane scenario helper by path, and so the files they import.
+              - 'scripts/tsconfig.json'
+              - 'packages/dispatch/e2e/api.ts'
+              - 'packages/dispatch/e2e/harness-broker.ts'
+              - 'packages/dispatch/e2e/harness-embedder.ts'
+              - 'packages/dispatch/e2e/harness-ports.ts'
+              - 'packages/dispatch/e2e/harness-processes.ts'
+              - 'packages/dispatch/e2e/harness-real-broker.ts'
+              - 'packages/dispatch/e2e/harness-signin.ts'
+              - 'packages/dispatch/web/src/api/paths.ts'
+              - 'packages/dispatch/web/src/api/types.ts'
+              - 'packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts'
               # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
               # and its tests read the daemon sources and fixtures named below. The e2e
               # libraries and the census script import contracts and envoy-client, which

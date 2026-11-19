@@ -1,0 +1,21 @@
+{
+  // The fixture generator `bun run check` runs (gen.ts) and the corpus, decode and differential
+  // scripts pmdoc's Go tests run, typechecked by `bun run typecheck` in ci-job-envoy-go-checks.yaml.
+  // They compile the proof editor's sources, so they do under the editor's own settings, and tsc
+  // reads its upstream modules through the declarations its typecheck reads
+  // (packages/proof-editor/tsconfig.check.json) rather than opening the upstream sources.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["bun"],
+    "paths": {
+      "proof-sdk-upstream/src/*": ["../../../../../proof-editor/upstream/*"]
+    }
+  },
+  "include": ["*.ts"]
+}

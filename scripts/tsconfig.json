@@ -1,0 +1,22 @@
+{
+  // The scripts at the top of scripts/ and of scripts/e2e/, which no workspace holds: the
+  // priorities seed, the semantic line-break checker, the third-party notices and their tests, and
+  // the e2e proofs' Bun drivers. ci-job-test.yaml's test job typechecks them with `bunx tsc
+  // --noEmit -p scripts`; each directory below with a tsconfig.json of its own is that project's.
+  // The root package pins their TypeScript and Bun types.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // priorities-seed.test.ts imports scripts/dispatch/__tests__/held-deadlines.ts, which imports
+    // its modules by their .ts names under scripts/dispatch's settings.
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@legion/contracts": ["../packages/contracts/src/index.ts"]
+    },
+    "strict": true,
+    "noEmit": true,
+    "types": ["bun"]
+  },
+  "include": ["*.ts", "e2e/*.ts"]
+}

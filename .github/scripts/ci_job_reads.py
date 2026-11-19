@@ -2338,7 +2338,7 @@ SCRIPT_TEST_GATES = [
                                                     "over a module with a negated tag"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50-52)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:54-56)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the engine imports, linked in beside it"),
@@ -2525,6 +2525,19 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
+        # `tsc -p scripts` compiles scripts/e2e/plan-pointer-drive.ts, which imports the Dispatch
+        # e2e client and the pane scenario helper by path, and so their imports with them.
+        ("scripts/tsconfig.json", at("test", "Typecheck the top-level scripts")),
+        ("packages/dispatch/e2e/api.ts", "scripts/e2e/plan-pointer-drive.ts:62-69 imports it (tsc -p scripts)"),
+        ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:19 imports it (tsc -p scripts)"),
+        ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:20 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-ports.ts", "packages/dispatch/e2e/api.ts:21 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-processes.ts", "packages/dispatch/e2e/api.ts:22 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-embedder.ts", "packages/dispatch/e2e/harness-ports.ts:58 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-real-broker.ts", "packages/dispatch/e2e/harness-ports.ts:60 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-signin.ts", "packages/dispatch/e2e/harness-ports.ts:61 imports it (tsc -p scripts)"),
+        ("packages/dispatch/e2e/harness-broker.ts", "packages/dispatch/e2e/harness-real-broker.ts:21 imports it (tsc -p scripts)"),
+        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "scripts/e2e/plan-pointer-drive.ts:70 imports it (tsc -p scripts)"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "

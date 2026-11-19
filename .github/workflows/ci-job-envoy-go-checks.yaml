@@ -158,6 +158,15 @@ jobs:
       - name: Check that no CI file of this repository compares the spec files
         run: go run ./cmd/spec-check guard --root ../..
         working-directory: packages/envoy
+      # The fixture generator the step below runs and the corpus, decode and differential scripts
+      # pmdoc's Go tests run, under the proof editor's settings (gen/tsconfig.json says why).
+      - name: Typecheck the pmdoc fixture generator
+        run: bun run typecheck
+        working-directory: packages/envoy/internal/dispatch/pmdoc/gen
+      # The TypeScript packages/envoy/scripts runs with Bun, which no workspace holds:
+      # airlock/slack.ts, which airlock-check.sh runs.
+      - name: Typecheck packages/envoy's Bun scripts
+        run: bunx tsc --noEmit -p packages/envoy/scripts
       - name: Check pmdoc fixtures are up to date
         run: bun run check
         working-directory: packages/envoy/internal/dispatch/pmdoc/gen

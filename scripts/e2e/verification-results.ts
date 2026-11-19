@@ -238,20 +238,31 @@ function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
 }
 
+/** A check as the cases read it: its results and the bases it compares with as lists. The route's
+ *  type lets either be `null` where there are none, and every case counts them as none. */
+type ReadCheck = CheckBlock & {
+  readonly results: CheckResult[];
+  readonly compared_with: CheckBasis[];
+};
+
 /** The checks of an issue's Verification document, each with the commits and branches its results
  *  are compared with, whether a pass of it stands, and every result recorded against it, as
  *  `GET /api/v1/issues/{key}/results` answers. `at` names one commit (`?at=`), which becomes the
  *  one basis of every check of the issue. */
-async function checksOf(key: string, at?: string): Promise<readonly CheckBlock[]> {
+async function checksOf(key: string, at?: string): Promise<readonly ReadCheck[]> {
   const query = at === undefined ? "" : `?at=${encodeURIComponent(at)}`;
   const body = (await asSession("GET", issuePath(key, `/results${query}`))) as {
     checks: CheckBlock[];
   };
-  return body.checks;
+  return body.checks.map((check) => ({
+    ...check,
+    results: check.results ?? [],
+    compared_with: check.compared_with ?? [],
+  }));
 }
 
 /** One check of an issue, by its block id. */
-async function checkOf(key: string, blockID: string): Promise<CheckBlock> {
+async function checkOf(key: string, blockID: string): Promise<ReadCheck> {
   const found = (await checksOf(key)).find((check) => check.block_id === blockID);
   if (found === undefined) throw new Error(`${key} has no check ${blockID}`);
   return found;

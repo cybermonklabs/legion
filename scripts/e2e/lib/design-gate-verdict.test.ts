@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { runJq } from "./run-jq.ts";
+import { runJq } from "./run-jq";
 
 const library = fileURLToPath(new URL(".", import.meta.url));
 const program = fileURLToPath(new URL("./design-gate-verdict.jq", import.meta.url));

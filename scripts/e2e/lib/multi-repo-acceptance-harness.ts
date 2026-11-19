@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import type { Server } from "bun";
 
 // Shared fixtures for the multi-repository acceptance observer's tests:
 // scripts/e2e/multi-repo-acceptance.sh reads only structured sources — the daemon's state JSON (a
@@ -306,7 +307,7 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
 }
 export const stateBody = makeStateBody();
 
-export function daemonStub(body: string = stateBody): Server {
+export function daemonStub(body: string = stateBody): Server<undefined> {
   return servers.track(
     Bun.serve({
       port: 0,
@@ -327,7 +328,7 @@ export function daemonStub(body: string = stateBody): Server {
 // against, so a test that must change the daemon's answer between `before` and `after` needs the
 // same server, not a fresh one on a new port.
 export function mutableDaemonStub(initial: string): {
-  server: Server;
+  server: Server<undefined>;
   setBody: (body: string) => void;
 } {
   let body = initial;
@@ -357,7 +358,7 @@ export function mutableDaemonStub(initial: string): {
 export function dispatchStub(
   issues: Record<string, string>,
   events: Record<string, string> = {}
-): Server {
+): Server<undefined> {
   return servers.track(
     Bun.serve({
       port: 0,

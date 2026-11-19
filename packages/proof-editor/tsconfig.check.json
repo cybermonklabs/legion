@@ -2,10 +2,16 @@
   // Tsc reads `upstream/` — the declarations generated from the pinned upstream sources — rather
   // than opening those sources, which do not type-check. Bun and Vite resolve the sources for
   // runtime; see tsconfig.json and packages/dispatch/web/vite.config.ts.
+  //
+  // `upstream/` is included whole: scripts/upstream-declarations.ts writes a declaration for every
+  // module of the sources' import closure, and its `--check` (tests/upstream-pin.test.ts) refuses
+  // one missing, so some of them are modules no declaration src/ imports reaches. Each one is
+  // still a file of this program.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {
       "proof-sdk-upstream/src/*": ["./upstream/*"]
     }
-  }
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "upstream/**/*.d.ts"]
 }

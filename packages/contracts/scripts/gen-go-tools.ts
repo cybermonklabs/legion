@@ -46,12 +46,18 @@ function recordedFields(shape: Record<string, RecordedNode>): [string, RecordedF
 // The facade the tool specs' arguments are written against, recording what each call declares.
 // `refineObject` records the object alone: a cross-field rule is the tool's and the route
 // handler's to enforce, and the catalogue's check is of the arguments an action names, not of
-// how they agree.
+// how they agree. The Go field kinds have no literal: a set of strings is the enum of those
+// names, and a set holding any other value is widened to any, as zodSchemaApi widens a set its
+// host cannot build (src/tool-schema.ts), the route's own parse refusing what the set does not hold.
 const recordingApi: SchemaApi<RecordedNode> = {
   string: () => recordedNode({ kind: "string" }),
   number: () => recordedNode({ kind: "number" }),
   boolean: () => recordedNode({ kind: "boolean" }),
   enum: (values) => recordedNode({ kind: "enum", values }),
+  literal: (values) =>
+    values.every((value) => typeof value === "string")
+      ? recordedNode({ kind: "enum", values })
+      : recordedNode({ kind: "any" }),
   array: (item) => recordedNode({ kind: "array", item: item.field }),
   unknown: () => recordedNode({ kind: "any" }),
   object: (shape) => recordedNode({ kind: "object", fields: recordedFields(shape) }),

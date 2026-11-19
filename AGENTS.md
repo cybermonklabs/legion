@@ -239,11 +239,13 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Type check one package against its own tsconfig.
   The root has no tsconfig.json, so a bare `bunx tsc --noEmit` there checks nothing: it prints tsc's help and exits 1.
   CI runs this command in each of these, in a job of ci.yaml that runs when a change touches a file it reads:
-  packages/contracts, envoy-client, claude-envoy, pi-shared, pi-envoy, pi-legion, proof-editor and dispatch, and docs/site
+  packages/contracts, broker-client, envoy-client, claude-envoy, pi-shared, pi-envoy, pi-legion, proof-editor, dispatch, test-fixtures and envoy/internal/dispatch/pmdoc/gen, and docs/site
 
-- `bunx tsc --noEmit -p scripts/dispatch && bunx tsc --noEmit -p scripts/github-apps && bunx tsc --noEmit -p scripts/sessions`
+- `bunx tsc --noEmit -p scripts && bunx tsc --noEmit -p scripts/e2e/lib && bunx tsc --noEmit -p scripts/dispatch && bunx tsc --noEmit -p scripts/github-apps && bunx tsc --noEmit -p scripts/sessions && bunx tsc --noEmit -p scripts/approval-eval && bunx tsc --noEmit -p scripts/conflicts && bunx tsc --noEmit -p packages/envoy/scripts`
 
-  Type check the three script directories that are no workspace, as ci.yaml's `test` job does
+  Type check the TypeScript no workspace holds, as ci.yaml's `test`, `conflicts-script` and `envoy-go-checks` jobs do.
+  Every TypeScript file git tracks is in one of these programs or a package's: `.github/scripts/check-ts-filters.sh`, in the `lint` job, refuses by name a tracked file no typechecked program holds, and a typecheck step with no row in `.github/scripts/ci_ts_programs.py`.
+  A new file goes in the project its directory's typecheck reads; a directory with none gets a tsconfig.json, a typecheck step in the job whose filter selects it, and that row.
 
 - `(cd packages/daemon && go vet -tags e2e ./... && flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64) && while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./... || exit 1; done <<< "$flags")`
 

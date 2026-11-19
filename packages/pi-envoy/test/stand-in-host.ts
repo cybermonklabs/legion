@@ -1,24 +1,31 @@
 // The stand-in Oh My Pi host `extensions/envoy.ts` is driven against off a real session: the
-// surface the extension sees (`TestPi`) and a recorder of everything it registers, sends and
+// surface the extension sees (a `PiApi`) and a recorder of everything it registers, sends and
 // appends. Three callers share it, which is why it is a module of its own: the package's own suite
 // (`extensions/envoy.test.ts`, through its `createPi`, which adds the clipboard the suite mocks),
 // `scripts/smoke-role-takeover.sh`'s client process (`scripts/role-takeover/omp-client.ts`), one
 // client instance per OS process, and `test/session-pod-process.ts`, one session of a session pod
 // in an OS process of its own. A host method the extension starts to use is added here once, so
 // neither process can drift behind the suite.
-import type { MessageRenderer, PiApi } from "@legion/pi-shared/pi-types";
+import type {
+  CommandContext,
+  RegisteredTool as HostRegisteredTool,
+  MessageRenderer,
+  PiApi,
+  PiZod,
+  SessionContext,
+  ToolResult,
+} from "@legion/pi-shared/pi-types";
 import { z } from "zod";
 
-export type ToolResult = {
-  readonly content: readonly { readonly type: "text"; readonly text: string }[];
-  readonly details: Readonly<Record<string, unknown>>;
-  readonly isError?: boolean;
-};
+// What a row hands a handler, a tool or a command is the context the extension declares it takes.
+export type { CommandContext, SessionContext, ToolResult };
 
-export type RegisteredTool = {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: unknown;
+/**
+ * A tool the extension registered, as a row calls it: the host's `RegisteredTool`, whose signal,
+ * progress callback and context a row may leave out, as no host does. The extension's tools are
+ * called that way throughout the suite, so the stand-in records each tool as this.
+ */
+export type RegisteredTool = Omit<HostRegisteredTool, "execute"> & {
   readonly execute: (
     id: string,
     params: Record<string, unknown>,
@@ -28,83 +35,34 @@ export type RegisteredTool = {
   ) => Promise<ToolResult>;
 };
 
-export type RegisteredCommand = {
-  readonly name: string;
-  readonly description: string | undefined;
-  readonly handler: (args: string, context: CommandContext) => Promise<void>;
-};
+/** A slash command the extension registered, under its name. */
+export type RegisteredCommand = { readonly name: string } & Parameters<PiApi["registerCommand"]>[1];
 
-export type SessionContext = {
-  readonly cwd: string;
-  /** Oh My Pi's agent identity: the top-level session's runner is `main`, a `task` subagent's `sub`. */
-  readonly agent?: { readonly kind: "main" | "sub" };
-  readonly sessionManager: {
-    readonly getSessionId: () => string;
-    readonly getSessionName?: () => string | undefined;
-    readonly getBranch?: () => readonly unknown[];
-    readonly getEntries: () => readonly unknown[];
-    readonly getSessionFile: () => string | undefined;
-    readonly ensureOnDisk: () => Promise<void>;
-  };
-  readonly setInterval: (callback: () => void, intervalMs: number) => void;
-  /** The host's managed `ctx.setTimeout`: the one-shot timer the extension arms through the
-   *  session (the heartbeat's extra call after a failed pass), cleared with it. */
-  readonly setTimeout: (callback: () => void | Promise<void>, delayMs: number) => void;
-  /** The host's `ctx.isIdle()`: false while a turn runs. */
-  readonly isIdle?: () => boolean;
-  readonly ui: {
-    readonly notify: (message: string, level: "info" | "warning") => void;
-    readonly onTerminalInput: (handler: (input: unknown) => void) => () => void;
-    readonly getEditorText: () => string;
-  };
-};
+/** A card the extension sent: the host's `sendMessage` message that carries content. */
+export type Card = Extract<Parameters<PiApi["sendMessage"]>[0], { readonly customType: string }>;
 
-export type CommandContext = {
-  readonly ui: {
-    readonly notify: (message: string, level: "info" | "warning" | "error") => void;
-  };
-};
-
-export type TestPi = {
-  readonly zod: typeof z;
-  readonly registerTool: (tool: RegisteredTool) => void;
-  readonly registerCommand: (name: string, command: Omit<RegisteredCommand, "name">) => void;
-  readonly registerMessageRenderer: PiApi["registerMessageRenderer"];
-  readonly on: (
-    event:
-      | "resources_discover"
-      | "session_start"
-      | "session_switch"
-      | "session_branch"
-      | "session_tree"
-      | "session_shutdown"
-      | "before_agent_start"
-      | "agent_end"
-      | "message_start"
-      | "session_stop"
-      | "input"
-      | "tool_call"
-      | "tool_result",
-    handler: (event: unknown, context: SessionContext) => Promise<unknown>
-  ) => void;
-  readonly sendMessage: (
-    message: { readonly content: string; readonly customType?: string; readonly display?: boolean },
-    options: unknown
-  ) => void;
-  readonly sendUserMessage: (content: string, options?: unknown) => void;
-  readonly appendEntry: PiApi["appendEntry"];
-};
+/** `message` as the card it is: the extension sends cards alone, so any other message is refused,
+ *  naming its type. */
+export function sentCard(message: Parameters<PiApi["sendMessage"]>[0]): Card {
+  if (!("customType" in message)) {
+    throw new Error(`the stand-in host records cards alone, not a ${message.type} message`);
+  }
+  return message;
+}
 
 /** A message the extension sent through `pi.sendMessage`, as the host records it. */
 export type Delivery = {
-  readonly content: string;
-  readonly customType?: string;
-  readonly details?: unknown;
-  readonly display?: boolean;
+  readonly content: Card["content"];
+  readonly customType: string;
+  readonly details?: Card["details"];
+  readonly display: boolean;
   readonly options: unknown;
 };
 
-/** An event handler the extension registered through `pi.on`. */
+/**
+ * An event handler the extension registered through `pi.on`, as a row calls it: with whatever
+ * event the row builds, a partial or malformed one included, and the context of a session.
+ */
 export type EventHandler = (event: unknown, context: SessionContext) => Promise<unknown>;
 
 /** A custom entry the extension persisted, in the shape `getBranch()` and `getEntries()` return. */
@@ -114,36 +72,60 @@ export type BranchEntry = {
   readonly data: unknown;
 };
 
+/** A user turn the extension started through `pi.sendUserMessage`, as the host records it. */
+export type UserTurn = {
+  readonly content: Parameters<PiApi["sendUserMessage"]>[0];
+  readonly options: unknown;
+};
+
 /**
  * One stand-in host: `pi`, to hand the extension, and the arrays and maps it records into. The
  * caller reads `tools` and `handlers` to drive the extension, and `entries` is also the branch a
  * session manager hands back (`omp-client.ts`'s does).
- *
- * `zod` replaces the `z` the extension validates with, for the one case that injects another.
  */
-export function createStandInHost(options: { readonly zod?: typeof z } = {}) {
+export type StandInHost = {
+  readonly commands: RegisteredCommand[];
+  readonly deliveries: Delivery[];
+  readonly entries: BranchEntry[];
+  readonly handlers: Map<string, EventHandler>;
+  /** The content of each card, in the order the extension sent them. */
+  readonly messages: Delivery["content"][];
+  readonly pi: PiApi;
+  readonly renderers: Map<string, MessageRenderer>;
+  readonly tools: RegisteredTool[];
+  /** The user turns the extension started, in the order it sent them. */
+  readonly userMessages: UserTurn[];
+};
+
+/** A stand-in host; `zod` replaces the `z` the extension validates with, for the one case that
+ *  injects another. */
+export function createStandInHost(options: { readonly zod?: typeof z } = {}): StandInHost {
   const commands: RegisteredCommand[] = [];
   const tools: RegisteredTool[] = [];
   const handlers = new Map<string, EventHandler>();
   const renderers = new Map<string, MessageRenderer>();
-  const messages: string[] = [];
+  const messages: Delivery["content"][] = [];
   const deliveries: Delivery[] = [];
-  // User turns the extension started, in the order it sent them.
-  const userMessages: { readonly content: string; readonly options: unknown }[] = [];
+  const userMessages: UserTurn[] = [];
   const entries: BranchEntry[] = [];
-  const pi: TestPi = {
-    zod: options.zod ?? z,
-    registerTool: (tool) => tools.push(tool),
+  const pi: PiApi = {
+    // Real zod where the host hands its own: `PiZod` declares only the calls the extension makes,
+    // and each of zod's own takes zod's node types where `PiZod`'s takes `unknown`.
+    zod: (options.zod ?? z) as PiZod,
+    // A row calls a tool with fewer arguments than a host passes (`RegisteredTool`).
+    registerTool: (tool) => tools.push(tool as RegisteredTool),
     registerCommand: (name, command) => commands.push({ name, ...command }),
     registerMessageRenderer: (customType, renderer) => renderers.set(customType, renderer),
-    on: (event, handler) => handlers.set(event, handler),
+    // A row hands a handler the event it builds (`EventHandler`).
+    on: (event, handler) => handlers.set(event, handler as EventHandler),
     sendMessage: (message, options) => {
-      messages.push(message.content);
+      const card = sentCard(message);
+      messages.push(card.content);
       deliveries.push({
-        content: message.content,
-        customType: message.customType,
-        details: "details" in message ? message.details : undefined,
-        display: message.display,
+        content: card.content,
+        customType: card.customType,
+        details: card.details,
+        display: card.display,
         options,
       });
     },
@@ -152,6 +134,17 @@ export function createStandInHost(options: { readonly zod?: typeof z } = {}) {
     },
     appendEntry: (customType, data) => {
       entries.push({ type: "custom", customType, data });
+    },
+    // Host members the extension never calls. Each throws, naming itself, as a call to a member
+    // the host lacked would fail, so a row that reaches one names what to add here.
+    setSessionName: () => {
+      throw new Error("the stand-in host has no setSessionName");
+    },
+    getActiveTools: () => {
+      throw new Error("the stand-in host has no getActiveTools");
+    },
+    setActiveTools: () => {
+      throw new Error("the stand-in host has no setActiveTools");
     },
   };
   return {

@@ -40,7 +40,6 @@
  * delivery reaches the session.
  */
 import { appendFileSync } from "node:fs";
-import type { PiApi } from "@legion/pi-shared/pi-types";
 import envoyExtension from "../../extensions/envoy";
 import { createStandInHost, type EventHandler } from "../../test/stand-in-host";
 
@@ -121,9 +120,7 @@ host.sendMessage = (message, options) => {
   });
 };
 
-// The stand-in host is a subset of the real `PiApi`: the extension reads only what the suite's
-// host supplies, and the cast is that same narrowing.
-envoyExtension(pi as unknown as PiApi);
+envoyExtension(pi);
 
 /** Replaces the branch with the transcript a resumed, forked or fresh session carries. */
 function setBranch(roles: readonly (string | null)[] | undefined): void {

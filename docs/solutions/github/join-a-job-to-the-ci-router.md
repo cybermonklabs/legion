@@ -233,7 +233,10 @@ For a job whose steps typecheck TypeScript, the program is derived rather than l
 `.github/scripts/check-ts-filters.sh` runs `bunx tsc -p <project> --noEmit --listFilesOnly` for
 each pair of a filter and a project (`ci_ts_programs.py`) and holds every file of the program to
 that filter, so an import that reaches a new package fails on the pull request that writes it.
-Add the pair when a job gains a typecheck; the files need no list.
+Add the pair when a job gains a typecheck; the files need no list. The same check reads every
+workflow step for the tsc projects it typechecks and refuses one with no pair, and a pair no step
+typechecks; and it refuses, by name, each TypeScript file git tracks that no pair's program holds,
+since no job typechecks that file.
 It runs in `ci.yaml`'s lint job, which installs the dependencies and is gated by no `changes`
 output; the `ci-filters` job has neither Bun nor `node_modules`.
 

@@ -84,7 +84,7 @@ type ReplaceRangeCase =
   | ReplaceRangeDocumentPointCase
   | ReplaceRangeAnchoredPointCase;
 
-const replaceRangeCases: ReplaceRangeCase[] = [
+const replaceRangeInputs: ReplaceRangeCase[] = [
   {
     name: "paragraph-inline",
     markdown: "Alpha first.\n\nSecond omega.\n",
@@ -404,33 +404,54 @@ const replaceRangeCases: ReplaceRangeCase[] = [
     to: "head",
     replacement: "X\n\n```\ncode\n```\n",
   },
-].map((replace) => {
+];
+
+/** One case as the oracle file holds it: the case's own fields and the document it leaves. A
+ *  field the case does not have is undefined, which JSON.stringify leaves out. */
+type ReplaceRangeResult = {
+  name: string;
+  markdown: string;
+  from: string | undefined;
+  to: string | undefined;
+  at: string | undefined;
+  point:
+    | ReplaceRangeDocumentPointCase["point"]
+    | ReplaceRangeAnchoredPointCase["point"]
+    | undefined;
+  replacement: string;
+  pm_json: unknown;
+};
+
+/** Where a case's replaceRange starts and ends: between its two quotes, or at its one point. */
+function replaceRangePositions(doc: ProseMirrorNode, replace: ReplaceRangeCase): [number, number] {
+  if (!("point" in replace)) {
+    return [quotePosition(doc, replace.from), quotePosition(doc, replace.to) + replace.to.length];
+  }
+  const at = (() => {
+    switch (replace.point) {
+      case "doc-start":
+        return 0;
+      case "doc-end":
+        return doc.content.size;
+      case "after":
+        return quotePosition(doc, replace.at) + replace.at.length;
+      case "before":
+        return quotePosition(doc, replace.at);
+      case "after-textblock":
+        return doc.resolve(quotePosition(doc, replace.at)).after();
+      case "before-textblock":
+        return doc.resolve(quotePosition(doc, replace.at)).before();
+    }
+  })();
+  return [at, at];
+}
+
+const replaceRangeCases: ReplaceRangeResult[] = replaceRangeInputs.map((replace) => {
   const { name, markdown, replacement, inline = false } = replace;
   const doc = engine.parseMarkdown(markdown);
   const inserted = engine.parseMarkdown(replacement);
   const transformed = new Transform(doc);
-  const pointPosition =
-    replace.point === undefined
-      ? undefined
-      : (() => {
-          switch (replace.point) {
-            case "doc-start":
-              return 0;
-            case "doc-end":
-              return doc.content.size;
-            case "after":
-              return quotePosition(doc, replace.at) + replace.at.length;
-            case "before":
-              return quotePosition(doc, replace.at);
-            case "after-textblock":
-              return doc.resolve(quotePosition(doc, replace.at)).after();
-            case "before-textblock":
-              return doc.resolve(quotePosition(doc, replace.at)).before();
-          }
-        })();
-  const fromPos = pointPosition === undefined ? quotePosition(doc, replace.from) : pointPosition;
-  const toPos =
-    pointPosition === undefined ? quotePosition(doc, replace.to) + replace.to.length : fromPos;
+  const [fromPos, toPos] = replaceRangePositions(doc, replace);
   const slice = inline
     ? inserted.slice(1, inserted.content.size - 1)
     : inserted.slice(0, inserted.content.size);
@@ -438,10 +459,10 @@ const replaceRangeCases: ReplaceRangeCase[] = [
   return {
     name,
     markdown,
-    from: replace.from,
-    to: replace.to,
-    at: replace.at,
-    point: replace.point,
+    from: "from" in replace ? replace.from : undefined,
+    to: "to" in replace ? replace.to : undefined,
+    at: "at" in replace ? replace.at : undefined,
+    point: "point" in replace ? replace.point : undefined,
     replacement,
     pm_json: transformed.doc.toJSON(),
   };

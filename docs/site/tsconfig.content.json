@@ -1,0 +1,12 @@
+// src/content.config.ts, the collections `astro build` loads, under the types Astro gives the
+// modules it runs itself: `astro/client` declares `astro:content` and reads `import.meta.env` as
+// Vite fills it, which the plugin loaders this file imports read. tsconfig.tools.json holds the
+// files Bun runs, under Bun's types; tsconfig.json also reaches astro.config.mjs and through it
+// plugin sources that do not typecheck here, which `astro build` validates itself.
+{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "types": ["astro/client"]
+  },
+  "include": ["src/content.config.ts"]
+}

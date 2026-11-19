@@ -10,7 +10,7 @@
     "build": "bun run generate && astro build",
     "preview": "astro preview",
     "lint": "biome check --error-on-warnings .",
-    "typecheck": "tsc --noEmit -p tsconfig.tools.json"
+    "typecheck": "tsc --noEmit -p tsconfig.tools.json && tsc --noEmit -p tsconfig.content.json"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.42.5",
