@@ -61,7 +61,7 @@ Each directory below that is marked "guide" has an `AGENTS.md` of its own.
 
 - `skills/` (guide): the skills Legion's agents load.
 
-- `scripts/e2e/`: the live end-to-end proofs; `scripts/e2e/README.md` says how to run each.
+- `scripts/e2e/`: the end-to-end tests; `scripts/e2e/README.md` says how each one runs.
 
 - `.github/workflows/ci.yaml`: the CI router; its header lists the eight places a new job joins it.
 
@@ -110,7 +110,7 @@ The real Oh My Pi and Claude Code suites skip without a word unless `LEGION_TEST
 - After a merge of `main` that touched `bun.lock`, take one side whole (`git checkout origin/main -- bun.lock`), then run `bun install`.
   Commit what it writes only when the difference holds just the lines the change explains, `lockfileVersion` has not moved, and no entry names a registry other than npm's, which a configured mirror writes into every entry.
 
-- CI pulls each image by digest from `ghcr.io/cybermonklabs/legion/ci` (`.github/ci-images.yaml`) and each tool through a row of `.github/ci-tools.yaml`; the live proofs and the deployment examples pull through `mirror.gcr.io`.
+- CI pulls each image by digest from `ghcr.io/cybermonklabs/legion/ci` (`.github/ci-images.yaml`) and each tool through a row of `.github/ci-tools.yaml`; the deployment examples pull through `mirror.gcr.io`.
 
 - Moving a copied image or Bun to a new version takes two commits: first the new row, then the pins (`.bun-version`, `ARG BUN_VERSION`, each `FROM`, the `bun-*` tool rows) with the old row deleted.
   In one commit, a job can pull a digest the copy has not landed yet.
