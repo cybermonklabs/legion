@@ -14,7 +14,19 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
+
+// holderStateRunes is how much of a holder state the commit-order lock table shows, in code
+// points, so a cut never splits a character.
+const holderStateRunes = 70
+
+// holderState is the part of a holder state the table shows: its first holderStateRunes code
+// points, cut between two characters.
+func holderState(what string) string {
+	return text.HeadRunes(what, holderStateRunes)
+}
 
 // stepData is one step directory's results.
 type stepData struct {
@@ -582,10 +594,7 @@ func commitOrderLockTable(md *markdown, steps []stepData) {
 			if i == 4 {
 				break
 			}
-			what := d.What
-			if len(what) > 70 {
-				what = what[:70]
-			}
+			what := holderState(d.What)
 			doing = append(doing, fmt.Sprintf("%s %s%%", mdEscape(what), num(100*d.Share, 0)))
 		}
 		md.row(withFailedReads(s.label(), l.Errors), num(100*l.HeldFraction, 0)+"%", pair(l.Waiters, p50, smax, 0), holds, num(float64(l.HoldsObserved), 0), strings.Join(doing, "; "))

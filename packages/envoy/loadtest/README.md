@@ -2329,7 +2329,7 @@ and about 0.82 of one of the instance's 8 cores.
 | `waiters p50 / max` | count | The backends that wait for the lock, per sample. | `commit_order_lock.waiters` |
 | `hold ms p50 / p90 / p99` | ms | Hold durations. One hold is a run of samples with the same holder pid and transaction start. It lasts from its first sample to the sample that ends it. A hold that is open at the last sample is not counted. The resolution is the sample interval. | `commit_order_lock.hold_ms` |
 | `holds seen` | count | The holds counted for `hold ms`. | `commit_order_lock.holds_observed` |
-| `what the holder was doing (share of held samples)` | text, percent | Up to four holder states, most frequent first, each with its share of held samples. A state is `<state> (<wait event type>:<wait event>)`, or `active: <query>` with the query cut to 90 code points; the table shows a state's first 70 bytes. `idle in transaction (Client:ClientRead)` means that Postgres waits for Dispatch to send the next statement. | `commit_order_lock.holder_doing` (up to 12 entries) |
+| `what the holder was doing (share of held samples)` | text, percent | Up to four holder states, most frequent first, each with its share of held samples. A state is `<state> (<wait event type>:<wait event>)`, or `active: <query>` with the query cut to 90 code points; the table shows a state's first 70 code points, cut between two characters. `idle in transaction (Client:ClientRead)` means that Postgres waits for Dispatch to send the next statement. | `commit_order_lock.holder_doing` (up to 12 entries) |
 
 **The failed-reads mark.** `(<n> failed reads)`, or `(1 failed read)`, after the step name, in this
 table and in the ungranted-locks table, means that n of that probe's reads of `pg_locks` failed: a
