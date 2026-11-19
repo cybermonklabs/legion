@@ -460,9 +460,9 @@ const (
 )
 
 // warned is how many lines of log say says, and how many of those are written at WARN, as a
-// text handler writes the level and then the message. operate.md lists each line a token nobody
-// holds writes among the lines worth alerting on, at WARN, so a line that says it at another
-// level is one such an alert misses.
+// text handler writes the level and then the message. operate.md documents each line a token
+// nobody holds writes, at WARN, so a line that says it at another level is not the line a reader
+// of the guide searches the log for.
 func warned(log, says string) (lines, warnings int) {
 	warn := regexp.MustCompile(`level=WARN msg="[^"]*` + regexp.QuoteMeta(says))
 	for line := range strings.Lines(log) {

@@ -161,8 +161,8 @@ func (l *Listener) onConnected() {
 // reason and a nil error, which the Refresh this package is given discards, so it is the policy's
 // own refusal line that records it and nothing here fires. Neither line carries the payload's own text, which an unreadable payload makes
 // arbitrary bytes, and each names the fan-out rather than repeating the HTTP reread's own
-// "broker: reread secret failed", so an operator alarming on that line still reads one pod's
-// own request path alone.
+// "broker: reread secret failed", so a reader filtering on that line still reads one pod's own
+// request path alone.
 func (l *Listener) notified(ctx context.Context, payload string) {
 	note, err := parse(payload)
 	if err != nil {

@@ -14,8 +14,9 @@ import (
 
 // SweepRecoveredMessage is logged, at INFO, by Tick for one of its sweeps on the first run of that
 // sweep that succeeds after one that failed, followed by sweep=<the sweep's name in sweeps>. One
-// message names the recovery of all seven sweeps, the sweep field saying which, so a reader
-// filters one text for every recovery.
+// message names the recovery of all seven sweeps, the sweep field saying which, so one text finds
+// every recovery in the log. No broker metric counts a sweep or its outcome, and no alert this
+// repository describes reads these lines: a sweep's failures and recoveries are read in the log.
 //
 // A sweep's failure line is its own message in sweeps, at WARN, followed by sweep= and error=. It
 // is written on the first failure of a run of failures and not again until this line has ended

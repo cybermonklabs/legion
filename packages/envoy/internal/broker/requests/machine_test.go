@@ -578,11 +578,11 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 	}
 }
 
-// TestARereadItsCallerAbandonedRaisesNoAlarm pins that a miss-path reread cut short by its own
+// TestARereadItsCallerAbandonedLogsNoLoadFailure pins that a miss-path reread cut short by its own
 // request's end is that request's failure, not Secrets Manager's: the broker logs no
 // LoadFailedMessage, the line that reports a failed reread of the store, and answers the request
 // with its context's error, writing no request and so no grant.
-func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
+func TestARereadItsCallerAbandonedLogsNoLoadFailure(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -600,7 +600,7 @@ func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
 		t.Fatalf("Create whose request ended during the reread = %+v, %v; want context.Canceled and no grant", req, err)
 	}
 	if strings.Contains(logged.String(), policy.LoadFailedMessage) {
-		t.Fatalf("an abandoned reread logged the alarm's line:\n%s", logged.String())
+		t.Fatalf("an abandoned reread logged LoadFailedMessage:\n%s", logged.String())
 	}
 	var written int
 	if err := m.Store.Pool.QueryRow(context.Background(), `select count(*) from requests where enrollment_id=$1`, enr).Scan(&written); err != nil || written != 0 {
@@ -620,10 +620,10 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 	return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", ctx.Err())
 }
 
-// TestAnOrdinaryRereadFailureRaisesThePolicyAlarm pins the other half of that rule: a reread
+// TestAnOrdinaryRereadFailureLogsOneLoadFailure pins the other half of that rule: a reread
 // Secrets Manager itself fails, while the request is still live, logs LoadFailedMessage once,
 // naming the requested secret, and the name stays unknown with no request written.
-func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
+func TestAnOrdinaryRereadFailureLogsOneLoadFailure(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	loader := policytest.Loader(fixtureStore(m), fixtureService)
 	loader.Store = policytest.StoreThrough(fixtureStore(m), failingDescriber{SecretsManagerAPI: fixtureStore(m), err: errors.New("throttled")})
@@ -637,14 +637,14 @@ func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
 	if _, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "", nil); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create whose reread Secrets Manager failed = %v; want policy.ErrUnknownSecret", err)
 	}
-	var alarms []string
+	var failures []string
 	for _, line := range strings.Split(logged.String(), "\n") {
 		if strings.Contains(line, policy.LoadFailedMessage) {
-			alarms = append(alarms, line)
+			failures = append(failures, line)
 		}
 	}
-	if len(alarms) != 1 || !strings.Contains(alarms[0], "name=BRAND_NEW_KEY") {
-		t.Fatalf("alarm lines = %q; want exactly one naming BRAND_NEW_KEY\n%s", alarms, logged.String())
+	if len(failures) != 1 || !strings.Contains(failures[0], "name=BRAND_NEW_KEY") {
+		t.Fatalf("LoadFailedMessage lines = %q; want exactly one naming BRAND_NEW_KEY\n%s", failures, logged.String())
 	}
 	var written int
 	if err := m.Store.Pool.QueryRow(context.Background(), `select count(*) from requests where enrollment_id=$1`, enr).Scan(&written); err != nil || written != 0 {

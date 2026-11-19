@@ -370,8 +370,10 @@ func (n *SecretNames) AppendFields(fields []any) []any {
 }
 
 // RefusalLine is the fields a refusal's line names on both ports of the broker, which a reader of
-// the log filters and alerts on by name: Middleware writes the API port's line by it and the
-// airlock's proxy port its own, so the two name each field alike and in one order.
+// the log filters on by name: Middleware writes the API port's line by it and the airlock's proxy
+// port its own, so the two name each field alike and in one order. No alert this repository
+// describes reads the line: the operate guide's alert on refusals reads
+// broker_answers_total{outcome="refused"}, which counts the same answers.
 type RefusalLine struct {
 	// ID is the answer's id, which the answer carries in its X-Broker-Answer-Id header.
 	ID string

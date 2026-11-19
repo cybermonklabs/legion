@@ -21,18 +21,24 @@ import (
 // a change of reason, was (the reason before). A load or a reread that refuses a secret for the
 // reason the live policy already held writes nothing: the line is the record of when the state
 // changed, and broker_unservable_secrets (NewUnservableSecrets) is what holds the standing
-// state. The operate guide documents its text, so the text changes only with that guide.
+// state. The operate guide documents the line's text, so the text changes only with that guide.
+// No alert this repository describes reads this line: the guide's alert on a secret the broker
+// cannot serve ("What to alert on") reads that gauge.
 const RefusedMessage = "agent secret policy refused"
 
 // ServableMessage is the line Current writes, at INFO, when a secret the live policy refused is
 // refused no longer: name, reason (the reason it had) and owner as its refusal last held them,
-// and now, which is servable when the policy serves it and absent when the store no longer holds
-// it (deleted, or scheduled for deletion).
+// and now, which is servable when the policy serves it, pending when it waits for its value
+// (PendingMessage) and absent when the store no longer holds it (deleted, or scheduled for
+// deletion). The operate guide documents its text, so the text changes only with that guide. No
+// alert this repository describes reads this line.
 const ServableMessage = "agent secret policy no longer refused"
 
 // PendingMessage is the line Current writes, at INFO, when a secret starts waiting for its value
 // (ReasonPendingValue): name, reason, owner and first_load, as RefusedMessage carries them. The
-// operate guide documents its text, so the text changes only with that guide.
+// operate guide documents its text, so the text changes only with that guide. No alert this
+// repository describes reads this line, and a secret waiting for its value is no refusal, so
+// broker_unservable_secrets holds no series for it.
 const PendingMessage = "agent secret policy waiting for a value"
 
 // PendingValueWindow is how long after its creation a secret `agent-secrets secret create` made
@@ -57,11 +63,17 @@ func pendingAt(created, now time.Time) bool {
 // LoadFailedMessage is written, at ERROR, by the reload NewCurrent runs every interval, on the
 // first reload of a run that fails while its context is live; the previous policy stays in force,
 // and the reloads of the run after it write nothing until one loads again (LoadRecoveredMessage).
-// requests writes it too, with the name, for one request whose reread of a name failed.
+// requests writes it too, with the name, for each requested name whose reread failed while the
+// request's context was live. The operate guide documents its text, so the text changes only with
+// that guide. No metric tells a failed load from one that loaded (broker_policy_store_reads_total
+// counts each store call, a failed one too), and no alert this repository describes reads this
+// line: a failed load is read in the log.
 const LoadFailedMessage = "agent secret policy load failed; previous policy kept"
 
 // LoadRecoveredMessage is written, at INFO, by the reload NewCurrent runs, on the first reload
-// that succeeds after a run of failed reloads that wrote LoadFailedMessage.
+// that succeeds after a run of failed reloads that wrote LoadFailedMessage. The operate guide
+// documents its text, so the text changes only with that guide, and no alert this repository
+// describes reads this line.
 const LoadRecoveredMessage = "agent secret policy load succeeded again"
 
 // ValueReadFailedMessage is the line Current writes, at WARN, when it reads a type secret's stored

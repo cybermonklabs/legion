@@ -117,7 +117,8 @@ type rereadResponse struct {
 // (policy.Current.RefreshOne) and answers whether the broker serves it. A reread whose request
 // ended first - its caller went away, or its deadline passed - is the request's failure, not the
 // broker's, so it logs nothing, as the miss path logs nothing for one: anyone can end a request,
-// and the "broker: reread secret failed" line is the one an operator's alert counts.
+// and the "broker: reread secret failed" line must report only the store's failures to whoever
+// reads the broker's ERROR lines.
 // Having reread it here, the handler tells every other pod serving the same database to reread it
 // too (notifyPeers), so one call reaches the whole fleet rather than the pod the load balancer
 // happened to pick: on the 200, and on the 503 of a reread whose request ended during its value

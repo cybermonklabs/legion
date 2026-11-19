@@ -211,14 +211,14 @@ func TestARereadNamesTheTypeItServes(t *testing.T) {
 
 // TestARereadWhoseRequestEndedLogsNoError pins that a reread whose request ended before it
 // finished - its caller went away, or its deadline passed - is answered 503 REQUEST_ENDED without
-// the ERROR line "broker: reread secret failed" that an operator's alert counts, as the miss path
-// logs nothing for one, while a reread Secrets Manager itself fails for a caller still waiting is
-// still that 500 and that line. A request that ends during the value read of a type secret's
-// version the pod has not decoded, once the metadata read has served the secret, ended before the
-// reread finished too: it is that 503, not a 200 answering for a value nobody checked. That
-// reread has merged the tags it read into this pod's policy, though, so the other pods are told
-// to reread the name as on a 200, on a context of the handler's own; one whose request ended
-// during its metadata read merged nothing and tells nobody, nor does the 500.
+// the ERROR line "broker: reread secret failed", which reports the store's failures, as the miss
+// path logs nothing for one, while a reread Secrets Manager itself fails for a caller still
+// waiting is still that 500 and that line. A request that ends during the value read of a type
+// secret's version the pod has not decoded, once the metadata read has served the secret, ended
+// before the reread finished too: it is that 503, not a 200 answering for a value nobody
+// checked. That reread has merged the tags it read into this pod's policy, though, so the other
+// pods are told to reread the name as on a 200, on a context of the handler's own; one whose
+// request ended during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
 	// telling the other pods through notifier.
