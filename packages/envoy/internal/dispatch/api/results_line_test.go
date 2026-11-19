@@ -151,9 +151,9 @@ func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 			want:     "and stay.",
 		},
 		{
-			name:     "a cut that would leave an issue key",
+			name:     "a cut that would leave an issue key keeps nothing, and says so",
 			observed: strings.Repeat("/", 73) + "ACME-12xyz tail words",
-			want:     "…",
+			want:     "The reading holds only words this line leaves out.",
 		},
 		{
 			name:     "a cut inside a word that names no project",
@@ -666,5 +666,24 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 	}
 	if controlMismatches == 0 {
 		t.Fatalf("a stop one rune early printed the whole text's tail on every body: the comparison cannot fail")
+	}
+}
+
+// The line of a check CI proves ends at its run when the cut keeps nothing of the check's words,
+// as it does when the words keep nothing before the cut: a text whose only word is longer than the
+// budget and whose cut part holds an issue key the whole word did not. A word whose cut part holds
+// no key is printed cut, which is the control.
+func TestTheCILineEndsAtTheRunWhenTheCutKeepsNothing(t *testing.T) {
+	words := lineWordsFor([]string{"ACME"}, testServerURL)
+	prefix := "- Check c1 (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + "."
+	for _, row := range []struct{ name, text, want string }{
+		{"a cut that would leave an issue key", strings.Repeat("/", 73) + "ACME-12xyz tail words", prefix},
+		{"a cut inside a word that names no project", strings.Repeat("/", 73) + "abcdefgh tail words",
+			prefix + " " + strings.Repeat("/", 73) + "abcdefg…"},
+	} {
+		check := model.CheckBlock{BlockID: "c1", When: "before_merge", Text: row.text}
+		if got := ciVerdictLine(check, ciCheckRun, "pass", headCommit, words); got != row.want {
+			t.Errorf("%s: the CI line = %q, want %q", row.name, got, row.want)
+		}
 	}
 }

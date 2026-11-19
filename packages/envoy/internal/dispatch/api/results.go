@@ -1223,31 +1223,37 @@ func blockContent(node *pmdoc.Node) string {
 // is cut, when it is longer than the budget, and marked with an ellipsis, so a reader can tell a
 // cut line from a short one; the cut falls at a word boundary where the budget's first runes hold
 // one (cut). A result with no reading says so, since a line that simply stopped after the role
-// would read as a reading nobody recorded, and a reading words keeps nothing of says that.
+// would read as a reading nobody recorded, and a reading of which nothing is left after the cut
+// says that, whether words kept nothing of it or the cut's second judging dropped what it kept.
 func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
 	if strings.TrimSpace(result.Observed) == "" {
 		return line + " The role recorded no reading."
 	}
-	reading := words.keepThrough(result.Observed, checkResultReadingRunes)
-	if reading == "" {
+	tail := words.cut(words.keepThrough(result.Observed, checkResultReadingRunes))
+	if tail == "" {
 		return line + " The reading holds only words this line leaves out."
 	}
-	return line + " " + words.cut(reading)
+	return line + " " + tail
 }
 
 // cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
 // an ellipsis where it was cut, so a reader can tell a cut line from a short one
 // (text.HeadWords). HeadWords cuts inside a word when the budget's first runes hold no blank, and
 // what it keeps of that word can hold a key the whole word did not (`ACME-12xyz` cut to
-// `ACME-12`), so a cut text is kept by w once more.
+// `ACME-12`), so a cut text is kept by w once more. cut is empty when nothing is left: when kept
+// is, or when w keeps nothing of the cut text, so a caller decides that nothing is left from what
+// cut answers and never prints a bare ellipsis.
 func (w lineWords) cut(kept string) string {
 	head, cut := text.HeadWords(kept, checkResultReadingRunes)
 	if !cut {
 		return head
 	}
-	return w.keep(head) + "…"
+	if head = w.keep(head); head == "" {
+		return ""
+	}
+	return head + "…"
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.

@@ -315,15 +315,15 @@ func ciRunOfLine(name string, words lineWords) string {
 // ciVerdictLine is the pull-request body line of a derived result: the recorded line's grammar,
 // with the run that proved it (ciRunOfLine), where a recorded line names its recorder, and the
 // check's own words where a recorded line carries the role's reading, since no role read anything.
-// The words are kept by words and cut as checkResultLine keeps and cuts a reading; a check words
-// keeps nothing of ends the line at the run, as a check with no words does.
+// The words are kept by words and cut as checkResultLine keeps and cuts a reading; a check of whose
+// words nothing is left after the cut ends the line at the run, as a check with no words does.
 func ciVerdictLine(check model.CheckBlock, name, verdict, sha string, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, from %s.", check.BlockID, check.When, verdict, sha, ciRunOfLine(name, words))
-	kept := words.keepThrough(check.Text, checkResultReadingRunes)
-	if kept == "" {
+	tail := words.cut(words.keepThrough(check.Text, checkResultReadingRunes))
+	if tail == "" {
 		return line
 	}
-	return line + " " + words.cut(kept)
+	return line + " " + tail
 }
 
 // ciObserved is what a derived result says was observed, one part a line: the run's conclusion,
