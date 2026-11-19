@@ -6704,3 +6704,89 @@ func TestMemoryGuardPidfdKillEndsTheProcessItHolds(t *testing.T) {
 		t.Fatalf("the process ended with %v, want SIGKILL", err)
 	}
 }
+
+// At an urgent reading at the mark in a stay with history, the read-on after the first kill does
+// not end for urgency a fork whose parent's size covers its own: it ranks at nothing (INFRA-3531
+// R1 of spec version 43, "a fork that ranks at nothing does not"). The run is r3's (the case
+// of TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram), with three
+// more sleeping forks of pid 700, pids 704 to 706, started with the six growers after the band's
+// last reading. The search reads the growers first, the highest pid first, and one of them before
+// the first kill; the read-on reads the other five and the three forks, ends the five, and leaves
+// the forks, each reporting its parent's block as its own.
+func TestMemoryGuardReadsOnPastTheLateForksOfAParentAndEndsOnlyTheGrowersForUrgency(t *testing.T) {
+	replayLatepool(t, latepoolRun{
+		name: "r3 with three late forks",
+		band: []replayReading{{7574, 0}, {7974, 102 * time.Millisecond}, {8379, 101 * time.Millisecond},
+			{8390, 100 * time.Millisecond}, {8390, 101 * time.Millisecond}, {8390, 101 * time.Millisecond},
+			{8434, 151 * time.Millisecond}, {8434, 102 * time.Millisecond}, {8434, 103 * time.Millisecond},
+			{8438, 102 * time.Millisecond}, {8438, 101 * time.Millisecond}, {8438, 102 * time.Millisecond}},
+		forksAt:        6,
+		lateForks:      true,
+		mark:           replayReading{9252, 101 * time.Millisecond},
+		stall:          50 * time.Millisecond,
+		perRead:        22 * time.Millisecond,
+		withinInterval: true,
+		grown:          []uint64{64},
+		newRead:        "9:6",
+		atMark:         6,
+		want: []endedChoice{
+			{805, "new", "search", 0}, {804, "urgent", "search", 0}, {803, "urgent", "search", 0},
+			{802, "urgent", "search", 0}, {801, "urgent", "search", 0}, {800, "urgent", "search", 0},
+		},
+	})
+}
+
+// At an urgent reading at the mark in a stay with history, the read-on after the first kill reads
+// the held processes new to the stay that no read at the mark reached, and ends each that holds
+// memory of its own (INFRA-3531 R1 of spec version 43). Pid 700 holds its block through the
+// band's three readings, so the stay has history; six growers, pids 800 to 805, python3 grow.py,
+// start before the band's last reading, which reads each once at 8 MiB of its own. Each then
+// takes a 64 MiB step, and the reading at the mark, 92.53%, is at or above the urgent share. It
+// spends 50 ms before the guard reads anything and each smaps read before the first kill takes
+// 22 ms, so the reads again read pid 805 alone and end it, the half interval passed; the read-on
+// then reads pids 804 to 800 and ends each at that reading.
+func TestMemoryGuardReadsOnThroughTheHeldNewProcessesNoReadAtTheMarkReached(t *testing.T) {
+	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock - 40*mib}
+	pod.add(agent(podLimit/4), parent)
+	pod.setAnon(at(7600))
+	h := newHarness(t, pod, protect("tester", 100))
+	stall, perRead := slowMark(h)
+	exit := exitFreeing(pod, 0)
+	h.signal.onKill = func(pid int) bool {
+		// The reads after a kill cost nothing, as replayLatepool's do.
+		perRead.Store(0)
+		return exit(pid)
+	}
+	h.run()
+	growers := make([]*fakeProcess, 6)
+	for i, r := range []uint64{8000, 8400, 8440} {
+		if i == 0 {
+			pod.resize(&parent, latepoolBlock)
+		}
+		if i == 2 {
+			for j := range growers {
+				growers[j] = &fakeProcess{pid: 800 + j, ppid: 700, start: uint64(6000 + j), exe: "/usr/bin/python3.13", args: growArgs, anon: 8 * mib}
+				pod.add(*growers[j])
+			}
+		}
+		pod.setAnon(at(r))
+		h.tick()
+	}
+	h.requireKilled()
+	for j, g := range growers {
+		pod.resize(g, uint64(72+j)*mib)
+	}
+	pod.setAnon(at(9253))
+	stall.Store(int64(50 * time.Millisecond))
+	perRead.Store(int64(22 * time.Millisecond))
+	h.tick()
+	want := []endedChoice{
+		{805, "grew", "reread", 0}, {804, "urgent", "reread", 0}, {803, "urgent", "reread", 0},
+		{802, "urgent", "reread", 0}, {801, "urgent", "reread", 0}, {800, "urgent", "reread", 0},
+	}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+	}
+}
