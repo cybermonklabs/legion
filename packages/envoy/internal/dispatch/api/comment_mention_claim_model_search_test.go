@@ -316,11 +316,13 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // event, and never let s1 take A-2 first or a comment twice - with any refresh's answer lost and
 // two re-reads failed, and, in the full run, with up to two refreshes failed before they commit,
 // so that a claim may lapse. Two controls show the model sees each failure: a sender whose re-reads
-// learn nothing of a lost refresh must trust a stale claim, and, in the full run, the refresh and
-// take before this change, under the same failures, must trust a stale claim, drop a send and let
-// A-2 pass A-1. After a claim lapses the delivery sweep keeps no order between two comments, which
-// the spec puts outside this change: an A-2 the sweep sends first, or one the lane sends after the
-// sweep took A-1, is counted in its own column of the table, and fails nothing.
+// learn nothing of a lost refresh must trust a stale claim, and, in the full run, a refresh that
+// writes a claim even once the claim it names has lapsed and a take that counts the row's claim its
+// own only while the claim it carries is live, under the same failures, must trust a stale claim,
+// drop a send and let A-2 pass A-1. After a claim lapses the delivery sweep keeps no order between
+// two comments, which the spec puts outside this change: an A-2 the sweep sends first, or one the
+// lane sends after the sweep took A-1, is counted in its own column of the table, and fails
+// nothing.
 //
 // CI runs three periods (the envoy-go-claim-model job), which is enough for a refresh to re-read
 // and write a row between a try's answer and its park and for a send to park after a failed read;
@@ -350,11 +352,11 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 	}
 	if os.Getenv("ENVOY_MENTION_ORDER_MODEL") == "full" {
 		// A claim lapses only after a lease with no committed refresh, and the sweep then takes
-		// its attempt: four periods reach that, the refresh before this change writing the lapsed
-		// claim again, and a hand-off landing after a send's retry check.
+		// its attempt: four periods reach that, the control's refresh writing the lapsed claim
+		// again, and a hand-off landing after a send's retry check.
 		runs = append(runs,
 			modelRun{v: cmOutage, periods: 4},
-			modelRun{v: cmOldStatements, periods: 4, breaks: []string{"stale", "dropped", "order"}},
+			modelRun{v: cmLapseBlindStatements, periods: 4, breaks: []string{"stale", "dropped", "order"}},
 		)
 	}
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))

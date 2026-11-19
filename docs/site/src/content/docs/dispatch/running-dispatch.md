@@ -393,14 +393,15 @@ threshold logs at ERROR however it was held.
 
 A copy of a comment's mention waits until every earlier event of its issue that a session may
 take first has been published, so the session takes them in order. The wait has no limit, so it
-shows. `envoy_dispatch_mention_sends_held` counts the mention sends that wait, labelled `owner`
-with the issue or document, and `envoy_dispatch_mention_send_held_oldest_seconds` is how long the
-oldest of them has waited. `envoy_dispatch_outbox_fallback_copies_held` and
+shows. `envoy_dispatch_mention_sends_held` counts the mention sends that wait, and
+`envoy_dispatch_mention_send_held_oldest_seconds` is how long the oldest of them has waited.
+`envoy_dispatch_outbox_fallback_copies_held` and
 `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds` are the same for the copies the outbox
-holds for a mention whose send did not settle. A copy that waits a minute logs one WARN that names
-the owner, the earlier event and that event's last publish error. The cause is the earlier event's
-failed publish, which logs `dispatch outbox: publish event` at ERROR at each attempt and counts in
-`envoy_dispatch_outbox_publish_failures_total`.
+holds for a mention whose send did not settle. The four carry no label: an issue key is private,
+and anyone who reaches the port reads this endpoint. A copy that waits a minute logs one WARN
+that names the owner, the earlier event and that event's last publish error. The cause is the
+earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
+attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
 ## Behind a proxy
 

@@ -253,7 +253,7 @@ func (s *moState) anyDue(due bool) bool {
 
 // moVariant is a copy rule. Every record writes owed_seq beside owed_keys in every variant - the
 // model's measure of a record older than the owner's last write (moState.inWindow) - and only the
-// rule of this change reads it.
+// rule as built reads it.
 type moVariant struct {
 	name   string
 	holder func(s *moState) int
@@ -261,9 +261,9 @@ type moVariant struct {
 
 func moOwesS1(e *moEvent) bool { return e.owed&(moTopic|moS1) != 0 }
 
-// moRule8b36 is model.MentionCopyHolderSQL at 8b36c213b8: an earlier event, unpublished, whose
-// owed_keys are null or name the topic family or s1.
-func moRule8b36(s *moState) int {
+// moRuleOwedKeysAlone is the rule that reads earlier events' owed_keys alone: an earlier event,
+// unpublished, whose owed_keys are null or name the topic family or s1.
+func moRuleOwedKeysAlone(s *moState) int {
 	for k := range int(s.c) {
 		if e := &s.ev[k]; !e.published && (e.owedNull || moOwesS1(e)) {
 			return k
@@ -294,9 +294,9 @@ func moRuleOwnCopy(s *moState) int {
 	return -1
 }
 
-// moRuleOwedSeq is this change: an earlier event, unpublished, whose owed_keys are null or name
-// the topic family or s1, or whose record read the owner before its last event (owed_seq below
-// the owner's last_seq) - a write since may have made it reach s1.
+// moRuleOwedSeq is the rule as built (model.MentionCopyHolderSQL): an earlier event, unpublished,
+// whose owed_keys are null or name the topic family or s1, or whose record read the owner before
+// its last event (owed_seq below the owner's last_seq) - a write since may have made it reach s1.
 func moRuleOwedSeq(s *moState) int {
 	for k := range int(s.c) {
 		if e := &s.ev[k]; !e.published && (e.owedNull || e.owedSeq < s.n || moOwesS1(e)) {
@@ -307,10 +307,10 @@ func moRuleOwedSeq(s *moState) int {
 }
 
 var (
-	moVariant8b36      = moVariant{name: "8b36c213b8: earlier events' owed_keys", holder: moRule8b36}
-	moVariantLaterNull = moVariant{name: "hand-over plan: also any later event whose owed_keys are null", holder: moRuleLaterNull}
-	moVariantOwnCopy   = moVariant{name: "liveness control: the comment's own event holds its copy", holder: moRuleOwnCopy}
-	moVariantOwedSeq   = moVariant{name: "this change: earlier events' owed_keys and owed_seq", holder: moRuleOwedSeq}
+	moVariantOwedKeysAlone = moVariant{name: "the rule that reads earlier events' owed_keys alone", holder: moRuleOwedKeysAlone}
+	moVariantLaterNull     = moVariant{name: "hand-over plan: also any later event whose owed_keys are null", holder: moRuleLaterNull}
+	moVariantOwnCopy       = moVariant{name: "liveness control: the comment's own event holds its copy", holder: moRuleOwnCopy}
+	moVariantOwedSeq       = moVariant{name: "the rule as built: earlier events' owed_keys and owed_seq", holder: moRuleOwedSeq}
 )
 
 type moEnv struct {
@@ -851,11 +851,12 @@ func (r moRow) String() string {
 		r.liveFailures, r.steps, r.duration.Round(time.Millisecond))
 }
 
-// The model run: the rules of 8b36c213b8 must reproduce the reviewer's counterexample, a route
-// moved after the comment letting the copy pass the earlier event (s1 takes [2 1]); the hand-over's
-// plan must show the model sees what a second publisher does; the liveness control must show the
-// model sees a copy that never goes; and this change's rule must find nothing anywhere. Every
-// counterexample is carried on until s1 takes the event the copy passed (moRow.unobserved).
+// The model run: the rule that reads owed_keys alone must reproduce the reviewer's counterexample,
+// a route moved after the comment letting the copy pass the earlier event (s1 takes [2 1]); the
+// hand-over's plan must show the model sees what a second publisher does; the liveness control
+// must show the model sees a copy that never goes; and the rule as built must find nothing
+// anywhere. Every counterexample is carried on until s1 takes the event the copy passed
+// (moRow.unobserved).
 func TestTheMentionCopyOrderModel(t *testing.T) {
 	quiet := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -875,14 +876,14 @@ func TestTheMentionCopyOrderModel(t *testing.T) {
 	}
 
 	reviewer := moScenario{route0: 2, program: []moOp{{kind: moNotifying}, {kind: moComment}, {kind: moQuiet, write: moRoute, to: 1}}}
-	control := report(moRun(moVariant8b36, moOnePublisher, []moScenario{reviewer}))
+	control := report(moRun(moVariantOwedKeysAlone, moOnePublisher, []moScenario{reviewer}))
 	if control.first == nil || !slices.Equal(control.first.took(), []int{2, 1}) {
-		t.Fatalf("the model is blind: 8b36c213b8's rules did not reproduce s1 taking [2 1] in the reviewer's scenario; first counterexample: %v", control.first)
+		t.Fatalf("the model is blind: the rule that reads owed_keys alone did not reproduce s1 taking [2 1] in the reviewer's scenario; first counterexample: %v", control.first)
 	}
-	t.Logf("8b36c213b8's rules, the reviewer's scenario:\n%s", control.first)
-	all8b36 := report(moRun(moVariant8b36, moOnePublisher, scenarios))
-	if all8b36.violations == 0 {
-		t.Fatalf("the model is blind: 8b36c213b8's rules passed every scenario")
+	t.Logf("the rule that reads owed_keys alone, the reviewer's scenario:\n%s", control.first)
+	allOwedKeysAlone := report(moRun(moVariantOwedKeysAlone, moOnePublisher, scenarios))
+	if allOwedKeysAlone.violations == 0 {
+		t.Fatalf("the model is blind: the rule that reads owed_keys alone passed every scenario")
 	}
 
 	for _, env := range []moEnv{moOnePublisher, moHoldMoves, moRollingDeploy} {
@@ -908,10 +909,10 @@ func TestTheMentionCopyOrderModel(t *testing.T) {
 	for _, env := range []moEnv{moOnePublisher, moHoldMoves, moRollingDeploy} {
 		row := report(moRun(moVariantOwedSeq, env, scenarios))
 		if row.violations != 0 {
-			t.Errorf("this change's rule let a copy pass an earlier event (%s):\n%s", env.name, row.first)
+			t.Errorf("the rule as built let a copy pass an earlier event (%s):\n%s", env.name, row.first)
 		}
 		if row.liveFailures != 0 {
-			t.Errorf("this change's rule left a copy that never goes (%s): %s", env.name, row.liveFirst)
+			t.Errorf("the rule as built left a copy that never goes (%s): %s", env.name, row.liveFirst)
 		}
 	}
 	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))

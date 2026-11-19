@@ -800,6 +800,11 @@ RULES = {
          "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
          "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
          "internal/api/state_golden_test.go writes, which the sampler's decode must read")),
+    f"{ENVOY}/internal/dispatch/outbox/copyrule/copyrule_test.go": [
+        Read(path, "internal/dispatch/outbox/copyrule/copyrule_test.go:45 walks packages/envoy (../../../..) and :58 "
+                   "reads every .go file it finds but the test files and node_modules, to hold every reader of the "
+                   "mention copy rule to copyrule.Holder")
+        for path in files_but_tests(ENVOY, tree=True)],
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "

@@ -310,9 +310,9 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		return parks.Load() == 1 && len(sender.lanes[held]) == 3
 	})
 	count, _ := sender.heldSamples(time.Now())
-	t.Logf("held gauge samples %+v", count)
-	if len(count) != 1 || count[0].Value != 3 {
-		t.Fatalf("the held gauge reads %+v, want 3 sends of A-1", count)
+	t.Logf("the held gauge reads %d", count)
+	if count != 3 {
+		t.Fatalf("the held gauge reads %d, want 3 sends of A-1", count)
 	}
 }
 

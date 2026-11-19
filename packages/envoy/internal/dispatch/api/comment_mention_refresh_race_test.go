@@ -240,7 +240,7 @@ func newParkGate(t *testing.T) *parkGate {
 
 //go:noinline
 func (g *parkGate) Lock() {
-	if g.armed.Load() && lockCaller() == "park" && g.armed.CompareAndSwap(true, false) {
+	if g.armed.Load() && lockCaller() == parkLockSite && g.armed.CompareAndSwap(true, false) {
 		close(g.arrived)
 		<-g.open
 	}
@@ -251,7 +251,8 @@ func (g *parkGate) release() {
 	g.releases.Do(func() { close(g.open) })
 }
 
-// lockCaller is the name of the function that called the Lock that calls lockCaller.
+// lockCaller is the name of the function that called the Lock that calls lockCaller, which the
+// list of the sender's lock sites names (mentionSenderLockSites, parkLockSite).
 //
 //go:noinline
 func lockCaller() string {
@@ -272,12 +273,12 @@ func lockCaller() string {
 //
 // The last row lands the refresh in the window's last step: the try has answered and serve has
 // gone on to park, which waits at the sender's lock (parkGate) while the refresh runs, a refresh
-// whose answer was lost during the try having left the claim unknown. Before this change serve
-// marked the try done (trying(false)) before park took that lock to record the try's claim, so
-// this refresh re-read the row, recorded the try's claim and wrote the row past it, and park then
-// set the record back to the try's claim: the sender trusted a claim the row no longer carried,
-// and no refresh wrote that row again. Now the try stays marked in flight until park records its
-// claim under that lock (mentionSender.park), so the refresh re-reads nothing there.
+// whose answer was lost during the try having left the claim unknown. A serve that marked the try
+// done (trying(false)) before park took that lock to record the try's claim let this refresh
+// re-read the row, record the try's claim and write the row past it, and park then set the record
+// back to the try's claim: the sender trusted a claim the row no longer carried, and no refresh
+// wrote that row again. The try stays marked in flight until park records its claim under that
+// lock (mentionSender.park), so the refresh re-reads nothing there.
 func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPark(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

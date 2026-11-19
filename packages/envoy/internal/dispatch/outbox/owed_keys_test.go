@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,9 @@ import (
 // as its key; and nothing for a destination already reached, by an earlier batch or this one, a
 // copy a fallback row owns, or a role route reached with nothing to send. An event whose recipient
 // read failed owes model.OwedAnySession besides; one whose row scanned but whose payload does not
-// decode owes nothing (a row that did not scan is never asked, publishBatch).
+// decode owes nothing, as does a row that did not scan (TestAnEventTheOutboxCannotReadOwesNothing
+// records both). Whether the record writes the answer is the outcome's owedKnown, so an answer
+// that owes nothing may be nil or empty alike.
 func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 	topic := "notifications.dispatch.issue.T-1.message.created"
 	s1 := contracts.LegacyAgentSubject("s1")
@@ -95,7 +98,7 @@ func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := owedKeys(&row.event, row.reached)
-			if got == nil || !slices.Equal(got, row.want) {
+			if !slices.Equal(got, row.want) {
 				t.Fatalf("owedKeys = %#v, want %#v", got, row.want)
 			}
 		})
@@ -280,4 +283,77 @@ func TestAnEventNotDueHasWhatItOwesWrittenAgain(t *testing.T) {
 	if _, _, _, again := eventRecord(t, database, earlier.ID); again != version {
 		t.Fatalf("a batch that found the earlier event owing the same moved its row from version %s to %s, want no write", version, again)
 	}
+}
+
+// An earlier event of T-1 that the outbox cannot read owes nothing, as the spec says, and so holds
+// no later copy of a mention: a row whose published_destinations holds a null, which the batch
+// reads and cannot publish, and a row that fails the batch's scan - a created_at of infinity,
+// which no time.Time holds, as an operator's write or a restore can leave one. Each is backed off
+// with the read's failure, and the record writes it owing nothing ('{}') as of T-1's last_seq as
+// the batch read it, so s1's copy of a later comment waits behind nothing. Before the batch the
+// same event, never recorded (null), holds the copy: the control that the rig sees a hold.
+func TestAnEventTheOutboxCannotReadOwesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name, unreadable, failure string
+	}{
+		{
+			name:       "its published_destinations holds a null: read, and not publishable",
+			unreadable: `published_destinations = array[null]::text[]`, failure: "published_destinations holds a null",
+		},
+		{
+			name:       "its created_at is infinity: the row does not scan",
+			unreadable: `created_at = 'infinity'`, failure: "cannot scan Infinity",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			earlier, comment, _ := earlierEventAndComment(t, database, broker)
+			if _, err := database.Pool.Exec(ctx, `update events set `+tc.unreadable+` where id = $1`, earlier.ID); err != nil {
+				t.Fatalf("make the earlier event unreadable: %v", err)
+			}
+			s1 := contracts.LegacyAgentSubject("s1")
+			if by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, s1, "s1"); err != nil || by == nil || by.EventID != earlier.ID {
+				t.Fatalf("control: before any batch s1's copy waits behind %s (%v), want event %d, which no record has written", describeHolder(by), err, earlier.ID)
+			}
+
+			holding(t, Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker}).scan(ctx, unfenced{})
+			var owed []string
+			var owedSeq, lastSeq *int
+			var failure *string
+			var published bool
+			if err := database.Pool.QueryRow(ctx, `
+				select coalesce(e.owed_keys, array['<null>']), e.owed_seq, i.last_seq, e.publish_error, e.published_at is not null
+				from events e join issues i on i.key = e.issue_key where e.id = $1
+			`, earlier.ID).Scan(&owed, &owedSeq, &lastSeq, &failure, &published); err != nil {
+				t.Fatalf("read the earlier event's record: %v", err)
+			}
+			by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, s1, "s1")
+			if err != nil {
+				t.Fatalf("read the rule: %v", err)
+			}
+			t.Logf("after a batch: published %t, publish_error %v, owed_keys %v, owed_seq %v of last_seq %v; s1's copy waits behind %s",
+				published, nullable(failure), owed, nullable(owedSeq), nullable(lastSeq), describeHolder(by))
+			if published || failure == nil || !strings.Contains(*failure, "read event") || !strings.Contains(*failure, tc.failure) {
+				t.Fatalf("the earlier event is published %t with publish_error %v, want it backed off with the read's failure naming %q",
+					published, nullable(failure), tc.failure)
+			}
+			if !slices.Equal(owed, []string{}) || owedSeq == nil || lastSeq == nil || *owedSeq != *lastSeq {
+				t.Fatalf("the record left the earlier event owing %v as of owed_seq %v (last_seq %v), want nothing as of the last_seq the batch read",
+					owed, nullable(owedSeq), nullable(lastSeq))
+			}
+			if by != nil {
+				t.Fatalf("s1's copy waits behind %s, want nothing: an event the outbox cannot read owes nothing", describeHolder(by))
+			}
+		})
+	}
+}
+
+// nullable is what a nullable column read holds, "null" for none.
+func nullable[T any](value *T) any {
+	if value == nil {
+		return "null"
+	}
+	return *value
 }

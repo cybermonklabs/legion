@@ -10,18 +10,21 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The order model (TestTheMentionCopyOrderModel) restates model.MentionCopyHolderSQL as
-// moRuleOwedSeq, so this runs both on the same rows: T-1's two earlier events, a comment that
-// mentions s1 and a later event no record has written, the earlier two set to every pairing of
-// published or not, each owed_keys the model has (null, nothing, the topic family, s1's subject,
-// s2's subject, both subjects) and each owed_seq (null, one behind the owner's last_seq, at it).
-// The SQL's answer for s1's copy must be the model's, event for event. The later event's null
-// owed_keys hold nothing in either - only earlier events hold a copy. A rule the model restated
-// wrongly - a missing clause, a comparison the wrong way round, a later event counted - fails here
-// on the first row the two disagree on.
+// moRuleOwedSeq, so this runs both on the same rows, the SQL through copyrule.Holder, the one read
+// of the rule both roads of a copy make (mentionCopyHolderFor in internal/dispatch/api, copyHolder
+// here; TestOnlyHolderReadsTheCopyRule): T-1's two earlier events, a comment that mentions s1 and
+// a later event no record has written, the earlier two set to every pairing of published or not,
+// each owed_keys the model has (null, nothing, the topic family, s1's subject, s2's subject, both
+// subjects) and each owed_seq (null, one behind the owner's last_seq, at it). The SQL's answer for
+// s1's copy must be the model's, event for event. The later event's null owed_keys hold nothing
+// in either - only earlier events hold a copy - and no role route is owed, so no role's holder is
+// asked. A rule the model restated wrongly - a missing clause, a comparison the wrong way round, a
+// later event counted - fails here on the first row the two disagree on.
 func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	ctx := context.Background()
@@ -108,7 +111,10 @@ func TestTheModelsCopyRuleIsTheSQLRule(t *testing.T) {
 				}
 				state.ev[k] = e
 			}
-			by, err := copyHolder(ctx, Deps{Store: database}, comment.ID, s1, "s1")
+			by, err := copyrule.Holder(ctx, database.Pool, comment.ID, s1, func(_ context.Context, role string) bool {
+				t.Errorf("the rule asked who holds role %q, which no event of these rows owes", role)
+				return true
+			})
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}

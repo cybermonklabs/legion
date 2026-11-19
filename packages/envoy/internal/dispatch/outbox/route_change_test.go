@@ -331,8 +331,8 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 	// What a batch that read the move comes to: the earlier event, not due, owes s1 now,
 	// and issue.updated, which goes to the topic family alone, is published.
 	outcomes := []outcome{
-		{id: earlier.ID, state: owedAgain, owed: []string{s1}, owedSeq: lastSeq},
-		{id: updated.ID, state: published, reached: []string{item.Topic}, owed: []string{}, owedSeq: lastSeq},
+		{id: earlier.ID, state: owedAgain, owed: []string{s1}, owedKnown: true, owedSeq: lastSeq},
+		{id: updated.ID, state: published, reached: []string{item.Topic}, owed: []string{}, owedKnown: true, owedSeq: lastSeq},
 	}
 	switch record {
 	case "lost":

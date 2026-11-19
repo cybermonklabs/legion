@@ -748,6 +748,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
+              - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
@@ -2067,6 +2068,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
+              - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
@@ -3185,6 +3187,7 @@ jobs:
               # cmd/listener/dispatch_kept_role_test.go drives Dispatch's outbox end to end, so the
               # serverchange soak compiles this package: a change to it must re-run that soak.
               - 'packages/envoy/internal/dispatch/outbox/*'
+              - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
               - 'packages/envoy/internal/dispatch/prioritystore/*'
               - 'packages/envoy/internal/dispatch/processes/*'
@@ -3846,6 +3849,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/legion/metrics/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
+              - 'packages/envoy/internal/dispatch/outbox/copyrule/*'
               - 'packages/envoy/internal/dispatch/pmdoc/*'
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/*'
               - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'

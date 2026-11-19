@@ -45,11 +45,9 @@ type pendingEvent struct {
 	// every event of the owner with a seq at most this and the routing they were written with, and
 	// every event written after it has a higher one. The record writes it beside what the event
 	// owes (events.owed_seq, recordBatch), so a copy of a mention reads whether a write came after
-	// that record (model.MentionCopyHolderSQL).
+	// that record (model.MentionCopyHolderSQL). It is read beside the event's id, before every
+	// column a row can fail to scan, so a row that did not scan has it too (readRows).
 	ownerSeq int
-	// unread is a row that did not scan (readRows): nothing of it beyond its id is known, its
-	// ownerSeq among it, so the record writes nothing of what it owes (outcome.owed nil).
-	unread bool
 	// failure is why the row cannot be published as it was read - it did not scan, or its actor or
 	// payload JSON did not decode - and failureLog is the predicate it reports under. Such an
 	// event has no destinations: it is backed off, and holds back no other event.
@@ -86,8 +84,9 @@ type routing struct {
 // rather than long ones for a few. The choice carries only each row's id and back-off: the event's
 // own columns, and the issue (its route and claim, routing), document and project columns a
 // publish needs, are joined onto the kept rows, the owner's last_seq among them (ownerSeq), read
-// in this same statement and so as of the routing it reads. A kept row's event is read by its id
-// in a lateral subquery with a limit, which
+// in this same statement and so as of the routing it reads. The event's id and that last_seq are
+// its first two columns, which no row fails to scan, so a row that fails a later one is known by
+// both (readRows). A kept row's event is read by its id in a lateral subquery with a limit, which
 // Postgres does not flatten into a join, so each is one lookup of events_pkey: as a join, the
 // planner, which expects many more kept rows than a batch keeps, merges them with a walk of every
 // event's id.
@@ -144,12 +143,13 @@ const readBatchSQL = `
 		       count(*) over (partition by first) as window_size
 		from chosen
 	)
-	select e.id, e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''),
+	select e.id, coalesce(i.last_seq, ar.last_seq, p.last_seq, 0),
+	       e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''),
 	       e.seq, e.type, e.actor, e.notify, e.created_at, e.payload, e.attempt_count,
 	       e.published_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
 	       coalesce(case when i.claimed_by ->> 'kind' = 'session' then i.claimed_by ->> 'id' end, ''),
 	       coalesce(e.issue_key, e.artifact_id::text, e.project_key), r.due, r.next_attempt_at, r.candidates,
-	       r.window_size, coalesce(i.last_seq, ar.last_seq, p.last_seq, 0)
+	       r.window_size
 	from ranked r
 	cross join lateral (select * from events where id = r.id limit 1) e
 	left join issues i on i.key = e.issue_key
@@ -191,6 +191,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 		var owner *string
 		if err := rows.Scan(
 			&item.event.ID,
+			&item.ownerSeq,
 			&item.event.IssueKey,
 			&item.event.ArtifactID,
 			&item.event.Project,
@@ -210,15 +211,16 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			&item.nextAttempt,
 			&item.candidates,
 			&item.windowSize,
-			&item.ownerSeq,
 		); err != nil {
 			// pgx scans positionally and treats a failure as fatal to the cursor, so this row ends
-			// the batch and rows.Err() below repeats the same error. e.id is the first column, so
-			// the row scanned that far before it failed, and it is carried on as a failure, backed
-			// off like any other event that cannot be published.
+			// the batch and rows.Err() below repeats the same error. e.id and the owner's last_seq
+			// are the first two columns, which no row fails to scan - a created_at of infinity, which
+			// no time.Time holds, fails a later one - so the row is known by both: it is carried on
+			// as a failure, backed off like any other event that cannot be published, and recorded
+			// as of that last_seq owing nothing (owedKeys), so it holds no copy of a mention.
 			item.failure = fmt.Errorf("read event: %w", err)
 			item.failureLog = "dispatch outbox: read event"
-			item.due, item.unread = true, true
+			item.due = true
 			pending = append(pending, item)
 			stopped = true
 			continue

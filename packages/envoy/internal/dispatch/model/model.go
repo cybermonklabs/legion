@@ -2636,8 +2636,9 @@ const (
 // owner's topic family, which any session may follow and the outbox cannot know which do, one to
 // that very key, or one to a session its failed recipient read did not name (OwedAnySession). The
 // earliest such event is the one read. A role route an earlier event still owes holds the copy
-// only when the role's holder is that session, which this statement cannot read: the caller asks
-// MentionCopyRolesSQL for those routes when this one answers no row.
+// only when the role's holder is that session, which this statement cannot read:
+// MentionCopyRuleSQL reads MentionCopyRolesSQL's rows for those routes beside it, in the same
+// statement, when this one answers no row.
 //
 // What an earlier event owes is what the outbox's last record of it says (events.owed_keys), as
 // its destinations stood when the batch that wrote it read them, and that record is trusted only
@@ -2670,14 +2671,15 @@ const (
 // It is the order the outbox keeps for its own sends (planChains), asked by the two roads a
 // mention's copy takes outside the outbox's chains: the API's send of the mention
 // (deliverResolvedCommentMention in internal/dispatch/api) and the outbox's fallback pass
-// (decideFallbackCopy). The read walks the partial index events_outbox_owner, whose predicate the
-// query's own clauses spell, so it reads the owner's unpublished events and no other, and the
-// owner's newest seq backwards over its unique (owner, seq) index, once: the newest-seq subquery
-// ends with offset 0, which keeps the planner from pulling it up into the filter on the earlier
-// events, where it ran once for each of them and read the newest event's payload each time. The
-// exhaustive model of this order (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds
-// this rule, and TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows. It is a constant so
-// that a guard reading a statement's SQL can read it (the keyed-write guard of
+// (decideFallbackCopy), each through copyrule.Holder and MentionCopyRuleSQL. The read walks the
+// partial index events_outbox_owner, whose predicate the query's own clauses spell, so it reads
+// the owner's unpublished events and no other, and the owner's newest seq backwards over its
+// unique (owner, seq) index, once: the newest-seq subquery ends with offset 0, which keeps the
+// planner from pulling it up into the filter on the earlier events, where it ran once for each of
+// them and read the newest event's payload each time. The exhaustive model of this order
+// (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds this rule, and
+// TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows, through copyrule.Holder. It is a
+// constant so that a guard reading a statement's SQL can read it (the keyed-write guard of
 // internal/dispatch/api).
 const MentionCopyHolderSQL = `select k.id, k.publish_error
 		from events c
@@ -2707,8 +2709,8 @@ const MentionCopyHolderSQL = `select k.id, k.publish_error
 // for each role topic one of them owes, that topic and the earliest such event, with its id and
 // publish_error, the comment's comment.created event's id being $1. Its rows are the earlier
 // events MentionCopyHolderSQL cannot judge: each holds a copy bound for the role's holder, and
-// only the caller can read who that is now (mentionCopyHolder in internal/dispatch/api,
-// copyHolder in internal/dispatch/outbox). It reads the same owner's unpublished events as
+// only the caller can read who that is now (copyrule.Holder's holds, which the API's send and the
+// outbox's fallback pass each give it). It reads the same owner's unpublished events as
 // MentionCopyHolderSQL, through events_outbox_owner, and answers no row - the usual case - when
 // none of them owes a role route.
 const MentionCopyRolesSQL = `select distinct on (owed.owed_key) owed.owed_key, k.id, k.publish_error
@@ -2722,18 +2724,27 @@ const MentionCopyRolesSQL = `select distinct on (owed.owed_key) owed.owed_key, k
 		  and starts_with(owed.owed_key, '` + contracts.RoleTopicPrefix + `')
 		order by owed.owed_key, k.id`
 
-// MentionCopyHolder is the earlier event a copy of a mention waits behind (MentionCopyHolderSQL,
-// MentionCopyRolesSQL): its id, and why its last publish attempt failed, nil while none has.
+// MentionCopyRuleSQL is the copy rule as one statement, so in one snapshot: MentionCopyHolderSQL's
+// row, with an empty role topic, and, only when that answers none, MentionCopyRolesSQL's rows, in
+// role topic order. $1 and $2 are MentionCopyHolderSQL's. Read as two statements, a write between
+// them could move what an earlier event owes from a role route the copy's session holds to that
+// session's own key - a route moved to the session, which a batch then records - and the second
+// statement would find no role owed while the first found no key: the copy would pass an event
+// that each read alone holds it behind (TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot in
+// internal/dispatch/outbox). Its one reader is copyrule.Holder, which both roads of a copy call
+// (TestOnlyHolderReadsTheCopyRule).
+const MentionCopyRuleSQL = `with holder as materialized (` + MentionCopyHolderSQL + `)
+	select ''::text as role_topic, id, publish_error from holder
+	union all
+	select owed_key, id, publish_error from (` + MentionCopyRolesSQL + `) roles
+	where not exists (select 1 from holder)
+	order by role_topic`
+
+// MentionCopyHolder is the earlier event a copy of a mention waits behind (MentionCopyRuleSQL):
+// its id, and why its last publish attempt failed, nil while none has.
 type MentionCopyHolder struct {
 	EventID      int64
 	PublishError *string
-}
-
-// MentionCopyRole is one row of MentionCopyRolesSQL: a role topic an earlier event still owes,
-// and the earliest such event.
-type MentionCopyRole struct {
-	Topic string
-	MentionCopyHolder
 }
 
 // MentionCopyHeldWarnAfter is how long a copy of a mention waits behind an earlier event before

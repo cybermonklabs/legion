@@ -3,12 +3,240 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// mentionClaimRefresh is how often the mention sender writes the claims of the sends waiting on
+// its lanes again (refreshHeldClaims). It is well inside model.DeliveryClaimLapse, so a claim this
+// sender holds never lapses while the process is alive however long its lane is held, and a
+// process that stops or dies writes none again, so every claim it still held lapses within one
+// lease and the delivery sweep takes those attempts.
+const mentionClaimRefresh = model.DeliveryClaimLapse / 3
+
+// mentionClaim is one attempt the sender holds and the claim it last wrote on it.
+type mentionClaim struct {
+	key       mentionKey
+	claimedAt time.Time
+}
+
+func (m mentionSend) claim() mentionClaim {
+	return mentionClaim{key: m.key(), claimedAt: m.claimed}
+}
+
+// mentionClaimState is what the mention sender records of one attempt it holds
+// (mentionSender.held).
+type mentionClaimState struct {
+	// claimed is the claim this sender holds on the attempt, as it last wrote it, so one statement
+	// writes the claims of every attempt it holds again: every send that has not started, and a
+	// send in flight until it ends (claimedDuring). A try that claims the attempt for itself takes that
+	// claim out of the statements' reach, as each matches only the claim recorded here, and park
+	// records the try's; a try that reads the rule alone (sendCommentMention) writes no claim, so
+	// its send's row still carries the one recorded here, and a refresh that writes it meanwhile
+	// records what it wrote (refreshHeldClaims).
+	claimed time.Time
+	// unsure is that a refresh named claimed and got no answer, so the row may carry a claim this
+	// sender wrote and never learned; the next refresh or try re-reads it (refreshHeldClaims,
+	// claimKnown), and a claim recorded from an answer ends it.
+	unsure bool
+	// lost counts the refreshes whose answer was lost while they named this attempt. A re-read
+	// applies what it read only while the count is the one it began under: a refresh that lost
+	// its answer after the read took the row may have written a claim the read never saw.
+	lost uint64
+	// trying is that a try of the attempt is in flight (mentionSender.markTrying), from before the try
+	// until its park records its claim or the send ends (claimedDuring), which the re-read of the unsure
+	// claims leaves alone (rereadUnsure).
+	trying bool
+}
+
+// markTrying marks key's try in flight: the one writer of this sender's own its row can have
+// beside the refresh, which rereadUnsure leaves alone while it runs. The mark stays until the try's
+// park clears it, under the lock it records the try's claim under (park), or the send ends
+// (claimedDuring). A send that only reads its claim (claimKnown) writes nothing, and is not marked.
+func (m *mentionSender) markTrying(key mentionKey) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, mine := m.held[key]; mine {
+		state.trying = true
+		m.held[key] = state
+	}
+}
+
+// claimKnown is item with the claim its row carries, read before its try acts on it when its
+// recorded claim is unsure: a refresh named that claim and got no answer, so the row may carry one
+// the refresh wrote (mentionSender's doc). The read answers a row's claim only while it is this
+// sender's own - at or past the claim recorded and less than a lease after it
+// (model.DeliveryClaimSinceSQL) - and this goroutine's is the one try of the attempt, so no other
+// try's claim can be among them. The claim read is recorded unless one was recorded from an
+// answer meanwhile, which item then carries instead; no claim read leaves the record as it is,
+// the row's claim being no longer this sender's to carry, and the try finds it so. ok is false
+// when the read fails: the claim is still unknown, and the send makes no try.
+func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
+	key := item.key()
+	m.mu.Lock()
+	began := m.held[key]
+	m.mu.Unlock()
+	if !began.unsure {
+		return item, true
+	}
+	read, err := m.reread(m.ctx, []mentionClaim{item.claim()})
+	if err != nil {
+		slog.Error("dispatch: read the claim of a comment mention a lost refresh may have written",
+			"comment", item.comment.ID, "target", item.mention.Target, "error", err)
+		return item, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.held[key]
+	switch {
+	case !state.claimed.Equal(item.claimed):
+		item.claimed = state.claimed
+	case state.lost != began.lost:
+		// Another refresh lost its answer after the read: the claim stays unknown, and the try
+		// carries the one recorded, which the row's claim, if this sender's, is at or past.
+	default:
+		state.unsure = false
+		if len(read) == 1 {
+			item.claimed = read[0].claimedAt
+			state.claimed = item.claimed
+		}
+		m.held[key] = state
+	}
+	return item, true
+}
+
+// keepClaims writes the claims of the sends waiting on the lanes again every claimRefresh
+// (mentionClaimRefresh), until the lifetime ends or wait runs. Nothing is written again after
+// that, which is what hands a stopped process's queue to the delivery sweep a lease later.
+func (m *mentionSender) keepClaims() {
+	defer m.done.Done()
+	refresh := time.NewTicker(m.claimRefresh)
+	defer refresh.Stop()
+	for {
+		select {
+		case <-m.lifetime.Done():
+			return
+		case <-m.stopped:
+			return
+		case <-refresh.C:
+			m.refreshHeldClaims(m.ctx)
+		}
+	}
+}
+
+// refreshHeldClaims writes the claim of every attempt this sender holds again, in one statement,
+// and records what that statement wrote: the next refresh and the lane's own send both read the
+// claim this sender last took. The statement moves only a row that still carries the claim this
+// sender recorded, so it never moves the claim a try has taken for itself out from under that
+// try's settle, and it goes on writing the row of a send in flight whose try reads the rule alone
+// and writes none (held).
+//
+// The statement runs without the lock, so for its length a row carries a newer claim than the map
+// records. That gap is safe: the row's claim only moves forward, so the delivery sweep, which
+// reads committed rows past a lease, sees it live sooner, never later, and the lane's bound send
+// accepts any claim at or past the one it carries within a lease (model.DeliveryClaimSinceSQL).
+// Its result is recorded only for a key whose claim the map still holds as the snapshot took it,
+// so a claim written meanwhile - a keyed repeat's (queueLocked) - is never set back.
+//
+// A statement that answers an error may have committed all the same, so it leaves every claim it
+// named that the map still holds unknown (mentionClaimState.unsure), never assumed, and the
+// refresh re-reads those rows at once (rereadUnsure), leaving a send whose try is in flight to
+// its park, which records the claim that try took; the next refresh or try re-reads whatever is
+// still unknown before it acts on it (claimKnown). A read proves a row's claim this sender's own
+// while it is less than a lease after the claim recorded (model.DeliveryClaimSinceSQL), and a lost
+// refresh wrote at most one claim past the one recorded, less than a lease after it, since it
+// writes only while the claim it names is live and every refresh after it names the recorded one,
+// which the row no longer carries.
+func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
+	m.rereadUnsure(ctx)
+	m.mu.Lock()
+	queued := make([]mentionClaim, 0, len(m.held))
+	snapshot := make(map[mentionKey]time.Time, len(m.held))
+	for key, state := range m.held {
+		queued = append(queued, mentionClaim{key: key, claimedAt: state.claimed})
+		snapshot[key] = state.claimed
+	}
+	m.mu.Unlock()
+	if len(queued) == 0 {
+		return
+	}
+	refreshed, err := m.refresh(ctx, queued)
+	if err != nil {
+		slog.Error("dispatch: write the claims of the queued comment mentions again; the claims it named are unknown until read",
+			"attempts", len(queued), "error", err)
+	}
+	m.mu.Lock()
+	if err != nil {
+		for key, claimed := range snapshot {
+			if state, mine := m.held[key]; mine && state.claimed.Equal(claimed) {
+				state.unsure = true
+				state.lost++
+				m.held[key] = state
+			}
+		}
+		m.mu.Unlock()
+		m.rereadUnsure(ctx)
+		return
+	}
+	defer m.mu.Unlock()
+	for _, claim := range refreshed {
+		if state, mine := m.held[claim.key]; mine && state.claimed.Equal(snapshot[claim.key]) {
+			state.claimed, state.unsure = claim.claimedAt, false
+			m.held[claim.key] = state
+		}
+	}
+}
+
+// rereadUnsure reads the claims the rows of the unsure attempts carry, for those no try is in
+// flight for, and records each (mentionSender's doc). The read answers a row's claim only while
+// it is this sender's own - at or past the claim recorded and less than a lease after it
+// (model.DeliveryClaimSinceSQL) - and a claim is recorded only while its attempt is no try's and
+// its record is the one the read named, so a try's own claim, which a try that started after the
+// read began may have taken, is never recorded here: that try records its own (park), or ends
+// (claimedDuring). An attempt it answers no row for is no longer this sender's to write, and stays as it
+// is. A read that fails leaves every one unsure for the next refresh.
+func (m *mentionSender) rereadUnsure(ctx context.Context) {
+	m.mu.Lock()
+	var unsure []mentionClaim
+	lost := map[mentionKey]uint64{}
+	for key, state := range m.held {
+		if state.unsure && !state.trying {
+			unsure = append(unsure, mentionClaim{key: key, claimedAt: state.claimed})
+			lost[key] = state.lost
+		}
+	}
+	m.mu.Unlock()
+	if len(unsure) == 0 {
+		return
+	}
+	read, err := m.reread(ctx, unsure)
+	if err != nil {
+		slog.Error("dispatch: read the claims of the comment mentions a lost refresh may have written",
+			"attempts", len(unsure), "error", err)
+		return
+	}
+	rows := make(map[mentionKey]time.Time, len(read))
+	for _, claim := range read {
+		rows[claim.key] = claim.claimedAt
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, claim := range unsure {
+		state, mine := m.held[claim.key]
+		if !mine || !state.unsure || state.trying || !state.claimed.Equal(claim.claimedAt) || state.lost != lost[claim.key] {
+			continue
+		}
+		state.unsure = false
+		if row, ok := rows[claim.key]; ok {
+			state.claimed = row
+		}
+		m.held[claim.key] = state
+	}
+}
 
 // mentionClaimArrays is claims as the four arrays the sender's statements match a comment_deliveries
 // row against: its comment, target and attempt, and the claim this sender wrote on it.

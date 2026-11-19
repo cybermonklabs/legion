@@ -24,14 +24,15 @@ func scrape(t *testing.T, registry *metrics.Registry) string {
 }
 
 // A mention's send that waits behind an earlier event shows, since nothing bounds the wait: the
-// server's gauges count it by owner and read how long the oldest has waited, and past the warn
-// threshold - shortened here to a second - the sender logs one WARN naming the owner, the event it
-// waits behind and that event's last publish error. The cause is logged too: the outbox's own
-// ERROR for the earlier event's failed topic send names that event and its topic. While it waits,
-// each try of the parked lane reads the rule alone: no claim, resolution or settle of the attempt
-// is written (a traced pool counts the server's statements). Once the topic family is captured
-// again the send lands, the gauges read nothing and no second WARN comes. The controls are the
-// scrape before the comment and the one after the send landed.
+// server's gauges count it and read how long the oldest has waited, naming no owner, since
+// /metrics answers whoever reaches the port; and past the warn threshold - shortened here to a
+// second - the sender logs one WARN naming the owner, the event it waits behind and that event's
+// last publish error. The cause is logged too: the outbox's own ERROR for the earlier event's
+// failed topic send names that event and its topic. While it waits, each try of the parked lane
+// reads the rule alone: no claim, resolution or settle of the attempt is written (a traced pool
+// counts the server's statements). Once the topic family is captured again the send lands, the
+// gauges read none and no second WARN comes. The controls are the scrape before the comment and
+// the one after the send landed.
 func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
@@ -59,8 +60,8 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	waitUntil(t, 10*time.Second, "the issue's first events published", func() bool {
 		return unpublishedEvents(t, database, issue.Key) == 0
 	})
-	if body := scrape(t, registry); strings.Contains(body, "envoy_dispatch_mention_sends_held{") {
-		t.Fatalf("the gauges read %q before any mention, want no held send", body)
+	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
+		t.Fatalf("the gauges read %q before any mention, want no held send", heldLines(body))
 	}
 
 	view.refuseTopics(true)
@@ -77,7 +78,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	}))
 	const warning = `level=WARN msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 	waitUntil(t, 10*time.Second, "the held send counted and reported", func() bool {
-		return strings.Contains(scrape(t, registry), fmt.Sprintf(`envoy_dispatch_mention_sends_held{owner=%q} 1`, issue.Key)) &&
+		return strings.Contains(scrape(t, registry), "envoy_dispatch_mention_sends_held 1\n") &&
 			strings.Contains(logs.String(), warning)
 	})
 
@@ -103,9 +104,12 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	if attemptWrites != 0 {
 		t.Errorf("the parked lane made %d statements on comment_deliveries over 3 s, want none: a try of a held send reads the rule alone", attemptWrites)
 	}
-	if !strings.Contains(body, fmt.Sprintf(`envoy_dispatch_mention_send_held_oldest_seconds{owner=%q}`, issue.Key)) ||
-		strings.Contains(body, fmt.Sprintf(`envoy_dispatch_mention_send_held_oldest_seconds{owner=%q} 0`, issue.Key)) {
+	if !strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds ") ||
+		strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 0\n") {
 		t.Errorf("the gauges read %q, want the held send's age past zero seconds", heldLines(body))
+	}
+	if lines := heldLines(body); strings.Contains(lines, "{") || strings.Contains(lines, issue.Key) {
+		t.Errorf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port", lines)
 	}
 	logged := logs.String()
 	if got := strings.Count(logged, warning); got != 1 {
@@ -128,7 +132,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		attempts := waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true })
 		return len(attempts) == 1 && attempts[0].State == "sent"
 	})
-	if body := scrape(t, registry); strings.Contains(body, "envoy_dispatch_mention_sends_held{") {
+	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q once the send landed, want no held send", heldLines(body))
 	}
 	if got := strings.Count(logs.String(), warning); got != 1 {

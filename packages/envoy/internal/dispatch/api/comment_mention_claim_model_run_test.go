@@ -137,7 +137,7 @@ func cmOwns(row, recorded time.Time) bool {
 
 // cmRefreshWrites is whether the refresh's statement (refreshMentionClaims) writes a row that is
 // pending and carries row, naming named, read now: the row carries the claim named, which is live
-// at some timing within the slots - or, for the control's refresh before this change, at all.
+// at some timing within the slots - or, for the control's refresh that writes a lapsed claim, at all.
 func (r *cmRun) cmRefreshWrites(row cmRow, named time.Time) bool {
 	return row.pending && row.claim.Equal(named) && (r.v.revivesLapsed || !r.lapsed(named))
 }

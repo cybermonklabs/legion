@@ -10,14 +10,15 @@
 --               route is its role topic whichever holder it resolved to, since the holder can
 --               change before the event's next record; an event whose list ends at a recipient
 --               read that failed owes model.OwedAnySession beside them. An event the record
---               publishes owes nothing (an empty array), and so does one whose row the outbox
---               read but cannot publish: its list holds a null, or its actor or payload does not
---               decode. The record writes the column only while the publisher hold is its own; a
---               record made without it leaves the column as it was, on an event it publishes
---               too, which nothing reads: both rules read unpublished events alone. A row the
---               outbox cannot scan is not recorded at all, and keeps null or what an earlier
---               record wrote. Null is an event no record has written it for yet, which owes at
---               least its owner's topic family, the first destination of every event.
+--               publishes owes nothing (an empty array), and so does one the outbox cannot
+--               read: a row it read but cannot publish - its list holds a null, or its actor or
+--               payload does not decode - and a row that does not scan, which the batch still
+--               knows by its id and its owner's last_seq, the first two columns it reads. The
+--               record writes the column only while the publisher hold is its own; a record
+--               made without it leaves the column as it was, on an event it publishes too,
+--               which nothing reads: both rules read unpublished events alone. Null is an event
+--               no record has written it for yet, which owes at least its owner's topic family,
+--               the first destination of every event.
 --
 --   owed_seq    the owner's last_seq (issues, artifacts or projects) as the batch that wrote
 --               owed_keys read it, in the same statement as the routing those keys come from,

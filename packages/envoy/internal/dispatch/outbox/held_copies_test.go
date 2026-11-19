@@ -32,8 +32,8 @@ func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
 		return comments
 	}
 
-	if count, _ := held.samples(time.Now()); len(count) != 0 {
-		t.Fatalf("the gauges read %+v, want nothing of a copy no pass found waiting for %s", count, fallbackClaim)
+	if count, _ := held.samples(time.Now()); count != 0 {
+		t.Fatalf("the gauges read %d, want nothing of a copy no pass found waiting for %s", count, fallbackClaim)
 	}
 	if got := entries(); len(got) != 1 {
 		t.Fatalf("reading the gauges left the record %v, want it unchanged: the gauges only read", got)

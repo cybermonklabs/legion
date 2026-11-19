@@ -337,13 +337,13 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		var done settlement
 		for _, event := range owned {
 			if !event.due {
-				outcomes = append(outcomes, outcome{id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil), owedSeq: event.ownerSeq})
+				outcomes = append(outcomes, outcome{
+					id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil), owedKnown: true, owedSeq: event.ownerSeq,
+				})
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
-			if !event.unread {
-				event.outcome.owed, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), event.ownerSeq
-			}
+			event.outcome.owed, event.outcome.owedKnown, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), true, event.ownerSeq
 			outcomes = append(outcomes, event.outcome)
 			switch event.outcome.state {
 			case published:
@@ -579,14 +579,16 @@ type outcome struct {
 	delay *time.Duration
 	until *time.Time
 	// owed is what the event still owes once the batch settled it (owedKeys), which the record
-	// writes to events.owed_keys, and nil for an outcome that does not read the event's list - an
-	// event a batch chose and did not read (deferPastWindow), and a row that did not scan
-	// (pendingEvent.unread), of which nothing beyond its id is known - whose owed_keys and owed_seq
-	// the record leaves as they are: null, or what an earlier record wrote. owedSeq is the owner's
-	// last_seq the batch's read saw (pendingEvent.ownerSeq), which the record writes to
-	// events.owed_seq beside owed, and only beside it.
-	owed    []string
-	owedSeq int
+	// writes to events.owed_keys when owedKnown is set, and owedSeq the owner's last_seq the
+	// batch's read saw (pendingEvent.ownerSeq), which the record writes to events.owed_seq beside
+	// it, and only beside it. owedKnown is set where the outcome of an event the batch read is
+	// built - settled, or read as a blocker, a row that did not scan among them - and is not for
+	// an event the batch chose and did not read (deferPastWindow), of which nothing is known: the
+	// record leaves that one's owed_keys and owed_seq as they are, null or what an earlier record
+	// wrote.
+	owed      []string
+	owedKnown bool
+	owedSeq   int
 }
 
 // owedKeys is what event still owes once its batch has settled it, as events.owed_keys records it
@@ -602,11 +604,10 @@ type outcome struct {
 // role route reached with nothing to send (roleForward.skip) are not: planChains reads neither as
 // holding anything back. An event whose list ends at a recipient read that failed owes
 // model.OwedAnySession beside its list, the sessions that read would name, as planChains holds the
-// owner's later events from every session key it does not name. An event whose row scanned but
-// cannot be published - its list holds a null, or its actor or payload does not decode
-// (pendingEvent.failure) - owes nothing, as it holds nothing back; a row that did not scan is not
-// asked (publishBatch), so its record keeps what it had. The answer is never nil: an empty list
-// is an event that owes nothing, which the record writes as such.
+// owner's later events from every session key it does not name. An event the outbox cannot read
+// or publish - its row did not scan, its list holds a null, or its actor or payload does not
+// decode (pendingEvent.failure) - owes nothing, as it holds nothing back. Whether the record
+// writes the answer is the outcome's owedKnown, never whether the answer is nil.
 func owedKeys(event *batchEvent, reached []string) []string {
 	owed := []string{}
 	if event.failure != nil {
@@ -896,7 +897,7 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedIDs = append(reachedIDs, result.id)
 			reachedTopics = append(reachedTopics, topic)
 		}
-		owedKnown = append(owedKnown, result.owed != nil)
+		owedKnown = append(owedKnown, result.owedKnown)
 		owedSeqs = append(owedSeqs, int32(result.owedSeq))
 		for _, key := range result.owed {
 			owedIDs = append(owedIDs, result.id)

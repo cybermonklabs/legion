@@ -180,10 +180,9 @@ type cmVariant struct {
 	outages int
 	// blind has every re-read answer no row: the control's sender learns nothing of a lost write.
 	blind bool
-	// revivesLapsed is the refresh statement before this change, which wrote a row whose recorded
-	// claim had lapsed, and takeNeedsLive the take before it, which counted the row's claim the
-	// send's own only while the claim it carried was itself live: the control the outages must
-	// break.
+	// revivesLapsed is a refresh statement that writes a row whose recorded claim has lapsed, and
+	// takeNeedsLive a take that counts the row's claim the send's own only while the claim it
+	// carries is itself live: the control the outages must break.
 	revivesLapsed, takeNeedsLive bool
 }
 
@@ -195,8 +194,8 @@ var (
 	cmOutage = cmVariant{
 		name: "the sender as built: up to two refreshes failed uncommitted, any answer lost", outages: 2,
 	}
-	cmOldStatements = cmVariant{
-		name:    "control: the same, with the refresh and the take before this change",
+	cmLapseBlindStatements = cmVariant{
+		name:    "control: the same, with a refresh that writes a lapsed claim and a take that needs a live one",
 		outages: 2, revivesLapsed: true, takeNeedsLive: true,
 	}
 )
@@ -400,7 +399,9 @@ type cmSite struct {
 // cmSites caches cmCaller's answer by program counter.
 var cmSites sync.Map
 
-// cmCaller is the site of the function skip frames above cmCaller's caller.
+// cmCaller is the site of the function skip frames above cmCaller's caller, classed by the list of
+// the sender's lock sites (mentionSenderLockSites), which TestTheLockSiteListNamesTheSendersLocks
+// holds to the sender's source in every run of the package.
 //
 //go:noinline
 func cmCaller(skip int) cmSite {
@@ -414,12 +415,12 @@ func cmCaller(skip int) cmSite {
 	frame, _ := runtime.CallersFrames(pc[:]).Next()
 	function := frame.Function[strings.LastIndex(frame.Function, ".")+1:]
 	site := cmSite{name: function + ":" + strconv.Itoa(frame.Line)}
-	switch function {
-	case "next", "claimKnown", "markTrying", "claimedDuring", "park", "reportLate":
+	switch mentionSenderLockSites[function] {
+	case lockSiteLane:
 		site.lane = true
-	case "refreshHeldClaims", "rereadUnsure":
+	case lockSiteRefresh:
 		site.refresh = true
-	case "enqueue", "unpark", "wait":
+	case lockSiteModel:
 		site.model = true
 	}
 	cmSites.Store(pc[0], site)

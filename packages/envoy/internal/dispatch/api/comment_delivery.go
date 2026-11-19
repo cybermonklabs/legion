@@ -17,6 +17,7 @@ import (
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -677,9 +678,12 @@ func (s *server) recordCommentDeliveryResolution(
 // the comment's owner first (mentionCopyHolder): an event the outbox still owes a send
 // that session may take, which the outbox's own order puts before this comment. Then it makes no
 // try and settles nothing: the attempt stays pending under the claim this call renewed, and the
-// call answers a *mentionHeldForOrder carrying that claim, which its caller hands to the mention
-// sender's lane for that session (sendCommentMention, resumeOwedDelivery, createCommentDelivery),
-// so the send is made again once the outbox has sent what comes first.
+// call answers, beside that pending attempt, a *mentionHeldForOrder carrying that claim, which its
+// caller hands to the mention sender's lane for that session (sendCommentMention,
+// resumeOwedDelivery, createCommentDelivery), so the send is made again once the outbox has sent
+// what comes first. A read of that rule that fails is answered the same way, as a wait behind no
+// event (mentionHeldForOrder.unread): the send keeps its claim and its place on its lane, so the
+// owner's later comments to the session stay behind it, and it tries again a moment later.
 //
 // Attempt 1 of a comment whose other routes were decided on its mentions' resolution
 // (mentions_decide_routes, resolveCommentDeliveries) keeps the resolution it was opened with,
@@ -700,16 +704,17 @@ func (s *server) deliverResolvedCommentMention(
 	actor model.Actor,
 	resume attemptClaim,
 	takeover takeoverRetry,
-) (model.CommentDelivery, error) {
+) (model.CommentDelivery, *mentionHeldForOrder, error) {
 	claimed, err := s.claimCommentDeliveryAttempt(ctx, comment, target, resume)
 	if err != nil {
-		return model.CommentDelivery{}, err
+		return model.CommentDelivery{}, nil, err
 	}
 	if claimed.settled != nil {
 		if claimed.superseded {
-			return s.supersedeCommentDelivery(ctx, claimed.comment, *claimed.settled, actor, resume)
+			settled, err := s.supersedeCommentDelivery(ctx, claimed.comment, *claimed.settled, actor, resume)
+			return settled, nil, err
 		}
-		return *claimed.settled, nil
+		return *claimed.settled, nil, nil
 	}
 	stored := claimed.comment
 	decided := claimed.pending != nil && claimed.pending.Attempt == 1 &&
@@ -717,7 +722,7 @@ func (s *server) deliverResolvedCommentMention(
 	target, resolveError := s.mentionResolutionFor(ctx, target, claimed.pending)
 	recorded, held, _, err := s.recordCommentDeliveryResolution(ctx, stored, target, claimed.attemptClaim, resolveError)
 	if err != nil {
-		return model.CommentDelivery{}, err
+		return model.CommentDelivery{}, nil, err
 	}
 	frame, err := json.Marshal(struct {
 		Event    model.Event `json:"event"`
@@ -732,7 +737,7 @@ func (s *server) deliverResolvedCommentMention(
 		},
 	})
 	if err != nil {
-		return model.CommentDelivery{}, fmt.Errorf("encode comment mention delivery frame: %w", err)
+		return model.CommentDelivery{}, nil, fmt.Errorf("encode comment mention delivery frame: %w", err)
 	}
 	// The key is the mention's: its target and the mode the comment recorded on it, never the
 	// mode of this attempt (model.CommentMentionIdempotencyKey), so a second frame of this
@@ -779,20 +784,23 @@ func (s *server) deliverResolvedCommentMention(
 			return renewed, err
 		})
 		if err != nil {
-			return model.CommentDelivery{}, err
+			return model.CommentDelivery{}, nil, err
 		}
 	}
 	if orderErr != nil {
-		// Nothing was sent: the attempt stays pending under the claim it holds, as a failure of
-		// any other statement here leaves it, for the delivery sweep once that claim lapses.
-		return model.CommentDelivery{}, orderErr
+		// Nothing was sent, and whether the session must take an earlier event first is not
+		// known: the send waits as one that waited behind an event does, under the claim this call
+		// renewed, behind no event, and its lane parks it (park).
+		slog.Error("dispatch: read whether a comment mention's session must take an earlier event first; the send waits",
+			"comment", stored.ID, "target", target.Target, "attempt", recorded.Attempt, "error", orderErr)
+		return recorded, &mentionHeldForOrder{comment: stored, target: target, claim: held, unread: true}, nil
 	}
 	if heldBy != nil {
-		return recorded, &mentionHeldForOrder{comment: stored, target: target, claim: held, by: *heldBy}
+		return recorded, &mentionHeldForOrder{comment: stored, target: target, claim: held, by: *heldBy}, nil
 	}
 	settled, err := s.completeCommentDelivery(ctx, stored, recorded, actor, held, outcome)
 	if err != nil {
-		return model.CommentDelivery{}, err
+		return model.CommentDelivery{}, nil, err
 	}
 	if err := s.supersedeOvertakenAttempts(ctx, stored, settled, actor); err != nil {
 		// The attempt stays pending, claim-free and sent by nobody: a later attempt of its mention
@@ -802,7 +810,7 @@ func (s *server) deliverResolvedCommentMention(
 		slog.Error("dispatch: settle the attempts a comment mention's send superseded",
 			"comment", stored.ID, "target", settled.Target, "attempt", settled.Attempt, "error", err)
 	}
-	return settled, nil
+	return settled, nil, nil
 }
 
 // mentionWaitsFailure is what a try that waited for an earlier event answers the take-over loop:
@@ -815,22 +823,21 @@ const mentionWaitsFailure = "the mention waits for an earlier event of its comme
 // mention as last resolved, naming the session it waits to reach, the claim the call renewed on
 // its attempt, which stays pending, and the earlier event it waits behind. The caller hands it to
 // the mention sender's lane for that session (send), which writes the claim again while the send
-// waits and makes it again under it.
+// waits and makes it again under it. unread is that the read of the rule failed: the send waits
+// all the same, behind no event, so it is no held copy (mentionSend.held, park).
 type mentionHeldForOrder struct {
 	comment model.Comment
 	target  ResolvedMention
 	claim   attemptClaim
 	by      model.MentionCopyHolder
-}
-
-func (h *mentionHeldForOrder) Error() string {
-	return mentionWaitsFailure
+	unread  bool
 }
 
 // send is the mention sender's send that takes the held attempt up again, for a caller that holds
 // no lane of its own (resumeOwedDelivery, createCommentDelivery): bound to the attempt and the
 // claim the held call left on it, queued on the lane of the session it waits to reach, as actor,
-// with a take-over window of its own, held from now behind the event it waits behind (held).
+// with a take-over window of its own, held from now behind the event it waits behind, or behind
+// none when the read of the rule failed (held).
 func (h *mentionHeldForOrder) send(created model.Event, actor model.Actor, takeover takeoverRetry) mentionSend {
 	item := mentionSend{
 		comment: h.comment, created: created, mention: h.target, actor: actor,
@@ -844,8 +851,8 @@ func (h *mentionHeldForOrder) send(created model.Event, actor model.Actor, takeo
 // comment whose comment.created event is created, to the session target names, waits behind - an
 // event the outbox still owes a send that session may take: one to the owner's topic family,
 // which the session may follow, one to that session's own subject, or one an event whose
-// recipient read failed may owe any session (model.MentionCopyHolderSQL); or a role route whose
-// role that session holds now (model.MentionCopyRolesSQL) - and nil while it waits for none. It
+// recipient read failed may owe any session; or a role route whose role that session holds now -
+// and nil while it waits for none (copyrule.Holder, model.MentionCopyRuleSQL). It
 // is the order the outbox keeps for its own sends, which this send would otherwise pass, since it
 // reaches the session outside the outbox (planChains in internal/dispatch/outbox).
 //
@@ -861,47 +868,21 @@ func (s *server) mentionCopyHolder(ctx context.Context, created model.Event, tar
 }
 
 // mentionCopyHolderFor is mentionCopyHolder for a send to sessionID, the rule a send held before
-// reads again before it tries once more (sendCommentMention). The first statement answers for
-// every earlier event but those that still owe a role route; when it finds none, the second reads
-// those routes (the usual answer is none), and each role's holder is read from the listener
-// (roleHolderMayBe, within mentionLookupTimeout): the route holds the send when the holder is
-// sessionID, as planChains keys the route on whoever holds the role at its next batch, and when
-// the read fails in any way but the listener saying the role has no holder, since sessionID may be
-// the holder - the lane tries again a moment later (mentionOrderRetry).
+// reads again before it tries once more (sendCommentMention): copyrule.Holder, the one read of the
+// rule both roads of a copy make, in one statement, for sessionID's own subject. Each role route
+// an earlier event still owes is asked of the listener (roleHolderMayBe, within
+// mentionLookupTimeout): the route holds the send when the holder is sessionID, as planChains keys
+// the route on whoever holds the role at its next batch, and when the read fails in any way but
+// the listener saying the role has no holder, since sessionID may be the holder - the lane tries
+// again a moment later (mentionOrderRetry).
 func (s *server) mentionCopyHolderFor(
 	ctx context.Context, created model.Event, sessionID string,
 ) (*model.MentionCopyHolder, error) {
 	if !s.deps.OutboxPublishes {
 		return nil, nil
 	}
-	var by model.MentionCopyHolder
-	err := s.deps.Store.Pool.QueryRow(ctx, model.MentionCopyHolderSQL,
-		created.ID, contracts.LegacyAgentSubject(sessionID),
-	).Scan(&by.EventID, &by.PublishError)
-	switch {
-	case err == nil:
-		return &by, nil
-	case !errors.Is(err, pgx.ErrNoRows):
-		return nil, fmt.Errorf("read the earlier event that holds event %d's mention for %s: %w", created.ID, sessionID, err)
-	}
-	rows, err := s.deps.Store.Pool.Query(ctx, model.MentionCopyRolesSQL, created.ID)
-	if err != nil {
-		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", created.ID, err)
-	}
-	routes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MentionCopyRole, error) {
-		var route model.MentionCopyRole
-		err := row.Scan(&route.Topic, &route.EventID, &route.PublishError)
-		return route, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", created.ID, err)
-	}
-	for _, route := range routes {
-		if s.roleHolderMayBe(ctx, strings.TrimPrefix(route.Topic, contracts.RoleTopicPrefix), sessionID) {
-			return &route.MentionCopyHolder, nil
-		}
-	}
-	return nil, nil
+	return copyrule.Holder(ctx, s.deps.Store.Pool, created.ID, contracts.LegacyAgentSubject(sessionID),
+		func(ctx context.Context, role string) bool { return s.roleHolderMayBe(ctx, role, sessionID) })
 }
 
 // roleHolderMayBe is whether sessionID holds role now, or may. Only two answers are a no: the
@@ -1143,17 +1124,19 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	// The send outlives the request's connection, as createStoredMessage's does: the attempt is
 	// committed before the listener call, a cut connection must not strand it, and one a process
 	// death strands the delivery sweep resumes.
-	attempt, err := s.deliverResolvedCommentMention(
+	attempt, held, err := s.deliverResolvedCommentMention(
 		context.WithoutCancel(r.Context()), comment, created, resolved, actor, attemptClaim{}, s.newTakeoverRetry(),
 	)
-	if held, ok := errors.AsType[*mentionHeldForOrder](err); ok {
-		// The session must take an earlier event of the comment's owner first: the attempt is
-		// pending, and the mention sender's lane for that session sends it once the outbox has
-		// sent that event. The answer is the pending attempt, as a send still on its way is.
-		s.mentions.enqueue(context.WithoutCancel(r.Context()), held.send(created, actor, s.newTakeoverRetry()))
-	} else if err != nil {
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if held != nil {
+		// The session must take an earlier event of the comment's owner first, or may: the
+		// attempt is pending, and the mention sender's lane for that session sends it once the
+		// outbox has sent that event. The answer is the pending attempt, as a send still on its
+		// way is.
+		s.mentions.enqueue(context.WithoutCancel(r.Context()), held.send(created, actor, s.newTakeoverRetry()))
 	}
 	WriteJSON(w, http.StatusCreated, attempt)
 }

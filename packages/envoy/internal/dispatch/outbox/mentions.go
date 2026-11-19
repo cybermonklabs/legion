@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 )
 
@@ -1770,51 +1771,19 @@ func fallbackCopyKey(subject string, forward *roleForward) string {
 // copyHolder is the earlier event of its owner a copy of the comment whose comment.created event
 // is eventID, bound for the session key key, waits behind - one that still owes a send that
 // session may take: to the owner's topic family, to that key, or, its recipient read having
-// failed, to any session (model.MentionCopyHolderSQL); or a role route whose holder is session,
-// the session key names (model.MentionCopyRolesSQL, copyWaitsForRole) - and nil while it waits
-// for none. A key that names no session, a role topic for a copy kept for the role's next holder,
-// asks the first rule alone. It is the rule the API's send of a mention asks too
-// (mentionCopyHolder in internal/dispatch/api), so both roads a mention's copy takes outside the
-// owner's chains keep the order planChains keeps inside them.
+// failed, to any session; or a role route whose holder is session, the session key names
+// (copyWaitsForRole) - and nil while it waits for none: copyrule.Holder, which reads the rule in
+// one snapshot (model.MentionCopyRuleSQL). A key that names no session, a role topic for a copy
+// kept for the role's next holder, asks no role's holder, and no role route holds it. The API's
+// send of a mention asks copyrule.Holder too (mentionCopyHolderFor in internal/dispatch/api), so
+// both roads a mention's copy takes outside the owner's chains keep the order planChains keeps
+// inside them.
 func copyHolder(ctx context.Context, deps Deps, eventID int64, key, session string) (*model.MentionCopyHolder, error) {
-	var by model.MentionCopyHolder
-	err := deps.Store.Pool.QueryRow(ctx, model.MentionCopyHolderSQL, eventID, key).Scan(&by.EventID, &by.PublishError)
-	switch {
-	case err == nil:
-		return &by, nil
-	case !errors.Is(err, pgx.ErrNoRows):
-		return nil, fmt.Errorf("read the earlier event that holds event %d's copy for %s: %w", eventID, key, err)
-	case session == key:
-		return nil, nil
+	var holds func(context.Context, string) bool
+	if session != key {
+		holds = func(ctx context.Context, role string) bool { return copyWaitsForRole(ctx, deps, role, session) }
 	}
-	routes, err := owedRoleRoutes(ctx, deps.Store.Pool, eventID)
-	if err != nil {
-		return nil, err
-	}
-	for _, route := range routes {
-		if copyWaitsForRole(ctx, deps, strings.TrimPrefix(route.Topic, contracts.RoleTopicPrefix), session) {
-			return &route.MentionCopyHolder, nil
-		}
-	}
-	return nil, nil
-}
-
-// owedRoleRoutes is model.MentionCopyRolesSQL's rows for the comment whose comment.created event is
-// eventID: each role topic an earlier event of its owner still owes, with the earliest such event.
-func owedRoleRoutes(ctx context.Context, db queryer, eventID int64) ([]model.MentionCopyRole, error) {
-	rows, err := db.Query(ctx, model.MentionCopyRolesSQL, eventID)
-	if err != nil {
-		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", eventID, err)
-	}
-	routes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.MentionCopyRole, error) {
-		var route model.MentionCopyRole
-		err := row.Scan(&route.Topic, &route.EventID, &route.PublishError)
-		return route, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the role routes the events before event %d owe: %w", eventID, err)
-	}
-	return routes, nil
+	return copyrule.Holder(ctx, deps.Store.Pool, eventID, key, holds)
 }
 
 // copyWaitsForRole is whether a copy bound for session waits for an earlier event's route to role:

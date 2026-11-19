@@ -353,11 +353,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			if parked != tc.readFail {
 				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)
 			}
-			count, _ := sender.heldSamples(time.Now())
-			var held int64
-			for _, sample := range count {
-				held += sample.Value
-			}
+			held, _ := sender.heldSamples(time.Now())
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 			logged := logs.String()
 			warns := strings.Count(logged, marker)

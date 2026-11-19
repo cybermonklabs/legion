@@ -236,11 +236,12 @@ func heldGauges(t *testing.T, registry *metrics.Registry) string {
 	return response.Body.String()
 }
 
-// A fallback copy that waits behind an earlier event of its owner shows: the gauges count it by
-// owner and read how long the oldest has waited, and once it has waited past the warn threshold
-// the pass logs one WARN naming the owner, the event it waits behind and that event's last publish
-// error - once, however many passes find it waiting. When the event is published the row's copy
-// goes and the gauges read nothing of it: the control, as is the scrape before any pass.
+// A fallback copy that waits behind an earlier event of its owner shows: the gauges count it and
+// read how long the oldest has waited, naming no owner, since /metrics answers whoever reaches the
+// port; and once it has waited past the warn threshold the pass logs one WARN naming the owner,
+// the event it waits behind and that event's last publish error - once, however many passes find
+// it waiting. When the event is published the row's copy goes and the gauges read none: the
+// control, as is the scrape before any pass.
 func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	logs := &storetest.LockedLog{}
@@ -272,7 +273,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	warnings := func() int {
 		return strings.Count(logs.String(), `level=WARN msg="dispatch outbox: a fallback copy of a mention waits behind an earlier event of its owner"`)
 	}
-	if body := heldGauges(t, registry); strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held{") {
+	if body := heldGauges(t, registry); !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 0\n") {
 		t.Fatalf("the gauges read %q before any pass, want no held copy", body)
 	}
 
@@ -280,9 +281,9 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	if row := readHeldCopy(t, database, commentID, s1); row.settled || row.published {
 		t.Fatalf("the row is settled %v and published %v while event %d owes its topic family, want it waiting", row.settled, row.published, earlier.ID)
 	}
-	if body := heldGauges(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_fallback_copies_held{owner="T-1"} 1`) ||
-		!strings.Contains(body, `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds{owner="T-1"} 0`) {
-		t.Fatalf("the gauges read %q, want one copy of T-1 held, the oldest held under a second", body)
+	if body := heldGauges(t, registry); !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 1\n") ||
+		!strings.Contains(body, "envoy_dispatch_outbox_fallback_copy_held_oldest_seconds 0\n") {
+		t.Fatalf("the gauges read %q, want one copy held, the oldest held under a second", body)
 	}
 	if got := warnings(); got != 0 {
 		t.Fatalf("%d WARN lines before the threshold, want none", got)
@@ -293,9 +294,15 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	publishFallbackCopies(ctx, deps, unfenced{}, holder)
 	due()
 	publishFallbackCopies(ctx, deps, unfenced{}, holder)
-	if body := heldGauges(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_fallback_copies_held{owner="T-1"} 1`) ||
-		!strings.Contains(body, `envoy_dispatch_outbox_fallback_copy_held_oldest_seconds{owner="T-1"} 1`) {
-		t.Fatalf("the gauges read %q, want one copy of T-1 held for a second", body)
+	body := heldGauges(t, registry)
+	if !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 1\n") ||
+		!strings.Contains(body, "envoy_dispatch_outbox_fallback_copy_held_oldest_seconds 1\n") {
+		t.Fatalf("the gauges read %q, want one copy held for a second", body)
+	}
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(line, "envoy_dispatch_outbox_fallback_cop") && (strings.Contains(line, "{") || strings.Contains(line, "T-1")) {
+			t.Fatalf("the gauges read %q, want no label and no owner's key: /metrics answers whoever reaches the port", line)
+		}
 	}
 	logged := logs.String()
 	t.Logf("logged:\n%s", logged)
@@ -317,7 +324,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	if row := readHeldCopy(t, database, commentID, s1); !row.settled || !row.published {
 		t.Fatalf("the row is settled %v and published %v once the earlier event was published, want both", row.settled, row.published)
 	}
-	if body := heldGauges(t, registry); strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held{") {
+	if body := heldGauges(t, registry); !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 0\n") {
 		t.Fatalf("the gauges read %q once the copy went, want no held copy", body)
 	}
 	if got := warnings(); got != 1 {
