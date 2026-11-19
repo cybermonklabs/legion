@@ -780,12 +780,12 @@ func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 
 // A pass records failed when it gives up part of its read of GitHub on an answer the client takes
 // as data and notes nothing of -- a 404, a 422, a name the pass cannot key a record by, a head's
-// status field a query answers refused, or a limit recorded before any request -- so in each
-// failed row only the pass's own note can make the record say so, and its cause names the
-// repository it gave up (the limit in force at the start names the limit instead, the pass having
-// reached no repository). A query GitHub answered 502 whose repository the REST listing then read
-// is a read the pass made the other way, and it records succeeded; a pass its caller cancelled,
-// which is this process shutting down, records nothing.
+// commit statuses a query or a REST read answers refused, or a limit recorded before any
+// request -- so in each failed row only the pass's own note can make the record say so, and its
+// cause names the repository it gave up (the limit in force at the start names the limit instead,
+// the pass having reached no repository). A query GitHub answered 502 whose repository the REST
+// listing then read is a read the pass made the other way, and it records succeeded; a pass its
+// caller cancelled, which is this process shutting down, records nothing.
 func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -870,6 +870,18 @@ func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 			h.github.refuseStatuses(gitHubRepository, headSHA)
 		},
 		causeHas: []string{"commit status", gitHubRepository},
+	}, {
+		name: "a head read over REST whose commit statuses GitHub refuses",
+		arrange: func(h *harness) {
+			// The query cannot answer the head's checks, so the pass reads the head over REST: its
+			// check runs, its check suites, and then, the token holding Commit statuses, its
+			// statuses, which GitHub answers 422. The query answered the head's status field with
+			// no errors entry, so only the REST read's failure can note the statuses given up.
+			h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
+			h.github.refuseChecks(gitHubRepository, headSHA)
+			h.github.answerStatus("/repos/"+gitHubRepository+"/commits/"+headSHA+"/status", http.StatusUnprocessableEntity)
+		},
+		causeHas: []string{"commit status", gitHubRepository, "422"},
 	}, {
 		name: "a limit in force when the pass starts",
 		arrange: func(h *harness) {

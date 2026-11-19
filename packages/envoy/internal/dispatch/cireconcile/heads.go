@@ -277,9 +277,9 @@ func (r *Reconciler) holdStatuses(head pullHead, pages []pageOf[object], wanted 
 // entries a query answered against the head commit's status field as one error of their text
 // (errorText, walk.visitHead). Both refusals are this one line, which
 // packages/envoy/cmd/dispatch/README.md ("CI reconcile") gives operators with these four fields;
-// slog writes cause as its Error() text. It notes the refusal on the pass's attempt (githubreads),
-// as headFailed does: the statuses of a head whose token holds Commit statuses are part of the
-// read the deployment configured, and the pass gave them up.
+// slog writes cause as its Error() text. It notes the failed read on the pass's attempt
+// (githubreads), whatever failed, as headFailed does: the statuses of a head whose token holds
+// Commit statuses are part of the read the deployment configured, and the pass gave them up.
 func (r *Reconciler) statusesUnread(ctx context.Context, head pullHead, cause error) {
 	r.Logger.Warn("ci reconcile read no commit status of a head",
 		"repository", head.repository(), "pr", head.number, "sha", head.sha, "error", cause)

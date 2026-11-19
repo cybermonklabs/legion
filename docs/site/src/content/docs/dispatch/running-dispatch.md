@@ -385,7 +385,8 @@ period. `github` holds one entry for each loop, in this order:
 - `delivery_reconcile`: the read of the pull requests and workflow runs that the
   [Delivery](/legion/dispatch/delivery/) page shows, and of the pull request heads that results
   are compared with, every 5 minutes.
-- `ci_reconcile`: the read of each open pull request's checks, every 5 minutes.
+- `ci_reconcile`: the read of each open pull request's checks, and of its head's commit statuses
+  where the App's token for the repository holds Commit statuses, every 5 minutes.
 
 Each entry is `{"state": …, "at": …, "cause": …}`:
 
@@ -437,9 +438,9 @@ The second kind is a part of its read that a loop gives up:
 - The CI reconcile: a repository it reads that it cannot read (it gets no token for it, GitHub does
   not answer for it or gives it a name that is not `owner/name`, or its open pull requests cannot
   be listed), a repository a project maps that the App is not installed on, a pull request head it
-  cannot read (an answer too large included), the commit statuses of a head that GitHub refuses,
-  or a rate limit that ends the pass, also one already in force when the pass starts. A read that
-  the pass's own time limit cut short is not one of these.
+  cannot read (an answer too large included), a failed read of a head's commit statuses, or a
+  rate limit that ends the pass, also one already in force when the pass starts. A read that the
+  pass's own time limit cut short is not one of these.
 - The architecture import: the sync of a source fails at a step that reads GitHub, which is its
   installation token, its branch head, its directory listing or its files. That includes the App
   not installed on the source's repository, a missing Contents permission, and a branch that
