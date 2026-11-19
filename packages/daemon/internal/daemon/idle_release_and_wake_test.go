@@ -35,7 +35,7 @@ const (
 	idleRigFreed      = "freed-claim"
 	// The four pods whose sessions end as a released Oh My Pi's does in production
 	// (idleRigPlan.ExitsAsReleasedInProduction): one per message a sender sends that wakes such a
-	// pod, and one for the daemon's own phase-ended message and hook prompt.
+	// pod, and one for the daemon's own hook prompts.
 	idleRigJustReleasedAgent  = "just-released-agent"
 	idleRigJustReleasedRole   = "just-released-role"
 	idleRigJustReleasedRouted = "just-released-routed"
@@ -93,10 +93,9 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigWakeJustReleased(t, rig)
 	})
 
-	// The daemon's own messages to a released role, a phase-ended message and a hook prompt,
-	// whose rows wake the role's pod and then publish while its woken session has not claimed the
-	// role yet.
-	t.Run("ThePhaseEndedMessageAndTheHookPromptOfAReleasedRoleReachItsWokenSessionOnce", func(t *testing.T) {
+	// The daemon's own messages to a released role, two hook prompts, whose rows wake the role's
+	// pod and then publish while its woken session has not claimed the role yet.
+	t.Run("TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce", func(t *testing.T) {
 		idleRigOutboxWakesJustReleased(t, rig)
 	})
 
@@ -517,9 +516,9 @@ const idleRigRoleLapsed = roleholder.HolderLapsed
 const idleRigRoleUnclaimed = roleholder.Unclaimed
 
 // idleRigRoleAnswer is what a role publish's answer says about the keep and the holder: the
-// 202's own kept, kept_reason and kept_until (cmd/listener's publishResponse), the 404's reason
-// (its roleHolderError), which names the same holder states in the same words, and the holder and
-// holder_state both carry for a holder the claim names.
+// 202's own kept, kept_reason and kept_until (listenerwire.PublishResponse), the 404's reason
+// (listenerwire.RoleRefusal), which names the same holder states in the same words, and the holder
+// and holder_state both carry for a holder the claim names.
 type idleRigRoleAnswer struct {
 	Kept        bool   `json:"kept"`
 	KeptReason  string `json:"kept_reason"`
@@ -604,8 +603,8 @@ func idleRigKeptWakesAndReaches(t *testing.T, rig *idleWakeRig, issue idleRigIss
 // raises and not the copy's hand-over. Every other is counted where it is handed over
 // (idleRigDeliveredOnce), by the function that counts it: idleRigKeptWakesAndReaches counts one
 // copy for each of rows (a) and (b) of check k3; idleRigWakeJustReleased counts the
-// just-released role's message; idleRigOutboxWakesJustReleased counts the daemon's phase-ended
-// message and hook prompt; and the restart subtest
+// just-released role's message; idleRigOutboxWakesJustReleased counts the daemon's two hook
+// prompts; and the restart subtest
 // (AMessageSentDuringTheReleaseReachesTheWokenSessionOnceAcrossARestart) counts the role message
 // sent while the daemon was down.
 func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, message, key string) {
@@ -623,11 +622,11 @@ func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, mes
 	idleRigDeliveredOnce(t, rig, issue, message)
 }
 
-// The words a send's answer gives its target (cmd/listener's sendResponse and sendHandler): state
-// stopped is a session nothing holds the relay subject of, or one the listener knows only by its
-// known-session record, and recipient_state gone is a session the registry holds no entry of
-// within the gone horizon. A role publish names a lapsed holder's session by the same word, its
-// holder_state.
+// The words a send's answer gives its target (listenerwire.SendResponse, cmd/listener's
+// sendHandler): state stopped is a session nothing holds the relay subject of, or one the listener
+// knows only by its known-session record, and recipient_state gone is a session the registry
+// holds no entry of within the gone horizon. A role publish names a lapsed holder's session by the
+// same word, its holder_state.
 const (
 	idleRigSendStopped   = "stopped"
 	idleRigRecipientGone = "gone"

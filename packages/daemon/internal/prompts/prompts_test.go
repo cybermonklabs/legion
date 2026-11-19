@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -743,9 +744,9 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
-		"Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;",
+		"Read the whole change again, and give the pair the whole change, in two cases: the task names no commit,",
 		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
-		"a forward merge of the base changed the unchanged-diff fingerprint",
+		"After a forward merge of the base, read the merge as the next paragraph says",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
@@ -753,6 +754,30 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	}
 	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
 		t.Errorf("the composed reviewer prompt still says %q", retired)
+	}
+}
+
+// The agent that does the retro rates the plan in the completion that ends the retro, and the rule
+// of the rating is stated in prose once, in the step of skill://legion-retro that gives the two
+// fields (pi-legion's skills-guard test pins it). The composed prompt of the role the daemon starts
+// on the retro (phase.RoleFor) sends it there: it names the two fields the completion carries, the
+// skill, and the three refusals the daemon answers a completion that breaks the rule with (api's
+// planRatingOf and workflow's planRatingRefusal), each code as the daemon writes it. This shows the
+// text is loaded, never that a role follows it.
+func TestTheComposedRetroNamesTheRatingsFieldsAndRefusals(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retro := phase.RoleFor(phase.Retro)
+	text := foldWhitespace(composedText(t, composer, retro, false))
+	for _, token := range []string{
+		"`plan_rating`", "`plan_reason`", "`skill://legion-retro`",
+		"`PLAN_RATING_REQUIRED`", "`PLAN_RATING_UNEXPECTED`", "`PLAN_RATING_INPUT`",
+	} {
+		if !strings.Contains(text, token) {
+			t.Errorf("the composed %s prompt, the retro's, omits %s", retro, token)
+		}
 	}
 }
 

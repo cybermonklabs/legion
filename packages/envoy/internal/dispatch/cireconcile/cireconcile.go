@@ -9,12 +9,13 @@
 //
 // A pass reads GitHub in batches, over GraphQL: one query answers twenty open pull requests of
 // one repository with every check suite and every check run of each one's head commit
-// (headsQuery). Reading the same heads over REST takes two requests of each head and one of
-// each page of each repository's open pull requests, which for 833 heads of 16 repositories
-// measures 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute
-// interval, which no pass finishes within its bound and which leaves the loop looking dead for
-// the whole of it. The same read in queries is about 53 of them, about 318 points of the App's
-// GraphQL budget and about 178 seconds of GitHub's own processing time.
+// (headsQuery). Reading the same heads over REST takes two requests of each head, three where
+// the token holds Commit statuses (readStatuses), and one of each page of each repository's open
+// pull requests. Before the pass read statuses that measured, for 833 heads of 16 repositories,
+// 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute interval, which no
+// pass finishes within its bound and which leaves the loop looking dead for the whole of it. The
+// same read in queries is about 53 of them, about 318 points of the App's GraphQL budget and
+// about 178 seconds of GitHub's own processing time.
 //
 // What a query cannot answer whole is read over REST: paged, conditional on the ETags the pass
 // kept, and recorded through the same writes. That is a head with more check suites than one
@@ -31,6 +32,15 @@
 // query and the same run delivered by webhook are one observation. The pass writes with a
 // cistore writer, which binds the listener's bucket and creates none (cistore.OpenWriter), so
 // one record per head is shared by both processes.
+//
+// Where the token the pass holds for a repository holds Commit statuses, the pass reads the
+// commit statuses of each of its heads as well: in the same query (headsQueryWithStatuses), and
+// over REST, after the check runs and suites, for a head the query could not answer whole
+// (readStatuses). Each status in success, failure or error is mapped through
+// contracts.GithubStatusObservation and recorded, and a pending one is not. GitHub refusing a
+// head's statuses costs that head its statuses alone. Where the token does not hold Commit
+// statuses the pass asks GitHub for no status, and reads the repository as it did before it read
+// any.
 //
 // A query's answer carries no ETag of its own -- it is one answer for twenty heads, which
 // GitHub's conditional reads do not cover -- so what an ETag does for a REST read a fingerprint
@@ -78,12 +88,14 @@ package cireconcile
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -161,6 +173,11 @@ type Reconciler struct {
 	// this one's, and a loop must not wait on that. A nil Instance, and one that answers "", is
 	// a pass that records no row at all.
 	Instance func() string
+	// GitHubReads records each pass as the newest attempt of githubreads.CIReconcile, which
+	// GET /healthz answers: whether a GitHub read of the pass failed, and the first failure. It is
+	// a record apart from ci_reconcile_passes, which says how the pass ended: a pass can complete
+	// there and still have failed here, on a repository it skipped. Nil records nothing.
+	GitHubReads githubreads.Recorder
 	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.
@@ -214,6 +231,13 @@ type Reconciler struct {
 type stop struct {
 	scope string
 	until time.Time
+}
+
+// ended is the failure a pass notes on its attempt (githubreads) when this limit ended it: the
+// limit's scope and end, and where, which says how far the pass had read.
+func (s *stop) ended(where string) error {
+	return fmt.Errorf("a GitHub rate limit on %s in force until %s ended the CI reconcile pass %s",
+		s.scope, s.until.UTC().Format(time.RFC3339), where)
 }
 
 // limited reads the shared GitHub rate limits and reports the limit in force on the scopes it is

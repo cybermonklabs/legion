@@ -18,8 +18,8 @@ import (
 // The join is after VerifyMark because that call waits for a mark whose append may still be in
 // flight and re-reads the document on each of the room's updates (marks.go): a write joined
 // before it would have the first of those reads take and freeze the fork under the document's
-// advisory lock (readFork, lockedHead), and the wait would re-read one frozen tree while
-// holding the lock the awaited append waits on.
+// advisory lock (readFork, headUnderDocumentLock), and the wait would re-read one frozen tree
+// while holding the lock the awaited append waits on.
 //
 // The join is before SnapshotVersion because that is the first call that takes the lock, and
 // the join is what has every other process store its room of the document (flushOtherRooms):

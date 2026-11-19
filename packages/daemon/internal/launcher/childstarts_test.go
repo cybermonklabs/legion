@@ -42,8 +42,8 @@ var processStarts = []string{
 const launcherPackage = "github.com/sjawhar/legion/daemon/internal/launcher"
 
 // heldStart is one call of a process start the launcher's process may reach: how many call sites
-// make it, and how its child is held from every reap of that process (the orphan reaper's passes
-// and the controller pod's drain, pidGuard.reap), or why it never runs there.
+// make it, and how its child is held from every reap of that process (the orphan reaper's passes,
+// pidGuard.reapOrphans, and the controller pod's drain, pidGuard.reap), or why it never runs there.
 type heldStart struct {
 	sites int
 	why   string
@@ -51,10 +51,10 @@ type heldStart struct {
 
 // heldStarts are those calls, each keyed by the function that makes it and the start it calls
 // (processStart.call). Any other start the walk reaches is one the reaper can take the exit of,
-// which fails its own wait with `waitid: no child processes` (or under gVisor `no such process`).
-// A count that changes fails too, in either direction, so a dependency that adds a start to a
-// function already here, or a function here that no longer starts anything, is read again rather
-// than let through on the old reason.
+// which fails its own wait with `waitid: no child processes` (or under gVisor at times `wait: no
+// child processes` or `waitid: no such process`). A count that changes fails too, in either
+// direction, so a dependency that adds a start to a function already here, or a function here that
+// no longer starts anything, is read again rather than let through on the old reason.
 var heldStarts = map[string]heldStart{
 	"(*" + launcherPackage + ".pidGuard).start -> (*os/exec.Cmd).Start":    {1, "the guard itself: it records the child's pid under the lock every reap holds"},
 	"(*" + launcherPackage + ".roleProcess).start -> (*os/exec.Cmd).Start": {1, "a generation: its manager records the pid under its own lock as it starts it, and the orphan reaper skips every manager's child"},

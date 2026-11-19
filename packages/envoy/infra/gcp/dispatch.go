@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/pulumi/pulumi-go-provider/infer"
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
@@ -132,6 +134,16 @@ var (
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
+	// clusterLocationRule is a Google Cloud region (us-central1) or zone (us-central1-a), where a
+	// cluster runs.
+	clusterLocationRule = regexp.MustCompile(`^[a-z]+-[a-z]+[0-9]+(?:-[a-z])?$`)
+	// connectionNameRule is a Cloud SQL instance's connection name, <project>:<region>:<instance>,
+	// the form the instance's connectionName takes: a project id (a lowercase letter, then 4 to 28
+	// lowercase letters, digits or hyphens, and a lowercase letter or digit), which a domain-scoped
+	// project prefixes with its domain (example.com:example-project, so the whole name then has
+	// four parts); a region (us-central1); and the instance's name (a lowercase letter, then at most
+	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
+	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
@@ -150,13 +162,13 @@ type DispatchArgs struct {
 	// other eight are two groups, each set whole or left wholly unset: the tailnet group
 	// (dispatchTailnetInputs), which builds the front door and serves Dispatch at its tailnet
 	// name, and the sign-in group (dispatchSignInInputs), which runs people's browser sign-in.
-	// Both unset is the sandbox, which the resolver accepts; the tailnet group set with the
-	// sign-in group unset is a tailnet Dispatch that runs no browser sign-in, which it accepts
-	// too. A sign-in input sent with the tailnet group unset is refused for being sent at all
-	// (refuseDispatchSandbox). Otherwise a group set in part is refused by the per-input refusal
-	// it always gave, trailing one clause naming every input of that group still unset
-	// (dispatchGroupClause). With clusterOnly on the resolver refuses each of the twelve that
-	// is set.
+	// Both unset, with publicOrigin unset too, is the sandbox, which the resolver accepts; the
+	// tailnet group set with the sign-in group unset is a tailnet Dispatch that runs no browser
+	// sign-in, which it accepts too. A sign-in input sent with the tailnet group and publicOrigin
+	// unset is refused for being sent at all (refuseDispatchSandbox). Otherwise a group set in
+	// part is refused by the per-input refusal it always gave, trailing one clause naming every
+	// input of that group still unset (dispatchGroupClause). With clusterOnly on the resolver
+	// refuses each of the twelve that is set.
 	TailnetDnsName string             `pulumi:"tailnetDnsName,optional"`
 	Tags           []string           `pulumi:"tags,optional"`
 	TailnetAuthKey pulumi.StringInput `pulumi:"tailnetAuthKey,optional" provider:"secret"`
@@ -176,20 +188,67 @@ type DispatchArgs struct {
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
 	SignInDomain       string             `pulumi:"signInDomain,optional"`
 	// OutsideOrigin is a second origin Dispatch is reached at, by people from outside the
-	// company: an https origin weborigin.Parse takes, whose host is not the front door's.
-	// It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves that origin
-	// and forwards it to the app is the deployment's, and the app's NetworkPolicy admits an
-	// in-cluster one only through allowedNamespaces. It needs the tailnet inputs: without them the
-	// component builds the sandbox, whose own origin is an in-cluster http:// address where browser
-	// sign-in is refused. With the sign-in inputs set its host must also be one
-	// weborigin.GoogleRedirectHost takes, since the Google client then lists its callback. Unset
-	// renders nothing.
+	// company: an https origin weborigin.Parse takes, whose host is not that of Dispatch's own
+	// origin, the front door's or publicOrigin. It renders DISPATCH_OUTSIDE_ORIGIN and nothing
+	// else: whatever serves that origin and forwards it to the app is the deployment's, and the
+	// app's NetworkPolicy admits an in-cluster one only through allowedNamespaces. It needs the
+	// tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own
+	// origin is an in-cluster http:// address where browser sign-in is refused. With the sign-in
+	// inputs set its host must also be one weborigin.GoogleRedirectHost takes, since the Google
+	// client then lists its callback. Unset renders nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
 	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
 	// signInDomain sign in as a restricted member while some project's owner or access list names
 	// its email directly. It needs the sign-in inputs and is no member of their group, so a
 	// deployment that sets them leaves it unset and renders what it always rendered.
 	SignInOutside bool `pulumi:"signInOutside,optional"`
+	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
+	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
+	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
+	// Service <hostname> on 8766. The app's pods (labelled app=<hostname>) admit that entrance by
+	// loadBalancerSourceRanges, which the component renders into the app's own NetworkPolicy, or by
+	// a NetworkPolicy of the deployment's own, since policies add up. It is an origin
+	// weborigin.Parse takes, https, and with the sign-in inputs set its host is one
+	// weborigin.GoogleRedirectHost takes, since the Google client then lists
+	// <publicOrigin>/auth/callback. It is refused beside the tailnet inputs, whose front door's
+	// name is the origin of a Dispatch on the tailnet; a second origin beside that one is
+	// outsideOrigin. With it the sign-in inputs, signInOutside and outsideOrigin are taken
+	// without the tailnet inputs, natsInCluster is required, as it is in the sandbox, and
+	// allowedNamespaces is not, since the entrance admits its own traffic. Unset, Dispatch is
+	// reached as it always was: at the front door's name or, in the sandbox, inside its cluster.
+	PublicOrigin string `pulumi:"publicOrigin,optional"`
+	// IapAudience turns on the IAP door: a browser reaches Dispatch through Identity-Aware Proxy
+	// on the deployment's load balancer, and Dispatch names its person from the signed header IAP
+	// adds to each request it lets through (DISPATCH_IDENTITY=iap), which Dispatch verifies
+	// itself, holding the token's aud claim to this value (DISPATCH_IAP_AUDIENCE). It is the
+	// audience Google documents for a load balancer's backend service,
+	// /projects/<project number>/global/backendServices/<backend service id>
+	// (https://cloud.google.com/iap/docs/signed-headers-howto), and may be another resource's
+	// output, such as one built from the backend service's own id. It needs publicOrigin, the
+	// origin that load balancer serves, and signInDomain, the Workspace domain whose accounts may
+	// use Dispatch, rendered as DISPATCH_SIGNIN_DOMAIN, which Dispatch holds the signed header's hd
+	// claim to; it is refused beside signInClientId, signInClientSecret, signInOutside and
+	// outsideOrigin: IAP signs a person in, and a browser reaches Dispatch through it alone.
+	// Unset renders none of the three variables, and Dispatch keeps its default identity.
+	IapAudience pulumi.StringInput `pulumi:"iapAudience,optional"`
+	// LoadBalancerSourceRanges are the CIDRs the deployment's load balancer reaches the app's pods
+	// from, such as Google's health-check and proxy ranges, which the component renders as ipBlock
+	// peers on 8766 in the app's own NetworkPolicy, beside allowedNamespaces' peers, so one policy
+	// selects the Dispatch pods. Each is a CIDR net.ParseCIDR takes, written as its network
+	// (10.0.0.0/8, not 10.1.2.3/8), with a prefix longer than /0: 0.0.0.0/0 or ::/0 would admit
+	// every address to 8766, past the load balancer and IAP alike. It needs publicOrigin, the
+	// origin that load balancer serves. Unset renders no such peer.
+	LoadBalancerSourceRanges []string `pulumi:"loadBalancerSourceRanges,optional"`
+	// NetworkEndpointGroupName names the standalone network endpoint group GKE makes for the app's
+	// Service on 8766, which the deployment's load balancer takes as its backend: the Service gets
+	// the annotation cloud.google.com/neg: {"exposed_ports":{"8766":{"name":"<name>"}},"zones":["*"]}
+	// (https://cloud.google.com/kubernetes-engine/docs/how-to/standalone-neg). "zones":["*"] has GKE
+	// pre-provision the group in every zone of the cluster's region, empty until a pod runs there,
+	// so the load balancer's backend can name it in each zone; that needs GKE 1.36.2-gke.3104000 or
+	// later, a Preview feature. It is a Compute Engine resource name, a lowercase letter, then up to
+	// 62 lowercase letters, digits or hyphens, not ending in a hyphen. It needs publicOrigin. Unset
+	// renders no annotation.
+	NetworkEndpointGroupName string `pulumi:"networkEndpointGroupName,optional"`
 
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
 	// DISPATCH_AGENT_SECRETS_URL (an absolute http(s) URL with no path; a trailing slash is
@@ -204,8 +263,9 @@ type DispatchArgs struct {
 	// OidcAudience turns on Dispatch's own service-account verifier, the one the secrets
 	// broker's judge reads Dispatch with: DISPATCH_OIDC_AUDIENCE is the audience a projected
 	// ServiceAccount token must carry, and DISPATCH_OIDC_ISSUER the issuer that signed it,
-	// which defaults to this component's cluster (the serviceAccountIssuer output) and which
-	// oidcIssuer replaces for a token another cluster mints. Dispatch reads the two as a pair
+	// which defaults to the cluster Dispatch runs in, the component's own or the one
+	// existingCluster names (the serviceAccountIssuer output), and which oidcIssuer replaces
+	// for a token another cluster mints. Dispatch reads the two as a pair
 	// (oidc.ConfigFromEnv refuses half of one), so the component renders both or neither, and
 	// an oidcIssuer with no oidcAudience is refused.
 	//
@@ -233,31 +293,68 @@ type DispatchArgs struct {
 	DatabaseVersion    *string `pulumi:"databaseVersion,optional"`
 	DatabaseTier       *string `pulumi:"databaseTier,optional"`
 	DeletionProtection *bool   `pulumi:"deletionProtection,optional"`
-	// DatabaseAvailabilityType is the Cloud SQL instance's availability type: ZONAL, one zone and
-	// the default, or REGIONAL, a standby in a second zone that Cloud SQL fails over to. Switching
-	// changes the instance in place, restarting it once.
+	// DatabaseAvailabilityType is the availability type of the Cloud SQL instance the component
+	// makes: ZONAL, one zone and the default, or REGIONAL, a standby in a second zone that Cloud
+	// SQL fails over to. Switching changes the instance in place, restarting it once.
 	DatabaseAvailabilityType *string `pulumi:"databaseAvailabilityType,optional"`
-	// DatabaseWaitsFor is a value of the resource whose update the Cloud SQL instance's must
-	// follow, so that a step of the consumer's own — deleting the old tailnet device before the
-	// front door comes back, for instance — runs before the instance restarts. The component never
-	// reads the value, and it reaches no resource: only the resources the value came from are
-	// used, which is what pulumi.DependsOnInputs reads off it. Unset, the instance's ordering is
-	// what it is today.
+	// DatabaseWaitsFor is a value of the resource whose update must come before the update of the
+	// Cloud SQL instance the component makes, so that a step of the consumer's own — deleting the
+	// old tailnet device before the front door comes back, for instance — runs before the instance
+	// restarts. The component never reads the value, and it reaches no resource: only the
+	// resources the value came from are used, which is what pulumi.DependsOnInputs reads off it.
+	// Unset, the instance's ordering is what it is today.
 	DatabaseWaitsFor pulumi.StringInput `pulumi:"databaseWaitsFor,optional"`
 	Namespace        *string            `pulumi:"namespace,optional"`
 	// ExistingNamespace: use the namespace as it exists in the cluster rather than creating it
 	// (another program owns the namespace).
 	ExistingNamespace *bool `pulumi:"existingNamespace,optional"`
+	// ExistingCluster names a GKE cluster the component does not make: the component runs
+	// Dispatch in that cluster and registers no Cluster of its own. The cluster must run on the
+	// component's own network, Network <hostname>-network, which the component registers whether
+	// or not it makes a cluster: the Cloud SQL proxy reaches the instance's private address on that
+	// network. It is a plain object, not a Pulumi Input, because the component looks the cluster up
+	// through the gcp provider before it registers anything and builds its Kubernetes provider's
+	// kubeconfig from what the lookup reports: an Input would make the kubeconfig unknown whenever
+	// the cluster's name is, and pulumi-kubernetes replaces its provider, and so every Kubernetes
+	// child, whenever the kubeconfig is unknown. The lookup refuses a cluster Dispatch cannot run
+	// in (lookupDispatchCluster). Unset, the component makes the Autopilot cluster <hostname>.
+	ExistingCluster *DispatchClusterArgs `pulumi:"existingCluster,optional"`
+	// ExistingDatabaseInstance is the connection name, <project>:<region>:<instance>, of a Cloud
+	// SQL instance the component does not make: the form of the databaseInstance output, so a
+	// consumer can pass its own replica's connectionName. With it the component registers no
+	// DatabaseInstance, Database or User, and the app pod's cloud-sql-proxy sidecar connects to
+	// that instance. It keeps every RandomPassword, under the names and with the arguments it
+	// always had, so the contract is that the instance holds database dispatch and login dispatch,
+	// whose password is the component's generated one: a promoted replica of the component's own
+	// instance does. It is a Pulumi Input because a consumer takes it from another resource or
+	// stack, and it is checked for a seed and for its shape once it resolves
+	// (dispatchDatabaseConnectionName). databaseVersion, databaseTier, databaseAvailabilityType and
+	// databaseWaitsFor configure the instance the component makes, and are refused beside it.
+	// Unset, the component makes the Cloud SQL instance <hostname>.
+	ExistingDatabaseInstance pulumi.StringInput `pulumi:"existingDatabaseInstance,optional"`
+	// RegionalNetwork is the regional part of the component's network: Subnetwork, Router and
+	// RouterNat <hostname> in region, the subnetwork the component's own cluster takes its
+	// addresses from and the router and Cloud NAT its private nodes reach the internet through.
+	// True when unset. False registers none of the three, while the Network, its GlobalAddress and
+	// its private services Connection stay exactly as they are, so the Cloud SQL instance keeps its
+	// private address. It is the step that empties the region once nothing uses the subnetwork, and
+	// so is allowed only beside existingCluster: the component's own cluster runs on that
+	// subnetwork, and false without existingCluster is refused rather than leaving it none.
+	RegionalNetwork *bool `pulumi:"regionalNetwork,optional"`
 
-	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and the
-	// Autopilot cluster, and nothing else. No Cloud SQL instance, database or user, no generated
-	// password, no Secret Manager grant, no Kubernetes provider and no Kubernetes object is
-	// registered, and the component requires no random provider. Every input that configures
-	// Dispatch rather than the cluster is refused by name, so only region, hostname and
-	// deletionProtection come with it; clusterName, kubeconfig and serviceAccountIssuer carry the
-	// cluster's own values and url, databaseInstance, principal, agentToken and
-	// serviceAccountSubject are "". A stack already running Dispatch cannot turn it on: such a
-	// stack sets the inputs this mode refuses, so the update is refused before anything is deleted.
+	// ClusterOnly builds the cluster alone: the VPC, its subnetwork, the router, Cloud NAT and an
+	// Autopilot cluster of the component's own, and nothing else. No Cloud SQL instance, database
+	// or user, no generated password, no Secret Manager grant, no Kubernetes provider and no
+	// Kubernetes object is registered, and the component requires no random provider. Every input
+	// that configures Dispatch rather than the cluster is refused by name, existingCluster and
+	// existingDatabaseInstance among them, since this mode always makes its own cluster and uses
+	// no database. So only region, hostname, deletionProtection and regionalNetwork come with it:
+	// regionalNetwork shapes the network half both modes build, and since this mode always makes
+	// its own cluster on that subnetwork, true (or unset) changes nothing and false is refused.
+	// clusterName, kubeconfig and serviceAccountIssuer carry the cluster's own values and url,
+	// databaseInstance, principal, agentToken and serviceAccountSubject are "". A stack already
+	// running Dispatch cannot turn it on: such a stack sets the inputs this mode refuses, so the
+	// update is refused before anything is deleted.
 	ClusterOnly *bool `pulumi:"clusterOnly,optional"`
 
 	// Replicas is the app Deployment's replica count, 1 by default. Above 1 the Deployment rolls
@@ -413,6 +510,20 @@ type DispatchArgs struct {
 	AzureFederationAudience *string            `pulumi:"azureFederationAudience,optional"`
 }
 
+// DispatchClusterArgs name the GKE cluster existingCluster runs Dispatch in, as the gcp provider's
+// getCluster takes it: the cluster's name and its location.
+type DispatchClusterArgs struct {
+	// Name is the cluster's name: a lowercase letter, then lowercase letters, digits and hyphens,
+	// ending in a letter or digit, at most 40 characters.
+	Name string `pulumi:"name"`
+	// Location is the region (us-central1) or the zone (us-central1-a) the cluster runs in.
+	Location string `pulumi:"location"`
+}
+
+// Annotate names the type gcp:DispatchCluster in the schema, for the reason NATSUserArgs's
+// gives.
+func (c *DispatchClusterArgs) Annotate(a infer.Annotator) { a.SetToken("gcp", "DispatchCluster") }
+
 // dispatchSeededInput names the first plain string input that holds an nkey seed. No component
 // input takes an nkey seed here: each value reaches a cloud resource, a Kubernetes object, or the
 // pod configuration, so a seed would be disclosed or used as the wrong credential. An int input,
@@ -432,6 +543,8 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"signInClientId", args.SignInClientId},
 		{"signInDomain", args.SignInDomain},
 		{"outsideOrigin", args.OutsideOrigin},
+		{"publicOrigin", args.PublicOrigin},
+		{"networkEndpointGroupName", args.NetworkEndpointGroupName},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
@@ -488,6 +601,11 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 			return fmt.Sprintf("allowedNamespaces[%d]", i), true
 		}
 	}
+	for i, cidr := range args.LoadBalancerSourceRanges {
+		if bus.HoldsSeed(cidr) {
+			return fmt.Sprintf("loadBalancerSourceRanges[%d]", i), true
+		}
+	}
 	if args.AzureFederationAudience != nil && bus.HoldsSeed(*args.AzureFederationAudience) {
 		return "azureFederationAudience", true
 	}
@@ -500,10 +618,21 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 	if args.ChatModel != nil && bus.HoldsSeed(*args.ChatModel) {
 		return "chatModel", true
 	}
+	if args.ExistingCluster != nil {
+		if bus.HoldsSeed(args.ExistingCluster.Name) {
+			return "existingCluster.name", true
+		}
+		if bus.HoldsSeed(args.ExistingCluster.Location) {
+			return "existingCluster.location", true
+		}
+	}
 	return "", false
 }
 
-// Dispatch is Dispatch on an Autopilot cluster of its own, with Cloud SQL, reached over a tailnet.
+// Dispatch is Dispatch on GKE with Cloud SQL: on an Autopilot cluster of its own, or in the
+// cluster existingCluster names, and on a Cloud SQL instance of its own, or on the one
+// existingDatabaseInstance names, the two choices independent of each other. It is reached over a
+// tailnet, at a public origin the deployment's own entrance serves, or inside its cluster alone.
 type Dispatch struct {
 	pulumi.ResourceState
 	Url              pulumi.StringOutput `pulumi:"url"`
@@ -521,28 +650,41 @@ type Dispatch struct {
 }
 
 // dispatchSettings are the plain inputs, validated, with the defaults applied, so they are known at
-// preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region and
-// deletionProtection are resolved: no other field is read by the cluster the mode builds.
+// preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region,
+// deletionProtection and regionalNetwork are resolved, regionalNetwork because it shapes the
+// network half both modes build: no other field is read by the cluster and the network the mode
+// builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
 // inputs are unset, where the component renders none of those settings, and signingKeyGenerations
 // is the generations the component registers a signing key for, in the order the server holds
 // them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
 // consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
 // component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
-// any sign-in input is, where the app runs browser sign-in.
-// With neither the component is the sandbox: Dispatch is reached in the cluster alone, by readers
-// the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images,
-// outsideOrigin, signIn and signInOutside are empty, since nothing reads them. signInOutside is
-// set only with signInOn, and outsideOrigin is "" when its input is unset, where the component
-// renders no second origin.
+// any sign-in input is, where the app runs browser sign-in. publicOrigin is the origin Dispatch
+// is served at without a front door, "" when its input is unset, and iap is iapAudience set,
+// where a browser's person is the one IAP's signed header names; the Input itself is rendered
+// from args, since it may be another resource's output.
+// With neither group and no publicOrigin the component is the sandbox: Dispatch is reached in the
+// cluster alone, by readers the app's NetworkPolicy admits, and tailnetDNSName, tags, the
+// tailscale and tools images, outsideOrigin, signIn and signInOutside are empty, since nothing
+// reads them. signInOutside is set only with signInOn, and outsideOrigin is "" when its input is
+// unset, where the component renders no second origin.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
-// field here.
+// field here. existingCluster is the input of that name, its name and location checked
+// (resolveDispatchExistingCluster), which NewDispatch looks the cluster up by and runs Dispatch
+// in, and nil without that input, where the component makes a cluster of its own.
+// existingDatabaseInstance is true while the input of that name is set, where the component makes
+// no Cloud SQL instance, database or user and the proxy connects to the instance it names; the
+// connection name itself is a Pulumi Input, judged once it resolves, and so no field here.
+// regionalNetwork is true unless the input of that name is false, which both resolvers allow only
+// beside existingCluster, where the network half registers no Subnetwork, Router or RouterNat.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
 	hostname, tailnetDNSName, region, namespace string
-	outsideOrigin                               string
+	outsideOrigin, publicOrigin                 string
+	iap                                         bool
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
@@ -565,6 +707,9 @@ type dispatchSettings struct {
 	disruption                                  dispatchDisruption
 	azure                                       dispatchAzure
 	answerer                                    dispatchAnswerer
+	existingCluster                             *DispatchClusterArgs
+	existingDatabaseInstance                    bool
+	regionalNetwork                             bool
 }
 
 // socks5Proxy is the address of the front door's SOCKS5 proxy, the one the app and the listener
@@ -587,13 +732,17 @@ func (s dispatchSettings) clusterURL() string {
 }
 
 // serverURL is the address Dispatch tells a reader it is at, the url output and the app's
-// DISPATCH_SERVER_URL: the tailnet name the front door hosts, or, in the sandbox, the app's own
-// Service inside the cluster, which is all there is to reach. It carries no trailing slash, it is
-// http in the sandbox because that Service terminates no TLS, and its port is the 8766 that
-// Service publishes. One derivation, so the output and the variable can never disagree.
+// DISPATCH_SERVER_URL: the tailnet name the front door hosts, publicOrigin where the deployment's
+// own entrance serves Dispatch, or, in the sandbox, the app's own Service inside the cluster,
+// which is all there is to reach. It carries no trailing slash, it is http in the sandbox because
+// that Service terminates no TLS, and its port is the 8766 that Service publishes. One
+// derivation, so the output and the variable can never disagree.
 func (s dispatchSettings) serverURL() string {
-	if s.frontDoor {
+	switch {
+	case s.frontDoor:
 		return "https://" + core.TailnetHostName(s.hostname, s.tailnetDNSName)
+	case s.publicOrigin != "":
+		return s.publicOrigin
 	}
 	return s.clusterURL()
 }
@@ -845,16 +994,40 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 	}
 }
 
+// dispatchDatabaseInputs are the four inputs that configure the Cloud SQL instance the component
+// makes, in the order a refusal judges them in: newDispatchExistingDatabaseInstance refuses each
+// beside existingDatabaseInstance, which replaces that instance, and dispatchClusterOnlyRefusals
+// takes them from here. Written here alone, as the two groups are.
+func dispatchDatabaseInputs(args *DispatchArgs) []dispatchInput {
+	return []dispatchInput{
+		{"databaseVersion", args.DatabaseVersion != nil},
+		{"databaseTier", args.DatabaseTier != nil},
+		{"databaseAvailabilityType", args.DatabaseAvailabilityType != nil},
+		{"databaseWaitsFor", args.DatabaseWaitsFor != nil},
+	}
+}
+
 // dispatchClusterOnlyRefusals is every pulumi-tagged input of DispatchArgs that configures
-// Dispatch rather than the cluster, which clusterOnly refuses by name. Only the four inputs both
+// Dispatch rather than the cluster, which clusterOnly refuses by name. Only the five inputs both
 // modes use are absent: clusterOnly itself, region and hostname, which name every cloud resource,
-// and deletionProtection, which guards the cluster as well as the database. The eight inputs of
-// the two groups come from the groups' own definitions, so an input either group gains is refused
-// here without being written down a second time.
+// deletionProtection, which guards the cluster this mode makes as it guards whatever else the
+// component makes (dispatchDeletionProtection), and regionalNetwork, which shapes the network half
+// both modes build; newDispatchClusterOnlySettings refuses it false by a rule of its own, since
+// true is the only value that leaves the cluster this mode makes a subnetwork. existingCluster and
+// existingDatabaseInstance are among the refused: one names the cluster Dispatch runs in and the
+// other the database instance it uses, and clusterOnly runs no Dispatch, always makes its own
+// cluster and uses no database. The eight inputs of the two groups and the four database inputs
+// come from their own definitions (dispatchTailnetInputs, dispatchSignInInputs and
+// dispatchDatabaseInputs), so an input any of them gains is refused here without being written
+// down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
 		{"signInOutside", args.SignInOutside},
+		{"publicOrigin", args.PublicOrigin != ""},
+		{"iapAudience", args.IapAudience != nil},
+		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
+		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
 		{"envoyImage", args.EnvoyImage != ""},
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
@@ -867,12 +1040,11 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey != ""},
-		{"databaseVersion", args.DatabaseVersion != nil},
-		{"databaseTier", args.DatabaseTier != nil},
-		{"databaseAvailabilityType", args.DatabaseAvailabilityType != nil},
-		{"databaseWaitsFor", args.DatabaseWaitsFor != nil},
+	}, dispatchDatabaseInputs(args), []dispatchInput{
 		{"namespace", args.Namespace != nil},
 		{"existingNamespace", args.ExistingNamespace != nil},
+		{"existingCluster", args.ExistingCluster != nil},
+		{"existingDatabaseInstance", args.ExistingDatabaseInstance != nil},
 		{"replicas", args.Replicas != nil},
 		{"frontDoorReplicas", args.FrontDoorReplicas != nil},
 		{"listenerReplicas", args.ListenerReplicas != nil},
@@ -986,19 +1158,18 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 	return nil
 }
 
-const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset %s, or set the tailnet inputs"
+const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs an https origin, the tailnet inputs' or publicOrigin: without either Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset %s, or set the tailnet inputs or publicOrigin"
 
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
-// mode needs. It runs only while the tailnet group is wholly unset, which is what asks for the
-// mode: no front door is built, so a sign-in input, signInOutside among them, would ask an OAuth
-// provider to redirect to an in-cluster http:// address, outsideOrigin would add an origin for
-// outside sign-in to a Dispatch where browser sign-in is refused, frontDoorReplicas and
-// frontDoorPdbMinAvailable size and protect a Deployment that does not exist, the pods reach a
-// NATS hub only inside their own cluster, and
-// the app's own policy is its only ingress. Each is refused by its own name rather than accepted
-// and quietly dropped. The sign-in inputs are refused here, before the sign-in group's own
-// checks, so one sent to a sandbox is refused for being sent at all and not for the rest of its
-// group being missing.
+// mode needs. It runs only while the tailnet group is wholly unset and publicOrigin is unset,
+// which is what asks for the mode: no front door is built and no origin is served, so a sign-in
+// input, signInOutside among them, would ask an OAuth provider to redirect to an in-cluster
+// http:// address, outsideOrigin would add an origin for outside sign-in to a Dispatch where
+// browser sign-in is refused, and the app's own policy is its only ingress; what any Dispatch
+// without a front door cannot make good is refuseDispatchWithoutFrontDoor's. Each is refused by
+// its own name rather than accepted and quietly dropped. The sign-in inputs are refused here,
+// before the sign-in group's own checks, so one sent to a sandbox is refused for being sent at
+// all and not for the rest of its group being missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
@@ -1009,19 +1180,90 @@ func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) erro
 		return fmt.Errorf(dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
 	}
 	if args.OutsideOrigin != "" {
-		return errors.New("outsideOrigin needs the tailnet inputs: without them the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs")
+		return errors.New("outsideOrigin needs the tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs or publicOrigin")
 	}
-	if args.NatsInCluster == nil || !*args.NatsInCluster {
-		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
+	if err := refuseDispatchWithoutFrontDoor(args); err != nil {
+		return err
 	}
 	if len(args.AllowedNamespaces) == 0 {
-		return errors.New("allowedNamespaces must name at least one namespace without the tailnet inputs: with no front door its rules are the app's only ingress, and a NetworkPolicy with no rule admits nobody, so nothing could reach Dispatch at all")
+		return errors.New("allowedNamespaces must name at least one namespace without the tailnet inputs or publicOrigin: with no entrance its rules are the app's only ingress, and a NetworkPolicy with no rule admits nobody, so nothing could reach Dispatch at all")
+	}
+	return nil
+}
+
+// refuseDispatchWithoutFrontDoor judges what a Dispatch without the tailnet inputs cannot make
+// good, in the sandbox and at publicOrigin alike: the pods reach a NATS hub only inside their own
+// cluster, since no front door runs the SOCKS5 proxy a tailnet hub is reached through, and
+// frontDoorReplicas and frontDoorPdbMinAvailable size and protect a Deployment that does not
+// exist. Each is refused by its own name rather than accepted and quietly dropped.
+func refuseDispatchWithoutFrontDoor(args *DispatchArgs) error {
+	if args.NatsInCluster == nil || !*args.NatsInCluster {
+		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
 	}
 	if args.FrontDoorReplicas != nil {
 		return errors.New("frontDoorReplicas sizes a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
 	}
 	if args.FrontDoorPdbMinAvailable != nil {
 		return errors.New("frontDoorPdbMinAvailable covers a front door, which is not built without the tailnet inputs: unset it, or set the tailnet inputs")
+	}
+	return nil
+}
+
+// refuseDispatchPublicOrigin judges publicOrigin where the tailnet group is unset, the one place
+// it may be set, and returns it as a URL holding its scheme and host alone, whose String is the
+// origin with a trailing slash trimmed, as Dispatch trims one. It must be a web origin
+// weborigin.Parse takes, whose refusals it prefixes with the input's name, and https, since
+// Dispatch's session cookie, browser sign-in and IAP all need TLS there, as they do at the front
+// door's name; with the sign-in inputs set its host must be one weborigin.GoogleRedirectHost
+// takes, since the Google client must then list <publicOrigin>/auth/callback, and that function's
+// refusals it prefixes with "publicOrigin's ".
+func refuseDispatchPublicOrigin(args *DispatchArgs, signInOn bool) (*url.URL, error) {
+	origin, err := weborigin.Parse(args.PublicOrigin)
+	if err != nil {
+		return nil, fmt.Errorf("publicOrigin: %w", err)
+	}
+	if origin.Scheme != "https" {
+		return nil, errors.New("publicOrigin must be an https origin: Dispatch's session cookie, browser sign-in and IAP need TLS at it, as they do at the front door's name")
+	}
+	if signInOn {
+		if err := weborigin.GoogleRedirectHost(origin.Hostname()); err != nil {
+			return nil, fmt.Errorf("publicOrigin's %w", err)
+		}
+	}
+	return origin, nil
+}
+
+// refuseDispatchIAP judges what the IAP door, which iapAudience turns on, needs beside it. It needs
+// publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch there, and
+// no request through the tailnet front door or into the sandbox carries IAP's signed header. It
+// needs signInDomain, the Workspace domain whose accounts may use Dispatch, which Dispatch holds
+// the signed header's hd claim to by the membership rule its own sign-in uses, and which it
+// refuses to boot without under IAP. And it refuses the Google client (signInClientId,
+// signInClientSecret), signInOutside and outsideOrigin: IAP signs a person in and a browser
+// reaches Dispatch through it alone, so Dispatch runs no sign-in of its own and serves no second
+// origin for outside sign-in. Each is refused by its own name, before the sign-in group's own
+// checks, which the IAP door does not run, so a client input sent beside IAP is refused for being
+// sent at all. The audience's own value may be another resource's output, so it is judged once
+// it resolves (dispatchIAPAudience).
+func refuseDispatchIAP(args *DispatchArgs) error {
+	if args.PublicOrigin == "" {
+		return errors.New("iapAudience needs publicOrigin: IAP runs on the deployment's own load balancer, which serves Dispatch at that origin, and no request through the tailnet front door or into the sandbox carries IAP's signed header; set publicOrigin, or unset iapAudience")
+	}
+	const signIn = "%s configures Google sign-in, which iapAudience replaces: IAP signs a person in and Dispatch names them from IAP's signed header, so it runs no sign-in of its own; unset %s, or unset iapAudience"
+	for _, in := range []dispatchInput{
+		{"signInClientId", args.SignInClientId != ""},
+		{"signInClientSecret", args.SignInClientSecret != nil},
+		{"signInOutside", args.SignInOutside},
+	} {
+		if in.set {
+			return fmt.Errorf(signIn, in.input, in.input)
+		}
+	}
+	if args.OutsideOrigin != "" {
+		return errors.New("outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience")
+	}
+	if !signInDomainRule.MatchString(args.SignInDomain) {
+		return fmt.Errorf("signInDomain %q must be a lowercase DNS name with iapAudience: the Workspace domain whose accounts may use Dispatch, which Dispatch holds IAP's signed header's hd claim to and refuses to boot without", args.SignInDomain)
 	}
 	return nil
 }
@@ -1044,14 +1286,16 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	return nil
 }
 
-// refuseDispatchOutsideOrigin judges outsideOrigin where the tailnet group is set, the one place
-// it may be set, and returns it with a trailing slash trimmed, as Dispatch trims one: "" when it
-// is unset. It must be a web origin weborigin.Parse takes, whose refusals it prefixes with the
-// input's name; the component adds that the origin is https, as the front door's is, that its
-// host is not the front door's, whose origin Dispatch already is, and, with the sign-in inputs
-// set, that its host is one weborigin.GoogleRedirectHost takes, since the Google client must then
-// list <outsideOrigin>/auth/callback; that function's refusals it prefixes with "outsideOrigin's ".
-func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, error) {
+// refuseDispatchOutsideOrigin judges outsideOrigin where Dispatch serves an origin of its own, the
+// front door's or publicOrigin, the only places it may be set, and returns it with a trailing
+// slash trimmed, as Dispatch trims one: "" when it is unset. ownHost is that origin's host and
+// owner names it in a refusal ("the front door's", "publicOrigin's"). It must be a web origin
+// weborigin.Parse takes, whose refusals it prefixes with the input's name; the component adds that
+// the origin is https, as Dispatch's own is, that its host is not ownHost, whose origin Dispatch
+// already is, and, with the sign-in inputs set, that its host is one weborigin.GoogleRedirectHost
+// takes, since the Google client must then list <outsideOrigin>/auth/callback; that function's
+// refusals it prefixes with "outsideOrigin's ".
+func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
 		return "", nil
 	}
@@ -1060,11 +1304,11 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 		return "", fmt.Errorf("outsideOrigin: %w", err)
 	}
 	if origin.Scheme != "https" {
-		return "", errors.New("outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does")
+		return "", fmt.Errorf("outsideOrigin must be an https origin: browser sign-in at it needs TLS, as %s does", owner)
 	}
 	host := origin.Hostname()
-	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); host == frontDoor {
-		return "", fmt.Errorf("outsideOrigin's host %s is the front door's: a second origin needs a host of its own", frontDoor)
+	if host == ownHost {
+		return "", fmt.Errorf("outsideOrigin's host %s is %s: a second origin needs a host of its own", host, owner)
 	}
 	if !signInOn {
 		return origin.String(), nil
@@ -1073,6 +1317,47 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 		return "", fmt.Errorf("outsideOrigin's %w", err)
 	}
 	return origin.String(), nil
+}
+
+// negNameRule is a Compute Engine resource name, which a network endpoint group's is: a lowercase
+// letter, then up to 62 lowercase letters, digits or hyphens, the last not a hyphen
+// (https://cloud.google.com/compute/docs/naming-resources).
+var negNameRule = regexp.MustCompile(`^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// refuseDispatchEntrance judges what the deployment's own entrance, a load balancer serving
+// publicOrigin, hands the component: loadBalancerSourceRanges, the CIDRs it reaches the app's pods
+// from, and networkEndpointGroupName, the endpoint group it takes as its backend. Each needs
+// publicOrigin: a Dispatch on the tailnet is reached through its front door and one in the sandbox
+// inside its cluster, and neither has a load balancer to admit or to name a group for. Each range
+// must be a CIDR written as its network, which net.ParseCIDR takes and which is the network it
+// names, so the rule admits what it says, and with a prefix longer than /0: 0.0.0.0/0 or ::/0
+// would admit every address to 8766, past the load balancer, and IAP with it. The name must be
+// negNameRule's.
+func refuseDispatchEntrance(args *DispatchArgs) error {
+	for _, in := range []dispatchInput{
+		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
+		{"networkEndpointGroupName", args.NetworkEndpointGroupName != ""},
+	} {
+		if in.set && args.PublicOrigin == "" {
+			return fmt.Errorf("%s needs publicOrigin: it describes the deployment's own load balancer, which serves Dispatch at that origin, and a Dispatch reached through the tailnet front door or inside its cluster has none; set publicOrigin, or unset %s", in.input, in.input)
+		}
+	}
+	for i, cidr := range args.LoadBalancerSourceRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be a CIDR, such as 130.211.0.0/22", i, cidr)
+		}
+		if network.String() != cidr {
+			return fmt.Errorf("loadBalancerSourceRanges[%d] %q must be written as the network it names, %s", i, cidr, network)
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return fmt.Errorf("loadBalancerSourceRanges[%d] %q admits every address to 8766, past the load balancer and IAP alike: name the load balancer's own ranges, such as 130.211.0.0/22", i, cidr)
+		}
+	}
+	if name := args.NetworkEndpointGroupName; name != "" && !negNameRule.MatchString(name) {
+		return fmt.Errorf("networkEndpointGroupName %q must match %s, a Compute Engine resource name", name, negNameRule)
+	}
+	return nil
 }
 
 // refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one
@@ -1100,8 +1385,54 @@ func refuseDispatchRegion(region string) error {
 	return nil
 }
 
+// resolveDispatchExistingCluster resolves existingCluster: nil when it is unset, where the
+// component makes a cluster of its own, and otherwise the input itself, once its name and location
+// have the shape GKE gives them, each refused as a core.InputError naming its path when it does
+// not, so the lookup never asks for a cluster no GKE cluster can be. A GKE cluster's name is a
+// DNS-1035 label (dns1035LabelRule) of at most 40 characters. dispatchSeededInput has refused a
+// seed in either already, so each refusal may quote its value.
+func resolveDispatchExistingCluster(args *DispatchArgs) (*DispatchClusterArgs, error) {
+	cluster := args.ExistingCluster
+	if cluster == nil {
+		return nil, nil
+	}
+	if len(cluster.Name) > 40 || !dns1035LabelRule.MatchString(cluster.Name) {
+		return nil, core.InputErrorf("existingCluster.name",
+			"existingCluster.name %q must be a GKE cluster name: a lowercase letter, then lowercase letters, digits and hyphens, ending in a letter or digit, at most 40 characters", cluster.Name)
+	}
+	if !clusterLocationRule.MatchString(cluster.Location) {
+		return nil, core.InputErrorf("existingCluster.location",
+			"existingCluster.location %q must be a region or a zone, such as us-central1 or us-central1-a", cluster.Location)
+	}
+	return cluster, nil
+}
+
+// newDispatchExistingDatabaseInstance resolves existingDatabaseInstance: false when it is unset,
+// where the component makes a Cloud SQL instance of its own, and otherwise true, with each of the
+// four inputs that configure that instance (dispatchDatabaseInputs) refused when it is set, in that
+// order, as a core.InputError naming it. The instance existingDatabaseInstance names replaces the
+// component's own, so each of the four would configure nothing, and is refused rather than
+// dropped. The check runs before the resolver judges the four's own values, so one sent beside it
+// is refused for being sent at all, an empty databaseTier as much as a valid one. The connection
+// name is a Pulumi Input, judged once it resolves (dispatchDatabaseConnectionName).
+func newDispatchExistingDatabaseInstance(args *DispatchArgs) (bool, error) {
+	if args.ExistingDatabaseInstance == nil {
+		return false, nil
+	}
+	for _, in := range dispatchDatabaseInputs(args) {
+		if in.set {
+			return false, core.InputErrorf(in.input,
+				"%s configures the Cloud SQL instance the component makes, which existingDatabaseInstance replaces: unset it, or unset existingDatabaseInstance", in.input)
+		}
+	}
+	return true, nil
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
-// guards the cluster as well as the database, so both resolvers default it the same way.
+// guards what the component makes: its own cluster, its own Cloud SQL instance and the database
+// dispatch on it, and the Tailscale Service. A cluster existingCluster names and an instance
+// existingDatabaseInstance names are not the component's, and it guards neither. clusterOnly makes
+// its own cluster too, so both resolvers default it the same way.
 func dispatchDeletionProtection(value *bool) bool {
 	if value == nil {
 		return true
@@ -1109,10 +1440,20 @@ func dispatchDeletionProtection(value *bool) bool {
 	return *value
 }
 
-// newDispatchClusterOnlySettings resolves the inputs clusterOnly leaves live, hostname, region and
-// deletionProtection, each as the full resolver resolves it, and refuses every input that
-// configures Dispatch, which this mode does not build. It validates nothing else and applies no
-// other default: no other value reaches a resource here.
+// dispatchRegionalNetwork resolves regionalNetwork, true when the consumer sets nothing. It shapes
+// the network half both modes build, so both resolvers default it the same way; each refuses false
+// in its own words, since only the full resolver can be given the existingCluster false needs.
+func dispatchRegionalNetwork(value *bool) bool {
+	return value == nil || *value
+}
+
+// newDispatchClusterOnlySettings resolves the inputs clusterOnly leaves live, hostname, region,
+// deletionProtection and regionalNetwork, each as the full resolver resolves it, and refuses every
+// input that configures Dispatch, which this mode does not build. regionalNetwork is live because
+// it shapes the network half both modes build, but this mode always makes its own cluster on the
+// subnetwork false would drop, and refuses existingCluster, so true (or unset) changes nothing and
+// false is refused, as a core.InputError naming it. It validates nothing else and applies no other
+// default: no other value reaches a resource here.
 func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err := refuseDispatchHostname(args.Hostname); err != nil {
 		return dispatchSettings{}, err
@@ -1120,7 +1461,15 @@ func newDispatchClusterOnlySettings(args *DispatchArgs) (dispatchSettings, error
 	if err := refuseDispatchRegion(args.Region); err != nil {
 		return dispatchSettings{}, err
 	}
-	s := dispatchSettings{clusterOnly: true, hostname: args.Hostname, region: args.Region, deletionProtection: dispatchDeletionProtection(args.DeletionProtection)}
+	regionalNetwork := dispatchRegionalNetwork(args.RegionalNetwork)
+	if !regionalNetwork {
+		return dispatchSettings{}, core.InputErrorf("regionalNetwork",
+			"regionalNetwork false leaves the cluster clusterOnly builds no subnetwork: unset regionalNetwork")
+	}
+	s := dispatchSettings{
+		clusterOnly: true, hostname: args.Hostname, region: args.Region,
+		deletionProtection: dispatchDeletionProtection(args.DeletionProtection), regionalNetwork: regionalNetwork,
+	}
 	for _, in := range dispatchClusterOnlyRefusals(args) {
 		if in.set {
 			return dispatchSettings{}, fmt.Errorf("%s configures Dispatch, which clusterOnly does not build: unset it, or unset clusterOnly", in.input)
@@ -1141,21 +1490,52 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if err := refuseDispatchHostname(args.Hostname); err != nil {
 		return dispatchSettings{}, err
 	}
-	// Each group is judged by its own function while it is set, and what the sandbox cannot make
-	// good by a third while the tailnet group is unset.
+	// Each group is judged by its own function while it is set; what a Dispatch serving
+	// publicOrigin cannot make good by a third while the tailnet group is unset and publicOrigin
+	// is set, and what the sandbox cannot by a fourth while both are unset. The IAP door is judged
+	// first, so a sign-in input sent beside it is refused for being sent at all; it takes
+	// signInDomain alone of the sign-in group and runs no Google sign-in, so the group is off
+	// beside it.
 	tailnetGroup, signInGroup := dispatchTailnetInputs(args), dispatchSignInInputs(args)
 	frontDoor, signInOn := dispatchGroupSet(tailnetGroup), dispatchGroupSet(signInGroup)
-	var outsideOrigin string
-	if frontDoor {
+	if args.IapAudience != nil {
+		if err := refuseDispatchIAP(args); err != nil {
+			return dispatchSettings{}, err
+		}
+		signInOn = false
+	}
+	if err := refuseDispatchEntrance(args); err != nil {
+		return dispatchSettings{}, err
+	}
+	var outsideOrigin, publicOrigin string
+	switch {
+	case frontDoor:
 		if err := refuseDispatchTailnetGroup(args, dispatchGroupClause("tailnet", tailnetGroup)); err != nil {
 			return dispatchSettings{}, err
 		}
+		if args.PublicOrigin != "" {
+			return dispatchSettings{}, errors.New("publicOrigin is refused beside the tailnet inputs: the front door serves Dispatch at <hostname>.<tailnetDnsName>, which is then its origin, and a second origin beside that one is outsideOrigin; unset publicOrigin, or unset the tailnet inputs")
+		}
 		var err error
-		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, signInOn); err != nil {
+		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, core.TailnetHostName(args.Hostname, args.TailnetDnsName), "the front door's", signInOn); err != nil {
 			return dispatchSettings{}, err
 		}
-	} else if err := refuseDispatchSandbox(args, signInGroup); err != nil {
-		return dispatchSettings{}, err
+	case args.PublicOrigin != "":
+		origin, err := refuseDispatchPublicOrigin(args, signInOn)
+		if err != nil {
+			return dispatchSettings{}, err
+		}
+		if err := refuseDispatchWithoutFrontDoor(args); err != nil {
+			return dispatchSettings{}, err
+		}
+		publicOrigin = origin.String()
+		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, origin.Hostname(), "publicOrigin's", signInOn); err != nil {
+			return dispatchSettings{}, err
+		}
+	default:
+		if err := refuseDispatchSandbox(args, signInGroup); err != nil {
+			return dispatchSettings{}, err
+		}
 	}
 	if signInOn {
 		if err := refuseDispatchSignInGroup(args, dispatchGroupClause("sign-in", signInGroup)); err != nil {
@@ -1177,6 +1557,22 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	if err := refuseDispatchRegion(args.Region); err != nil {
+		return dispatchSettings{}, err
+	}
+	existingCluster, err := resolveDispatchExistingCluster(args)
+	if err != nil {
+		return dispatchSettings{}, err
+	}
+	// The component's own cluster runs on the regional subnetwork, so regionalNetwork false is
+	// taken only beside a cluster the component does not make, and refused rather than dropped
+	// without one.
+	regionalNetwork := dispatchRegionalNetwork(args.RegionalNetwork)
+	if !regionalNetwork && existingCluster == nil {
+		return dispatchSettings{}, core.InputErrorf("regionalNetwork",
+			"regionalNetwork false leaves the component's own cluster no subnetwork: set existingCluster, or unset regionalNetwork")
+	}
+	existingDatabaseInstance, err := newDispatchExistingDatabaseInstance(args)
+	if err != nil {
 		return dispatchSettings{}, err
 	}
 	if args.NatsUrl == nil {
@@ -1201,7 +1597,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
 			return dispatchSettings{}, errors.New("agentSecretsUrl must be an absolute http(s) URL with no path, as Dispatch requires of DISPATCH_AGENT_SECRETS_URL (not echoed)")
 		}
-		if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(agentSecretsURL, "#") {
+		if urlCarriesExtras(agentSecretsURL, parsed) {
 			return dispatchSettings{}, errors.New("agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
 		}
 	}
@@ -1212,6 +1608,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
 	if args.OidcIssuer != "" && args.OidcAudience == "" {
 		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
+	}
+	// The issuer is the URL Dispatch discovers keys from and compares every token's iss to, so it is
+	// held to the shape the hub listener's is: an empty query or fragment, which url.Parse reads as
+	// none, is not the issuer a token names.
+	if args.OidcIssuer != "" && !issuerURL(args.OidcIssuer) {
+		return dispatchSettings{}, fmt.Errorf("oidcIssuer %q must be an https URL with a host and no user, query or fragment, such as https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>", args.OidcIssuer)
 	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
@@ -1262,7 +1664,10 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		databaseVersion: defaultDispatchDatabaseVersion,
 		databaseTier:    defaultDispatchDatabaseTier,
 		namespace:       defaultDispatchNamespace,
+		existingCluster: existingCluster,
 	}
+	s.existingDatabaseInstance = existingDatabaseInstance
+	s.regionalNetwork = regionalNetwork
 	s.images.envoy = args.EnvoyImage
 	s.images.tailscale = args.TailscaleImage
 	s.images.proxy = args.CloudSqlProxyImage
@@ -1271,6 +1676,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = args.SignInDomain
 	s.signInOutside = args.SignInOutside
 	s.outsideOrigin = outsideOrigin
+	s.publicOrigin = publicOrigin
+	s.iap = args.IapAudience != nil
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
@@ -1707,8 +2114,13 @@ func mebibytes(bytes *big.Rat) string {
 	return new(big.Rat).Quo(bytes, new(big.Rat).SetInt64(1<<20)).FloatString(0) + "Mi"
 }
 
-// NewDispatch registers a Dispatch component after resolving all plain inputs and requiring the
-// providers its cluster, database, generated secrets, and Kubernetes resources use.
+// NewDispatch registers a Dispatch component after resolving all plain inputs, requiring the
+// providers its network, cluster, database, generated secrets, and Kubernetes resources use, and
+// looking up the cluster existingCluster names, when it names one. The cluster is then that one,
+// which the component registers nothing for, or else the component's own; and the Cloud SQL
+// instance is the one existingDatabaseInstance names, for which the component registers no
+// DatabaseInstance, Database or User, or else the component's own. Whichever they are, the
+// component registers its network (newDispatchNetwork).
 func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...pulumi.ResourceOption) (*Dispatch, error) {
 	// The name is quoted in every refusal below and the component registers under it, so a seed
 	// there is refused first, as NewNatsHub refuses one in its own name.
@@ -1736,17 +2148,44 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 			return nil, err
 		}
 	}
+	// The gcp provider among opts, which the first providers check found there, read once: the
+	// lookup of the cluster existingCluster names and the network half's project lookup both go
+	// through it.
+	gcpProvider, err := providerFor(ctx.Context(), "gcp", opts...)
+	if err != nil {
+		return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+	}
+	// The cluster half is decided once, from existingCluster alone: the component's own cluster
+	// (newDispatchCluster), or else the cluster existingCluster names (newDispatchExistingCluster).
+	// That cluster is looked up here, after the providers checks and before anything registers, so
+	// a cluster Dispatch cannot run in is refused with nothing registered, and its half builds the
+	// kubeconfig from the lookup's plain values. Either half runs after the network half, whose
+	// network both read.
+	newCluster := newDispatchCluster
+	if s.existingCluster != nil {
+		existing, err := lookupDispatchCluster(ctx, s.existingCluster, gcpProvider)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %w", dispatchType, name, err)
+		}
+		newCluster = func(_ *pulumi.Context, _ *Dispatch, name string, _ dispatchSettings, vpc *dispatchNetwork) (*dispatchCluster, error) {
+			return newDispatchExistingCluster(name, vpc, existing), nil
+		}
+	}
 
 	comp := &Dispatch{}
 	if err := ctx.RegisterComponentResource(dispatchType, name, comp, opts...); err != nil {
 		return nil, err
 	}
-	cloud, err := newDispatchCluster(ctx, comp, name, s, opts...)
+	vpc, err := newDispatchNetwork(ctx, comp, s, gcpProvider)
+	if err != nil {
+		return nil, err
+	}
+	cloud, err := newCluster(ctx, comp, name, s, vpc)
 	if err != nil {
 		return nil, err
 	}
 	// The three outputs the cluster alone decides, which both modes carry.
-	comp.ClusterName = cloud.cluster.Name
+	comp.ClusterName = cloud.name
 	comp.Kubeconfig = cloud.kubeconfig
 	comp.ServiceAccountIssuer = cloud.issuer
 	if s.clusterOnly {
@@ -1758,14 +2197,14 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 		comp.AgentToken, comp.ServiceAccountSubject = empty, empty
 		return comp, nil
 	}
-	database, err := newDispatchDatabase(ctx, comp, name, args, s, cloud)
+	database, err := newDispatchDatabase(ctx, comp, name, args, s, vpc, cloud)
 	if err != nil {
 		return nil, err
 	}
 	if err := newDispatchKubernetes(ctx, comp, name, args, s, cloud, database); err != nil {
 		return nil, err
 	}
-	comp.DatabaseInstance = database.instance.ConnectionName
+	comp.DatabaseInstance = database.connectionName
 	comp.Principal = database.principal
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()

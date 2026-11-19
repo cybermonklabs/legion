@@ -24,7 +24,8 @@
 # to decide two of them, leave the third and refuse the administrator's fourth; that the banner
 # exports the three stands' records, the route a check sets the model's answer at, and the two
 # issues the Dispatch stand holds; that every broker, dev-broker.sh's own included, binds its
-# metrics on a port the system picks;
+# metrics on a port the system picks; that a run in a pod starts its airlock brokers with
+# KUBERNETES_SERVICE_HOST empty, as local processes outside the pod's cluster;
 # that one front stands over the two API ports and one over the two proxy ports, and that both
 # brokers name those fronts as their public and proxy URLs; that --keep-values, --no-kind,
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
@@ -174,7 +175,7 @@ ISSUER
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
 echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
-echo "fake broker airlock: pid=$$ rules=${BROKER_AIRLOCK_RULES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}]" >&2
+echo "fake broker airlock: pid=$$ rules=${BROKER_AIRLOCK_RULES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} azure_authority=${BROKER_AIRLOCK_TEST_AZURE_AUTHORITY:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_AIRLOCK_RULES_FILE:-}" ]]; then
@@ -227,8 +228,10 @@ cat <<REPORT
   "github_app_id": "123456",
   "github_app_key_file": "$dir/github-app.pem",
   "model_answer_url": "http://127.0.0.1:$$/answers/model",
-  "dispatch_open_issue": "INFRA-1353",
-  "dispatch_done_issue": "INFRA-1200",
+  "dispatch_open_issue": "ACME-1353",
+  "dispatch_done_issue": "ACME-1200",
+  "dispatch_answered_ask": "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+  "dispatch_ask_answered_by": "approver@example.test",
   "stands": {
     "s": {"address": "127.0.0.1:1001", "url": "https://127.0.0.1:1001", "records_url": "http://127.0.0.1:$$/records/s"},
     "t": {"address": "127.0.0.1:1002", "url": "https://127.0.0.1:1002", "records_url": "http://127.0.0.1:$$/records/t"},
@@ -264,7 +267,9 @@ readonly renew_calls="${temporary_dir}/renew-calls"
 readonly pids_file="${temporary_dir}/pids"
 
 # run_stack starts dev-airlock.sh in the background with every call file emptied, and sets the
-# global driver_pid (never in a subshell: the EXIT trap's kill must see this assignment).
+# global driver_pid (never in a subshell: the EXIT trap's kill must see this assignment). It runs
+# the stack as a Legion pod does, with the KUBERNETES_SERVICE_HOST Kubernetes sets in every
+# container, which the stack's brokers must not inherit.
 run_stack() {
   : >"$log"
   : >"$psql_calls"
@@ -275,6 +280,7 @@ run_stack() {
   PATH="${fake_bin_dir}:${PATH}" TMPDIR="$run_tmpdir" DEV_BROKER_POSTGRES_URL="$admin_url" \
     DEV_AIRLOCK_TEST_PSQL_CALLS="$psql_calls" DEV_AIRLOCK_TEST_CURL_CALLS="$curl_calls" \
     DEV_AIRLOCK_TEST_STANDS_CALLS="$stands_calls" DEV_AIRLOCK_TEST_PIDS="$pids_file" \
+    KUBERNETES_SERVICE_HOST=34.118.224.1 \
     DEV_AIRLOCK_TEST_RENEW_CALLS="$renew_calls" \
     bash "$driver" "$@" >"$log" 2>&1 &
   driver_pid=$!
@@ -370,6 +376,17 @@ for line in "${airlock_lines[@]}"; do
 done
 printf 'PASS: two broker processes are started, each with the whole BROKER_AIRLOCK_* block (rules, proxy URL, authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial)\n'
 
+# The run above was started as a pod's, with KUBERNETES_SERVICE_HOST set. A broker with an airlock
+# that sees it is a broker in a cluster and refuses to start without that cluster's ranges, which a
+# pod cannot read; the stack's brokers are local processes, so each is started with it empty.
+for line in "${airlock_lines[@]}"; do
+  if [[ "$line" != *'kubernetes_service_host=[]'* ]]; then
+    echo "FAIL: a broker of the stack was not started with KUBERNETES_SERVICE_HOST empty: $line" >&2
+    exit 1
+  fi
+done
+printf 'PASS: a run in a pod starts both brokers with KUBERNETES_SERVICE_HOST empty, as local processes outside its cluster\n'
+
 # The model judge, on every broker that has an airlock: the six settings and the metadata host,
 # each the address or the name the banner exported. dev-broker.sh's own broker configures no
 # judge, which is what its empty model_url keeps out of these lines.
@@ -453,20 +470,21 @@ printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s to 
   "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
   "$approver" "$service" "$admin_max_grant"
 
-# What a check needs to drive the judge: the three stands' records, the answer route and the
-# two issues the Dispatch stand holds.
+# What a check needs to drive the judge: the three stands' records, the answer route, the two
+# issues the Dispatch stand holds and the answered ask on the open one.
 records_url="$(exported AIRLOCK_RECORDS_URL)"
 for want in "AIRLOCK_MODEL_RECORDS=$records_url/records/model" \
   "AIRLOCK_DISPATCH_RECORDS=$records_url/records/dispatch" \
   "AIRLOCK_METADATA_RECORDS=$records_url/records/metadata" \
   "AIRLOCK_MODEL_ANSWER_URL=$model_answer_url" \
-  "AIRLOCK_DISPATCH_OPEN_ISSUE=INFRA-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=INFRA-1200"; do
+  "AIRLOCK_DISPATCH_OPEN_ISSUE=ACME-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=ACME-1200" \
+  "AIRLOCK_DISPATCH_ANSWERED_ASK=4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"; do
   if [[ "$(exported "${want%%=*}")" != "${want#*=}" ]]; then
     echo "FAIL: the banner exports ${want%%=*}=$(exported "${want%%=*}"); want ${want#*=}" >&2
     exit 1
   fi
 done
-printf 'PASS: the banner exports the three stands'"'"' records, the route a check sets the model'"'"'s answer at (%s) and the two issues the Dispatch stand holds\n' \
+printf 'PASS: the banner exports the three stands'"'"' records, the route a check sets the model'"'"'s answer at (%s), the two issues the Dispatch stand holds and the ask its approver answered\n' \
   "$model_answer_url"
 
 mapfile -t broker_lines < <(grep -o 'fake broker: .*' "$log")

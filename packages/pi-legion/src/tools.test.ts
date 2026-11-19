@@ -16,6 +16,7 @@ import {
 } from "@legion/pi-shared/handoff-record";
 import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool, type LegionToolSession } from "./tools";
 
@@ -67,6 +68,9 @@ const noBranchHead = async (): Promise<string> => {
   throw new Error("branchHead is not expected in this test");
 };
 
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+
 /** A claim's session on LEGION-208: a root architect's, a sub-architect's (its issue is not its
  * tree), or a phase worker's by role. */
 function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession {
@@ -76,7 +80,7 @@ function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession
     sessionID: "ses_208",
     tree: "LEGION-208",
     issue,
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     claimToken: roleToken("omp", issue, role),
     generation: 1,
   };
@@ -158,6 +162,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
   "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
   "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+  "The completion that ends the retro carries `plan_rating` (1 to 5) and `plan_reason`, as " +
+  "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
+  "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
   "write this phase's handoff), " +
@@ -337,6 +344,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
+    plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+    plan_reason: { type: "string" },
     round: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
@@ -390,7 +399,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -438,7 +447,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   expect(calls).toEqual([
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "gateRegister",
@@ -752,7 +761,7 @@ test("read_release_records reads the window with this session's claim, and repor
           "LEGION-208",
           session.kind === "architect" ? "architect" : "tester"
         ),
-        secret: "claim-secret",
+        secret: CLAIM_SECRET,
         since: "2026-11-01T00:00:00Z",
       },
     ]);
@@ -991,7 +1000,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     ["state", undefined],
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "handoffComplete",
@@ -1186,6 +1195,52 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       },
     ]);
   }
+});
+
+// The agent that does the retro rates the plan the issue ran in the completion that ends the
+// retro. Retro writes no handoff, so the completion reports the commit the workspace stands on,
+// and the rating travels beside it under the daemon's names.
+test("the retro's handoff_complete posts its rating of the plan as planRating and planReason, with the commit the workspace stands on", async () => {
+  const reads: string[] = [];
+  const { calls, daemon } = recordingDaemon({ state: stateAt("retro") });
+  const reason = "The plan's tester step caught the regression the review would have missed.";
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: paneJj(),
+        latestHandoff: paneDispatch(reads),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  }).execute(
+    "",
+    { op: "handoff_complete", summary: "Retro done.", plan_rating: 5, plan_reason: reason },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(result.isError).toBeUndefined();
+  expect(reads).toEqual([]);
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Retro done.",
+      verdict: "",
+      commit: STANDING,
+      planRating: 5,
+      planReason: reason,
+    },
+  ]);
 });
 
 test("a completion once the issue moved on posts the role's own newest record of the phase it left, and @- where that phase writes none", async () => {
@@ -1412,7 +1467,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       ["state", undefined],
       [
         "grant",
-        { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+        { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
       ],
       [
         "handoffComplete",

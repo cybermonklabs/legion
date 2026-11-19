@@ -77,10 +77,11 @@ type githubAccessTokensBody struct {
 }
 
 // readOnlyPermissions are the permissions a read-only narrowing asks GitHub for, and the most a
-// token minted for one may hold. They are the Legion daemon's own read set (its appauth
-// readPermissions), so a caller reading a repository over a broker-released token reads what one
-// minted from a configured key reads: its contents, its pull requests and the Actions runs, jobs
-// and job logs its merges produced.
+// token minted for one may hold. They are the broker's own read set, so a caller reading a
+// repository over a broker-released token reads its contents, its pull requests and the Actions
+// runs, jobs and job logs its merges produced. The set differs from the Legion daemon's read
+// lease (its appauth readPermissions), which also holds issues, checks, statuses and
+// attestations.
 var readOnlyPermissions = map[string]string{"contents": "read", "metadata": "read", "pull_requests": "read", "actions": "read"}
 
 // optionalReadOnlyPermission is the one permission of readOnlyPermissions an installation may not

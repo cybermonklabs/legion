@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -107,10 +106,15 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // still running in it, wherever its turn stood, so the Suspended patch that replaces it names it on
 // the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
-// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing, and nor is a pod
-// that never started, where no role ran: the launch that waited the boot timeout on such a pod was
-// charged, and the next one replaces it rather than waiting on it again. Before each start the
-// Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
+// (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing displaced: its roles
+// ended with it. Nor is a pod that never started, where no role ran: the launch that waited the
+// boot timeout on such a pod was charged, and the next one replaces it rather than waiting on it
+// again. Where the Sandbox still runs and its own pod ended with a reason
+// (runtime.PodEnd), the Suspended patch that replaces that pod records the end on the Sandbox
+// instead, keyed by the pod's uid (suspendRecordingEnd): an eviction ends every role of the pod,
+// and a role whose next check comes after this launch has replaced the pod reads the eviction
+// from there (evaluate's endedPod), since the pod's own reason goes with the pod. Before each
+// start the Sandbox records the addresses the generation is handed (recordAddresses). A new pod is
 // provisioned by its kind (podKind.provision), under nothing but the pod's own launch turn: an
 // issue pod has its workspace's provisioning token minted, the controller's pod needs nothing. A
 // workflow claim passed its tree's lifecycle check before the call (supervise's checkLaunch), so
@@ -234,7 +238,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			// (replaceSupersededSandbox).
 			s = suspended
 		case s.mode() != modeSuspended:
-			if err := r.setMode(bounded, s, modeSuspended); err != nil {
+			if err := r.suspendRecordingEnd(bounded, s, pod); err != nil {
 				return fail("suspend its sandbox", err)
 			}
 		}
@@ -318,9 +322,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
 // overlays
-// its container holds (heldRoleOverlays), the skills repository its recorded pod shape names, and
-// the session store it was built under (heldSessionStore, the URL file its generation is pointed
-// at). A launch that keeps such a pod
+// its container holds (heldRoleOverlays), and the session store it was built under
+// (heldSessionStore, the URL file its generation is pointed at). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to push its work and answer that
@@ -329,11 +332,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //
-// It reads the Sandbox's stored pod template and its pod-shape annotation. Overlays and session
-// storage predate that annotation and are read from the template; skills_repository is recorded
-// there when the skills volume is built. A missing field names no skills, so an old pod's role
-// can still answer the ordinary update round instead of looking for a volume it does not carry.
-// readable is false when the template
+// It reads the Sandbox's stored pod template, the build of the pod the controller made from it,
+// and not the pod-shape annotation (podShapeAnnotation), which records the configuration the pod
+// was built from rather than what its container holds, and which a pod created before the
+// annotation existed does not carry. readable is false when the template
 // holds no container for the role — a template of another shape, or one this daemon cannot read:
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
 func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
@@ -342,22 +344,8 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	if !readable {
 		return keptPod{}, false
 	}
-	var shape podShapeRecord
-	if record := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]; record != "" {
-		if err := json.Unmarshal([]byte(record), &shape); err != nil {
-			return keptPod{}, false
-		}
-	}
-	var skills ghrepo.Repository
-	if shape.SkillsRepository != "" {
-		var err error
-		skills, err = ghrepo.Parse("the stored pod's skills repository", shape.SkillsRepository)
-		if err != nil {
-			return keptPod{}, false
-		}
-	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
@@ -456,20 +444,18 @@ func launcherBackstop(boot, bound time.Duration) time.Duration {
 
 // awaitRoleLauncher waits until loc's role launcher has connected, reporting false, or loc's pod
 // has ended, reporting true, and returns the deadline the wait stood at when it stopped. The
-// launcher starts only once every init container of the pod has finished, however many the
-// deployment gives it, and the three steps whose duration follows the repository's size —
-// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends
-// while it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their
-// retries, and the restarts the grace covers (fetchRestartGrace) — then workspace-init's
-// shared clone of the feed
-// and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own start,
-// a sum that counts no term for the commands which keep CommandTimeout, skills-fetch's one
-// shallow clone among them (ProvisionBound, manifest.go). So until the wait
-// first sees the pod provisioning (an init container running, or a fetch between those restarts:
-// provisioning) it gives the pod the
-// boot timeout, the image pull's; from then on, the boot timeout from the last moment it saw the
-// pod provisioning, never past the boot timeout plus ProvisionBound from the first
-// (launcherDeadline). A pod that never provisions past the boot timeout waits it alone.
+// launcher starts only once every init container of the pod has finished (an issue pod's two; the
+// controller's pod has none), and the three steps whose duration follows the repository's size —
+// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends while
+// it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their retries, and
+// the restarts the grace covers (fetchRestartGrace) — then workspace-init's shared clone of the
+// feed and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own
+// start, a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
+// manifest.go). So until the wait first sees the pod provisioning (an init container running, or a
+// fetch between those restarts: provisioning) it gives the pod the boot timeout, the image pull's;
+// from then on, the boot timeout from the last moment it saw the pod provisioning, never past the
+// boot timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions
+// past the boot timeout waits it alone.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
 	start := time.Now()
@@ -1168,6 +1154,21 @@ const (
 	roundDisplacedAnnotation = "legion.dev/round-displaced-pod"
 )
 
+// endedPodAnnotation names, on a Sandbox, the uid of the last pod of it a launch replaced after
+// that pod had ended with a reason of its own (relaunch's suspendRecordingEnd), and
+// endedPodEndAnnotation holds that end as runtime.PodEnd builds it: the pod's reason and the
+// kubelet's message, bounded. The two are written in one patch and read together (endedPod). An
+// eviction ends every role of the pod, and the roles' checks run one after another, so a sibling's
+// launch can replace the evicted pod before a role's check has read it; the pod's own reason goes
+// with the pod, and this is where every role recorded in it reads that end afterwards. Keyed by
+// uid, a record of an earlier pod says nothing of a role recorded in a later one. It lives with the
+// Sandbox, so a restarted daemon reads it as well, as it reads displacedAnnotation. A Sandbox a
+// migrating launch deletes and creates again (replaceSupersededSandbox) does not carry it over.
+const (
+	endedPodAnnotation    = "legion.dev/ended-pod"
+	endedPodEndAnnotation = "legion.dev/ended-pod-end"
+)
+
 // replacementKind is which of the two acts that replace a live pod a suspension is made for: a
 // launch that cannot use the pod it found, or the update round of that pod, once it is over.
 type replacementKind bool
@@ -1192,6 +1193,32 @@ func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, uid types.U
 	if kind == roundReplacement {
 		annotations[roundDisplacedAnnotation] = string(uid)
 	}
+	return r.suspendAnnotating(ctx, s, annotations)
+}
+
+// suspendRecordingEnd sets the Sandbox read as s Suspended to replace pod, which is not live: it
+// ended, it is not the Sandbox's, or there is none. A pod of the Sandbox's own whose end carries a
+// reason (runtime.PodEnd) has that end recorded in the same JSON merge patch (endedPodAnnotation,
+// endedPodEndAnnotation), so the API server applies the suspension and the record together or
+// neither; any other pod is suspended over as setMode does, recording nothing.
+func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *corev1.Pod) error {
+	end := ""
+	if ownedBy(pod, s.UID) {
+		end = runtime.PodEnd(pod.Status.Reason, pod.Status.Message)
+	}
+	if end == "" {
+		return r.setMode(ctx, s, modeSuspended)
+	}
+	_, err := r.suspendAnnotating(ctx, s, map[string]string{endedPodAnnotation: string(pod.UID), endedPodEndAnnotation: end})
+	return err
+}
+
+// suspendAnnotating sets the Sandbox read as s Suspended and sets each of annotations on it, in
+// one JSON merge patch: the API server applies both or neither, and a merge patch sets those keys
+// whatever other annotations the Sandbox carries, or none. It carries s's uid, which the API
+// server refuses to change on a live object, so a Sandbox deleted and recreated in between is
+// never written: the fence recordAddresses keeps. It returns the Sandbox as the patch left it.
+func (r *Runtime) suspendAnnotating(ctx context.Context, s *sandbox, annotations map[string]string) (*sandbox, error) {
 	body, err := json.Marshal(map[string]any{
 		"metadata": map[string]any{"uid": string(s.UID), "annotations": annotations},
 		"spec":     map[string]any{"operatingMode": modeSuspended},

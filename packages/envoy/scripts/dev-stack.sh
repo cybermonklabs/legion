@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317 # cleanup is trap-invoked and each reader is invoked by name
+# shellcheck disable=SC2317,SC2329 # cleanup is trap-invoked and each reader is invoked by name
 # packages/envoy/scripts/dev-stack.sh
 #
 # The whole local stack a session is driven against, on one machine, with no cluster, no AWS and
@@ -25,25 +25,26 @@
 # --binaries <dir> names a directory that already holds them, built elsewhere: a Legion pod sends
 # a Go build out to the builds farm rather than running it itself. Then it runs those in place of
 # its go build, and needs no go on PATH. It requires each of them in that directory, broker,
-# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper and natsd, each an
-# executable file, and refuses before it creates or starts anything -- no database, no port, no
-# process -- when one is missing or is not, naming each such file. It copies them into this run's
-# own bin directory, where a build would have put them, so everything after that step is the
-# same either way.
+# dev-oidc-issuer, dispatch, listener, agent-secrets, agent-secrets-helper, natsd and natsprobe,
+# each an executable file, and refuses before it creates or starts anything -- no database, no
+# port, no process -- when one is missing or is not, naming each such file. It copies them into
+# this run's own bin directory, where a build would have put them, so everything after that step
+# is the same either way.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
 # "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
 # client connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
 # "dispatch: listening" addr. So a URL this script prints can only ever name this run's own
 # process, never one left over from another. Two of the five are the exceptions to "bind, then
-# report", and both serve on a socket scripts/e2e/lib/held-port.py opened on a port the kernel
-# chose (as docs/site/media/broker/rig.sh does): Dispatch, because the broker must name its
-# machine-login page before it starts while Dispatch must name the broker's URL before it starts,
-# so a keeper holds that socket for the whole run and Dispatch serves on a copy of it
+# report", and both serve on a socket a keeper (scripts/e2e/lib/held-port.py keep) opened on a
+# port the kernel chose and holds for the whole run (as docs/site/media/broker/rig.sh does):
+# Dispatch, because the broker must name its machine-login page before it starts while Dispatch
+# must name the broker's URL before it starts, so Dispatch serves on a copy of its keeper's socket
 # (DISPATCH_LISTEN_FD); and the listener, because it must be told its own public origin before it
-# starts, the origin a DPoP proof's target URI is checked against (ENVOY_PUBLIC_URL), so
-# held-port.py opens its socket and puts the port in that one variable (ENVOY_LISTEN_FD). Each
-# still reports its port in its own listening line, and those lines are what this script reads.
+# starts, the origin a DPoP proof's target URI is checked against (ENVOY_PUBLIC_URL), so it serves
+# on a copy of its keeper's socket (ENVOY_LISTEN_FD) and that port goes in that one variable,
+# which a restart (below) serves again. Each still reports its port in its own listening line, and
+# those lines are what this script reads.
 #
 # Dispatch runs on its dev sign-in route (DISPATCH_DEV_SIGNIN=1), so a browser on this machine is
 # signed in as any person it names with no sign-in pool, and the broker's approval page signs a
@@ -71,6 +72,8 @@
 #   ENVOY_URL                             the listener
 #   NATS_URLS                             this run's NATS
 #   DEV_STACK_DIR                         the work directory (logs, tokens, fake secrets)
+#   DEV_STACK_PID                         this script, which SIGUSR1 and SIGUSR2 restart natsd and
+#                                         the listener through (below)
 #   DEV_STACK_ISSUER_URL                  dev-oidc-issuer, for a sign-in or a minted token
 #   DEV_STACK_EXCHANGE_TOKEN_FILE         the pod's token for the broker's exchange audience
 #   DEV_STACK_POD_TOKEN_FILE              that same pod's token for the broker's own audience
@@ -95,14 +98,27 @@
 # agent-secrets under the second box's variables; each box trades its machine identity for a
 # launcher credential of its own, bound to the identity key its own HOME holds.
 #
-# It then stays in the foreground until it is interrupted or any process it started stops. One
-# trap stops every process by the pid this script started it as, drops the two databases it
+# It then stays in the foreground until it is interrupted or any process it started stops, and
+# restarts two of them in place when it is asked, for a proof that a client keeps receiving across
+# a restart (scripts/e2e/nats-callout-sessions.sh): SIGUSR1 restarts natsd on the client port it
+# served, its monitor port with --callout, the same JetStream store and the same callout keys;
+# SIGUSR2 restarts the listener on its keeper's socket, so on the same port. Each stops the old
+# process by its pid, keeps its log as <name>.log.<n>, and prints "dev-stack: natsd restarted (pid
+# <old> -> <new>) <url>" or "dev-stack: listener restarted (pid <old> -> <new>) <url>" once the new
+# one serves; a process that comes back on another port stops the whole stack, naming both ports,
+# since every client of the stack was told the old one. The banner exports DEV_STACK_PID, this
+# script's pid, which those signals go to.
+#
+# One trap stops every process by the pid this script started it as, drops the two databases it
 # created and nothing else, and leaves the logs; it runs on a normal exit, on Ctrl-C, on SIGTERM
 # and on a failure part way through, so a start that fails before "ready" leaves nothing running.
 # A SIGTERM sent to the whole process group, as a supervisor's stop sends it, is that same stop,
 # and so is the same signal repeated while the stop runs. The exception is a signal this script
 # cannot take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the
 # server for someone to drop by hand, as does any other signal this script does not trap.
+#
+# With --callout the hub runs behind the NATS auth service, in two brokers, which
+# scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -116,6 +132,19 @@
 # service.
 set -euo pipefail
 
+# refuse_old_bash MAJOR MINOR VERSION: exits 2, in one line naming the bash this script needs and
+# VERSION, where MAJOR.MINOR is older than 5.1. The wait at the end (`wait -n -p`, which names the
+# process that stopped) is bash 5.1's: an older bash refuses -p there, and the loop around it never
+# sees a process stop and spins at once forever. So the first command hands it this bash's own
+# version, before anything is created or started; scripts/dev-stack.test.sh runs it with others.
+refuse_old_bash() {
+  if (($1 < 5 || ($1 == 5 && $2 < 1))); then
+    echo "dev-stack: needs bash 5.1 or newer (for wait -n -p), and this is bash $3" >&2
+    exit 2
+  fi
+}
+refuse_old_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$ENVOY_DIR/../.." && pwd)"
@@ -123,7 +152,7 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 
 usage() {
   cat <<'EOF'
-Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--help]
+Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout] [--help]
 
 Boot dev-oidc-issuer, the secrets broker, a throwaway NATS, the Envoy listener and the Dispatch
 server on one machine, each on a port the kernel chooses, and print the exports a second shell
@@ -131,12 +160,16 @@ drives them with. The Postgres URL is this one option, else LEGION_TEST_PG_DSN, 
 DATABASE_URL; this run creates and drops two databases of its own on that server.
 
 With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, agent-secrets,
-agent-secrets-helper and natsd in <dir> in place of building them; a directory short of any of
-them, or holding one that is not an executable file, is refused, naming each, before anything is
-created or started.
+agent-secrets-helper, natsd and natsprobe in <dir> in place of building them; a directory short
+of any of them, or holding one that is not an executable file, is refused, naming each, before
+anything is created or started.
+
+With --callout, run the hub behind the NATS auth service in two brokers, and the listener and
+Dispatch with NATS service tokens rather than no credential.
 EOF
 }
 
+CALLOUT=false
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
 while [ "$#" -gt 0 ]; do
@@ -151,6 +184,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --database-url=*)
       DATABASE_URL_OPTION="${1#--database-url=}"
+      shift
+      ;;
+    --callout)
+      CALLOUT=true
       shift
       ;;
     --binaries)
@@ -205,7 +242,7 @@ POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
 # binary for its package's last path element, so the build's arguments and the names --binaries
 # checks and copies all come from here. The header and the usage name them for a reader. ---
 STACK_PACKAGES=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd)
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
 STACK_BINARIES=()
 for stack_package in "${STACK_PACKAGES[@]}"; do
   STACK_BINARIES+=("${stack_package##*/}")
@@ -261,6 +298,10 @@ DISPATCH_LOG="$LOG_DIR/dispatch.log"
 KEEPER_LOG="$LOG_DIR/dispatch-port-keeper.log"
 KEEPER_SOCKET="$WORK_DIR/dispatch-port.sock"
 KEEPER_PORT_FILE="$WORK_DIR/dispatch-port"
+# The listener's keeper, which holds its port for the whole run so a restart serves it again.
+LISTENER_KEEPER_LOG="$LOG_DIR/listener-port-keeper.log"
+LISTENER_KEEPER_SOCKET="$WORK_DIR/listener-port.sock"
+LISTENER_KEEPER_PORT_FILE="$WORK_DIR/listener-port"
 
 # The issuer and what it mints for, as dev-broker.sh names them (internal/broker/brokertest's rig):
 # the audience every listed caller's and every enrolment's token carries, the exchange's own
@@ -347,14 +388,21 @@ BROKER_DB="dev_stack_broker_${RUN_SUFFIX}"
 DISPATCH_DB="dev_stack_dispatch_${RUN_SUFFIX}"
 BROKER_DATABASE_URL="${POSTGRES_SERVER}/${BROKER_DB}${POSTGRES_QUERY}"
 DISPATCH_DATABASE_URL="${POSTGRES_SERVER}/${DISPATCH_DB}${POSTGRES_QUERY}"
+# The listener's machine id, every broker's database URL, and what --callout adds are
+# scripts/lib/callout-stack.sh's. It names paths in the work directory and reads the URLs above,
+# so it is sourced here, on every run.
+# shellcheck source-path=SCRIPTDIR source=lib/callout-stack.sh
+. "$SCRIPT_DIR/lib/callout-stack.sh"
 
 admin_psql() { psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
 
 KEEPER_PID=""
 ISSUER_PID=""
 BROKER_PID=""
+BROKER2_PID=""
 NATS_PID=""
 LISTENER_PID=""
+LISTENER_KEEPER_PID=""
 DISPATCH_PID=""
 # Each is set once this run's own create database succeeded: a run whose create failed (the name
 # taken by another run) must never drop that other run's database.
@@ -390,7 +438,7 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM
   set +e
-  for pid in "$DISPATCH_PID" "$LISTENER_PID" "$NATS_PID" "$BROKER_PID" "$ISSUER_PID" "$KEEPER_PID"; do
+  for pid in "$DISPATCH_PID" "$LISTENER_PID" "$LISTENER_KEEPER_PID" "$BROKER2_PID" "$BROKER_PID" "$NATS_PID" "$ISSUER_PID" "$KEEPER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
@@ -412,6 +460,12 @@ cleanup() {
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
+# The two in-place restarts, asked for by signal and run by the wait at the end of this script
+# once the stack is up: a request that arrives during the start waits for it. Trapped from here
+# on, so neither signal can end the run past the trap above, which their default action would.
+RESTARTS=""
+trap 'RESTARTS="$RESTARTS natsd"' USR1
+trap 'RESTARTS="$RESTARTS listener"' USR2
 
 echo "dev-stack: workdir $WORK_DIR" >&2
 
@@ -532,7 +586,7 @@ DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$MACHINE_SECRET_FILE")
 echo "dev-stack: starting dev-oidc-issuer..." >&2
 : >"$ISSUER_LOG"
-env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" \
+env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_TOKEN_FILE" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
@@ -547,6 +601,36 @@ ISSUER_PID=$!
 await dev-oidc-issuer "$ISSUER_PID" "$ISSUER_LOG" "$ISSUER_LOG" 'its URL' issuer_url_in
 ISSUER_URL="$awaited"
 echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
+
+# --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
+# JetStream in the work directory, since an agent's machine has no container runtime. -1 is
+# nats-server's own "choose a port". With --callout it runs behind the auth callout, whose seeds
+# it makes before it serves, so it starts before the brokers that read them.
+#
+# start_natsd PORT MONITOR starts it on the client port PORT and, with --callout, the monitor port
+# MONITOR in place of callout_natsd_args's -1: -1 both at the start, and at a restart the ports it
+# reported then, since every client of the stack was told them. The store and the callout seeds
+# are the same at every start, and natsd keeps the seeds it finds (internal/testnats/cmd/natsd), so
+# the brokers' auth service still answers a restarted server. It sets NATS_PID, and NATS_PORT to
+# the client port the server itself reported; callout_after_natsd, after it, waits for the monitor
+# port. ---
+start_natsd() {
+  local natsd_args=("${callout_natsd_args[@]}") at
+  for at in "${!natsd_args[@]}"; do
+    [ "${natsd_args[$at]}" != -m ] || natsd_args[at + 1]=$2
+  done
+  : >"$NATS_LOG"
+  env -i PATH="$PATH" "$BIN_DIR/natsd" -p "$1" -store_dir "$WORK_DIR/nats-store" "${natsd_args[@]}" \
+    >"$NATS_LOG" 2>&1 &
+  NATS_PID=$!
+  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
+  NATS_PORT="$awaited"
+}
+echo "dev-stack: starting natsd..." >&2
+start_natsd -1 -1
+NATS_URL="nats://127.0.0.1:$NATS_PORT"
+echo "dev-stack: natsd $NATS_URL" >&2
+callout_after_natsd
 
 # --- The broker, on a fake Secrets Manager holding one agent-tier secret its owner's sessions get
 # without asking, one human-tier secret its owner approves — both owned by the person the issuer
@@ -573,49 +657,61 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
+# start_broker starts one broker logging to $1 and sets started_pid: every broker of a run, as
+# every replica of one deployment, is the same binary and settings on the same database.
+started_pid=""
+start_broker() {
+  : >"$1"
+  env -i PATH="$PATH" \
+    BROKER_DATABASE_URL="$BROKER_POOL_DATABASE_URL" \
+    BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
+    BROKER_LISTEN_ADDR="127.0.0.1:0" \
+    BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+    BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
+    BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
+    BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
+    BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
+    BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
+    BROKER_DRAIN_SECONDS=0 \
+    BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
+    BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
+    BROKER_API_ACCOUNTS="dispatch=$API_ACCOUNT listener=$LISTENER_ACCOUNT" \
+    BROKER_SIGNIN_ISSUER="$ISSUER_URL" \
+    BROKER_SIGNIN_CLIENT_ID="$SIGNIN_CLIENT_ID" \
+    BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
+    BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
+    BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
+    BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+    BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
+    BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
+    BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
+    BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
+    BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
+    BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
+    BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
+    "${callout_broker_env[@]}" \
+    "$BIN_DIR/broker" >"$1" 2>&1 &
+  started_pid=$!
+}
 echo "dev-stack: starting broker..." >&2
-: >"$BROKER_LOG"
-env -i PATH="$PATH" \
-  BROKER_DATABASE_URL="$BROKER_DATABASE_URL" \
-  BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
-  BROKER_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_PUBLIC_URL="http://127.0.0.1:0" \
-  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
-  BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
-  BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
-  BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
-  BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
-  BROKER_DRAIN_SECONDS=0 \
-  BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
-  BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
-  BROKER_API_ACCOUNTS="dispatch=$API_ACCOUNT listener=$LISTENER_ACCOUNT" \
-  BROKER_SIGNIN_ISSUER="$ISSUER_URL" \
-  BROKER_SIGNIN_CLIENT_ID="$SIGNIN_CLIENT_ID" \
-  BROKER_SIGNIN_CLIENT_SECRET_FILE="$SIGNIN_SECRET_FILE" \
-  BROKER_SIGNIN_DOMAIN="$SIGNIN_DOMAIN" \
-  BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
-  BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
-  BROKER_GOOGLE_OIDC_ISSUER="$ISSUER_URL" \
-  BROKER_GOOGLE_OIDC_AUDIENCE="$MACHINE_CLIENT_ID" \
-  BROKER_VM_SERVICES="$FLEET_SERVICE=$FLEET_ACCOUNT $PERSON_FLEET_SERVICE=$PERSON_FLEET_ACCOUNT" \
-  BROKER_VM_EXCHANGE_ACCOUNTS="$PERSON_FLEET_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
-  BROKER_SIGNIN_DEVICE_AUDIENCE="$DEVICE_CLIENT_ID" \
-  BROKER_SERVICE_LOGINS="legion-daemon=$REGISTRAR_ACCOUNT" \
-  "$BIN_DIR/broker" >"$BROKER_LOG" 2>&1 &
-BROKER_PID=$!
+start_broker "$BROKER_LOG"
+BROKER_PID=$started_pid
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
 BROKER_URL="http://$awaited"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
+callout_after_first_broker
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. Both tokens stay out of
-# every command line: the body reaches curl on standard input from a here-string, which the shell
-# writes before curl starts, so no pipeline's status can hide curl's, and the header from a file
-# curl reads. ---
+# Every broker of the run lists that account as the registrar of the pod's account
+# (BROKER_POD_REGISTRARS, in start_broker), and a broker with no such entry refuses the write 403
+# POD_REGISTRAR_NOT_LISTED. Without the row the exchange is refused invalid_grant, naming the
+# session. Both tokens stay out of every command line: the body reaches curl on standard input
+# from a here-string, which the shell writes before curl starts, so no pipeline's status can hide
+# curl's, and the header from a file curl reads. ---
 registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
   -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
@@ -625,47 +721,51 @@ if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
   exit 1
 fi
 
-# --- The bus: one nats-server in a process of this run's own (internal/testnats/cmd/natsd), with
-# JetStream in the work directory, since an agent's machine has no container runtime. -1 is
-# nats-server's own "choose a port". ---
-echo "dev-stack: starting natsd..." >&2
-: >"$NATS_LOG"
-env -i PATH="$PATH" "$BIN_DIR/natsd" -p -1 -store_dir "$WORK_DIR/nats-store" >"$NATS_LOG" 2>&1 &
-NATS_PID=$!
-await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
-NATS_URL="nats://127.0.0.1:$awaited"
-echo "dev-stack: natsd $NATS_URL" >&2
-
 # --- The listener, on that bus. ENVOY_HOST_BRIDGE=127.0.0.1 because every session of this stack
-# runs on this machine. It serves on a socket held-port.py opened on a port the kernel chose
-# (ENVOY_LISTEN_FD=3) rather than on PORT=0, for the reason Dispatch does: the listener has to be
-# told its own public origin before it starts, since a DPoP proof's target URI is checked against
-# that origin and nothing else, and `{port}` below is the port of that very socket (held-port.py
-# exec substitutes it). It still reports the address it serves on in its own listening line, and
-# that line is what this script reads.
+# runs on this machine. It serves on a copy of a socket a keeper opened on a port the kernel chose
+# and holds for the whole run (ENVOY_LISTEN_FD=3) rather than on PORT=0, for the reason Dispatch
+# does: the listener has to be told its own public origin before it starts, since a DPoP proof's
+# target URI is checked against that origin and nothing else, and `{port}` below is the port of
+# that very socket (held-port.py exec substitutes it). The keeper is why a restart (SIGUSR2)
+# serves the same port: every session of the stack was told it. The listener still reports the
+# address it serves on in its own listening line, and that line is what this script reads.
 #
 # It takes three credentials: none, which is what every session of this stack uses and what the
 # listener allows on loopback; and a broker access token, which it checks at this run's broker
 # (ENVOY_AGENT_SECRETS_URL) as the caller "listener", presenting the projected token the issuer
 # wrote for it. A session holding such a token is bound to the session the broker named: it may
 # subscribe, claim a role, send and publish as that session and as no other.
+#
+# start_listener starts it on the keeper's socket and sets LISTENER_PID, and LISTENER_ADDRESS to
+# the address it reported once its health check answers. ---
+echo "dev-stack: holding a port for the listener..." >&2
+python3 "$HELD_PORT" keep --host 127.0.0.1 --port-file "$LISTENER_KEEPER_PORT_FILE" \
+  --socket "$LISTENER_KEEPER_SOCKET" >"$LISTENER_KEEPER_LOG" 2>&1 &
+LISTENER_KEEPER_PID=$!
+await 'the listener port keeper' "$LISTENER_KEEPER_PID" "$LISTENER_KEEPER_LOG" \
+  "$LISTENER_KEEPER_PORT_FILE" 'the port it holds' kept_port_in
+start_listener() {
+  : >"$LISTENER_LOG"
+  python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD -- \
+    env -i PATH="$PATH" \
+    ENVOY_LISTEN_FD=3 \
+    ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID" \
+    ENVOY_HOST_BRIDGE=127.0.0.1 \
+    ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
+    ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
+    ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
+    NATS_URLS="$NATS_URL" \
+    "${callout_listener_env[@]}" \
+    "$BIN_DIR/listener" >"$LISTENER_LOG" 2>&1 &
+  LISTENER_PID=$!
+  await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
+  LISTENER_ADDRESS="$awaited"
+  until_true "the listener's health check" curl -sf "http://$LISTENER_ADDRESS/healthz"
+}
 echo "dev-stack: starting listener..." >&2
-: >"$LISTENER_LOG"
-python3 "$HELD_PORT" exec --host 127.0.0.1 --fd-env ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" \
-  ENVOY_LISTEN_FD=3 \
-  ENVOY_LISTEN_HOST=127.0.0.1 \
-  ENVOY_MACHINE_ID="dev-stack-$RUN_SUFFIX" \
-  ENVOY_HOST_BRIDGE=127.0.0.1 \
-  ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
-  ENVOY_AGENT_SECRETS_URL="$BROKER_URL" \
-  ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$LISTENER_TOKEN_FILE" \
-  NATS_URLS="$NATS_URL" \
-  "$BIN_DIR/listener" >"$LISTENER_LOG" 2>&1 &
-LISTENER_PID=$!
-await listener "$LISTENER_PID" "$LISTENER_LOG" "$LISTENER_LOG" 'its address' listener_addr_in
-LISTENER_URL="http://$awaited"
-until_true "the listener's health check" curl -sf "$LISTENER_URL/healthz"
+start_listener
+LISTENER_URL="http://$LISTENER_ADDRESS"
 echo "dev-stack: listener $LISTENER_URL" >&2
 
 # --- Dispatch, on the keeper's socket (DISPATCH_LISTEN_FD=3, which held-port.py puts the socket
@@ -696,6 +796,7 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
   ENVOY_URL="$LISTENER_URL" \
   NATS_URLS="$NATS_URL" \
+  "${callout_dispatch_env[@]}" \
   "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
 DISPATCH_PID=$!
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
@@ -846,6 +947,7 @@ dev-stack: ready.
   export ENVOY_URL=$LISTENER_URL
   export NATS_URLS=$NATS_URL
   export DEV_STACK_DIR=$WORK_DIR
+  export DEV_STACK_PID=$$
   export DEV_STACK_ISSUER_URL=$ISSUER_URL
   export DEV_STACK_EXCHANGE_TOKEN_FILE=$EXCHANGE_TOKEN_FILE
   export DEV_STACK_POD_TOKEN_FILE=$POD_TOKEN_FILE
@@ -853,7 +955,7 @@ dev-stack: ready.
   export DEV_STACK_LISTENER_TOKEN_FILE=$LISTENER_TOKEN_FILE
   export DEV_STACK_MACHINE_ACCOUNT=$FLEET_ACCOUNT
   export DEV_STACK_PERSON_MACHINE_ACCOUNT=$PERSON_FLEET_ACCOUNT
-  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT
+  export DEV_STACK_METADATA_SCRIPT=$METADATA_SCRIPT$callout_exports
 
   the token clients (Go and TypeScript alike), for a session that trades this machine's identity
   or signs a person in. The exchange's answer is a Dispatch access token acting for
@@ -958,12 +1060,83 @@ dev-stack: ready.
   $EXCHANGE_SESSION, and a body naming any other source_session is refused 403. The listener
   checks it at $BROKER_URL as the caller "listener".
 
+  kill -USR1 \$DEV_STACK_PID restarts natsd on the same port and store, and kill -USR2
+  \$DEV_STACK_PID the listener on the same port; each prints "dev-stack: <natsd|listener>
+  restarted" once the new process serves.
+
   Press Ctrl-C to stop every process and drop both databases.
 EOF
 
+# stop_process PID stops one process of the stack by its pid and reaps it. The wait is repeated
+# because a restart signal arriving meanwhile ends a wait early, with the process still there.
+stop_process() {
+  kill "$1" 2>/dev/null || true
+  while kill -0 "$1" 2>/dev/null; do
+    wait "$1" 2>/dev/null || true
+  done
+}
+
+# The two in-place restarts. Each keeps the stopped process's log as <log>.<n>, starts the new one
+# on the port the old one served, and refuses one that reports another port: every client was
+# told the old one, so a stack serving elsewhere is no longer the stack they were told of, and the
+# return stops it here.
+natsd_restarts=0
+restart_natsd() {
+  # The monitor port is callout_monitor_url's (callout_after_natsd), and none without --callout.
+  local old="$NATS_PID" port="$NATS_PORT" monitor="${callout_monitor_url:-}" came_back
+  monitor="${monitor##*:}"
+  natsd_restarts=$((natsd_restarts + 1))
+  echo "dev-stack: restarting natsd (pid $old) on port $port..." >&2
+  stop_process "$old"
+  mv "$NATS_LOG" "$NATS_LOG.$natsd_restarts"
+  start_natsd "$port" "$monitor"
+  callout_after_natsd
+  came_back="${callout_monitor_url:-}"
+  came_back="${came_back##*:}"
+  if [ "$NATS_PORT" != "$port" ] || [ "$came_back" != "$monitor" ]; then
+    echo "dev-stack: natsd came back on port $NATS_PORT (monitor ${came_back:-none}), not port $port (monitor ${monitor:-none}) it served before the restart; stopping" >&2
+    return 1
+  fi
+  echo "dev-stack: natsd restarted (pid $old -> $NATS_PID) $NATS_URL" >&2
+}
+listener_restarts=0
+restart_listener() {
+  local old="$LISTENER_PID"
+  listener_restarts=$((listener_restarts + 1))
+  echo "dev-stack: restarting the listener (pid $old) at $LISTENER_URL..." >&2
+  stop_process "$old"
+  mv "$LISTENER_LOG" "$LISTENER_LOG.$listener_restarts"
+  start_listener
+  if [ "http://$LISTENER_ADDRESS" != "$LISTENER_URL" ]; then
+    echo "dev-stack: the listener came back at http://$LISTENER_ADDRESS, not $LISTENER_URL it served before the restart; stopping" >&2
+    return 1
+  fi
+  echo "dev-stack: listener restarted (pid $old -> $LISTENER_PID) $LISTENER_URL" >&2
+}
+
 # The stack stands until it is interrupted or any one of its processes stops; either way the trap
-# above stops the rest and drops the databases.
-status=0
-wait -n || status=$?
+# above stops the rest and drops the databases. The second broker is not one of them: with
+# --callout it is the replica scripts/callout-check.sh kills to show a stopped replica delays no
+# connection, so the stack outlives it. A restart signal ends the wait too, its trap having
+# recorded the request (which leaves `stopped` unset): each restart asked for runs, and the wait
+# starts again over the new pids. A one-second tick is among the pids waited on, so a request whose
+# signal landed between the look at RESTARTS and the start of the wait runs a second later rather
+# than at the next signal.
+while :; do
+  requested="$RESTARTS"
+  RESTARTS=""
+  for restart in $requested; do
+    "restart_$restart"
+  done
+  sleep 1 &
+  ticker=$!
+  status=0
+  wait -n -p stopped "$ticker" "$KEEPER_PID" "$LISTENER_KEEPER_PID" "$ISSUER_PID" "$NATS_PID" \
+    "$BROKER_PID" "$LISTENER_PID" "$DISPATCH_PID" || status=$?
+  case "${stopped:-}" in
+    "" | "$ticker") ;;
+    *) break ;;
+  esac
+done
 echo "dev-stack: a process of this stack stopped (status $status); stopping the rest" >&2
 exit "$status"

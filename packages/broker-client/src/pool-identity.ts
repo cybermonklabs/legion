@@ -5,6 +5,8 @@
 // (`packages/envoy/internal/brokerclient/pool.go`), and asks the two services Go asks with the
 // bodies Go sends, so a deployment that names a pool gets one identity from either client.
 
+import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { errorClass, requestForText, urlForText } from "@legion/contracts/log-text";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
 import {
@@ -39,6 +41,11 @@ const POOL_TIMEOUT_MS = 20_000;
 /** The most of an answer that is read, as Go's `io.LimitReader` bounds it, so a server in
  *  Google's place cannot grow this process without bound. */
 const MAX_ANSWER_BYTES = 1 << 20;
+
+/** What names each service in a text where its URL is not a plain http(s) URL (`urlForText`,
+ *  `requestForText`): the option of `PoolIdentityOptions` that holds it. */
+const STS_SETTING = "securityTokenServiceUrl";
+const IAM_SETTING = "iamCredentialsUrl";
 
 /** What {@link poolIdentity} takes, member for member Go's `PoolIdentity`. */
 export interface PoolIdentityOptions {
@@ -98,6 +105,35 @@ async function answerText(answer: Response): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** A word as Google's services write their error codes: STS's OAuth `error` (`invalid_grant`)
+ *  and IAM's `error.status` (`PERMISSION_DENIED`). */
+const GOOGLE_ERROR_CODE = /^[A-Za-z_]{1,64}$/;
+
+/**
+ * ` <code>` for the error code a Google answer `text` carries (STS's `error`, IAM's
+ * `error.status`), or "" where it carries none that reads as a code. The rest of the body is
+ * never named: its text is the service's, and a service can echo the token it was sent.
+ */
+function googleErrorCode(text: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return "";
+  }
+  const error =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as { error?: unknown }).error
+      : undefined;
+  const code =
+    typeof error === "string"
+      ? error
+      : typeof error === "object" && error !== null
+        ? (error as { status?: unknown }).status
+        : undefined;
+  return typeof code === "string" && GOOGLE_ERROR_CODE.test(code) ? ` ${code}` : "";
+}
+
 /**
  * The identity of a machine with no Google service account of its own (Go's `PoolIdentity`): an
  * external credential, the subject this deployment already holds, traded at Google's security
@@ -112,24 +148,34 @@ async function answerText(answer: Response): Promise<string> {
  *
  * `read()` mints afresh at every call, and each of its two calls has a 20 s deadline. Every error
  * names the call that failed, with Google's status and reason where it answered one, and never a
- * token.
+ * token. A service is named by the shared rule (`urlForText`; the mint as a request built on IAM
+ * Credentials' base, `requestForText`), a request that got no answer by its error's class
+ * (`errorClass`), and no error keeps another as its cause.
  */
 export function poolIdentity(options: PoolIdentityOptions): TokenSource {
-  const securityTokenService =
-    options.securityTokenServiceUrl ?? DEFAULT_SECURITY_TOKEN_SERVICE_URL;
+  const securityTokenService = holdUrlUserinfo(
+    options.securityTokenServiceUrl ?? DEFAULT_SECURITY_TOKEN_SERVICE_URL
+  );
+  holdUrlUserinfo(options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL);
   const iamCredentials = (options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL).replace(
     /\/$/,
     ""
   );
   const account = pathEscape(options.serviceAccount);
   const mintEndpoint = `${iamCredentials}/v1/projects/-/serviceAccounts/${account}:generateIdToken`;
+  const securityTokenServiceShown = urlForText(securityTokenService, STS_SETTING);
+  const mintEndpointShown = requestForText(iamCredentials, mintEndpoint, IAM_SETTING);
 
   /**
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
    * not empty, and answers the member `member` of what came back, or "" where the answer holds
-   * none. A non-2xx answer is an error naming the status and the body Google's services put their
-   * reason in, which carries no credential of this machine's; a 2xx answer that is not JSON is
-   * named without its text, since that text could be a token.
+   * none. A non-2xx answer is an error naming the status and Google's error code alone
+   * (`googleErrorCode`), never the body, which a service, or anything at its URL, can fill with
+   * the token it was sent; a 2xx answer that is not JSON is
+   * named without its text, since that text could be a token; and a request that got no answer is
+   * named by its error's class, since the runtime's message can repeat the host it was handed. No
+   * redirect is followed: Google's services answer none, and a 307 or 308 would send the body, a
+   * token in it, on to another origin, so a redirect is a non-2xx answer like any other.
    */
   const call = async (
     endpoint: string,
@@ -141,18 +187,25 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
     const signals = [AbortSignal.timeout(POOL_TIMEOUT_MS), signal].filter(
       (one) => one !== undefined
     );
-    const answer = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(bearer === "" ? {} : { Authorization: `Bearer ${bearer}` }),
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.any(signals),
-    });
-    const text = await answerText(answer);
+    let answer: Response;
+    let text: string;
+    try {
+      answer = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(bearer === "" ? {} : { Authorization: `Bearer ${bearer}` }),
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.any(signals),
+        redirect: "manual",
+      });
+      text = await answerText(answer);
+    } catch (error) {
+      throw new Error(`no answer: ${errorClass(error)}`);
+    }
     if (answer.status < 200 || answer.status > 299) {
-      throw new Error(`HTTP ${answer.status}: ${text.trim()}`);
+      throw new Error(`HTTP ${answer.status}${googleErrorCode(text)}`);
     }
     let parsed: unknown;
     try {
@@ -187,14 +240,15 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
         signal
       );
     } catch (error) {
+      // No `cause`: the error it would hold can carry the security token service's answer, and so
+      // a token, which no log of this error may carry.
       throw new Error(
-        `trade this machine's credential at the security token service ${securityTokenService}: ${messageOf(error)}`,
-        { cause: error }
+        `trade this machine's credential at the security token service ${securityTokenServiceShown}: ${messageOf(error)}`
       );
     }
     if (federated === "") {
       throw new Error(
-        `the security token service ${securityTokenService} answered no access_token`
+        `the security token service ${securityTokenServiceShown} answered no access_token`
       );
     }
     return federated;
@@ -213,12 +267,13 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
         signal
       );
     } catch (error) {
+      // No `cause`: every text of the call's is its own (`call`), and the error it would hold can
+      // carry IAM Credentials' answer.
       throw new Error(
-        `mint this machine's identity token at ${mintEndpoint}: ${messageOf(error)}`,
-        { cause: error }
+        `mint this machine's identity token at ${mintEndpointShown}: ${messageOf(error)}`
       );
     }
-    if (token === "") throw new Error(`generateIdToken at ${mintEndpoint} answered no token`);
+    if (token === "") throw new Error(`generateIdToken at ${mintEndpointShown} answered no token`);
     return token;
   };
 

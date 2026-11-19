@@ -366,7 +366,7 @@ LOAD_LISTENERS=(load-listener-1 load-listener-2 load-listener-3 load-listener-4)
 # though: the sessions those containers opened outlive them, which is db_free's work.
 DB_HOLDERS=(dispatch dispatch-listener "${LOAD_LISTENERS[@]}" hub-listener)
 # Dispatch's ephemeral storage limit, the setting that exists because Autopilot's 1Gi default
-# evicted production's Dispatch (agent-infra dispatch/Pulumi.prod.yaml appEphemeralStorage, 8Gi).
+# evicted production's Dispatch (deployment dispatch/Pulumi.prod.yaml appEphemeralStorage, 8Gi).
 # It has no form on these machines and is not set: docker takes such a limit as
 # --storage-opt size=, which its own daemon refuses here -- "--storage-opt is supported only for
 # overlay over xfs with 'pquota' mount option", measured on the deployment's Container-Optimized

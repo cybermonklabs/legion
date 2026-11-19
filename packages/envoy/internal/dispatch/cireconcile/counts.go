@@ -24,17 +24,18 @@ type counts struct {
 	listPages    int
 	heads        int
 	headRequests int
-	// notModified counts the heads every page of whose two listings answered 304.
+	// notModified counts the heads every page of whose listings answered 304: the check runs,
+	// the check suites, and the commit statuses where the pass read them.
 	notModified int
 	// unchanged counts the heads a query answered the very objects the pass had already
 	// recorded for, which are written nothing at all: the counterpart for a head read in a
 	// query of notModified for a head read over REST (walk.visitHead).
 	unchanged int
 	// records counts the records the pass changed, one for each head a write of the pass changed
-	// the record of: a head's runs and suites all write the one record cistore.Key names, so a
-	// head whose run and whose suite the pass both recorded counts once. An observation the
-	// store applied as no change, which is what every observation of a head the listener already
-	// recorded is, changes no record, so a pass that mended nothing reports none.
+	// the record of: a head's runs, suites and statuses all write the one record cistore.Key
+	// names, so a head whose run, suite and status the pass all recorded counts once. An
+	// observation the store applied as no change, which is what every observation of a head the
+	// listener already recorded is, changes no record, so a pass that mended nothing reports none.
 	records int
 	// mappingsSkipped counts the repositories the pass skipped, one for each canonical name it
 	// could not reconcile, so mappings renamed onto one repository are skipped once between

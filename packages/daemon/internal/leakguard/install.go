@@ -3,11 +3,13 @@ package leakguard
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -264,7 +267,9 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err != nil {
 		return fmt.Errorf("the staging directory could not be made: %w", err)
 	}
-	defer os.RemoveAll(staging)
+	// The parent is under the scratch every role writes, so a role can swap it for a fifo: the
+	// staging directory, and what is moved aside below, are removed without a plain open of it.
+	defer func() { _ = rolefile.RemoveTree(staging) }()
 	files, err := unpackServed(in.Body, staging)
 	if err == nil && files == 0 {
 		err = errors.New("it holds no file")
@@ -272,7 +277,7 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err != nil {
 		return fmt.Errorf("the pod's launcher could not unpack the check the daemon served: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(staging, tagFile), []byte(in.Tag+"\n"), 0o644); err != nil {
+	if err := writeMember(filepath.Join(staging, tagFile), strings.NewReader(in.Tag+"\n"), 0o644); err != nil {
 		return fmt.Errorf("the installed tag could not be recorded: %w", err)
 	}
 	if err := verifyServed(ctx, in.Start, filepath.Join(staging, checkName), parent); err != nil {
@@ -292,11 +297,11 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 		// path names a whole check at every moment but the one between the two renames, and a
 		// second rename that fails puts the old one back.
 		held := "what " + dir + " held"
-		if tag, there := installedTag(dir); there && tag != "" {
+		if tag, there, _ := installedTag(dir); there && tag != "" {
 			held = "the install of " + tag + " at " + dir
 		}
 		aside := staging + ".replaced"
-		defer os.RemoveAll(aside)
+		defer func() { _ = rolefile.RemoveTree(aside) }()
 		if err := os.Rename(dir, aside); err != nil {
 			return fmt.Errorf("%s could not be moved aside: %w", held, err)
 		}
@@ -356,6 +361,9 @@ func unpackServed(body []byte, dir string) (int, error) {
 	}
 }
 
+// writeMember writes content to path as a new file of mode: O_EXCL, so a file already at path,
+// whatever it is — a fifo a plain open would wait on, a symlink a plain open would write through —
+// fails the write at once rather than being opened.
 func writeMember(path string, content io.Reader, mode os.FileMode) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
@@ -393,10 +401,9 @@ func verifyServed(ctx context.Context, start procgroup.Starter, check, parent st
 	cmd.Dir = parent
 	var printed strings.Builder
 	cmd.Stdout, cmd.Stderr = &printed, &printed
-	if err := procgroup.Err(procgroup.Run(cmd, start)); err != nil {
-		return fmt.Errorf("the served check could not be run: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
+	runErr := procgroup.Err(procgroup.Run(cmd, start))
+	// A context that ended killed the run itself, so its end, not the kill, is the cause.
+	if err := cmp.Or(ctx.Err(), procgroup.Said(runErr, printed.String())); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
 	}
 	answer := printed.String()
@@ -432,8 +439,8 @@ func firstLine(printed string) string {
 // no check.
 //
 // With a pin it answers a *SetupFailure, naming the pin and what the install holds, where the
-// check is absent, where the install records no tag, and where it records another tag: a role
-// whose check is not the pin's runs no agent.
+// check is absent, where its tag file cannot be read (naming why), where the install records no
+// tag, and where it records another tag: a role whose check is not the pin's runs no agent.
 func Installed(env []string, dir string) (string, error) {
 	pin := value(env, TagVariable)
 	if pin == "" {
@@ -443,8 +450,11 @@ func Installed(env []string, dir string) (string, error) {
 		dir = InstallDir
 	}
 	check := filepath.Join(dir, checkName)
-	tag, there := installedTag(dir)
+	tag, there, refused := installedTag(dir)
 	switch {
+	case refused != nil:
+		return "", &SetupFailure{What: installWhat,
+			Why: fmt.Sprintf("%s=%s, and the install at %s is no install of it: its tag file is refused (%v)", TagVariable, pin, dir, refused)}
 	case !there:
 		return "", &SetupFailure{What: installWhat,
 			Why: fmt.Sprintf("%s=%s, and the pod's launcher installed no check at %s", TagVariable, pin, check)}
@@ -458,16 +468,34 @@ func Installed(env []string, dir string) (string, error) {
 	return check, nil
 }
 
+// tagLimit bounds how much of the tag file installedTag reads: leak-check-v<n> and its newline are
+// 13 bytes and the digits of n, so the bound holds every tag whose n has at most 243 digits, and a
+// file past it is taken as no install.
+const tagLimit = 256
+
 // installedTag is the tag of the install at dir and whether there is an install there at all: the
 // check itself, with the tag file beside it where the install recorded one. A check with no tag
 // file is an install of no tag a pin can match.
-func installedTag(dir string) (tag string, there bool) {
+//
+// The directory is under the issue's scratch, which every role of the pod writes, and the pod's
+// launcher, its container's PID 1, reads the tag as it replaces an install (InstallServed). So the
+// tag file is read as every file a role can write is read where something waits on the reader
+// (rolefile.Read): a symlink there, to /dev/zero say, which a read that follows it and reads to the
+// end would hold whole until PID 1 is killed, a fifo, whose plain open waits for a writer as long
+// as none comes, anything else that is no regular file, and a file past tagLimit, are each
+// refused, never followed or waited on. A refused read is taken as no install, and refused names
+// why: an install replaces whatever is there, and a role's shim refuses to start its agent where
+// there is no install of the pin, naming the refusal (Installed).
+func installedTag(dir string) (tag string, there bool, refused error) {
 	if _, err := os.Stat(filepath.Join(dir, checkName)); err != nil {
-		return "", false
+		return "", false, nil
 	}
-	recorded, err := os.ReadFile(filepath.Join(dir, tagFile))
-	if err != nil {
-		return "", true
+	recorded, err := rolefile.Read(filepath.Join(dir, tagFile), tagLimit)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", true, nil
+	case err != nil:
+		return "", false, err
 	}
-	return strings.TrimSpace(string(recorded)), true
+	return strings.TrimSpace(string(recorded)), true, nil
 }
