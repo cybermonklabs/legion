@@ -114,6 +114,11 @@
       "bun": "./src/errors.ts",
       "default": "./dist/errors.js"
     },
+    "./excerpt": {
+      "types": "./src/excerpt.ts",
+      "bun": "./src/excerpt.ts",
+      "default": "./dist/excerpt.js"
+    },
     "./machine": {
       "types": "./src/machine.ts",
       "bun": "./src/machine.ts",
@@ -123,6 +128,11 @@
       "types": "./src/nats-connection.ts",
       "bun": "./src/nats-connection.ts",
       "default": "./dist/nats-connection.js"
+    },
+    "./nats-credential": {
+      "types": "./src/nats-credential.ts",
+      "bun": "./src/nats-credential.ts",
+      "default": "./dist/nats-credential.js"
     },
     "./process-ancestry": {
       "types": "./src/process-ancestry.ts",
@@ -201,7 +211,7 @@
     }
   },
   "scripts": {
-    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/machine.ts src/nats-connection.ts src/process-ancestry.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test --timeout 30000",
     "lint": "bunx biome check src/ bin/ test/"

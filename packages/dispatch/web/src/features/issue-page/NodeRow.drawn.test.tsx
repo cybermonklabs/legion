@@ -499,8 +499,10 @@ function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {
 test("a press inside a row does not scroll the page under it, and a key's focus still does", async () => {
   const user = userEvent.setup();
   const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
-  // The row's top sits above the line the identity block leaves clear, so R9 would scroll.
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  // The row's top sits above the line the identity block leaves clear, so R9 would scroll. On
+  // Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, -24, 400, 300)
   );
   const drawn = node({ id: "comment-1", type: "comment" });
@@ -1161,7 +1163,8 @@ function layOut(height: number): () => void {
     configurable: true,
     get: () => height,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+  // On Element, which owns the method, for the reason the press case above gives.
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
     new DOMRect(0, 0, 600, height)
   );
   return () => {

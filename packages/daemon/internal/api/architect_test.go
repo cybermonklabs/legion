@@ -223,6 +223,9 @@ func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error 
 	return nil
 }
 
+func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
 func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

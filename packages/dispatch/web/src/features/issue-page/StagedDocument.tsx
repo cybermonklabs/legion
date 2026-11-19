@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, type Ref, useLayoutEffect, useRef } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import type { EditorHandle } from "../doc/editor";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
+import { useReportAdmission } from "./document-admission";
 import { DocumentStage, STAGE_IN_PANEL, useDocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 
@@ -24,6 +25,21 @@ import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
  * names no comment and no ask - the reader's read, then the document - since no address lands
  * here, and so it can hand the row the live editor (`onEditorHandle`), which the row holds every
  * edit of to its node's block (`useNodeEditing.ts`).
+ *
+ * It reports what the document's room admitted the page to (`document-admission.tsx`), so no row
+ * of the outline of a document its room admitted read-only draws the cue that it takes typing.
+ * The room's answer reaches the page only as `ProofDocument`'s mark on its article
+ * (`READ_ONLY_ATTRIBUTE`), which this reads in the box as the mark changes and as the editor is
+ * made. On an open issue the mark says read-only only for the room's answer, so that is reported
+ * as it comes. It says the document takes typing for the room's answer too, but also from the
+ * moment the article is drawn, as `ProofDocument` starts every connection, before the room has
+ * answered; so that is reported only once the editor is made, which `ProofDocument` does only
+ * after the room has admitted its socket: as the editor is made, and at each later admission while
+ * it stands - a reconnect's, a reopened issue's. On a closed issue the mark says read-only for the
+ * close itself, as the server admits every socket of a closed issue read-only, so nothing is read
+ * while the issue is closed: that admission, held, would keep the cue off the document's rows once
+ * the issue is reopened. A report outlives the editor: the admission stands for the page until a
+ * room of that document answers again.
  */
 export function StagedDocument({
   artifact,
@@ -47,11 +63,43 @@ export function StagedDocument({
 }): ReactNode {
   const stage = useDocumentStage(artifact.id, STAGE_IN_PANEL);
   const user = useQuery(whoAmIQuery());
+  const reportAdmission = useReportAdmission();
+  const box = useRef<HTMLDivElement>(null);
+  // Whether the editor is made, and so the room has answered: `ProofDocument` hands it over as it
+  // is made and takes it back as it is torn down.
+  const editorMade = useRef(false);
+  // A layout effect, so the commit that closes the issue takes the observer off before it hears
+  // the mark the close sets: `disconnect` drops what it had not yet heard. The observer watches
+  // the whole box, so it hears the mark of an article drawn in it after it starts.
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (isClosed || element === null) return;
+    const observer = new MutationObserver(() => {
+      const readOnly = articleReadOnly(element);
+      if (readOnly === true || (readOnly === false && editorMade.current)) {
+        reportAdmission(artifact.id, readOnly);
+      }
+    });
+    observer.observe(element, { attributeFilter: [READ_ONLY_ATTRIBUTE], subtree: true });
+    return () => observer.disconnect();
+  }, [artifact.id, isClosed, reportAdmission]);
+  // `ProofDocument` reads the latest of these, so one made at each render reopens nothing.
+  const takeEditor = (handle: EditorHandle | undefined) => {
+    editorMade.current = handle !== undefined;
+    // The room answered before the editor was made, so the mark already says what it answered,
+    // which an admission to write may not have changed.
+    const readOnly =
+      handle === undefined || isClosed || box.current === null
+        ? undefined
+        : articleReadOnly(box.current);
+    if (readOnly !== undefined) reportAdmission(artifact.id, readOnly);
+    onEditorHandle?.(handle);
+  };
   return (
     <>
       {resting ? <div className="flex min-w-0 flex-col" ref={stage} /> : null}
       <DocumentStage artifactId={artifact.id}>
-        <EditorBox>
+        <EditorBox ref={box}>
           {user.data === undefined ? (
             <p>Loading document…</p>
           ) : (
@@ -61,7 +109,7 @@ export function StagedDocument({
               highlightTerm={undefined}
               isClosed={isClosed}
               key={artifact.id}
-              onEditorHandle={onEditorHandle}
+              onEditorHandle={takeEditor}
               onToolbarChange={onToolbarChange}
               onVersionChange={onVersionChange}
               owner={{ key: issueKey, kind: "issue" }}
@@ -114,16 +162,36 @@ export function StagedDocument({
  * draws the cue only while the document in it takes typing: one the editor admits read-only - a
  * closed issue's, or one this build's schema is out of date for, its article marked so
  * (`ProofDocument.tsx`'s `data-read-only`) - draws none of it.
+ *
+ * `ref` takes the box itself, where `StagedDocument` reads the article's mark.
  */
-export function EditorBox({ children }: { children: ReactNode }): ReactNode {
+export function EditorBox({
+  children,
+  ref,
+}: {
+  children: ReactNode;
+  ref?: Ref<HTMLDivElement>;
+}): ReactNode {
   return (
     <div className="min-w-0 [overflow-anchor:none]">
       <div
         className="dispatch-edit-cue max-h-[calc(100dvh-var(--issue-identity-height,0px)-var(--issue-composer-height,0px))] overflow-y-auto overscroll-contain [&_.ProseMirror]:[overflow-wrap:anywhere]! [&_.dispatch-reference]:max-w-[min(24em,100%)]!"
+        ref={ref}
         {...{ [EDITOR_BOX_ATTRIBUTE]: "" }}
       >
         {children}
       </div>
     </div>
   );
+}
+
+/** `ProofDocument`'s mark on the article it draws the document in: whether the document takes
+ *  typing, `"false"`, or is read-only, `"true"`. */
+const READ_ONLY_ATTRIBUTE = "data-read-only";
+
+/** Whether the live document's article in `box` - the first in it, before any version's - is
+ *  marked read-only, or `undefined` where none is drawn. */
+function articleReadOnly(box: HTMLElement): boolean | undefined {
+  const mark = box.querySelector(".dispatch-doc")?.getAttribute(READ_ONLY_ATTRIBUTE);
+  return mark === undefined || mark === null ? undefined : mark === "true";
 }

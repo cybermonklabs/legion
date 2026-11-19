@@ -10,6 +10,7 @@ import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
+import { inputMethodKey } from "./useNodeEditing";
 
 /**
  * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,
@@ -629,13 +630,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       // Escape leaves the caret for the row it came from, and leaves the tree from the row
       // (below). It extends the Escape the page already binds for its header controls, which
-      // answers for a focused select and never for these two.
+      // answers for a focused select and never for these two. The Escape that ends an input
+      // method's composition is the input method's and leaves nothing (`inputMethodKey`): the
+      // keymap passes over one marked `isComposing`, and Safari's comes unmarked.
       id: "tree-leave-caret",
       inEditable: true,
       keys: "Escape",
       label: "Leave the row's text",
       palette: false,
-      run: () => {
+      run: (event) => {
+        if (inputMethodKey(event)) return;
         const row = caretFrom.current;
         caretFrom.current = null;
         (document.activeElement as HTMLElement | null)?.blur();

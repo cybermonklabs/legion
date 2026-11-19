@@ -279,9 +279,13 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 		// idle true: caught up whatever the target, so every summary applies now, as the listing of
 		// a daemon booted after the person's label — its consumer positioned past that event — does.
 		scoped, committed := intake.WithCommitHooks(context.Background())
+		scoped, settle := intake.OpenSettlers(scoped, admission)
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
 				t.Fatalf("Reconcile: %v", err)
+			}
+			if err := settle(scoped, tx); err != nil {
+				t.Fatalf("settle the reconcile: %v", err)
 			}
 		})
 		committed()

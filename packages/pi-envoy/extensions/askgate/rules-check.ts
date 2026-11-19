@@ -123,9 +123,16 @@ export interface RulesCheckDeps {
   env: Record<string, string | undefined>;
   /**
    * The session's Dispatch as the directory the call runs in configures it, every request ending
-   * with the gated call's stop; undefined when the session has no Dispatch configuration.
+   * with the gated call's stop (`signal`); undefined when the session has no Dispatch
+   * configuration. `deadlineMs` is what is left of the gate's deadline where it is armed, which
+   * the client takes as its own, so a broker credential is given that time less the request's
+   * reserve.
    */
-  dispatchClient: (directory: string, signal: AbortSignal) => DispatchSession | undefined;
+  dispatchClient: (
+    directory: string,
+    signal: AbortSignal,
+    deadlineMs?: number
+  ) => DispatchSession | undefined;
   /** The charter call's own walk: the role's chain under the call's deadline, dumped and raced by the core. */
   walk: (prompt: { system: string; user: () => string; label: string }) => Promise<Walked>;
 }
@@ -153,6 +160,9 @@ export interface RulesCheckCall {
   context: () => { primarySystemPrompt: string; transcript: string };
   /** The gated call's one stop, which ends a document read as it ends a model call. */
   signal: AbortSignal;
+  /** When the gate's deadline ends, on `RulesCheckDeps.now`'s clock, where it is armed: a read
+   *  hands its Dispatch client the time left, so the credential takes its reserve from it. */
+  deadlineAt?: number;
 }
 
 /** What one rules check leaves on the record, and what it tells `decide` to do. */
@@ -453,7 +463,12 @@ async function readDocument(
   try {
     const directory = await call.directory();
     if (directory === undefined) return "failed";
-    const session = deps.dispatchClient(directory, call.signal);
+    const left = call.deadlineAt === undefined ? undefined : call.deadlineAt - deps.now();
+    const session = deps.dispatchClient(
+      directory,
+      call.signal,
+      left === undefined ? undefined : Math.max(1, left)
+    );
     if (session === undefined) return "failed";
     return await readDocumentBlocks(session.client, target, {
       cwd: directory,

@@ -227,10 +227,11 @@ test("IssuePage keeps an unsaved route draft when a stale refetch arrives", asyn
   }
 });
 
-// A Cancel while a route's write is out puts back the route the issue still has, and the write's
-// landing then gives the draft the route it lands with: left on the old route, the draft would
-// read as changed, the trigger would name no route while Dispatch has one, and a Save would send
-// the old route over the new one.
+// A Cancel while a route's write is out puts back the route that write carries, the route the
+// issue is about to hold (decision 316), and the write's landing then gives the draft the route it
+// lands with: put back to the old route, the draft would read as changed against the route out,
+// the trigger would name no route while Dispatch has one, and a Save would send the old route over
+// the new one.
 test("IssuePage gives a route draft cancelled while its write is out the route that write lands with", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -249,7 +250,7 @@ test("IssuePage gives a route draft cancelled while its write is out the route t
     route = await openRouteEditor();
     expect(route.value).toBe("role:a");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    await screen.findByRole("button", { name: "Messages default to no route" });
+    await screen.findByRole("button", { name: "Messages default to role:a" });
 
     await act(async () => {
       firstSave.resolve(narrowIssue({ ...issue, route: "role:a" }));
@@ -802,6 +803,10 @@ test("IssuePage queues a route draft edited while a save is pending", async () =
   }
 });
 
+// A status write holds the guard a title's write needs, so the title waits queued and goes once
+// the status write settles. A value is marked out only inside the guard, as its write goes: marked
+// out while the guard held it back, the title was taken for the status write's own as that write
+// settled, and dropped.
 test("IssuePage drains a title draft after a different issue write settles", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1026,6 +1031,502 @@ test("IssuePage retries a failed drained title before sending the queued route",
   }
 });
 
+// An Escape while a title's write is out puts back the title that write carries, the title the
+// issue is about to hold (decision 316). An edit opened after it and left with nothing typed then
+// has nothing to send: put back to the issue's old title, the draft read as a change against the
+// title out, and the landing's settle sent the old title over the saved one.
+test("IssuePage sends no second title after an Escape while a title's write is out and an edit left with nothing typed", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Review the plan");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith(
+        "CORE-1",
+        { title: "Review the plan" },
+        keyedAttempt
+      )
+    );
+
+    await openTitleEditor();
+    await user.keyboard("{Escape}");
+    title = await openTitleEditor();
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "Review the plan" }));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect(patchIssue.mock.calls).toEqual([["CORE-1", { title: "Review the plan" }, keyedAttempt]]);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(/^Review the plan$/);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A title queued behind the write out is the reader's last ended choice, and typing ends no edit,
+// so it neither chooses nor withdraws one (decision 324): with the saved title typed back in the
+// editor, the queued title still goes as that write lands, and the editor keeps the reader's text
+// through both landings. The end of the edit then sends that text, once. Withdrawn by the text
+// typed back, the queued title never went; sent, the landing put it into the editor under the
+// reader.
+test("IssuePage sends the queued title as the write ahead lands while the saved title typed back stays in the editor, and the end of the edit sends it", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("ab");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    title = await openTitleEditor();
+    // The last character taken out, so the draft goes from "ab" to "a" with no empty text between,
+    // which would ask for nothing by itself.
+    await user.type(title, "{End}{Backspace}");
+    expect(title.value).toBe("a");
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ editor: title.value, writes: patchIssue.mock.calls }).toEqual({
+      editor: "a",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "ab" }, keyedAttempt],
+      ],
+    });
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue.mock.calls.slice(2)).toEqual([["CORE-1", { title: "a" }, keyedAttempt]]);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader saves a title, saves a second one, which waits behind the first write, and opens the
+// editor again to type a third. The first write lands while the reader is still typing: what goes
+// then is the second title, the reader's last ended choice, and what the reader has typed so far
+// stays in the editor unsent, since no end of an edit chose it (decision 324). The end of that
+// edit sends it, once. Sent as the first write landed, a title a reader was still typing reached
+// Dispatch, half written, under every other reader's eyes, and the title they saved never went.
+test("IssuePage sends the queued title and not the title the reader is still typing when the write ahead of it lands", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("ab");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    title = await openTitleEditor();
+    // One character typed onto the end, as a reader goes on writing: the draft goes from "ab" to
+    // "abc" with no empty text between, which would ask for nothing by itself.
+    await user.type(title, "{End}c");
+    expect(title.value).toBe("abc");
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ editor: title.value, writes: patchIssue.mock.calls }).toEqual({
+      editor: "abc",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "ab" }, keyedAttempt],
+      ],
+    });
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect(patchIssue.mock.calls.slice(2)).toEqual([["CORE-1", { title: "abc" }, keyedAttempt]]);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader saves a title, then types the issue's own title back and ends the edit, which queues
+// it behind the write out. Dispatch refuses that write, so the issue keeps its title, and the
+// draft typed back is that title: it has nothing to send, and follows the issue. Another reader's
+// title then reaches the heading, and a route save sends the route alone. Left queued, the issue's
+// old title held the heading and went ahead of the route, over the other reader's title.
+test("IssuePage lets another reader's title through after a refused save with the issue's title queued behind it, and a route save sends only the route", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste(issue.title);
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    act(() => {
+      firstSave.reject(
+        new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+      );
+    });
+    await screen.findByText("Could not update this issue.");
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(
+        ["issue", "CORE-1"],
+        (current) => current && { ...current, title: "Plan the review" }
+      );
+    });
+    const heading = screen.getByRole("heading", { level: 1 }).textContent;
+
+    const route = await openRouteEditor();
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
+    );
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ heading, writes: patchIssue.mock.calls }).toEqual({
+      heading: "Plan the review",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { route: "role:a" }, keyedAttempt],
+      ],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The same order with no other reader: the issue's own title, typed back and queued behind a
+// write Dispatch then refuses, has nothing left to send once the issue keeps that title, so a
+// route saved next goes alone. Left queued, the title went ahead of the route, and would have put
+// the issue's old title over any title another reader had set since.
+test("IssuePage sends only the route after a refused save with the issue's title queued behind it", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste(issue.title);
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    act(() => {
+      firstSave.reject(
+        new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+      );
+    });
+    await screen.findByText("Could not update this issue.");
+
+    const route = await openRouteEditor();
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
+    );
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect(patchIssue.mock.calls).toEqual([
+      ["CORE-1", { title: "a" }, keyedAttempt],
+      ["CORE-1", { route: "role:a" }, keyedAttempt],
+    ]);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader types a title, and with the editor still open another reader sets the issue's title
+// to that same text, then to a title of their own. The text is the reader's, typed by them, so the
+// editor keeps it through both, and the end of the edit sends it (decision 332). Judged against
+// the issue's title as each arrived, the draft read as not changed once the first matched it, then
+// followed the issue to the second, and the end of the edit sent nothing.
+test("IssuePage keeps a typed title through another reader setting the issue to it and then changing it, and sends it as the edit ends", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderIssuePage();
+  const otherReader = (title: string) => {
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(
+        ["issue", "CORE-1"],
+        (current) => current && { ...current, title }
+      );
+    });
+  };
+
+  try {
+    const title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Review the plan");
+    const editor = [title.value];
+    otherReader("Review the plan");
+    editor.push(title.value);
+    otherReader("Plan the review");
+    editor.push(title.value);
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ editor, writes: patchIssue.mock.calls }).toEqual({
+      editor: ["Review the plan", "Review the plan", "Review the plan"],
+      writes: [["CORE-1", { title: "Review the plan" }, keyedAttempt]],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader saves "a", and while its write is out opens the editor again, types a character and
+// takes it back out: they have typed "a" again after it went, so it is their open text, and stays
+// theirs as that write lands with it (decision 332: text the reader typed after a send stays
+// theirs). Another reader then sets a title of their own, the editor keeps "a", and the end of the
+// edit sends it a second time, over the other reader's title. Main's hook takes the draft for the
+// issue's as the write lands, follows the other reader's title, and the end of the edit sends
+// nothing.
+test("IssuePage keeps a title the reader typed again after its write went through that write's landing and another reader's title, and sends it again as the edit ends", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    expect(title.value).toBe("a");
+    // A character typed and taken back out, so the draft goes from "a" to "ax" and back with no
+    // empty text between, which would ask for nothing by itself.
+    await user.type(title, "x{Backspace}");
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(
+        ["issue", "CORE-1"],
+        (current) => current && { ...current, title: "Plan the review" }
+      );
+    });
+    const editor = title.value;
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect({ editor, writes: patchIssue.mock.calls }).toEqual({
+      editor: "a",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "a" }, keyedAttempt],
+      ],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A title Dispatch refuses stays in the field, the reader's unsent choice, which Retry or the end
+// of the next edit sends. A status picked next is a write of its own, and nothing drains after a
+// refusal (decision 315), so the status write's landing does not send the refused title again.
+// Main's hook does send it again after the status write: [title, status, title].
+test("IssuePage sends a refused title no second time as a status pick lands after it, and keeps the title in the field", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const titleSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => titleSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    const title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("B");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "B" }, keyedAttempt)
+    );
+    act(() => {
+      titleSave.reject(
+        new ApiError(400, { code: "INVALID_ISSUE", error: "the write was refused" })
+      );
+    });
+    await screen.findByText("Could not update this issue.");
+
+    await user.selectOptions(await screen.findByLabelText("Status"), "backlog");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
+    );
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({
+      heading: screen.getByRole("heading", { level: 1 }).textContent,
+      writes: patchIssue.mock.calls,
+    }).toEqual({
+      heading: "B",
+      writes: [
+        ["CORE-1", { title: "B" }, keyedAttempt],
+        ["CORE-1", { status: "backlog" }, keyedAttempt],
+      ],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A draft queued behind a write of another field stays the reader's last ended choice while they
+// type. Here a route waits behind a status write that fails: the failure settles no route, so the
+// route stays queued, the reader's choice. The reader then clears the route in its editor, which
+// ends no edit and withdraws nothing (decision 324), and saves a parent: the queued route goes
+// first, one write of the issue's fields at a time, then the parent. Through both the route's
+// editor keeps the reader's cleared text.
+test("IssuePage sends a route that waited behind a failed status write ahead of a parent saved while the route's editor was cleared, and keeps the cleared text", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const statusSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => statusSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    await user.selectOptions(status, "backlog");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
+    );
+
+    let route = await openRouteEditor();
+    const routeForm = screen.getByRole("button", { name: "Save route" }).closest("form");
+    if (routeForm === null) {
+      throw new Error("Save route must be inside a form.");
+    }
+    await user.click(route);
+    await user.paste("role:b");
+    // Submit has no user-event form; the route form saves on its own submit.
+    fireEvent.submit(routeForm);
+    // The route waits behind the status write, one write of the issue's fields at a time, and the
+    // editor closes on it.
+    expect(screen.queryByLabelText("Message route")).not.toBeInTheDocument();
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    act(() => {
+      statusSave.reject(new Error("offline"));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    route = await openRouteEditor();
+    expect(route.value).toBe("role:b");
+    await user.clear(route);
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
+    await user.click(parent);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
+    );
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ route: route.value, writes: patchIssue.mock.calls }).toEqual({
+      route: "",
+      writes: [
+        ["CORE-1", { status: "backlog" }, keyedAttempt],
+        ["CORE-1", { route: "role:b" }, keyedAttempt],
+        ["CORE-1", { parent: "CORE-9" }, keyedAttempt],
+      ],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 test("IssuePage mounts the header without reading who has signed in until the assignee control is reached for", async () => {
   const { restore } = stubIssueApi();
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
@@ -1075,9 +1576,9 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
   }
 });
 
-// The parent's draft the same way: a Cancel while its write is out puts back the issue's old
-// parent, and the landing gives the draft the parent it lands with, so the editor opens on that
-// parent and a Save sends nothing more.
+// The parent's draft the same way: a Cancel while its write is out puts back the parent that
+// write carries (decision 316), and the landing gives the draft the parent it lands with, so the
+// editor opens on that parent and a Save sends nothing more.
 test("IssuePage gives a parent draft cancelled while its write is out the parent that write lands with", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();

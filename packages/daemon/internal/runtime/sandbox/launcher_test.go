@@ -59,6 +59,65 @@ func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T)
 	}
 }
 
+// An accepted issue-pod launcher is handed what its cache trimmer runs by, the deployment's own
+// settings (Options.VolumeTrim), and a deployment that configured none hands none: the absence its
+// launcher reads as "run no trimmer" (INFRA-2009).
+func TestAnAcceptedIssueLaunchersResolverHandsItTheDeploymentsTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(workerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleTester)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleTester), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, ack, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the tester's own launcher was refused: %s", reason)
+			}
+			trim := ack.VolumeTrim
+			switch {
+			case configured == nil && trim != nil:
+				t.Fatalf("the launcher was handed %+v, want none: this deployment configured none", *trim)
+			case configured != nil && trim == nil:
+				t.Fatal("the launcher was handed no settings, want the deployment's own")
+			case configured != nil && *trim != *configured:
+				t.Fatalf("the launcher was handed %+v, want %+v", *trim, *configured)
+			}
+		})
+	}
+}
+
+// One acknowledgement carries what the pod's memory guard and its cache trimmer each run by, side
+// by side (launcherHelloAck): a deployment that configures both hands an issue pod's launcher
+// both, neither in place of the other, and the controller's launcher neither.
+func TestAnAcceptedLaunchersAcknowledgementCarriesTheGuardsAndTheTrimmersSettingsTogether(t *testing.T) {
+	guard := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
+	trim := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
+	g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard, o.VolumeTrim = &guard, &trim }))
+	controller := g.spawn(controllerSpec(t))
+	issue := g.spawn(workerSpec(t))
+	accept := g.r.LauncherResolver()
+	handler, ack, reason := accept(rigLauncherHello(g, issue.Sandbox.Name, issue.Sandbox.PodUID, claim.RoleTester))
+	if handler == nil {
+		t.Fatalf("the issue pod's tester launcher was refused: %s", reason)
+	}
+	if ack.MemoryGuard == nil || *ack.MemoryGuard != guard || ack.VolumeTrim == nil || *ack.VolumeTrim != trim {
+		t.Fatalf("the issue pod's launcher was answered memory guard %+v and trimmer %+v, want %+v and %+v", ack.MemoryGuard, ack.VolumeTrim, guard, trim)
+	}
+	handler, ack, reason = accept(rigLauncherHello(g, controller.Sandbox.Name, controller.Sandbox.PodUID, claim.RoleController))
+	if handler == nil {
+		t.Fatalf("the controller's launcher was refused: %s", reason)
+	}
+	if ack != (shimwire.LauncherHelloAck{}) {
+		t.Fatalf("the controller's launcher was answered memory guard %+v and trimmer %+v, want neither", ack.MemoryGuard, ack.VolumeTrim)
+	}
+}
+
 // conflictSecretUpdates makes the next updates of the Secret named name fail as a conflict, up to
 // times of them, each one after between has rewritten the Secret in the tracker as the write that
 // won the race would have; it counts the conflicts served.

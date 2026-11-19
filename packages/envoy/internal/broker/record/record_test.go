@@ -116,6 +116,47 @@ func TestVerifyRequestObjectRefusals(t *testing.T) {
 	}
 }
 
+// TestVerifyRequestObjectTellsAnotherAudienceFromEveryOtherRefusal pins the one refusal a caller
+// reads apart from the rest: an object signed for another audience, which is a request signed for
+// another broker address, is ErrRequestInvalid and ErrAudienceMismatch, and its text is still the
+// one the approver's left-out line reports. A bad signature and an iat outside the skew are
+// ErrRequestInvalid and never ErrAudienceMismatch, so requests.Machine.Create, which ends a
+// pending request on that error alone, ends no request for either of them. The bad signature is
+// signed for another audience too: the signature is checked first, so an object nobody signed is
+// never read as one signed for another broker.
+func TestVerifyRequestObjectTellsAnotherAudienceFromEveryOtherRefusal(t *testing.T) {
+	key, _ := proof.NewKey()
+	now := time.Now()
+	sign := func(audience, reason string, at time.Time) string {
+		t.Helper()
+		compact, err := Sign(key, audience, secretDetail(), reason, "", nil, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return compact
+	}
+
+	_, err := VerifyRequestObject(sign("https://another-broker.internal.example", "moved", now), "https://secrets.test", time.Minute, now)
+	if !errors.Is(err, ErrRequestInvalid) || !errors.Is(err, ErrAudienceMismatch) || err.Error() != "request object invalid: aud does not match" {
+		t.Fatalf("an object signed for another audience = %v; want ErrRequestInvalid and ErrAudienceMismatch, reading %q", err, "request object invalid: aud does not match")
+	}
+
+	// Another object's signature over this one's header and payload: one key signed both, so the
+	// header is the same and only the signature fails.
+	signed := strings.Split(sign("https://another-broker.internal.example", "first", now), ".")
+	other := strings.Split(sign("https://another-broker.internal.example", "second", now), ".")
+	forged := signed[0] + "." + signed[1] + "." + other[2]
+	for _, c := range []struct{ name, compact, reason string }{
+		{"a bad signature", forged, "request object invalid: signature"},
+		{"an iat outside the skew", sign("https://secrets.test", "late", now.Add(-time.Hour)), "request object invalid: iat outside 1m0s"},
+	} {
+		_, err := VerifyRequestObject(c.compact, "https://secrets.test", time.Minute, now)
+		if !errors.Is(err, ErrRequestInvalid) || errors.Is(err, ErrAudienceMismatch) || err.Error() != c.reason {
+			t.Errorf("%s = %v; want ErrRequestInvalid reading %q and not ErrAudienceMismatch", c.name, err, c.reason)
+		}
+	}
+}
+
 func TestParseBodyRefusesAnyEditedLine(t *testing.T) {
 	valid := "agent-secrets-record/v1\n" +
 		"request: eyJ.fake.jws\n" +
@@ -695,14 +736,22 @@ func TestNoJudgeActorDecidesARecordAsAPerson(t *testing.T) {
 	}
 }
 
-// TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue pins the three conditions a record must meet
-// before any model is asked, and which one each refusal names: one agent secret, a lifetime the
-// rules let the judge decide for that secret (a record with none is bounded by nothing and is
-// refused, one asking for exactly the bound is admitted), and a reason naming a Dispatch issue.
-func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
+// TestMayJudgeAdmitsBoundedJudgeKeys pins the conditions a record must meet before the judge's
+// grant of it is admitted, and which one each refusal names: agent secrets alone, each key the
+// judge decided a key the rules give the judge seconds of, and a lifetime within every one of
+// those seconds (a record with none is bounded by nothing and is refused, one asking for exactly
+// the bound is admitted). A key the request needed no decision for — one its session gets at once
+// — is no key the judge decided, and no bound of the judge's holds it; a record whose keys needed
+// no decision at all is no record the judge decided. A nil decided is every key decided. The
+// reason is the judge's to read and no condition here: a record whose reason names no issue is
+// admitted.
+func TestMayJudgeAdmitsBoundedJudgeKeys(t *testing.T) {
 	judged := func(secret string) (uint32, bool) {
-		if secret == "DEEL_API_KEY" {
+		switch secret {
+		case "DEEL_API_KEY":
 			return 900, true
+		case "SHORT_KEY":
+			return 300, true
 		}
 		return 0, false
 	}
@@ -712,21 +761,40 @@ func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
 	secret := func(name string) AuthorizationDetail {
 		return AuthorizationDetail{Type: KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	reason := "work on INFRA-1353 today"
+	reason := "post the release notes"
 	body := func(seconds *int) Body {
 		b := podBody("eyJ.fake.jws")
 		b.LifetimeSeconds = seconds
 		return b
 	}
+	// onlyDeel is a request whose one key that needed a decision is DEEL_API_KEY: the rest are
+	// keys its session gets at once.
+	onlyDeel := func(secret string) bool { return secret == "DEEL_API_KEY" }
+	none := func(string) bool { return false }
 	for _, c := range []struct {
 		name         string
 		body         Body
 		obj          RequestObject
 		judgeSeconds func(string) (uint32, bool)
+		decided      func(string) bool
 		want         string // the refusal names this, "" for a record the judge may decide
 	}{
 		{
-			name: "one secret, inside the bound, naming an issue",
+			name: "a judge key beside a key its session gets at once",
+			body: body(new(900)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("OTHER_KEY")}, reason), judgeSeconds: judged, decided: onlyDeel,
+		},
+		{
+			name: "a judge key beside a key its session gets at once, past the judge key's bound",
+			body: body(new(901)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("OTHER_KEY")}, reason), judgeSeconds: judged, decided: onlyDeel,
+			want: "past the 900",
+		},
+		{
+			name: "keys that all needed no decision",
+			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("OTHER_KEY")}, reason), judgeSeconds: judged, decided: none,
+			want: "no key that needed a decision",
+		},
+		{
+			name: "one secret, inside the bound, its reason naming no issue",
 			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: judged,
 		},
 		{
@@ -734,9 +802,18 @@ func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
 			body: body(new(900)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: judged,
 		},
 		{
-			name: "two secrets",
+			name: "two judge keys inside both bounds",
+			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("SHORT_KEY")}, reason), judgeSeconds: judged,
+		},
+		{
+			name: "two judge keys past the shorter bound",
+			body: body(new(600)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("SHORT_KEY")}, reason), judgeSeconds: judged,
+			want: `past the 300`,
+		},
+		{
+			name: "a judge key beside a key the rules give the judge nothing of",
 			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("OTHER_KEY")}, reason), judgeSeconds: judged,
-			want: "2 authorization details",
+			want: `decide nothing for "OTHER_KEY"`,
 		},
 		{
 			name: "a machine login, not an agent secret",
@@ -765,13 +842,12 @@ func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
 			want: "no judge bound is available",
 		},
 		{
-			name: "a reason naming no issue",
-			body: body(new(300)), judgeSeconds: judged,
-			obj:  object([]AuthorizationDetail{secret("DEEL_API_KEY")}, "deploying the broker"),
-			want: "names no Dispatch issue",
+			name: "no secret at all",
+			body: body(new(300)), obj: object(nil, reason), judgeSeconds: judged,
+			want: "names no authorization detail",
 		},
 	} {
-		err := MayJudge(c.body, c.obj, c.judgeSeconds)
+		err := MayJudge(c.body, c.obj, c.judgeSeconds, c.decided)
 		switch {
 		case c.want == "":
 			if err != nil {
@@ -791,12 +867,12 @@ const judgeModel = "claude-opus-5"
 
 // TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound pins the arm ChainVerifier.Verify
 // takes for an approval the model judge made: the event's actor chooses it, and MayJudge, over
-// the verifier's own JudgeSeconds, decides it. A judged approval of one bounded secret naming an
-// issue verifies; one of two secrets, one past the entry's judge, one whose reason names no
-// issue, and one against a verifier left no bound at all are each ErrChainBroken naming the model
-// and the reason MayJudge gave. A judged event whose row also carries a login is still the
-// judge's, so no login written beside it can buy a record MayJudge refuses. The person's arm is
-// untouched: the approver's own approval verifies and another login's does not.
+// the verifier's own JudgeSeconds, decides it. A judged approval of a bounded judge key verifies,
+// whatever its reason names; one beside a key the rules give the judge nothing of, one past the
+// entry's judge, and one against a verifier left no bound at all are each ErrChainBroken naming
+// the model and the reason MayJudge gave. A judged event whose row also carries a login is still
+// the judge's, so no login written beside it can buy a record MayJudge refuses. The person's arm
+// is untouched: the approver's own approval verifies and another login's does not.
 //
 // Every judged case would be refused by MayDecide alone, an empty login deciding nothing, so
 // each refusal is checked to name what MayJudge said rather than only to be a refusal.
@@ -831,21 +907,31 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 	one := []AuthorizationDetail{secret("DEEL_API_KEY")}
 	two := []AuthorizationDetail{secret("DEEL_API_KEY"), secret("SLACK_MCP_XOXP_TOKEN")}
 	issue := "unblock INFRA-1353"
+	// onlyDeel answers that DEEL_API_KEY was the one key of the record's request that needed a
+	// decision, as the broker's own read of its request rows answers it.
+	onlyDeel := func(context.Context, string) (func(string) bool, error) {
+		return func(secret string) bool { return secret == "DEEL_API_KEY" }, nil
+	}
 	for _, c := range []struct {
 		name         string
 		body         Body
 		event        TerminalEvent
 		judgeSeconds func(string) (uint32, bool)
+		decided      func(context.Context, string) (func(string) bool, error)
 		want         string // the refusal names this, "" for a chain that verifies
 	}{
+		{
+			name: "the judge, on a judge key beside a key its session got at once",
+			body: stored(two, issue, 300), event: byJudge, judgeSeconds: judged, decided: onlyDeel,
+		},
 		{
 			name: "the judge, on one secret inside the bound, naming an issue",
 			body: stored(one, issue, 300), event: byJudge, judgeSeconds: judged,
 		},
 		{
-			name: "the judge, on two secrets",
+			name: "the judge, on a secret beside one the rules give it nothing of",
 			body: stored(two, issue, 300), event: byJudge, judgeSeconds: judged,
-			want: "2 authorization details",
+			want: `decide nothing for "SLACK_MCP_XOXP_TOKEN"`,
 		},
 		{
 			name: "the judge, past the entry's judge",
@@ -855,7 +941,6 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 		{
 			name: "the judge, on a reason naming no issue",
 			body: stored(one, "deploying the broker", 300), event: byJudge, judgeSeconds: judged,
-			want: "names no Dispatch issue",
 		},
 		{
 			name: "the judge, against a verifier holding no bound",
@@ -866,7 +951,7 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 			name: "the judge, on a row that also names the approver as its login",
 			body: stored(two, issue, 300), judgeSeconds: judged,
 			event: TerminalEvent{Event: "approved", Login: "sjawhar", Actor: JudgeActor(judgeModel)},
-			want:  "2 authorization details",
+			want:  `decide nothing for "SLACK_MCP_XOXP_TOKEN"`,
 		},
 		{
 			name: "the record's own approver",
@@ -881,7 +966,7 @@ func TestChainVerifierAdmitsAJudgesApprovalOnlyInsideTheRulesBound(t *testing.T)
 		t.Run(c.name, func(t *testing.T) {
 			verifier := &ChainVerifier{
 				Kind: KindAgentSecret, Audience: "https://secrets.test", Skew: time.Minute,
-				JudgeSeconds: c.judgeSeconds,
+				JudgeSeconds: c.judgeSeconds, Decided: c.decided,
 				FetchRecord: func(context.Context, string) (string, time.Time, bool, error) {
 					return c.body.Canonical(), now, true, nil
 				},
@@ -983,5 +1068,30 @@ func TestClipArgumentBacksUpOverOneCharacterAtMost(t *testing.T) {
 				t.Errorf("ClipArgument kept %d bytes, want the first %d", len(got), c.want)
 			}
 		})
+	}
+}
+
+// TestAskRefInReason: a reason that cites a Dispatch ask, which the judge reads as data for the
+// model. The reference is the one skill://dispatch writes, dispatch://KEY/ask/<uuid>, and
+// anything else names no ask: a key with no ask path after it, and an id in any shape but a
+// lower-case uuid.
+func TestAskRefInReason(t *testing.T) {
+	const first = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+	const second = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+	for _, c := range []struct{ reason, wantKey, wantAsk string }{
+		{"", "", ""},
+		{"reach api.github.com for ACME-179", "", ""},
+		{"ACME-179: post it, approved at dispatch://ACME-179/ask/" + first, "ACME-179", first},
+		{"dispatch://ACME-179/ask/" + first + " and dispatch://ACME-810/ask/" + second, "ACME-179", first},
+		{"dispatch://ACME-179/ask/" + strings.ToUpper(first), "", ""},
+		{"dispatch://ACME-179/ask/" + first[:len(first)-1], "", ""},
+		{"dispatch://ACME-179 and the ask " + first, "", ""},
+		{"dispatch://ACME-179/ask/", "", ""},
+		{"dispatch://acme-179/ask/" + first, "", ""},
+	} {
+		key, ask := AskRefInReason(c.reason)
+		if key != c.wantKey || ask != c.wantAsk {
+			t.Errorf("AskRefInReason(%q) = %q, %q; want %q, %q", c.reason, key, ask, c.wantKey, c.wantAsk)
+		}
 	}
 }

@@ -3,6 +3,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from "react"
 
 import type { Artifact } from "../../api/types";
 import { focusOnDocument } from "../shell/roving";
+import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -81,16 +82,23 @@ export function abortOnReaderAct(then?: () => void): AbortController {
 
 /**
  * Whether a row takes typing, and so draws the cue that it does (`styles.css`), given `place`,
- * its node's place in one of the issue's documents. That place is Enter's own rule
+ * its node's place in one of the issue's documents, and `admissions`, what each document's room
+ * last admitted the page to (`document-admission.tsx`). That place is Enter's own rule
  * (`documentOfNode`): a block of one of the issue's documents, which Enter puts the caret in
  * (`useNodeEditing`'s `edit`), a statement and a check among them, takes typing on an issue that
- * is open. A closed issue's documents take comments by quote and no edit (`ProofDocument`'s
+ * is open, unless its document's room admitted the page read-only, as the server does a page whose
+ * schema it cannot trust with writes; before any room of that document has answered, Enter's rule
+ * alone decides. A closed issue's documents take comments by quote and no edit (`ProofDocument`'s
  * `editorAccess`), so none of its blocks takes typing, though Enter still opens the editor
  * there. Every other node has no place - the issue, a child issue, an ask, a comment, a message,
  * a result, a block of another issue's document such as one above it - and takes no caret at all.
  */
-export function nodeEditable(place: NodeDocument | undefined, isClosed: boolean): boolean {
-  return !isClosed && place !== undefined;
+export function nodeEditable(
+  place: NodeDocument | undefined,
+  isClosed: boolean,
+  admissions: DocumentAdmissions
+): boolean {
+  return !isClosed && place !== undefined && admissions.get(place.artifact.id) !== true;
 }
 
 /**
@@ -565,12 +573,15 @@ export function useNodeEditing({
     box.addEventListener(
       "keydown",
       (event) => {
+        // A Tab pressed in an input method's composition is the input method's, and moves no
+        // focus and ends no editing (`inputMethodKey`).
         if (
           event.key !== "Tab" ||
           event.defaultPrevented ||
           event.altKey ||
           event.ctrlKey ||
           event.metaKey ||
+          inputMethodKey(event) ||
           hold.current !== "on" ||
           !(event.target instanceof Element)
         ) {
@@ -599,7 +610,10 @@ export function useNodeEditing({
     const box = container.current;
     if (editingRow === undefined || box === null) return;
     const leave = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // An Escape that ends an input method's composition is the input method's, and ends no
+      // editing: it acts on nothing, as every key that ends a composition does
+      // (`inputMethodKey`).
+      if (event.key !== "Escape" || inputMethodKey(event) || event.defaultPrevented) return;
       event.preventDefault();
       (document.activeElement as HTMLElement | null)?.blur();
       box.querySelector<HTMLElement>(rowSelectorOf(editingRow))?.focus();
@@ -625,6 +639,14 @@ export function useNodeEditing({
   }, [container, editingRow]);
 
   return { edit, editing, stopEditing };
+}
+
+/** Whether `event` is an input method's key, which acts on nothing of the page's: one pressed in
+ *  a composition, or the one that ends it, which Safari sends after its compositionend with
+ *  `isComposing` false and keyCode 229 (WebKit bug 165004), as the title's editor reads it
+ *  (`IssueTitleRow.tsx`). */
+export function inputMethodKey(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
 }
 
 /** Whether the focus is still the edited row's: on the row itself, or inside the box its editor

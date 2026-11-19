@@ -44,6 +44,7 @@ import {
   listIssueMessages,
   listMyReplies,
   patchIssue,
+  resolveComment,
 } from "./api";
 import { countDocumentSockets, cursorLabel } from "./editor";
 import { nextFrames } from "./frames";
@@ -4234,6 +4235,113 @@ test("an editable row shows it takes typing under the pointer and at focus, and 
       await editorBoxRule(statementRow),
       "the box of the closed issue's statement editor draws a rule at focus"
     ).toMatchObject({ focused: true, style: "none" });
+  });
+});
+
+// The tester's finding at #4205's 2ff6850a, on "a node the room keeps read-only draws neither"
+// of the architect's ruling on the cue that a block takes typing: the server admits a document
+// read-only to a page whose schema it cannot trust with writes, as for a page whose build is out
+// of date, and no block of that document takes typing then. The page here presents schema version
+// 0 on every document socket, which no server admits writable (`admits` in
+// `packages/envoy/internal/dispatch/docs/schema_admission.go`). At 2ff6850a a statement's row
+// is marked as taking typing by Enter's rule alone, so under the pointer it draws the text cursor
+// and the tint after the room has admitted that editor read-only; only the box of the editor
+// follows the document's `data-read-only`.
+// SLOW(>=2s): the whole issue seeded and loaded, then Enter waited on until the statement's editor
+// opens read-only.
+test("a statement of a document the server admits read-only shows no cue that it takes typing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    await page.addInitScript(() => {
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(target, args) {
+          const url = new URL(String(args[0]), window.location.href);
+          if (url.searchParams.has("schema_version")) url.searchParams.set("schema_version", "0");
+          return new target(url.toString(), args[1]);
+        },
+      });
+    });
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statement = blockNodeId(specSlug, requirementBlockId(2));
+    const other = blockNodeId(specSlug, requirementBlockId(3));
+    await openWithNoRowFocused(page, seeded.key);
+    const statementRow = nodeRow(page, statement).first();
+    const otherRow = nodeRow(page, other).first();
+    await expect(statementRow, "the statement's row is not drawn").toBeAttached();
+    await expect(otherRow, "the second statement's row is not drawn").toBeAttached();
+
+    // Enter opens the statement's editor, which the room admits read-only; then another statement
+    // of the same document is under the pointer.
+    await focusRow(page, statement);
+    await page.keyboard.press("Enter");
+    await expect(
+      statementRow.locator("[data-editor-box] .dispatch-doc"),
+      "Enter drew no read-only document in the statement's row"
+    ).toHaveAttribute("data-read-only", "true");
+    await otherRow.hover();
+    await nextFrames(page);
+    expect(
+      await rowCue(otherRow),
+      "a statement of a document the room admitted read-only draws a cue under the pointer"
+    ).toEqual({ background: TRANSPARENT, cursor: "auto" });
+  });
+});
+
+/** Whether the element that holds the focus is a row of the outline's tree. */
+function focusOnATreeRow(page: Page): Promise<boolean> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    return active?.matches("[data-node-row]") === true && active.closest('[role="tree"]') !== null;
+  });
+}
+
+// The tester's finding at #4205's 2ff6850a: when a read of the issue's comments no longer holds
+// the comment whose row has the focus, that row leaves the tree and the focus falls to the page's
+// body, so the reader's place in the outline is lost and no row of the tree holds the focus. The
+// comments read is answered without that comment as the server's answer reaches the page, and a
+// real event of the issue - another comment resolved - makes the page read the comments again.
+// SLOW(>=2s): the whole issue seeded and loaded, then waited on until the read after the event
+// has drawn the outline without the comment.
+test("a read that drops the focused comment's row leaves the focus on a row of the tree", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const [gone = "", other = ""] = seeded.comments.threads;
+    expect(other, "the seed holds fewer than two comment threads").not.toBe("");
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await focusRow(page, gone);
+
+    await page.route(`**/api/v1/issues/${seeded.key}/comments*`, async (route) => {
+      const answer = await route.fetch();
+      const body = (await answer.json()) as unknown;
+      const without = (list: readonly { readonly id?: string }[]) =>
+        list.filter((comment) => comment.id !== gone);
+      let json: unknown = body;
+      if (Array.isArray(body)) json = without(body);
+      else if (typeof body === "object" && body !== null) {
+        const record = body as Record<string, unknown>;
+        for (const field of ["comments", "items"]) {
+          const list = record[field];
+          if (Array.isArray(list)) json = { ...record, [field]: without(list) };
+        }
+      }
+      await route.fulfill({ json, response: answer });
+    });
+    await resolveComment(other);
+    await expect(
+      nodeRow(page, gone),
+      "the read after the event still draws the comment its answer no longer holds"
+    ).toHaveCount(0);
+    await expect
+      .poll(() => focusOnATreeRow(page), {
+        message: "the focus left the tree when a read dropped the focused comment's row",
+      })
+      .toBe(true);
+    await expectFocusedRowClear(page, "a read that dropped the focused comment's row");
   });
 });
 

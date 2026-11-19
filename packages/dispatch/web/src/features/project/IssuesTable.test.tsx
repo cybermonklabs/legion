@@ -4,6 +4,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
@@ -982,6 +983,24 @@ test("a bulk action keeps at most eight writes in flight", async () => {
   expect(peak).toBeLessThanOrEqual(8);
 });
 
+/** Puts what `replacement` makes of the page storage's own `name` method in place of that
+ *  method, and returns what puts the real one back. `replacement` is handed the real method, so
+ *  it never reads `localStorage[name]` itself, which would find the replacement and call itself.
+ *  happy-dom's `localStorage` is a Proxy that copies each method of `Storage.prototype` onto
+ *  itself, bound, the first time anything reads it: a spy on the prototype reaches the storage
+ *  only when nothing in the process has read that method yet, and then stays its method after
+ *  `mockRestore`, a mock that no longer reaches the real method. `Object.defineProperty` passes
+ *  the Proxy's trap onto the storage itself, where every later read finds it. */
+function onLocalStorage<Name extends "getItem" | "setItem">(
+  name: Name,
+  replacement: (real: Storage[Name]) => Storage[Name]
+): () => void {
+  const real = localStorage[name];
+  const descriptor = { configurable: true, writable: true };
+  Object.defineProperty(localStorage, name, { ...descriptor, value: replacement(real) });
+  return () => Object.defineProperty(localStorage, name, { ...descriptor, value: real });
+}
+
 // A browser that refuses local storage loses the saved layout and the interrupted-action
 // record, and nothing else: no click may throw out of the table.
 test("a browser that refuses storage still renders the table and runs an action", async () => {
@@ -989,27 +1008,18 @@ test("a browser that refuses storage still renders the table and runs an action"
   const refuse = (key: string) => {
     if (key.startsWith("dispatch.project-table.")) throw new Error("Storage refused");
   };
-  const read = Storage.prototype.getItem;
-  const write = Storage.prototype.setItem;
-  const getItem = spyOn(Storage.prototype, "getItem").mockImplementation(function (
-    this: Storage,
-    key: string
-  ) {
+  const restoreRead = onLocalStorage("getItem", (read) => (key) => {
     refuse(key);
-    return read.call(this, key);
+    return read(key);
   });
-  const setItem = spyOn(Storage.prototype, "setItem").mockImplementation(function (
-    this: Storage,
-    key: string,
-    value: string
-  ) {
+  const restoreWrite = onLocalStorage("setItem", (write) => (key, value) => {
     refuse(key);
-    write.call(this, key, value);
+    write(key, value);
   });
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2"));
   restores.push(() => {
-    getItem.mockRestore();
-    setItem.mockRestore();
+    restoreRead();
+    restoreWrite();
     send.mockRestore();
   });
   table([
@@ -1052,33 +1062,13 @@ test("a scroll alone does no layout reads for the table's own box", async () => 
 // and the block above it are observed instead. happy-dom has no `ResizeObserver`, so the stub
 // is the geometry — what the table observes, and what a notice appearing there fires.
 test("the box is measured through an observer over itself and the content above it", async () => {
-  const live: { elements: Element[]; fire: () => void }[] = [];
-  const original = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    readonly elements: Element[] = [];
-    constructor(callback: ResizeObserverCallback) {
-      live.push({
-        elements: this.elements,
-        fire: () => callback([], this as unknown as ResizeObserver),
-      });
-    }
-    observe(element: Element) {
-      this.elements.push(element);
-    }
-    unobserve() {}
-    disconnect() {}
-  } as unknown as typeof ResizeObserver;
-  restores.push(() => {
-    globalThis.ResizeObserver = original;
-  });
+  const sizes = installResizeObserver();
+  restores.push(() => sizes.restore());
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const box = screen.getByTestId("issues-table-scroll");
   const above = screen.getByRole("region", { name: "Project issues" }).firstElementChild;
   if (!above) throw new Error("The table has no content above it");
-  const watching = [...live].reverse().find((entry) => entry.elements.includes(box));
-  if (!watching) throw new Error("Nothing observes the table's box");
-  expect(watching.elements).toContain(above);
   const measured: string[] = [];
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
@@ -1089,9 +1079,11 @@ test("the box is measured through an observer over itself and the content above 
     return new DOMRect(0, 0, 1000, 600);
   });
   restores.push(() => rect.mockRestore());
-  act(() => {
-    watching.fire();
-  });
+  // A notice appearing above the box changes only that block's size.
+  sizes.resize(above);
+  expect(measured).toContain("issues-table-scroll");
+  measured.length = 0;
+  sizes.resize(box);
   expect(measured).toContain("issues-table-scroll");
 });
 
@@ -1340,12 +1332,7 @@ test("resizing a column on a phone leaves the saved key and title widths alone",
     "dispatch.project-table.CORE",
     JSON.stringify({ sizing: { key: 200, title: 500 } })
   );
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? 390 : 100, 40);
-  });
-  restores.push(() => rect.mockRestore());
+  stubScrollBoxWidth(390);
   table([issue("CORE-1")]);
   const header = await screen.findByRole("columnheader", { name: /Status/ });
   const handle = header.querySelector(".cursor-col-resize");
@@ -1400,15 +1387,23 @@ test("a stored width under an inherited name such as toString is dropped", () =>
   expect(readLayout("CORE", ISSUE_TABLE_COLUMNS).sizing).toEqual({ title: 360 });
 });
 
+/** Makes `getBoundingClientRect` report the List's scroll box `width` pixels wide and every other
+ *  element 100, each 40 high, until the row ends. The spy is on `Element.prototype`, which owns the
+ *  method: one on `HTMLElement` would leave an own copy behind that shadows every later spy. */
+function stubScrollBoxWidth(width: number): void {
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const box = this.getAttribute("data-testid") === "issues-table-scroll";
+    return new DOMRect(0, 0, box ? width : 100, 40);
+  });
+  restores.push(() => rect.mockRestore());
+}
+
 /** Each header cell of the List, left to right, as `<its column's words> <width> <the offset a
  *  pinned cell is held at, or ->`, drawn with the scroll box `width` pixels wide. */
 async function headerLayout(width: number): Promise<string[]> {
-  const rect = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    return new DOMRect(0, 0, this.dataset.testid === "issues-table-scroll" ? width : 100, 40);
-  });
-  restores.push(() => rect.mockRestore());
+  stubScrollBoxWidth(width);
   table([issue("CORE-1")]);
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   const head = screen.getByRole("table", { name: "Project issues table" }).querySelector("thead");
@@ -1828,6 +1823,7 @@ test.each([
 });
 
 // F7: the steps of a start-next are known before the first write, so the store is written once.
+// Three issues move up, because with one a record written once per issue is the same two writes.
 test("Start next writes the store once for the whole batch", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
@@ -1837,18 +1833,29 @@ test("Start next writes the store once for the whole batch", async () => {
   );
   table(rows);
   await screen.findByRole("row", { name: "CORE-10 Work CORE-10" });
-  await user.click(screen.getByRole("checkbox", { name: "Select CORE-10" }));
-  const setItem = spyOn(Storage.prototype, "setItem");
-  restores.push(() => setItem.mockRestore());
+  for (const key of ["CORE-8", "CORE-9", "CORE-10"])
+    await user.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
+  const written: string[] = [];
+  restores.push(
+    onLocalStorage("setItem", (write) => (key, value) => {
+      written.push(value);
+      write(key, value);
+    })
+  );
   await user.click(
     within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
   );
-  await waitFor(() => expect(send).toHaveBeenCalled());
-  const records = setItem.mock.calls.filter(([, value]) =>
-    String(value).includes('"kind":"startNext"')
+  // The notice follows the last rank write and the record's dismissal, so no write of the
+  // action lands after it.
+  await waitFor(() =>
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
+    ).toContain("3 issues now start next")
   );
+  expect(send).toHaveBeenCalledTimes(3);
+  const records = written.filter((value) => value.includes('"kind":"startNext"'));
   // One write to begin the action and one for its whole batch of keys, not one per issue.
-  expect(records.length).toBeLessThanOrEqual(2);
+  expect(records.length).toBe(2);
 });
 
 // O8: a record a tab left behind a day ago is not this reader's unfinished work.

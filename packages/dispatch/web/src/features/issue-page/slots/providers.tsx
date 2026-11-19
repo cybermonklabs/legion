@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { DocumentAdmissionProvider } from "../document-admission";
 import { FocusedNodeProvider } from "../focused-node";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
@@ -23,6 +24,10 @@ export function ProvidersSlot({
   // outline share (`outline-request.tsx`); and each open document's toolbar, which the body's
   // row editor reports and the view row's version control is to read: nothing reads
   // it yet (`useDocumentToolbars.ts`).
+  //
+  // Innermost, what each document's room last admitted the page to, which the body's row editor
+  // reports and the outline's rows read, so no row of a document its room admitted read-only
+  // draws the cue that it takes typing (`document-admission.tsx`).
   return (
     <NoTooltips>
       <OutlineWriterProvider issueKey={issue.key}>
@@ -30,8 +35,10 @@ export function ProvidersSlot({
         <FocusedNodeProvider key={issue.key}>
           <OutlineRequestProvider>
             <DocumentToolbarsProvider>
-              {/* Each slot the root draws. */}
-              {children}
+              <DocumentAdmissionProvider>
+                {/* Each slot the root draws. */}
+                {children}
+              </DocumentAdmissionProvider>
             </DocumentToolbarsProvider>
           </OutlineRequestProvider>
         </FocusedNodeProvider>

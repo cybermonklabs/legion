@@ -38,7 +38,7 @@ type brokerBoot struct {
 	// no rules file and so has no airlock. In production: net.Listen("tcp",
 	// cfg.AirlockListenAddr).
 	ListenAirlock func() (net.Listener, error)
-	// ListenMetrics binds the metrics port, which serves GET /metrics alone. In production:
+	// ListenMetrics binds the metrics port, which serves GET /metrics and GET /livez (metricsHandler). In production:
 	// net.Listen("tcp", cfg.MetricsListenAddr). Every deployment has that port, so a boot given
 	// no ListenMetrics refuses before it runs anything.
 	ListenMetrics func() (net.Listener, error)

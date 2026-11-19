@@ -45,7 +45,11 @@
 //
 // Playwright is resolved from packages/dispatch, the package that owns the browser suite.
 import { createRequire } from "node:module";
-import { connect } from "nats";
+import { connect, type NatsConnection } from "nats";
+import {
+  natsDialFailure,
+  natsServersForLog,
+} from "../../../packages/envoy-client/src/nats-connection";
 
 import { readAgentReplay } from "./agent-replay";
 
@@ -54,6 +58,21 @@ const [command, ...args] = process.argv.slice(2);
 function refuse(message: string): never {
   process.stderr.write(`dispatch-user-turns: ${message}\n`);
   process.exit(2);
+}
+
+/** The bare bus client of `url`. A failed connect is named and exits 1; nats.js's own error left
+ *  uncaught would print the URL it was given, a credential in it included (a malformed URL's
+ *  `input`), so the line names the server by its argument and the reason as a log may
+ *  (natsDialFailure) and the error goes no further. */
+async function busClient(url: string): Promise<NatsConnection> {
+  try {
+    return await connect({ name: "legion-e2e-user-turns", servers: url, timeout: 10_000 });
+  } catch (error) {
+    process.stderr.write(
+      `dispatch-user-turns: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
+    );
+    process.exit(1);
+  }
 }
 
 const MODE_LABELS: Record<string, string> = { aside: "Aside", btw: "BTW", steer: "Send" };
@@ -245,7 +264,7 @@ async function forge(): Promise<void> {
       "usage: forge <dispatch-url> <login> <session> <nats-url> <shot.png> <control> <frame>..."
     );
   }
-  const nc = await connect({ name: "legion-e2e-user-turns", servers: url, timeout: 10_000 });
+  const nc = await busClient(url);
   try {
     const result = await withPage(base, login, session, async (page) => {
       const picker = page.getByRole("combobox", { name: "Delivery mode" });
@@ -375,7 +394,7 @@ async function envelope(): Promise<void> {
   if (!url || !session || !messageID) {
     refuse("usage: envelope <nats-url> <session> <message-id> <seconds>");
   }
-  const nc = await connect({ name: "legion-e2e-user-turns", servers: url, timeout: 10_000 });
+  const nc = await busClient(url);
   try {
     // An ordered consumer given no deliver policy starts at the stream's first message; nats.js
     // refuses DeliverPolicy.All here, since it sets a start sequence of its own.
@@ -405,7 +424,7 @@ async function envelope(): Promise<void> {
 async function publish(): Promise<void> {
   const [url, subject, data] = args;
   if (!url || !subject || data === undefined) refuse("usage: publish <nats-url> <subject> <data>");
-  const nc = await connect({ name: "legion-e2e-user-turns", servers: url, timeout: 10_000 });
+  const nc = await busClient(url);
   try {
     nc.publish(subject, new TextEncoder().encode(data));
     await nc.flush();

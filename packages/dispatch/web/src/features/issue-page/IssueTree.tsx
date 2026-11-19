@@ -42,7 +42,7 @@ import {
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
 import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
-import { useTreeKeymap } from "./useTreeKeymap";
+import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
 /**
  * The issue's body: one folded tree of its nodes.
@@ -803,6 +803,53 @@ export function IssueTree({
     });
     held.next = { frame, row };
   }, [goToNode, root, rootRow, rows, targetId, unfoldTo]);
+
+  // A read can answer without the node whose row holds the focus - a comment deleted - and the
+  // row then leaves the tree with the focus, which the browser drops to the page's body: the
+  // reader's place in the outline was lost, and no row held the focus. So where a render no
+  // longer draws the row that held the focus as the tree was last drawn, and nothing holds the
+  // focus now (`focusIsLoose`), the nearest row still drawn takes it as a key's move gives it
+  // (`moveToRow`): the tab stop and the row's body go with it, and the row brings itself on screen
+  // clear of the band. Whatever holds the focus by then keeps it - a control, the editor, another
+  // row - and so does the page's own placing of it, which runs first: the opening, which gives a
+  // row it focused back where a read drew that row again (`opening`), and an address's landing
+  // still waiting for its frame (`landingAsked`). The row is noted at every render, by its key and
+  // its place among the rows the focus can take, as the focus stands once that render is drawn:
+  // the render that drops the row no longer draws it, so where it stood is the render before's to
+  // tell. Its key is that of the row the focus is in, not `focused`, which names the row a press
+  // took the focus from until the press is over (`usePressFocus`). Nothing has let the dropped
+  // row go by the time this runs: the blur Chromium sends as React takes the focused row out comes
+  // during React's commit, where React hears no event, so `leave` never runs for it.
+  //
+  // A row being edited takes the editor's focus out with it, and its editing ends as Escape ends
+  // it (`stopEditing`), the page's editor of the document and its box with it, before the focus
+  // moves and wherever the focus is. Left on, the editing waited for a row no read draws
+  // (`useNodeEditing.ts`), and the tree held every row the focus came to as the one being edited
+  // (`useReleaseFocus`): a Tab out of the tree kept that row's body and its facts in Details.
+  const heldRow = useRef<{ readonly index: number; readonly key: string } | undefined>(undefined);
+  const editingRow = editing?.row;
+  useEffect(() => {
+    const tree = body.current;
+    const order = rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
+    const held = heldRow.current;
+    if (held !== undefined && !order.includes(held.key)) {
+      if (held.key === editingRow) stopEditing();
+      if (
+        focusIsLoose(tree) &&
+        opening.current.done &&
+        landingAsked.current?.signal.aborted !== false
+      ) {
+        // The nearest row is the one now at the dropped row's place, or the last where none is.
+        const key = order[Math.min(held.index, order.length - 1)];
+        const nearest =
+          key === undefined ? null : tree?.querySelector<HTMLElement>(rowSelectorOf(key));
+        if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+      }
+    }
+    const focusedKey = focusedRowIn(tree)?.dataset.rowKey;
+    heldRow.current =
+      focusedKey === undefined ? undefined : { index: order.indexOf(focusedKey), key: focusedKey };
+  }, [editingRow, rows, stopEditing]);
 
   // A write from the line at the foot takes the reader to what they wrote: their newest
   // node under what the write answered - the reply, the comment, the question - its branch

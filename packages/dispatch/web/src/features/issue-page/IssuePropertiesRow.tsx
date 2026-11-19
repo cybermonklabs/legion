@@ -31,7 +31,6 @@ import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
 import { gatedStepEntries } from "../issue/gated-steps";
-import { issuePriority } from "../issue/issue-priority";
 import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
@@ -232,7 +231,6 @@ export function IssuePropertiesRow({
       <PriorityEditor
         disabled={isClosed}
         issueKey={issue.key}
-        priority={issuePriority(issue.priority)}
         variant="header"
         write={priorityWrite}
       />

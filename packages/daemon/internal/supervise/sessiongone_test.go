@@ -1,11 +1,13 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -101,6 +103,117 @@ func TestADeathBeforeAnyRegistrationStopsNoSession(t *testing.T) {
 	if len(*stopped) != 0 {
 		t.Fatalf("stopped sessions %v, want none for a claim that registered none", *stopped)
 	}
+}
+
+// The clean stop deletes the registration the Envoy listener holds for the session id, whichever
+// process wrote it last, so a claim that records a session another claim recorded first sends no
+// stop when its process ends (sessionGone, plan E's t-e-54): that claim's live process can be the
+// last writer, as after a rollback, and the stop would delete its registration. The boot suspends
+// such a claim, and a death ends one as well; neither sends a stop, and each says so in the line
+// of a claim that does not hold its session. A store that does not answer whose claim the name is
+// held for sends none either, and says so in a line of its own at Warn, since that claim may well
+// hold its session. Across the same restart, a claim holding its own session is stopped as
+// before, once, with neither line (R9).
+//
+// The controls (the pull request records the runs): sessionGone sending the stop without asking
+// the hold, as cybermonklabs/legion#4088 wrote it, records a stop of ses_implementer in the first
+// three rows; one line for both answers, as 24f9841a08 wrote it, fails the store row's line.
+func TestAClaimThatDoesNotHoldItsSessionSendsNoStopOfIt(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	// dies is the probe's verdict of a death, whose relaunch resumes the recorded session and so
+	// is refused by the same hold, with refused the error that relaunch must answer.
+	dies := func(refused func(error) bool) func(h *harness) {
+		return func(h *harness) {
+			h.t.Helper()
+			err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}})
+			if !refused(err) {
+				h.t.Fatalf("the death's relaunch = %v, want the hold's refusal of the session it resumes", err)
+			}
+		}
+	}
+	const unheld = "no clean stop of the Envoy session of a claim that does not hold it"
+	const unanswered = "no clean stop of the Envoy session: the store did not answer whether the claim holds it"
+	for _, row := range []struct {
+		name string
+		// before is what changes in the store between the claim's registration and the restart.
+		before func(h *harness)
+		end    func(h *harness)
+		want   []string
+		// line is the log line the row's withheld stop writes, "" for none.
+		line string
+	}{
+		{
+			name:   "a death of a claim whose session another claim recorded first",
+			before: func(h *harness) { h.store.setHold(sessionID(session), other) },
+			end: dies(func(err error) bool {
+				var refusal claim.Refusal
+				return errors.As(err, &refusal) && refusal == claim.SessionHeldRefusal(session)
+			}),
+			line: unheld,
+		},
+		{
+			name:   "the daemon's suspension of a claim whose session another claim recorded first",
+			before: func(h *harness) { h.store.setHold(sessionID(session), other) },
+			end: func(h *harness) {
+				h.must(RequestSuspend{Claim: h.token, Reason: "the boot contains it", By: SuspendedByDaemon})
+				h.wantState(StateSuspended)
+			},
+			line: unheld,
+		},
+		{
+			name:   "a death of a claim whose hold the store does not answer",
+			before: func(h *harness) { h.store.fail("HoldSessions", errors.New("the store is down")) },
+			end:    dies(func(err error) bool { return errors.Is(err, errHoldUnanswered) }),
+			line:   unanswered,
+		},
+		{
+			name:   "the daemon's suspension of a claim holding its own session",
+			before: func(*harness) {},
+			end: func(h *harness) {
+				h.must(RequestSuspend{Claim: h.token, Reason: "the issue left the workflow", By: SuspendedByDaemon})
+				h.wantState(StateSuspended)
+			},
+			want: []string{session},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h, stopped := sessionStops(t)
+			h.reach(StateReady)
+			row.before(h)
+			h.restart()
+			row.end(h)
+			wantStops(t, *stopped, row.want)
+			for _, line := range []string{unheld, unanswered} {
+				n := len(h.logs.lines(line))
+				if want := map[bool]int{true: 1}[line == row.line]; n != want {
+					t.Fatalf("the line %q was written %d times, want %d", line, n, want)
+				}
+			}
+			if row.line == unanswered && len(h.logs.lines(unanswered, "level=WARN")) != 1 {
+				t.Fatalf("the line %q is not at Warn: %v", unanswered, h.logs.lines(unanswered))
+			}
+		})
+	}
+}
+
+// The hold check a clean stop asks first runs on a context the decision's end does not cancel
+// (sessionGone): a holder that has not admitted its names since a restart asks the store, and the
+// daemon's stop must not cut that ask short, since sessionStop.send was written so the daemon's
+// stop does not cut a clean stop short. So a restarted holder whose decision's context has ended
+// is still stopped, once.
+//
+// The control (the pull request records the run): the check on the decision's context, as
+// 3bce483568 wrote it, records no stop.
+func TestARestartedHoldersStopIsNotCutShortByTheEndOfItsDecision(t *testing.T) {
+	h, stopped := sessionStops(t)
+	h.reach(StateReady)
+	h.restart()
+	ended, cancel := context.WithCancel(h.ctx)
+	cancel()
+	h.m.mu.Lock()
+	h.m.sessionGone(ended)
+	h.m.mu.Unlock()
+	wantStops(t, *stopped, []string{session})
 }
 
 // A suspension that ends the claim's process sends the clean stop of its Envoy session, so the

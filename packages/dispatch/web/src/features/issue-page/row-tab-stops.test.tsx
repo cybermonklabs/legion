@@ -104,8 +104,10 @@ function layOutCut(below: string): () => void {
     configurable: true,
     get: () => 600,
   });
-  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
+  // On Element, which owns the method: a spy on HTMLElement leaves an own property behind once
+  // restored, which hides every later spy on Element (Margin.landing.test.tsx's `stubRects`).
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
   ) {
     return this.matches(below) ? new DOMRect(0, 400, 60, 24) : new DOMRect(0, 0, 600, 600);
   });

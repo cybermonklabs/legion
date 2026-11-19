@@ -120,7 +120,7 @@ itself, whose tests import its sources by relative path.
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
   question and the row that asks it (`stubBroker` in
-  `packages/envoy-client/src/__tests__/broker-credential.test.ts`). Never write a port number into a
+  `packages/envoy-client/src/__tests__/broker-stand-ins.ts`). Never write a port number into a
   test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
   is port 0, one that is set is used as given, and two variables naming one port are refused where
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
@@ -162,6 +162,99 @@ itself, whose tests import its sources by relative path.
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+
+## A Dispatch unit test runs in random order
+
+`packages/dispatch/bunfig.toml` sets `[test] randomize = true`. Bun reads that file only from the
+directory it starts in, and `bun run <script>` starts in the package's directory, so the file
+reaches `bun run test`, `test:web`, `test:web:cold`, `test:harness` and `test:repeat` from any
+directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run. It also
+reaches a `bun test <file>` started in `packages/dispatch`, but not one started from the repository
+root or from a subdirectory. Each `web/src/` and `e2e/` path below is under `packages/dispatch`,
+and each command runs there.
+
+- To reproduce a failing row, run its file alone with the seed its lane printed in its summary
+  (` --seed=<n>`): `bun run test:web web/src/<file> --seed=<n>`,
+  `bun run test:web:cold web/src/<file> --seed=<n>` for a row of the web-cold lane, or
+  `bun run test:harness e2e/__tests__/<file> --seed=<n>`. Add `--rerun-each=<k>` for a row that
+  first failed on run k, which the report of `bun run test:repeat` names. The order of the tests in
+  a file depends only on the seed and on that file, so this repeats the order the row failed in. A
+  row that failed from the lane's load, such as one that times a real process, or from another file
+  that ran beside it, can pass alone: run it with the files that ran beside it, or under the same
+  load.
+
+- No flag of `bun test` turns random order off: `--randomize=false` is refused, and
+  `--no-randomize` still shuffles. `bun --config=<file> test …` reads that file in place of
+  `bunfig.toml`, so with a file that does not set `randomize` it runs in file order: use that to
+  read a failure, never to make a row pass. A row is never pinned to an order or skipped to make it
+  pass. It is fixed at its cause.
+
+- Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
+  from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
+
+- `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
+  one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
+  a report of every row that failed, with how many of its runs failed, its seed and the command
+  that runs it again, and of every failure that belongs to no row.
+  `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+
+- `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` added last to
+  its preloads. That file registers its plugin in its `beforeAll`, where the test file's rows
+  begin. From then on it holds back each load of every script module that the sources of `web/src`,
+  tests aside, load with `import("<literal>")`, the `lazy()` pages and the Markdown engine among
+  them, for `DISPATCH_COLD_HOLD_MS` milliseconds of real time, 1000 when unset. So every row that
+  runs while such a module is held finds it unloaded, not only the row that random order puts first
+  in its file. A load written another way, such as an `import()` of a computed specifier, and a
+  style sheet are not held (the head of `hold-lazy-loads.ts` says how it lists them). A module the
+  test file imports itself is loaded before its rows begin, unheld; a lazy load that the file's own
+  `beforeAll` starts is held. A row that fails there and passes under `test:web` reads before it
+  waits; a row that waits and still fails there ran out its wait behind a chain of holds, one lazy
+  module loading the next, which a smaller `DISPATCH_COLD_HOLD_MS` tells apart. The weekly
+  workflow runs it as the `web-cold` lane with `--reruns 1`: a rerun of a file keeps the modules
+  its first run loaded, so only the first run is cold.
+
+- A spy or a stub on a DOM method goes on the prototype that owns it, which `Object.hasOwn` tells:
+  happy-dom's `Element.prototype`, not `HTMLElement.prototype`, owns `getBoundingClientRect`,
+  `scrollTo` and `scrollIntoView`. A restore, Bun's `mockRestore` or an assignment, leaves an own
+  copy on a prototype that only inherited the method, and that copy shadows every later spy on the
+  owner.
+
+- A `localStorage` method is replaced on the storage itself, as `onLocalStorage` in
+  `web/src/features/project/IssuesTable.test.tsx` does, never on `Storage.prototype`: happy-dom
+  copies the prototype's method onto the storage the first time it is read, and a spy on the
+  prototype after that never reaches it.
+
+- A row that reads a Markdown body or a lazily loaded part in the commit that mounts it first waits
+  for it (`warmMarkdownRenderer()` from `web/src/features/refs/markdown-engine.ts`, or a `findBy*`
+  query), because the earlier row that loaded it may run after it. A lazily loaded part is anything
+  that renders from a module that `import()` or `lazy()` loads, not the Markdown engine alone. A
+  test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
+  imports that module at its top: a load that a row starts can arrive between two of that row's
+  `act` scopes or in a later row, where React reports a suspended resource outside `act`
+  (`web/src/app-sign-out.test.tsx`, `web/src/app.test.tsx`,
+  `web/src/__tests__/responsive-shell.test.tsx` and `web/src/features/agents/AgentsPage.test.tsx`
+  do).
+
+- A row that dispatches a DOM event itself (`window.dispatchEvent(new Event("scroll"))`, say)
+  dispatches it inside `act` when a listener of a rendered component sets React state from it,
+  even a state the event leaves as it was. React drops a set of the same value without scheduling
+  it only while the component has no update left from an earlier render; when an update of that
+  component lands just before the event, the set is scheduled outside `act` and the act rule fails
+  the row. Under a lane's load that is rare, and the file alone does not show it:
+  `web/src/features/conversation/ConversationTab.test.tsx`'s row "a scroll event measures the
+  reader position in O(1) rect reads" failed 1 run in 20 that way.
+
+- `web/src/__tests__/act-warnings.test.ts` runs the act rule's six fixtures,
+  `web/src/__tests__/act-rule*.fixture.tsx`. Four draw React's act messages.
+  `act-rule-quiet-restore.fixture.tsx` proves that the preload puts back a spy of
+  `quietConsoleError()` that a row leaves in place. `act-rule-final-hook.fixture.tsx` proves that a
+  row that the network report and the act check both fail fails with one report naming both, and
+  that every reset and restore of the preload still runs after it, so the next row starts with
+  nothing that row left.
+
+- A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with
+  `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,
+  while an autovacuum worker is attached (the doc of `dropDatabase` says why).
 
 ## Unix sockets in Go tests
 

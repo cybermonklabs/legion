@@ -3,6 +3,7 @@ package wake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,28 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/listenerwire"
 )
+
+// accountTokens is the broker's account token as Notify reads it: each read answers the next of
+// tokens, as a projected token the kubelet rotated does, or err.
+type accountTokens struct {
+	tokens []string
+	err    error
+	reads  int
+}
+
+func (a *accountTokens) Read() (string, error) {
+	if a.err != nil {
+		return "", a.err
+	}
+	token := a.tokens[min(a.reads, len(a.tokens)-1)]
+	a.reads++
+	return token, nil
+}
+
+// staticAccount is an account whose token never changes.
+func staticAccount(token string) *accountTokens { return &accountTokens{tokens: []string{token}} }
 
 // capturingHandler records every slog record it is asked to handle, so a test can assert that
 // Notify logged a warning without caring about the exact message text.
@@ -29,9 +51,12 @@ func (h capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 
 func (h capturingHandler) WithGroup(string) slog.Handler { return h }
 
-func TestNotifySendsTargetSessionPayloadAndBearerToken(t *testing.T) {
+// Notify presents the broker's own account token, read afresh for each notice, as its bearer:
+// the listener admits the account it names, so the broker shares no bearer with anyone.
+func TestNotifyPresentsTheAccountToken(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
-	var gotBody sendBody
+	// The body is read as the listener's send route reads it.
+	var gotBody listenerwire.SendRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
@@ -43,8 +68,16 @@ func TestNotifySendsTargetSessionPayloadAndBearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := Envoy{URL: srv.URL, Token: "tok", HTTP: srv.Client()}
+	account := &accountTokens{tokens: []string{"account-token-1", "account-token-2"}}
+	e := Envoy{URL: srv.URL, Account: account, HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
+	if gotAuth != "Bearer account-token-1" {
+		t.Fatalf("authorization: got %q, want the account's token", gotAuth)
+	}
+	e.Notify(context.Background(), "sess-123", "req-456", "approved")
+	if gotAuth != "Bearer account-token-2" {
+		t.Fatalf("authorization: got %q, want the account's rotated token", gotAuth)
+	}
 
 	if gotMethod != http.MethodPost {
 		t.Fatalf("method: got %q, want POST", gotMethod)
@@ -52,18 +85,21 @@ func TestNotifySendsTargetSessionPayloadAndBearerToken(t *testing.T) {
 	if gotPath != "/v1/messages/send" {
 		t.Fatalf("path: got %q, want /v1/messages/send", gotPath)
 	}
-	if gotAuth != "Bearer tok" {
-		t.Fatalf("authorization: got %q, want %q", gotAuth, "Bearer tok")
-	}
 	if gotBody.TargetSession != "sess-123" {
 		t.Fatalf("target_session: got %q, want %q", gotBody.TargetSession, "sess-123")
 	}
 	if gotBody.Source != "envoy" {
 		t.Fatalf("source: got %q, want %q (contracts.Envelope.Validate's enum has no agent-secrets entry)", gotBody.Source, "envoy")
 	}
+	if gotBody.Message != "secret request approved" {
+		t.Fatalf("message: got %q, want %q", gotBody.Message, "secret request approved")
+	}
 
+	if gotBody.Payload == nil {
+		t.Fatal("the send carried no payload")
+	}
 	var payload secretRequestPayload
-	if err := json.Unmarshal([]byte(gotBody.Payload), &payload); err != nil {
+	if err := json.Unmarshal([]byte(*gotBody.Payload), &payload); err != nil {
 		t.Fatalf("payload is not JSON-encoded text: %v", err)
 	}
 	if payload.Type != "secret-request" {
@@ -86,7 +122,7 @@ func TestNotifySwallowsServerErrorAndLogsIt(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Token: "tok", HTTP: srv.Client()}
+	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -106,7 +142,7 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Token: "tok", HTTP: srv.Client()}
+	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -119,10 +155,32 @@ func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
 	// A port the test holds and nothing listens on: the connection fails.
-	e := Envoy{URL: "http://" + testport.Refused(t), Token: "tok", HTTP: &http.Client{}}
+	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
 		t.Fatal("expected a warning to be logged for the connection failure, got none")
+	}
+}
+
+// An account token the broker cannot read sends nothing, since a call with no bearer would only
+// be refused, and logs why without a token.
+func TestNotifySendsNothingWithoutTheAccountToken(t *testing.T) {
+	sent := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = true
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	var records []slog.Record
+	logtest.SetDefault(t, capturingHandler{records: &records})
+
+	e := Envoy{URL: srv.URL, Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client()}
+	e.Notify(context.Background(), "sess-123", "req-456", "approved")
+	if sent {
+		t.Fatal("a notice went out with no account token")
+	}
+	if len(records) == 0 {
+		t.Fatal("expected a warning naming the unread account token, got none")
 	}
 }

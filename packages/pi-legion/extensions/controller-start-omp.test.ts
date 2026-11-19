@@ -25,6 +25,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   completeLines,
   endsWhole,
@@ -535,7 +536,10 @@ async function startController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state.json", hooks);
   const secretFile = path.join(root, "controller-secret");
-  await writeFile(secretFile, "controller-start-capability\n", { mode: 0o600 });
+  // Random, as the daemon's capability is: the controller holds it, and every line it prints is
+  // scrubbed of it (`@legion/contracts/held-secrets`), so one spelled from words would take those
+  // words out of the refusal the operator reads ("invalid controller capability").
+  await writeFile(secretFile, `${fixtureSecret("ctl")}\n`, { mode: 0o600 });
   const startupHold = path.join(root, "startup-hold.ts");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
@@ -682,7 +686,8 @@ async function startDaemonController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state-controller-claim.json", hooks);
   const bootFile = path.join(root, "LEGION_BOOT_TOKEN");
-  await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+  // Random, as the daemon's boot token is (see the capability above).
+  await writeFile(bootFile, `${fixtureSecret("boot")}\n`, { mode: 0o600 });
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};

@@ -6,7 +6,7 @@ import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
-import { useIssueTree } from "./useIssueTree";
+import { issueAsksQuery, useIssueTree } from "./useIssueTree";
 
 /** What each read the outline waits on takes: a copy of the tree's own rule for its reads,
  *  `useIssueTree.ts`'s `EVENT_FRESH`, which this file is to import once that file exports it.
@@ -68,7 +68,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
       { ...issueCoverageQuery(key), ...EVENT_FRESH },
       { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
       { ...issueResultsQuery(key), ...EVENT_FRESH },
-      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key], ...EVENT_FRESH },
+      { ...issueAsksQuery(key), ...EVENT_FRESH },
       { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
       {
         queryFn: () => api.listIssueMessages(key),

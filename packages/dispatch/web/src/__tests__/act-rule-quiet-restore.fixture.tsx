@@ -7,9 +7,9 @@
 // restore is missing or runs after the act check, in any row order, with an error that says which.
 import { afterAll, afterEach, describe, test } from "bun:test";
 import { render } from "@testing-library/react";
-import { useState } from "react";
 
 import { quietConsoleError } from "./act-warnings";
+import { type HeldCount, heldCount, useHeldCount } from "./held-count";
 
 /** The rows that started with `console.error` still a spy, which a Bun mock carries `mock` for. */
 const startedQuiet: string[] = [];
@@ -56,17 +56,6 @@ describe("quiet rows whose afterEach throws", () => {
   });
 });
 
-/** The setter of the count `QuietActCount` shows, which its row calls with no event between. */
-interface HeldCount {
-  set: (count: number) => void;
-}
-
-function useHeldCount(held: HeldCount): string {
-  const [count, setCount] = useState(0);
-  held.set = setCount;
-  return `count ${count}`;
-}
-
 function QuietActCount({ held }: { held: HeldCount }) {
   return <p>{useHeldCount(held)}</p>;
 }
@@ -84,11 +73,7 @@ describe("a quiet row whose act check throws", () => {
     }
   });
   row("sets a state outside act while console.error is quiet", () => {
-    const held: HeldCount = {
-      set: () => {
-        throw new Error("QuietActCount has not rendered");
-      },
-    };
+    const held = heldCount();
     render(<QuietActCount held={held} />);
     quietConsoleError();
     held.set(1);

@@ -43,7 +43,7 @@ import { asUser } from "./users";
  * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
- * with `page.goto`; the body is G's `ConversationRows.tsx`, every branch unfolded at load, and
+ * with `page.goto`; the body is `slots/body.tsx`'s: G's rows drew every branch unfolded, and
  * part I's outline later, which folds to the frontier: so a row that reads a node unfolds every
  * folded branch first (`unfoldEveryBranch`), and holds on either body.
  *
