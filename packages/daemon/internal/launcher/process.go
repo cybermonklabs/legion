@@ -137,14 +137,15 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 }
 
 // pidGuard holds the pids of the launcher's own children that are no generation's, so a reap of
-// PID 1's leaves each exit to the wait that started it (pidGuard.reap: the orphan reaper's passes,
-// which skip them as they skip a manager's generation, and the controller pod's drain). A pid is
-// recorded as its process starts, under the lock every reap holds for its whole pass, so no pass
-// can read /proc between a child's start and its record. Every child the launcher's process starts
-// and waits for itself, but a generation, starts here: the test database's script (runTestPG), the
-// put-back's jj and git (bundleRestore) and the leak-check install's run of the check
-// (checkInstall). TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every
-// start that process reaches.
+// PID 1's leaves each exit to the wait that started it (pidGuard.reapOrphans: the orphan reaper's
+// passes, which skip them as they skip a manager's generation; pidGuard.reap: the controller pod's
+// drain). A pid is recorded as its process starts, under the lock every reap holds for its whole
+// pass, so no pass can read /proc between a child's start and its record. Every child the
+// launcher's process starts and waits for itself, but a generation, starts here: the test
+// database's script (runTestPG), the put-back's jj and git (bundleRestore) and the leak-check
+// install's run of the check (checkInstall).
+// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
+// reaches.
 type pidGuard struct {
 	mu   sync.Mutex
 	pids map[int]bool

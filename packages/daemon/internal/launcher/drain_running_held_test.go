@@ -190,9 +190,11 @@ func TestControllerDrainRunningHeldPIDOneHelper(t *testing.T) {
 // Both of the guard's passes (pidGuard.reap, the drain's, and pidGuard.reapOrphans, the orphan
 // reaper's) leave a held child to its own wait and reap an exited process PID 1 adopted from the
 // held child's process group, since no other wait will read it: a pass that skipped that orphan
-// too would leave it a zombie until some unrelated child's exit. The two passes reap the same set,
-// and only the drain's classifies what is left, so the orphan reaper's reads no process's stat.
-// It runs as PID 1, which adopts the orphan (TestGuardReapsAHeldGroupsOrphanPIDOneHelper).
+// too would leave it a zombie until some unrelated child's exit. The held child has exited before
+// the pass, so a pass that reaped it would take the exit its own wait reads. The two passes reap
+// the same set, and only the drain's classifies what is left, so the orphan reaper's reads no
+// process's stat. It runs as PID 1, which adopts the orphan
+// (TestGuardReapsAHeldGroupsOrphanPIDOneHelper).
 func TestTheGuardsReapTakesAnOrphanOfAHeldChildsGroup(t *testing.T) {
 	t.Logf("%s", runAsPIDOne(t, "TestGuardReapsAHeldGroupsOrphanPIDOneHelper"))
 }
@@ -217,16 +219,16 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 			guard := &pidGuard{}
 			orphanFile := filepath.Join(t.TempDir(), "orphan")
 			// The subshell starts a short sleep in the background, writes its pid and exits, so the
-			// sleep is orphaned to PID 1 in the held child's process group, while the held child runs
-			// on.
-			held := exec.CommandContext(context.Background(), "/bin/sh", "-c", `(sleep 0.1 & echo $! >"$1"); sleep 3; exit 5`, "sh", orphanFile)
+			// sleep is orphaned to PID 1 in the held child's process group; the held child then
+			// exits too, and its exit waits for its own wait.
+			held := exec.CommandContext(context.Background(), "/bin/sh", "-c", `(sleep 0.1 & echo $! >"$1"); exit 5`, "sh", orphanFile)
 			procgroup.Configure(held)
 			pid, err := guard.start(held)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var orphan int
-			testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child's orphan to exit", func() bool {
+			testwait.WithinPolling(t, 5*time.Second, testwait.Poll, "the held child and its orphan to exit", func() bool {
 				body, err := os.ReadFile(orphanFile)
 				if err != nil {
 					return false
@@ -234,7 +236,7 @@ func TestGuardReapsAHeldGroupsOrphanPIDOneHelper(t *testing.T) {
 				orphan, err = strconv.Atoi(strings.TrimSpace(string(body)))
 				// A zombie its subshell has not left yet is the subshell's to reap, not PID 1's.
 				ppid, _, ok := statParentAndGroup("/proc", orphan)
-				return err == nil && ok && ppid == 1 && zombie(orphan)
+				return err == nil && ok && ppid == 1 && zombie(orphan) && zombie(pid)
 			})
 			if err := tc.pass(guard); err != nil {
 				t.Fatal(err)

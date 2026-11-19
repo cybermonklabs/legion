@@ -1011,34 +1011,46 @@ func awaitZombie(t *testing.T, pid int) {
 
 // reapedByAnother is whether err is a child's own wait answering that another wait of the process
 // reaped it first: Linux answers ECHILD (`waitid: no child processes`), and gVisor, which a pod
-// runs under, answers ESRCH (`waitid: no such process`) for about half of them.
+// runs under, answers ESRCH (`waitid: no such process`) for about half of them. A reap that lands
+// between Go's waitid and its wait4 answers ECHILD from the second (`wait: no child processes`).
 func reapedByAnother(err error) bool {
 	return errors.Is(err, syscall.ECHILD) || errors.Is(err, syscall.ESRCH)
 }
 
-// A reap through the guard (pidGuard.reap, which the orphan reaper and the controller pod's drain
-// both run) leaves an exited child the launcher holds for a wait of its own (the leak-check
-// install's run, say) to that wait, which reads its own exit, and reaps any other exited child.
+// Each of the guard's passes (pidGuard.reapOrphans, the orphan reaper's, and pidGuard.reap, the
+// controller pod's drain's) leaves an exited child the launcher holds for a wait of its own (the
+// leak-check install's run, say) to that wait, which reads its own exit, and reaps any other exited
+// child.
 func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
-	guard := &pidGuard{}
-	held := exec.Command("/bin/sh", "-c", "exit 5")
-	if _, err := guard.start(held); err != nil {
-		t.Fatal(err)
-	}
-	other := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := other.Start(); err != nil {
-		t.Fatal(err)
-	}
-	awaitZombie(t, held.Process.Pid)
-	awaitZombie(t, other.Process.Pid)
-	if _, err := guard.reap(); err != nil {
-		t.Fatal(err)
-	}
-	if err := other.Wait(); !reapedByAnother(err) {
-		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the reap left it unreaped", err)
-	}
-	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
-		t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+	for _, tc := range []struct {
+		name string
+		pass func(guard *pidGuard) error
+	}{
+		{"the orphan reaper's pass", func(guard *pidGuard) error { return guard.reapOrphans() }},
+		{"the drain's pass", func(guard *pidGuard) error { _, err := guard.reap(); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := &pidGuard{}
+			held := exec.Command("/bin/sh", "-c", "exit 5")
+			if _, err := guard.start(held); err != nil {
+				t.Fatal(err)
+			}
+			other := exec.Command("/bin/sh", "-c", "exit 0")
+			if err := other.Start(); err != nil {
+				t.Fatal(err)
+			}
+			awaitZombie(t, held.Process.Pid)
+			awaitZombie(t, other.Process.Pid)
+			if err := tc.pass(guard); err != nil {
+				t.Fatal(err)
+			}
+			if err := other.Wait(); !reapedByAnother(err) {
+				t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the reap left it unreaped", err)
+			}
+			if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+				t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+			}
+		})
 	}
 }
 
