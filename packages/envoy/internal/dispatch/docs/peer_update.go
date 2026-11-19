@@ -40,9 +40,9 @@ import (
 // allowance, rolling the whole apply back where it passes (crdt.WithApplyBudget). For a keystroke
 // that is a handful of comparisons; nothing here walks the document, and the update itself is
 // read only by the header scans a room can pay for - the first three numbers of every update,
-// which name the one client a keystroke writes under (judgeClients, client_ids.go), the whole
-// header of an update writing under another client than its socket's, and in a rebuilt room the
-// header and the delete set every update is held to the retired clients' list by
+// which name the one client a keystroke writes under (judgeClients, client_ids_judgement.go), the
+// whole header of an update writing under another client than its socket's, and in a rebuilt room
+// the header and the delete set every update is held to the retired clients' list by
 // (refusedBeforeApply) - none of which decodes any content.
 //
 // The hook weighs bytes and not elements. Counting a rendering's elements is a whole goldmark
@@ -383,8 +383,8 @@ func (j *parkJudge) may(client crdt.ClientID) bool {
 // structs items against the decode cap (ceilingWithQueue) and holding stateBytes bytes resident -
 // its tracked state and what its pending queue holds (roomResidentBytes) - whose rendering
 // measures rendering bytes, its last published rendering (weighPeerUpdate; measured false for a
-// room with no rendering at all), while the budget is full or not, sent on a socket whose clients
-// are socket (nil for an update no socket of this service's admission sent).
+// room with no rendering at all), while the budget is full or not. Where its delete ranges may
+// park is judged by the sender's socket, whose judge judgeParks sets on the allowance.
 //
 // Each field is the least of the rules that apply to it, and each rule's own figure is kept so
 // the refusal can name it:
@@ -427,15 +427,12 @@ func (j *parkJudge) may(client crdt.ClientID) bool {
 //     one that integrates nothing of its own, adds no content and cuts at most that many of the
 //     items the room holds: a delete of whole items, which cuts none and is admitted however
 //     long the pressure has run, or a frame of structs the room already holds.
-//   - MayParkDeletes is the socket's own judge of its clients (parkJudge): a delete range parks
-//     only under a client the socket holds, and ygo refuses the whole apply where one would park
-//     under any other. An update no socket sent has no judge, and its ranges park as before.
 //
 // A negative figure is clamped to nothing: a room already past a bound takes no more, and ygo
 // reads a field below zero as no limit at all. A room with no rendering to measure is weighed on
 // the update's own bytes alone, so the caller passes a rendering of nothing for it
 // (roomWeighing.size answers sizeUnmeasured, which is no length).
-func peerApplyAllowance(update, rendering, stateBytes int64, structs uint64, measured bool, pressure peerPressure, socket *socketClients) peerAllowance {
+func peerApplyAllowance(update, rendering, stateBytes int64, structs uint64, measured bool, pressure peerPressure) peerAllowance {
 	if !measured {
 		rendering = 0
 	}
@@ -472,11 +469,18 @@ func peerApplyAllowance(update, rendering, stateBytes int64, structs uint64, mea
 			allowance.budget.Split, allowance.splits, allowance.splitsLimit = pressure.splits, rulePressure, 0
 		}
 	}
+	return allowance
+}
+
+// judgeParks has the allowance's MayParkDeletes ask socket's own judge of its clients
+// (parkJudge): a delete range parks only under a client the socket holds, and ygo refuses the
+// whole apply where one would park under any other. An update no socket of this service's
+// admission sent, socket nil, has no judge, and its ranges park as before.
+func (a *peerAllowance) judgeParks(socket *socketClients) {
 	if socket != nil {
 		judge := &parkJudge{socket: socket}
-		allowance.parks, allowance.budget.MayParkDeletes = judge, judge.may
+		a.parks, a.budget.MayParkDeletes = judge, judge.may
 	}
-	return allowance
 }
 
 // peerPressure is what the room budget's pressure allows one update in one room: full, whether
@@ -707,7 +711,8 @@ type roomApplies struct {
 	// apply is weighed against and spliced into while no other commit has landed and the
 	// replica has not yet taken this one (renderCheck.base). It is written under the document's
 	// lock and dropped by the replica once it stands at or past it (forgetChecked), so it is an
-	// atomic.
+	// atomic. It stays a field of the room's, and the methods that keep it are the check's
+	// (noteChecked, forgetChecked, render_check.go).
 	checked atomic.Pointer[roomRendered]
 }
 
@@ -743,7 +748,8 @@ func (report madeReport) checkedAt(seq uint64) *replicaRendering {
 // whether a check of what the apply left has passed and the rendering that check made of it, nil
 // for a state that renders nothing. The apply report hands that rendering on with the commit
 // (noteApply). All four are read and written under the document's lock, which ygo holds for the
-// budget, the check and the report alike, and under mu besides.
+// budget, the check and the report alike, and under mu besides. The methods that place and record
+// them are the check's, in render_check.go (began, passed, noteChecked).
 type peerApply struct {
 	budget    crdt.ApplyBudget
 	startAt   uint64
@@ -827,50 +833,6 @@ func (a *roomApplies) noteApply(origin any, report crdt.ApplyReport, logged *log
 		a.unpaired = append(a.unpaired, made)
 	}
 	a.mu.Unlock()
-}
-
-// noteChecked keeps, as the room's record of its rendering (checked), the rendering running's
-// commit left the room at: the one the room's apply check made of what the apply left, where a
-// check passed it, at at, the room's commit position once the commit is logged. An apply no check
-// ran for changed nothing the check reads - ygo checks every apply that changes the document -
-// so a record standing at the position the apply began at is carried to at unchanged. A position
-// that cannot be counted now (counted false) places nothing, and the record keeps the position
-// it had. It answers what the commit's report carries (madeReport): the record it made, nil where
-// no check rendered the apply or none could be placed. The caller holds the document's lock and
-// mu.
-func (a *roomApplies) noteChecked(running *peerApply, at uint64, counted bool) *roomRendered {
-	held := a.checked.Load()
-	switch {
-	case !counted:
-		return nil
-	case !running.checked:
-		if held != nil && running.counted && held.at == running.startAt {
-			a.checked.Store(&roomRendered{at: at, bytes: held.bytes, rendering: held.rendering})
-		}
-		return nil
-	}
-	made := &roomRendered{at: at, bytes: renderedSize(running.rendering), rendering: running.rendering}
-	a.checked.Store(made)
-	if running.rendering == nil {
-		return nil
-	}
-	return made
-}
-
-// forgetChecked drops the room's record of its rendering (checked) where it stands before seq, a
-// commit position whose rendering the replica has published (publishRendered): a commit past the
-// record has landed, and the replica's rendering says what the room renders now. A record standing
-// at seq itself stays: it is of the same state as the replica's and shares its markdown
-// (takeChecked keeps the check's string), and it carries the index of the room's own blocks the
-// next apply's check splices by (blockIndex), which the replica's rendering, of its own document's
-// blocks, cannot.
-func (a *roomApplies) forgetChecked(seq uint64) {
-	if a == nil {
-		return
-	}
-	if held := a.checked.Load(); held != nil && held.at < seq {
-		a.checked.CompareAndSwap(held, nil)
-	}
 }
 
 // stateBytes is the bytes of encoded state the room is tracked at (state), and zero for a
@@ -1081,20 +1043,6 @@ func (a *roomApplies) budget(origin any) crdt.ApplyBudget {
 	return crdt.ApplyBudget{Decoded: -1, Structs: -1, Bytes: -1, Split: -1}
 }
 
-// began places the hook's apply with origin at the commit position the room stands at as it
-// begins (peerApply.startAt), which the room's apply check weighs the apply against
-// (renderCheck.base). ygo asks for the apply's budget under the document's lock as the apply
-// begins, before the apply changes anything, so the room's document asks this there, beside the
-// budget (newRoomApplies). An apply of any other origin is placed nowhere.
-func (a *roomApplies) began(origin any, logged *loggedCommits) {
-	at, counted := logged.now()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if running, reserved := a.inFlight[origin]; reserved {
-		running.startAt, running.counted = at, counted
-	}
-}
-
 // roots is ygo's per-apply root list: the browser's two for the hook's applies, and nil - every
 // root - for every other origin.
 func (a *roomApplies) roots(origin any) []string {
@@ -1139,28 +1087,6 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 		a.mu.Unlock()
 	}()
 	return apply()
-}
-
-// checking is the record of the hook's apply with origin that the room's apply check is judging,
-// nil for an apply of any other origin, which the check passes (renderCheck.check). The caller
-// holds the document's lock.
-func (a *roomApplies) checking(origin any) *peerApply {
-	if a == nil {
-		return nil
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.inFlight[origin]
-}
-
-// passed records that a check of what running's apply left has passed, with rendering, that
-// check's rendering of it, nil for a state that renders nothing: the later of an update's check
-// and its drain's is the one that stands, since a drain the check refuses is taken back and leaves
-// what the update's own check rendered (noteChecked). The caller holds the document's lock.
-func (a *roomApplies) passed(running *peerApply, rendering *replicaRendering) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	running.checked, running.rendering = true, rendering
 }
 
 // noteQueued records after, what the room's pending queue holds once an apply of the hook's has
@@ -1305,12 +1231,12 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // one a used-up scan total is refused with: the document was just rebuilt, so no rebuild of it
 // would help, and the editor tells the person it was rebuilt, builds its document afresh from
 // the rebuilt room and drops its saved rows typed against the old history as rows of a rebuilt
-// document (connection.ts refusedEditNotice, pending-sync.ts addsParking). An update whose
+// document (connection.ts refusedEditNotice, pending-sync.ts parkedClients). An update whose
 // header does not read refuses nothing there and falls through to the apply, whose decoder
 // refuses the same bytes, DocumentUpdateRefusedCloseReason. The second is an update carrying
 // structs under a client id that is not its sender's, refused DocumentClientIdRefusedCloseReason,
 // or one whose client ids the table could not be read for, refused for a retry with the transient
-// DocumentBusyCloseCode (judgeClients, client_ids.go).
+// DocumentBusyCloseCode (judgeClients, client_ids_judgement.go).
 //
 // Everything else is the apply's. The hook builds the allowance this update applies under
 // (peerApplyAllowance) and the roots it may name (peerAllowedRoots), hands both to the room's
@@ -1437,7 +1363,8 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		socket = connection.clients
 	}
 	allowance := peerApplyAllowance(int64(len(info.Update)), rendering, weighing.roomResidentBytes(),
-		ceiling, measured, peerPressure{full: full, splits: applies.splitsUnderPressure(ceiling, full)}, socket)
+		ceiling, measured, peerPressure{full: full, splits: applies.splitsUnderPressure(ceiling, full)})
+	allowance.judgeParks(socket)
 	// The client ids the update writes under are judged last before the apply, since the
 	// judgement can claim ids for the sender (judgeClients), which a refusal above would then
 	// have to give back; a claim whose apply does not stand is given back below, and the first
@@ -1860,9 +1787,9 @@ func documentUpdateRefused() *websocket.PeerClose {
 }
 
 // documentClientIDRefused is the refusal of an update carrying structs under a client id that is
-// not its sender's (judgeClients, client_ids.go), permanent as documentTooLarge is and under the
-// same code, with a reason of its own: the editor drops the refused edit and rebuilds its document
-// under a fresh client id.
+// not its sender's (judgeClients, client_ids_judgement.go), permanent as documentTooLarge is and
+// under the same code, with a reason of its own: the editor drops the refused edit and rebuilds
+// its document under a fresh client id.
 func documentClientIDRefused() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,

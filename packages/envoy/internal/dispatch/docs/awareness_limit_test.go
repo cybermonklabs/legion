@@ -366,7 +366,7 @@ func TestAReadOnlySocketsAwarenessIsNotDecoded(t *testing.T) {
 	if drops() == 0 {
 		t.Fatal("the filter left no line for the writable page's entry under an id it was not given, so this test cannot see a decode")
 	}
-	setIssueClosed(t, service, true)
+	writeIssueClosed(t, service.store, "DOC-1", true)
 	reader := openPage(t, serverURL, artifactID, "bob")
 	awaitAnswer(t, reader, "bob's read-only page")
 	before := drops()

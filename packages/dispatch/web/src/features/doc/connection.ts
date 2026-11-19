@@ -652,8 +652,8 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       doc,
       onChange: callbacks.onPending,
       remoteOrigin: provider,
-      // A restored row that parks goes out as an Update of its own: the provider's handler of the
-      // document's updates writes one for any origin but its own.
+      // Each restored row the restore keeps goes out as an Update of its own: the provider's
+      // handler of the document's updates writes one for any origin but its own.
       send: (update) => provider.documentUpdateHandler(update, null),
       // The store opens at once, so the rows earlier pages saved are named while no socket has
       // answered yet - a reload with the network down shows them. The rows this document saves

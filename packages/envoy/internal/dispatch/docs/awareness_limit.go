@@ -43,11 +43,12 @@ import (
 // sockets of a process are themselves bounded (Service.canAddConnection).
 //
 // Before the count, a socket carries awareness only under the client ids it may announce
-// (socketClients.announces, client_ids.go): a page given its client id by the socket's admission
-// announces its presence under that id alone, so the filter drops every other entry - another
-// reader's cursor sent under that reader's id, as much as the echo of it an honest provider sends
-// back - and a page of an earlier build may name no id Dispatch gave anyone. A cursor or a
-// presence is the same act under a client id as an edit is, and the same rule refuses it.
+// (socketClients.announces, client_ids_admission.go): a page given its client id by the socket's
+// admission announces its presence under that id alone, so the filter drops every other entry -
+// another reader's cursor sent under that reader's id, as much as the echo of it an honest
+// provider sends back - and a page of an earlier build may name no id Dispatch gave anyone. A
+// cursor or a presence is the same act under a client id as an edit is, and the same rule
+// refuses it.
 //
 // A read-only socket's awareness is decoded by nothing at all. ygo answers a read-only peer's
 // awareness message with a reply of its own and applies and relays none of it
@@ -190,7 +191,8 @@ type awarenessLimitConn struct {
 	// time is never refused.
 	live map[uint64]struct{}
 	src  *bufio.Reader
-	// out is the rewritten bytes ygo's reader has yet to take.
+	// out is the rewritten bytes ygo's reader has yet to take. A buffer grown past the largest
+	// frame of an awareness message is let go once ygo has taken it all (Read).
 	out bytes.Buffer
 	// through is how much of the frame being read reaches ygo unread, straight from src.
 	through int64
@@ -224,7 +226,11 @@ func (c *awarenessLimitConn) Read(p []byte) (int, error) {
 		}
 	}
 	if c.out.Len() > 0 {
-		return c.out.Read(p)
+		read, err := c.out.Read(p)
+		if c.out.Len() == 0 && c.out.Cap() > maxAwarenessMessageBytes+maxFrameHeader {
+			c.out = bytes.Buffer{}
+		}
+		return read, err
 	}
 	if int64(len(p)) > c.through {
 		p = p[:c.through]
@@ -292,12 +298,9 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 	if want <= 0 {
 		return fmt.Errorf("dispatch: a document socket's message does not name its document and type within %d bytes", maxDocumentMessageHeader)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, want)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(want); err != nil {
 		return err
 	}
-	c.unmask(start)
 	rest := payload - want
 	name, kind, read, named := documentMessageKind(c.message)
 	switch {
@@ -338,12 +341,9 @@ func (c *awarenessLimitConn) collect(n int64, final bool) error {
 		c.message = c.message[:0]
 		return c.skip(n, final)
 	}
-	start := len(c.message)
-	c.message = append(c.message, make([]byte, n)...)
-	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+	if err := c.readMessage(n); err != nil {
 		return err
 	}
-	c.unmask(start)
 	c.mode = limitAwareness
 	if !final {
 		return nil
@@ -385,12 +385,19 @@ func (c *awarenessLimitConn) pass(rest int64, final bool) {
 	}
 }
 
-// unmask takes the mask off the message's bytes from start, the first of the frame in hand: each
-// stands at its own offset within that frame, which the key repeats over every four bytes.
-func (c *awarenessLimitConn) unmask(start int) {
+// readMessage reads n more bytes of the frame in hand onto the message and takes the mask off
+// them: each stands at its own offset within that frame, which the key repeats over every four
+// bytes.
+func (c *awarenessLimitConn) readMessage(n int64) error {
+	start := len(c.message)
+	c.message = append(c.message, make([]byte, n)...)
+	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+		return err
+	}
 	for i := start; i < len(c.message); i++ {
 		c.message[i] ^= c.key[(i-start)%4]
 	}
+	return nil
 }
 
 // allowed is the awareness update a socket may send of the one it sent: the entries of the
@@ -453,8 +460,10 @@ func (c *awarenessLimitConn) writeAwareness(update []byte) {
 // as every frame a client sends is.
 func (c *awarenessLimitConn) writeFrame(opcode byte, final bool, payload []byte) {
 	c.out.Write(frameHeader(opcode, final, int64(len(payload)), c.key[:]))
-	for i, b := range payload {
-		c.out.WriteByte(b ^ c.key[i%4])
+	c.out.Write(payload)
+	masked := c.out.Bytes()[c.out.Len()-len(payload):]
+	for i := range masked {
+		masked[i] ^= c.key[i%4]
 	}
 }
 

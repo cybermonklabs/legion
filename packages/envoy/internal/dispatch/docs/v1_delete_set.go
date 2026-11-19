@@ -2,7 +2,6 @@ package docs
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"strconv"
 	"unicode/utf8"
@@ -47,8 +46,8 @@ import (
 // does an Any value nested past the depth the library reads (maxAnyDepth).
 //
 // What it reads costs a pass over the update's bytes and nothing else, so a caller may read it
-// where it reads the update's header (refusedBeforeApply, carriesBeyond), under the load slot the
-// hook takes for an update past unslottedApplyBytes (weighPeerUpdate).
+// where it reads the update's header (refusedBeforeApply, parkedNeeds, heldAgainst), under the
+// load slot the hook takes for an update past unslottedApplyBytes (weighPeerUpdate).
 func eachV1Range(update []byte, structs, deletes func(client crdt.ClientID, clock, length uint64)) bool {
 	r := v1Reader{rest: update, ok: true}
 	for groups := r.uint(); groups > 0 && r.ok; groups-- {
@@ -111,23 +110,30 @@ const (
 	v1TypeRefs = 6 // YXmlText, the highest type reference Yjs defines
 )
 
+// The type references of a V1 type content (v1Type) that carry a name after the reference, as Yjs
+// numbers them: an element's tag and a hook's.
+const (
+	v1TypeXmlElement = 3
+	v1TypeXmlHook    = 5
+)
+
 // v1Reader reads a V1 update's bytes from rest, and ok goes false at the first that do not read.
 type v1Reader struct {
 	rest []byte
 	ok   bool
 }
 
-// uint reads a lib0 varuint, which binary.Uvarint reads as it is written.
+// uint reads a lib0 varuint (readUvarint).
 func (r *v1Reader) uint() uint64 {
 	if !r.ok {
 		return 0
 	}
-	value, read := binary.Uvarint(r.rest)
-	if read <= 0 {
+	value, rest, ok := readUvarint(r.rest)
+	if !ok {
 		r.ok = false
 		return 0
 	}
-	r.rest = r.rest[read:]
+	r.rest = rest
 	return value
 }
 
@@ -241,7 +247,7 @@ func (r *v1Reader) passContent(tag byte) uint64 {
 		if ref > v1TypeRefs {
 			r.ok = false
 		}
-		if ref == 3 || ref == 5 {
+		if ref == v1TypeXmlElement || ref == v1TypeXmlHook {
 			r.bytes() // an element's or a hook's name
 		}
 	case v1Any:

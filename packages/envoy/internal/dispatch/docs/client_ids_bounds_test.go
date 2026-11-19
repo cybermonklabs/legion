@@ -149,7 +149,7 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(
 	sendTyped(t, writer, 0, "w")
 	awaitRendering(t, room, "# Title\n\nwAlice's paragraph.\n", "the room")
 	writer.Close()
-	setIssueClosed(t, service, true)
+	writeIssueClosed(t, service.store, "DOC-1", true)
 	countRows := func() int {
 		t.Helper()
 		var n int
@@ -184,7 +184,7 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(
 		page.Close()
 	}
 
-	setIssueClosed(t, service, false)
+	writeIssueClosed(t, service.store, "DOC-1", false)
 	drawn := reader.Given
 	again := docstest.DialGiven(t, socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"="+strconv.FormatUint(uint64(drawn), 10),
 		pageHeader("bob"), artifactID, func(given crdt.ClientID) *crdt.Doc { return crdt.New(crdt.WithClientID(given)) })
@@ -200,19 +200,6 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(
 	awaitRendering(t, room, "# Title\n\nbwAlice's paragraph.\n", "the room after bob's page typed")
 	requireConnected(t, again, "bob's writable page")
 	awaitLanded(t, service, artifactID, again.Given, "bob's writable page")
-}
-
-// setIssueClosed closes or reopens the test document's issue in the store, which the next socket's
-// admission reads.
-func setIssueClosed(t *testing.T, service *Service, closed bool) {
-	t.Helper()
-	statement := `update issues set closed_at = null where key = 'DOC-1'`
-	if closed {
-		statement = `update issues set closed_at = now() where key = 'DOC-1'`
-	}
-	if _, err := service.store.Pool.Exec(context.Background(), statement); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // A request that never becomes a socket stores nothing: one that is no websocket upgrade is

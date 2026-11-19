@@ -29,7 +29,7 @@ func typedRuns(t *testing.T, doc *crdt.Doc, runs ...string) [][]byte {
 
 // A server write's commit carries more than its writer stored wherever it holds a clock the
 // writer's update does not, and a struct the commit's drain landed inside a gap of that update's
-// own clocks for a client is such a clock (carriesBeyond). The rows stored here are the first and
+// own clocks for a client is such a clock (heldAgainst). The rows stored here are the first and
 // the last of three runs one browser typed, merged: their client's clocks hold a Skip where the
 // middle run's are. The room parked the middle run, which waits behind the first; the rows' apply
 // supplies the first, and its drain lands the middle run beside them, so the commit holds the
@@ -93,11 +93,11 @@ func TestACommitThatLandsAStructInsideAGapOfItsWritersClocksCarriesBeyondThem(t 
 		t.Fatalf("the commit holds the browser's clocks %d to %d and the rows %d to %d; nothing here is tested",
 			from[client], to[client], writtenFrom[client], writtenTo[client])
 	}
-	if !carriesBeyond(landed, written) {
+	if beyond, _ := heldAgainst(landed, written); !beyond {
 		t.Fatalf("a commit whose drain landed the middle run, clocks %d to %d of a client the rows hold %d to %d of with a gap there, was taken as carrying nothing beyond them",
 			writtenFrom[client]+uint64(len("first ")), writtenFrom[client]+uint64(len("first middle ")), writtenFrom[client], writtenTo[client])
 	}
-	if plain := commit(t, nil); carriesBeyond(plain, written) {
+	if beyond, _ := heldAgainst(commit(t, nil), written); beyond {
 		t.Fatal("a commit that landed nothing was taken as carrying more than the rows it applied")
 	}
 }

@@ -144,7 +144,7 @@ func TestARoomWithNoReportYetIsWeighedFromItsDocument(t *testing.T) {
 	// The first update's allowance: built from the reading, since no apply has reported.
 	update := peerTyping(t, room.live, "a browser's first keystrokes")
 	rendering, measured := room.replica.size()
-	want := peerApplyAllowance(int64(len(update)), rendering, tracked, read, measured, peerPressure{}, nil)
+	want := peerApplyAllowance(int64(len(update)), rendering, tracked, read, measured, peerPressure{})
 	if given := weighOneUpdate(t, room, update); !sameBudget(given, want.budget) {
 		t.Fatalf("the first update after the load applied under %+v, want the %+v a room of %d structs allows", given, want.budget, read)
 	}
@@ -163,7 +163,7 @@ func TestARoomWithNoReportYetIsWeighedFromItsDocument(t *testing.T) {
 	// The update after it is bounded by the report rather than by a reading of its own.
 	second := peerTyping(t, room.live, "more")
 	rendering, measured = room.replica.size()
-	want = peerApplyAllowance(int64(len(second)), rendering, room.replica.roomStateBytes(), reported, measured, peerPressure{}, nil)
+	want = peerApplyAllowance(int64(len(second)), rendering, room.replica.roomStateBytes(), reported, measured, peerPressure{})
 	if given := weighOneUpdate(t, room, second); !sameBudget(given, want.budget) {
 		t.Fatalf("the update after the first applied under %+v, want the %+v the %d structs its room reported allow", given, want.budget, reported)
 	}

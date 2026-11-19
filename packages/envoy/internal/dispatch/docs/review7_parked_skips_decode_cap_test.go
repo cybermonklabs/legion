@@ -39,7 +39,7 @@ func TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap(t *testing.T) {
 	var before []byte
 	for i, client := range []uint64{9_000_001, 9_000_002} {
 		held := heldStructs(room)
-		allowed := peerApplyAllowance(0, 0, 0, held, false, peerPressure{}, nil).budget.Structs
+		allowed := peerApplyAllowance(0, 0, 0, held, false, peerPressure{}).budget.Structs
 		frame := r7ParkedBehindSkips(client, allowed)
 		before = crdt.EncodeStateAsUpdateV1(room, nil)
 		err, called := weighInto(service, room, frame)

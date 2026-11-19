@@ -1475,9 +1475,9 @@ test("a page that has written under its client id and is given another is refuse
 
 // The room took every edit the page typed under the id its first socket gave it, and a later
 // socket gives it another: its person signed in again as someone else, say, whose admission is
-// given an id of its own (client_ids.go, keepsClient). The page is refused as one holding edits
-// under an id Dispatch did not give it, though no saved row goes with the refusal: the room holds
-// every edit, so the notice names none as lost.
+// given an id of its own (client_ids_admission.go, keepsClient). The page is refused as one
+// holding edits under an id Dispatch did not give it, though no saved row goes with the refusal:
+// the room holds every edit, so the notice names none as lost.
 test("a page refused its client id after the room took every edit under it is told no edit went", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
@@ -1560,11 +1560,11 @@ test("a page given another client id before it typed keeps what it types after a
 });
 
 // A read-only admission stores no client id for the page: Dispatch sends it one drawn for it alone,
-// which no row names (client_ids.go, admitClients). The page takes it, having written nothing,
-// and presents it on its next socket; once that socket is admitted writable, Dispatch finds no row
-// for it and gives one afresh, which the page takes too (`takeClientId`), since a read-only page
-// writes nothing. What it types then goes out under the fresh id, is kept as a saved row until the
-// room acknowledges it, and the room holds it: no refusal, and nothing lost.
+// which no row names (client_ids_admission.go, admitClients). The page takes it, having written
+// nothing, and presents it on its next socket; once that socket is admitted writable, Dispatch
+// finds no row for it and gives one afresh, which the page takes too (`takeClientId`), since a
+// read-only page writes nothing. What it types then goes out under the fresh id, is kept as a
+// saved row until the room acknowledges it, and the room holds it: no refusal, and nothing lost.
 test("a page admitted read-only and then writable takes the fresh client id its writable socket gives it and writes under it", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
@@ -1732,9 +1732,9 @@ function relayedFrame(update: Uint8Array, name: string): Uint8Array {
 // The room relayed another person's edit to this page and then lost it before its store, and the
 // page's person typed right after it while the socket was down. The reconnect's SyncStep2 hands
 // back the lost edit beside the person's own, and the room refuses it whole as an edit under an id
-// Dispatch did not give this person (client_ids.go, judgeClients). A SyncStep2 names no saved row,
-// so none goes: the row is kept, and the notice says the document was reloaded and the person's
-// saved edits are sent again. The document read afresh from the room (ProofDocument's
+// Dispatch did not give this person (client_ids_judgement.go, judgeClients). A SyncStep2 names no
+// saved row, so none goes: the row is kept, and the notice says the document was reloaded and the
+// person's saved edits are sent again. The document read afresh from the room (ProofDocument's
 // `onEditRefused`) does send it: the row parks there on the other person's lost edit, which no
 // rebuild retired, so the restore records it again and sends it as an Update of its own. The room
 // holds it back and answers it not applied, and the row stays saved until the room has landed it

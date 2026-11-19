@@ -37,8 +37,8 @@ type connectionState struct {
 	// revokes it (RunSchemaAdmission), and ServeHTTP forgets it once the socket has ended.
 	admission *schemaAdmission
 	// clients is the client ids this socket may write and announce under, which its admission
-	// decided (admitClients, client_ids.go) and which the peer update hook and the awareness
-	// filter judge the socket's frames by.
+	// decided (admitClients, client_ids_admission.go) and which the peer update hook and the
+	// awareness filter judge the socket's frames by.
 	clients *socketClients
 }
 
@@ -1040,14 +1040,19 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // (crdt/update.go:395-418 in theorem-labs/ygo v1.55.1-theorem.9). Read off the message's first
 // numbers, it costs nothing to weigh.
 func stepOneWeight(step1 []byte) int64 {
-	if kind, rest, ok := readUvarint(step1); !ok || kind != 0 {
+	kind, rest, ok := readUvarint(step1)
+	if !ok || kind != 0 {
 		return 0
-	} else if length, vector, ok := readUvarint(rest); ok && length <= uint64(len(vector)) {
-		if entries, _, ok := readUvarint(vector[:length]); ok && entries <= length/2 && entries <= maxUpdateItems {
-			return int64(entries) * answerHeapAStepOneEntry
-		}
 	}
-	return 0
+	length, vector, ok := readUvarint(rest)
+	if !ok || length > uint64(len(vector)) {
+		return 0
+	}
+	entries, _, ok := readUvarint(vector[:length])
+	if !ok || entries > length/2 || entries > maxUpdateItems {
+		return 0
+	}
+	return int64(entries) * answerHeapAStepOneEntry
 }
 
 // answerFrameWeight is what the update an answer's cut is packing holds, for a room of structs
@@ -1328,7 +1333,7 @@ type writtenApply struct {
 // its writer's rows. Taken as carrying more, it was stored again, classed as the change the write
 // had made, at a place in the history where it changes nothing
 // (TestStoredOrderEditAfterTheForkReadIntoADeletedParagraph). Every other commit is held against
-// written clock by clock (carriesBeyond): one the check ran on twice, whose drain landed
+// written clock by clock (heldAgainst): one the check ran on twice, whose drain landed
 // something; one sharing no clock with written, whose update changed nothing, so that the one run
 // was the drain's; and one the check never ran on, which only a room without the check makes.
 func (w *writtenApply) landedBeyond(update []byte) bool {
@@ -1348,28 +1353,22 @@ func writtenApplyOf(origin any) *writtenApply {
 	return nil
 }
 
-// carriesBeyond reports whether update, the update a server write's commit made in a room, holds a
-// struct's clocks or a deleted clock that written, the update the writer stored, does not. Each
-// clock of update's structs is held against the clocks of written's, and each deleted clock
-// against written's deleted clocks, clock by clock, so a struct the drain landed inside a gap of
-// written's own clocks for a client - where written holds a Skip - is beyond it, as one past their
-// end is. What the drain of the room's pending queue the commit ended with landed, a browser's
-// frame parked behind the clocks the write supplied, is beyond written, and no row holds it
-// (classifyDrained). So is a deletion written's own changes reach in the room, which is no content
-// of the commit's own, so a commit whose drain landed nothing is not asked this
+// heldAgainst reads update, the update a server write's commit made in a room, against written,
+// the update the writer stored: beyond, whether update holds a struct's clocks or a deleted clock
+// that written does not, and shares, whether it holds one written does. Each clock of update's
+// structs is held against the clocks of written's, and each deleted clock against written's
+// deleted clocks, clock by clock, so a struct the drain landed inside a gap of written's own
+// clocks for a client - where written holds a Skip - is beyond it, as one past their end is. What
+// the drain of the room's pending queue the commit ended with landed, a browser's frame parked
+// behind the clocks the write supplied, is beyond written, and no row holds it (classifyDrained).
+// So is a deletion written's own changes reach in the room, which is no content of the commit's
+// own, so a commit whose drain landed nothing is not judged by beyond alone
 // (writtenApply.landedBeyond). The two updates are read from their structs and delete sets, one
 // pass over each, with no content decoded (eachV1Range), which costs a server write's commit the
-// two passes over its bytes; a browser's keystroke never reaches it. An update either of them
-// cannot read is answered as carrying more, which has the room store the commit itself: a row too
-// many, and nothing lost.
-func carriesBeyond(update, written []byte) bool {
-	beyond, _ := heldAgainst(update, written)
-	return beyond
-}
-
-// heldAgainst reads update's structs and deleted clocks against written's, as carriesBeyond
-// says: beyond, whether update holds a clock written does not, and shares, whether it holds one
-// written does. An update either of them cannot read is beyond and shares nothing.
+// two passes over its bytes: a published write's, and a catch-up's of the rows another process
+// stored, its browsers' keystrokes among them. A keystroke this process's room applies itself
+// never reaches it. An update either of them cannot read is beyond and shares nothing, which has
+// the room store the commit itself: a row too many, and nothing lost.
 func heldAgainst(update, written []byte) (beyond, shares bool) {
 	held, deleted := crdt.NewIDSet(), crdt.NewIDSet()
 	if !eachV1Range(written, held.Add, deleted.Add) {

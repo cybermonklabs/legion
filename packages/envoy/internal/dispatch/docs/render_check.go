@@ -108,6 +108,86 @@ func renderedSize(rendering *replicaRendering) int64 {
 	return int64(len(rendering.markdown))
 }
 
+// began places the hook's apply with origin at the commit position the room stands at as it
+// begins (peerApply.startAt), which the room's apply check weighs the apply against
+// (renderCheck.base). ygo asks for the apply's budget under the document's lock as the apply
+// begins, before the apply changes anything, so the room's document asks this there, beside the
+// budget (newRoomApplies). An apply of any other origin is placed nowhere.
+func (a *roomApplies) began(origin any, logged *loggedCommits) {
+	at, counted := logged.now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if running, reserved := a.inFlight[origin]; reserved {
+		running.startAt, running.counted = at, counted
+	}
+}
+
+// checking is the record of the hook's apply with origin that the room's apply check is judging,
+// nil for an apply of any other origin, which the check passes (renderCheck.check). The caller
+// holds the document's lock.
+func (a *roomApplies) checking(origin any) *peerApply {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.inFlight[origin]
+}
+
+// passed records that a check of what running's apply left has passed, with rendering, that
+// check's rendering of it, nil for a state that renders nothing: the later of an update's check
+// and its drain's is the one that stands, since a drain the check refuses is taken back and leaves
+// what the update's own check rendered (noteChecked). The caller holds the document's lock.
+func (a *roomApplies) passed(running *peerApply, rendering *replicaRendering) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	running.checked, running.rendering = true, rendering
+}
+
+// noteChecked keeps, as the room's record of its rendering (checked), the rendering running's
+// commit left the room at: the one the room's apply check made of what the apply left, where a
+// check passed it, at at, the room's commit position once the commit is logged. An apply no check
+// ran for changed nothing the check reads - ygo checks every apply that changes the document -
+// so a record standing at the position the apply began at is carried to at unchanged. A position
+// that cannot be counted now (counted false) places nothing, and the record keeps the position
+// it had. It answers what the commit's report carries (madeReport): the record it made, nil where
+// no check rendered the apply or none could be placed. The caller holds the document's lock and
+// mu.
+func (a *roomApplies) noteChecked(running *peerApply, at uint64, counted bool) *roomRendered {
+	held := a.checked.Load()
+	switch {
+	case !counted:
+		return nil
+	case !running.checked:
+		if held != nil && running.counted && held.at == running.startAt {
+			a.checked.Store(&roomRendered{at: at, bytes: held.bytes, rendering: held.rendering})
+		}
+		return nil
+	}
+	made := &roomRendered{at: at, bytes: renderedSize(running.rendering), rendering: running.rendering}
+	a.checked.Store(made)
+	if running.rendering == nil {
+		return nil
+	}
+	return made
+}
+
+// forgetChecked drops the room's record of its rendering (checked) where it stands before seq, a
+// commit position whose rendering the replica has published (publishRendered): a commit past the
+// record has landed, and the replica's rendering says what the room renders now. A record standing
+// at seq itself stays: it is of the same state as the replica's and shares its markdown
+// (takeChecked keeps the check's string), and it carries the index of the room's own blocks the
+// next apply's check splices by (blockIndex), which the replica's rendering, of its own document's
+// blocks, cannot.
+func (a *roomApplies) forgetChecked(seq uint64) {
+	if a == nil {
+		return
+	}
+	if held := a.checked.Load(); held != nil && held.at < seq {
+		a.checked.CompareAndSwap(held, nil)
+	}
+}
+
 // loggedCommits counts a room's commits by its update log: every commit that changes the room's
 // document or parks something in it is appended to the log under the document's lock, before any
 // observer runs (crdt.UpdateLog), so the count of what the log has handed over and what it still

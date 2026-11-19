@@ -884,7 +884,7 @@ func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
 	t.Helper()
 	for client := uint64(gcFillClient); structCeiling(room) < uint64(count); client++ {
 		held := structCeiling(room)
-		allowed := peerApplyAllowance(0, 0, 0, held, false, peerPressure{}, nil).budget.Structs
+		allowed := peerApplyAllowance(0, 0, 0, held, false, peerPressure{}).budget.Structs
 		n := min(count-int(held), gcFillFrameStructs, allowed)
 		if n == 0 {
 			// A fill to the cap itself ends here: the structs' share buys half the items of
@@ -2288,7 +2288,7 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 			at: func(t *testing.T, past int) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := peerUpdateRoom(t, ordinary, 0)
 				fillToStructs(t, service, room, maxUpdateItems-nearTheCap)
-				structs := peerApplyAllowance(0, 0, 0, structCeiling(room), false, peerPressure{}, nil).budget.Structs
+				structs := peerApplyAllowance(0, 0, 0, structCeiling(room), false, peerPressure{}).budget.Structs
 				return service, room, gcFrameFrom(7, structs+past), replica
 			},
 			refusedWith: requireRefusedTooLarge,

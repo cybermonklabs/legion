@@ -373,8 +373,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The page's client id is decided last, once nothing above can refuse the socket, so an id is
-	// given out only to a socket that is served (admitClients, client_ids.go): a request ygo's
-	// upgrade would refuse is answered as it would answer it first, and the page's write is
+	// given out only to a socket that is served (admitClients, client_ids_admission.go): a request
+	// ygo's upgrade would refuse is answered as it would answer it first, and the page's write is
 	// decided before its id, so a read-only page is given one stored nowhere.
 	if status := upgradeRefusal(r); status != 0 {
 		http.Error(w, http.StatusText(status), status)

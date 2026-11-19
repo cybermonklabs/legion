@@ -99,7 +99,7 @@ func TestOneFrameThatParksBehindGapsAndCutsItemsLeavesTheStoredStateDecodable(t 
 	frame.raw(cut[1:]...)
 	update := frame.done()
 	before := crdt.EncodeStateAsUpdateV1(room, nil)
-	allowance := peerApplyAllowance(int64(len(update)), 0, int64(service.roomStateBytes(room)), structCeiling(room), false, peerPressure{}, nil)
+	allowance := peerApplyAllowance(int64(len(update)), 0, int64(service.roomStateBytes(room)), structCeiling(room), false, peerPressure{})
 	err, called := weighInto(service, room, update)
 	ceiling := structCeiling(room)
 	t.Logf("a %d-byte frame parking %d structs behind gaps of their own and cutting %d items, into a room weighed at %d of the %d cap (allowance Structs=%d Split=%d): hook=%v applied=%t; the room is weighed at %d",

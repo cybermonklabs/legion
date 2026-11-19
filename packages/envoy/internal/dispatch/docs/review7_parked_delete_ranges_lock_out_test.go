@@ -21,11 +21,14 @@ import (
 	"testing"
 )
 
-// The frame is the largest one browser's frame of parked ranges can be: the room's pending cap,
-// maxUpdateItems ranges (Server.MaxPendingItems, which ygo holds the queue's ranges to as it parks
-// them), which is within the maxDecodedValuesPerApply values one apply may decode, every range
-// read counting one. Each honest keystroke after it must apply, the room's ceiling must not move
-// for it, and the rebuild must not be offered for a room it leaves as small as it was.
+// The frame is the largest one browser's frame of parked ranges can be in the document this test
+// applies it to: that document's pending cap, maxUpdateItems ranges (newDocumentCopy's
+// crdt.WithMaxPendingItems, which ygo holds the queue's ranges to as it parks them where no cap of
+// their own is set), far past the maxParkedDeleteRanges a served room parks
+// (Server.MaxPendingDeleteRanges), and within the maxDecodedValuesPerApply values one apply may
+// decode, every range read counting one. Each honest keystroke after it must apply, the room's
+// ceiling must not move for it, and the rebuild must not be offered for a room it leaves as small
+// as it was.
 func TestR7OneFrameOfParkedDeleteRangesLocksEveryEditorOutOfASmallDocument(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
 	defer runtime.KeepAlive(replica)

@@ -29,7 +29,7 @@ import (
 // several times the message again.
 func TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
-	setIssueClosed(t, service, true)
+	writeIssueClosed(t, service.store, "DOC-1", true)
 	dialer := *gws.DefaultDialer
 	dialer.WriteBufferSize = 1 << 20
 	connection, _, err := dialer.Dial(socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"=", pageHeader("bob"))
@@ -133,7 +133,7 @@ func TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode(t *testing.T) {
 // both ways on the same build).
 func TestAReadOnlySocketsStepTwoDenseInValuesDecodesNoFurtherThanTheApplysValueLimit(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
-	setIssueClosed(t, service, true)
+	writeIssueClosed(t, service.store, "DOC-1", true)
 	connection, _, err := gws.DefaultDialer.Dial(socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"=", pageHeader("bob"))
 	if err != nil {
 		t.Fatal(err)

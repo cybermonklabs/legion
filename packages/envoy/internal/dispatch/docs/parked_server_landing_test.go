@@ -20,7 +20,7 @@ import (
 // the rows another process stored, and a live write's publish, the update this process's own
 // write committed. Either is durable already, so the room stores its commit only where it carries
 // more than its writer stored - here the parked frame the commit's drain landed (classifyDrained,
-// carriesBeyond) - and resyncs the sender once that store has returned, so the SyncStep2 its
+// heldAgainst) - and resyncs the sender once that store has returned, so the SyncStep2 its
 // answer clears the row with comes after the store. Before that rule the server write's commit was
 // taken as stored, the landed content was in no row, and the next browser commit's store
 // resynced the sender all the same: the row cleared, and the edit was the room's alone.
@@ -163,9 +163,5 @@ func storedClock(t *testing.T, pair processPair, client crdt.ClientID) uint64 {
 	if err != nil {
 		t.Fatalf("load the stored document: %v", err)
 	}
-	stored := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(stored, loaded.Update, nil); err != nil {
-		t.Fatalf("decode the stored document: %v", err)
-	}
-	return stored.StateVector().Clock(client)
+	return copyOf(t, loaded.Update).StateVector().Clock(client)
 }
