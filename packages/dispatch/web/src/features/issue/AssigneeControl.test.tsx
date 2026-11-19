@@ -4,6 +4,13 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import {
+  type Commits,
+  drawnPick,
+  type HeldNotifications,
+  holdNotifications,
+  recordCommits,
+} from "../../__tests__/commits";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -126,7 +133,9 @@ const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 const inboxKey = ["inbox"] as const;
 
-function CachedControl(): ReactNode {
+/** The control with the assignee its host reads from the cache, each commit of it recorded with
+ *  that assignee. */
+function CachedControl({ commits }: { commits: Commits<string | null> }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -135,7 +144,11 @@ function CachedControl(): ReactNode {
   if (cached.data === undefined) {
     return null;
   }
-  return <AssigneeControl assignee={cached.data.assignee} issueKey={cached.data.key} />;
+  return (
+    <commits.Recorded host={cached.data.assignee}>
+      <AssigneeControl assignee={cached.data.assignee} issueKey={cached.data.key} />
+    </commits.Recorded>
+  );
 }
 
 function renderControl() {
@@ -150,12 +163,14 @@ function renderControl() {
   queryClient.setQueryData(listKey, [summary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
   const user = userEvent.setup();
+  const commits = recordCommits<string | null>(() => drawnPick(select()));
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      <CachedControl commits={commits} />
     </QueryClientProvider>
   );
   return {
+    commits,
     user,
     listUsers,
     queryClient,
@@ -218,6 +233,46 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
     );
   } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A pick shows from its press on, in every commit. The pick reaches the issue's cache in a
+// microtask of the press, and the control's host only when TanStack Query tells the cache's
+// observers, in a browser a timer later, which the row holds back. The select that showed the
+// pick as it was made is put back to its `value` within the press, so a commit before that timer
+// that drew the assignee the pick replaces is a frame of it on screen (INFRA-3904).
+test("AssigneeControl draws the pick in every commit from the pick on, while its host still passes the assignee it replaces", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { commits, queryClient, unmount, user } = renderControl();
+  let notifications: HeldNotifications | undefined;
+  try {
+    // A focus with no press before it: user-event has no form for a bare focus.
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    const fromPick = commits.markAt(select(), "change");
+    notifications = holdNotifications();
+    await user.selectOptions(select(), "bob");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
+    );
+    // The cache draws the pick, and its host has not been told.
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBe("bob");
+    expect(new Set(fromPick().map(({ host }) => host))).toEqual(new Set(["alice"]));
+    notifications.tell();
+    expect(fromPick().at(-1)?.host).toBe("bob");
+    await act(async () => {
+      save.resolve({ ...issue, assignee: "bob", last_seq: 2 });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(fromPick().map(({ drawn }) => drawn)).toEqual(fromPick().map(() => "bob bob"));
+  } finally {
+    notifications?.tell();
     unmount();
     patchIssue.mockRestore();
   }

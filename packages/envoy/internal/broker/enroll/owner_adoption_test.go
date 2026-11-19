@@ -99,6 +99,9 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	// A second role of the same pod, stating no claim: the slot the daemon gives each role process.
 	unclaimedSlot := r.podEnrollment(t, launcher, workerPodAccount, "pod-uid-unclaimed")
 	unclaimedSlot.SessionID, unclaimedSlot.Slot, unclaimedSlot.Thumbprint = str("unclaimed-slot-session"), "planner-g1", unclaimed.Thumbprint+"-planner-g1"
+	// A pod's grants follow the pair of its account and the account its launcher's login proved
+	// (carryPrincipal), whatever owner it records.
+	podCarry := exchange.PodLaunchPrincipal(workerPodAccount, exchange.AccountPrincipal(launcherAccount))
 
 	for _, c := range []struct {
 		name      string
@@ -124,19 +127,19 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 			name:  "a pod a launcher enrols under a claim belongs to that claim of the launcher's login",
 			cred:  launcher,
 			in:    claimed,
-			owner: "claim:" + launcherAccount + "/" + plannerClaim, claim: plannerClaim, principal: "account:" + workerPodAccount,
+			owner: "claim:" + launcherAccount + "/" + plannerClaim, claim: plannerClaim, principal: podCarry,
 		},
 		{
 			name:  "a pod that states no claim belongs to its own pod",
 			cred:  launcher,
 			in:    unclaimed,
-			owner: "machine:legion-daemon/pod-uid-unclaimed", principal: "account:" + workerPodAccount,
+			owner: "machine:legion-daemon/pod-uid-unclaimed", principal: podCarry,
 		},
 		{
 			name:  "a slot of a pod that states no claim belongs to that slot of its pod",
 			cred:  launcher,
 			in:    unclaimedSlot,
-			owner: "machine:legion-daemon/pod-uid-unclaimed/planner-g1", principal: "account:" + workerPodAccount,
+			owner: "machine:legion-daemon/pod-uid-unclaimed/planner-g1", principal: podCarry,
 		},
 		{
 			name:  "a machine's own session belongs to the machine its credential proved",

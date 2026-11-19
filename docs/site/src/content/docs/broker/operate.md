@@ -297,11 +297,14 @@ trade for that session only with a DPoP proof of that key, and refuses one prove
 are registered for one pod, so this is what keeps one role from trading for another role's
 session; the Legion daemon names each role's key. A later write that names no key keeps the one
 the registration names, and a registration that names none, as a session pod's is, admits any key
-of that pod. Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53
-makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session
-id a role's agent reports, so a role can still have its own claim registered under another
-claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in
-your daemon and its pods.
+of that pod. Set no `exchange_audience` until your daemon, its pods and its broker carry three
+more changes: each role trading with a key of its own, since until then a role's own trade is
+refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the
+daemon that registered it, not only each registrar to the pods of its own daemon, since until then
+any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
+claim's session; and the daemon choosing each role's session id rather than taking its agent's
+report. The daemon already holds each session id to the claim of its project that first recorded
+it and registers no session another of its claims holds.
 
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The

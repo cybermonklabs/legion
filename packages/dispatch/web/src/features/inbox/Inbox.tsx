@@ -553,17 +553,19 @@ function withHeld(
   return [held, ...rows];
 }
 
-/** The row to keep where the reader last saw it, if any. Dropped from the list: kept as last
- *  seen. Moved to another band: what the list says about it changed under the reader's hand, so
- *  the listed row is kept in the band they saw it in. A move into or out of Later is a snooze -
- *  the reader's own click, shown at once. */
+/** The row to keep where the reader last saw it, if any. Dropped from the list: kept where last
+ *  seen, drawn as `current`, or as last seen while `current` is undefined. Moved to another band:
+ *  what the list says about it changed under the reader's hand, so the listed row is kept in the
+ *  band they saw it in. A move into or out of Later is a snooze - the reader's own click, shown
+ *  at once. */
 function heldRow(
   seen: PlacedRow | undefined,
   listed: InboxListRow | undefined,
+  current: InboxListRow | undefined,
   now: string | undefined
 ): PlacedRow | undefined {
   if (seen === undefined) return undefined;
-  if (listed === undefined) return seen;
+  if (listed === undefined) return current === undefined ? seen : { ...seen, row: current };
   const movedBand =
     now !== undefined &&
     now !== seen.group &&
@@ -762,6 +764,10 @@ export function Inbox({
    *  hand-on may hold. Written on every render below, and read here as the record of the
    *  render a registration arrives after. */
   const presented = useRef<readonly PlacedRow[]>([]);
+  /** The row the list held at its last render, by id, and the typed words it was held under
+   *  (`searchWords`, joined): it stays held while the reader's words are those, whatever the
+   *  server does to the text they search. Written on every render below. */
+  const heldUnder = useRef<{ readonly id: string; readonly words: string } | undefined>(undefined);
   // And the same for a hand-on, whose control sits in the card rather than beside it
   // (`AskHandOn`): the optimistic `waiting_on_person` takes the row out of this list as the
   // write starts, so without this the card holding the control would be unmounted before the
@@ -928,6 +934,7 @@ export function Inbox({
   });
   const paneSelection = usePaneSelection({
     bulkSnoozing,
+    candidates,
     filter,
     listRef,
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
@@ -1437,21 +1444,40 @@ export function Inbox({
   //
   // The hold is told which rows the typed text excludes rather than being handed the narrowed
   // list: a row the reader's own typing drops must go at once, even with the pointer resting on
-  // it, so it is not "seen" here at all and there is nothing to hold. A row the server stopped
-  // sending is held exactly as it is today.
+  // it, so it is not "seen" here at all and there is nothing to hold. The words are tested only
+  // where they can have dropped it: on a row the list did not hold at its last render, or once
+  // the reader's words have changed since. A row held under the words the reader still has stays
+  // held though the server changes the text they search, since only the reader's own typing
+  // drops a row at once. A row the server stopped sending is held exactly as it is today.
   const handId = anchor?.id;
+  const typed = words.join(" ");
+  const heldBefore = heldUnder.current;
+  const heldUnderWords =
+    heldBefore !== undefined && heldBefore.id === handId && heldBefore.words === typed;
   const seen =
     handId === undefined || handId === answered.current || dismissedHere(handId)
       ? undefined
       : presented.current.find(
-          (placed) => rowId(placed.row) === handId && matchesInboxSearch(placed.row, words)
+          (placed) =>
+            rowId(placed.row) === handId &&
+            (heldUnderWords || matchesInboxSearch(placed.row, words))
         );
   const listed = seen === undefined ? undefined : byId.get(rowId(seen.row));
   const nowBand =
     listed === undefined
       ? undefined
       : bands.find(({ rows: banded }) => banded.includes(listed))?.key;
-  const held = heldRow(seen, listed, nowBand);
+  // A held row dropped from the list is drawn as its candidate, the row as the Inbox holds it
+  // now, so a pick in it shows there.
+  const held = heldRow(
+    seen,
+    listed,
+    seen === undefined || listed !== undefined
+      ? undefined
+      : candidates.find((row) => rowId(row) === handId),
+    nowBand
+  );
+  heldUnder.current = held === undefined ? undefined : { id: rowId(held.row), words: typed };
 
   // The filtered agent as its asks wrote it (the title it stamped, its attribution), or only its
   // id when none of its asks is listed; either way its registry title names it when listed.

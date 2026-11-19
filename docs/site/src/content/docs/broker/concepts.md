@@ -735,10 +735,16 @@ proving that enrollment's key.
 The session name, with the principal beside it, is what decides which enrollment that is.
 The principal is what the enrolling box proved, never anything its launcher states: the person, for
 a box of theirs and for their sign-in on a machine; the fleet's Google account, for a machine's own
-session; the service account its projected token proved, for a pod
+session; for a pod, the service account its projected token proved, paired with the account the
+token login that enrolled it proved
 (`packages/envoy/internal/broker/enroll/enroll.go`, `carryPrincipal`).
+A pod's grants follow that pair because the pods of several daemons can run as one account, and each
+daemon logs in as an account of its own: a pod one daemon enrolled under another daemon's session
+name takes none of that session's grants. A pod enrolled under a login that proved no account
+carries nothing.
 The broker records which principal holds a name, on the row the token exchange binds every token's
-name in, so the name is one principal's whichever of the two claimed it first.
+name in, so the name is one principal's whichever of the two claimed it first; a pod's name is held
+under its service account alone, the principal its own token exchange claims it under.
 An enrollment that names no session belongs to no principal at all.
 
 Enrolling the same session name again under the same principal takes what every earlier enrollment
@@ -762,6 +768,9 @@ session and no holder, and writes nothing (`enroll.go`, `bindSessionName`).
 A token exchange under that name is refused the same way, on the same row, so the name stays its
 principal's for 90 days past the last lease or token under it
 (`packages/envoy/internal/broker/oauthstore/exchange.go`, `ErrSessionHeld` and `SessionRetention`).
+A pod's name is held under its service account alone, though, so a pod another daemon enrolled
+under the name, running as the same account, is not refused it: its grants follow another pair,
+so it is admitted under the name and takes none of what the session holds (`enroll.go`, `adopt`).
 A box whose key a person revoked trades nothing, so it enrols nothing: a launcher proof signed with a
 revoked credential does not authenticate, and an enrollment already under way finds the credential
 revoked and is refused `LAUNCHER_INVALID`.
@@ -778,6 +787,10 @@ With the pair, the claim takes the name, whether an enrollment or a token exchan
 An enrollment under the name then takes what the other account's enrollments of it still hold, by
 the rule above for a successor under the same principal: the grants, the pending requests and the
 withheld names (`enroll.go`, `adopt`).
+A pod's grants follow its account and the account of the login that enrolled it, so the take
+reaches only the other account's pods that a login of the same account enrolled: a pair moves a
+session between the two accounts one daemon runs its pods as, and never from a pod another daemon
+enrolled.
 A pair works both ways, so pods moved back take the names back the same way.
 A pair does not chain: a claim reads the claimant's own pairs, and every pair works both ways, so
 with A paired with B and B with C, C takes a name B holds and never one A holds.
@@ -867,7 +880,9 @@ session was approved for, with no approval of its own.
 Within one principal what stands between a caller and a secret is the sign-in on a box, or the
 account, and never the session name.
 Three things bound it.
-Another principal is refused the name, but for a service account paired with the holder's (below).
+Another principal is refused the name, but for a service account paired with the holder's (below),
+and a pod of another daemon, which shares the account the name is held under, is admitted under it
+and takes none of what the session holds.
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
 
@@ -876,6 +891,8 @@ pair of service accounts is the operator's word that the move is intended.
 While it stands, a pod of either account can claim any session name the other holds, not only its
 own role's, so a pod of one project's account can claim a name a shared account holds for another
 project's role.
+It takes none of what that session holds, because a pair moves what a session holds only between
+the two accounts' pods one daemon launched (`enroll.go`, `adopt`).
 Two things bound this for Legion's pods: the daemon gives each role only its own name, and a name
 leaves the shared account once its role's pod has moved.
 Remove a pair once no live pod runs as the old account.
