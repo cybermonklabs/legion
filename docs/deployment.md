@@ -170,13 +170,24 @@ option or a second repository naming one owner while gh acts on another's, a wor
 remotes name two but for the marked `origin` above, or a repository a configured rename moved
 beside another of the owner it moved from, which run under one directory's token would answer for
 the other's with less than GitHub holds and no error; a moved repository named by both of its
-names is one directory), one naming an owner the bundle holds no directory for, one naming a
+names is one directory), one naming an owner the bundle holds no directory for but for the read
+below, one naming a
 repository a configured rename moved to an owner the bundle holds no directory for, which names
 the pair, every command where `PATH`'s first `gh` is not
 Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+A read that names only owners the bundle holds no directory for runs, rather than being refused,
+with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
+(`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
+`ghGraphQLQueryRead` reads for certain (its query given with `-f query=…` and holding no
+`mutation` or `subscription` token, its other fields given with `-f` or with `-F` values that read
+no file, and no option but `-f`, `-F`, `-H`, `-q`, `-t`, `--paginate` and `--slurp`, by either
+spelling), where no repository it names is one a configured rename moves and no `github.com`
+remote of the working directory was read for it. An installation's token reads public data and
+that installation's own repositories alone, and GitHub answers 404 for another owner's private
+repository. Every other command naming such an owner is refused as above.
 It refuses the same way, before gh runs: `--editor`/`-e` on any command, because gh runs the
 editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
 an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host

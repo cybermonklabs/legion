@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `legion gh` runs a read of a repository whose owner has no installation of the role's App, for
+  example a fork's upstream, with the token of `GH_CONFIG_DIR`, the directory a command that names
+  no owner runs with. Before, it refused the read. This applies when the call writes nothing, every
+  owner it names has no gh directory, no repository it names is one a configured rename moves, and
+  it reads no github.com remote of the working directory. `gh api graphql` counts as a read only
+  when its query is given with `-f query=…`, holds no `mutation` or `subscription` token, and the
+  call uses only `-f`, `-F` (with no value read from a file), `-H`, `-q`, `-t`, `--paginate` and
+  `--slurp`. A write, a GraphQL call in any other form, and a command that also names an owner the
+  bundle serves or reads such an owner from the working directory's remotes are refused as before,
+  with the same text. The token reads only public data and its own installation's repositories.
