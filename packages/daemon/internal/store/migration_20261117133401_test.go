@@ -38,13 +38,13 @@ const designNewsVersion = 20261117133401
 // started, so its first opening and each member's first phase take their own. The done member gets
 // none.
 //
-// The negative control is the schema before the migration, the role-holders kind's list of
-// 20261116165926 included, which holds neither the told rows table nor the unread history table
+// The negative control is the schema before the migration, the step record's kind list of
+// 20261117000528 included, which holds neither the told rows table nor the unread history table
 // and refuses a design_changes outbox row; after it, every kind the constraint already named is
-// still taken, the merge-queue kinds and role_holders_publish among them, since this migration
-// writes the list last on any database, an unread history is taken only with its reason and a
-// version above 0, and a change set is taken as unchanged only where Dispatch answered it and it
-// is not decision-only.
+// still taken, the merge-queue kinds, role_holders_publish and step_record among them, since this
+// migration writes the list last on any database, an unread history is taken only with its reason
+// and a version above 0, and a change set is taken as unchanged only where Dispatch answered it and
+// it is not decision-only.
 func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261117133401(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -200,7 +200,7 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261117133401(t 
 		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
 		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "design_changes",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "design_changes",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
