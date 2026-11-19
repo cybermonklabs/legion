@@ -9,6 +9,12 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      # why: .github/ci-notes/ci.md#the-commit-main-pointed-at-before-the-push-the-bypass-check-read
+      migration-base:
+        description: The commit main pointed at before the push this run tests.
+        type: string
+        required: false
 
 # why: .github/ci-notes/ci.md#what-a-newer-push-cancels-and-what-is-never-cancelled
 concurrency:
@@ -550,6 +556,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+      migration-base: ${{ inputs.migration-base }}
 
   # why: .github/ci-notes/ci.md#what-the-envoy-go-job-runs
   envoy-go:

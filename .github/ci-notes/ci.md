@@ -1158,6 +1158,12 @@ workflow_dispatch is the bypass check's (.github/workflows/main-bypass-check.yam
 run at main's tip when a commit reached main without a passing merge-group ci-ok, and `changes`
 selects every job there.
 
+## The commit main pointed at before the push the bypass check read
+
+The commit main pointed at before the push the bypass check read: envoy-go-checks compares
+every migration it holds with this run's tree, the range the push landed. A dispatch
+without it fails that check, which cannot tell what the run lands.
+
 ## What a newer push cancels, and what is never cancelled
 
 A newer push to a pull request cancels its older run, waiting or running. On pull_request the key

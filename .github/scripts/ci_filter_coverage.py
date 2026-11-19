@@ -1242,7 +1242,11 @@ ENV_ALLOWED = frozenset({
     "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
-    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN", "PREVIOUS_COMMIT",
+    "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
+    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with: its
+    # script passes it to the command as an argument, and go reads it nowhere.
+    "MIGRATION_BASE",
+    "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
 })
 

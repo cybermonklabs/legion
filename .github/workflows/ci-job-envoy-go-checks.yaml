@@ -19,6 +19,14 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+      migration-base:
+        description: >-
+          On a workflow_dispatch run, the commit main pointed at before the push the run tests
+          (ci.yaml's input of the same name, which main-bypass-check.yaml passes): the base the
+          edited-migrations check compares the run's tree with.
+        type: string
+        required: false
+        default: ''
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -209,6 +217,42 @@ jobs:
         working-directory: packages/envoy
       - name: Build envoy services
         run: go build ./cmd/dispatch ./cmd/listener
+        working-directory: packages/envoy
+      # A migration a database may already have run must keep its identity, or accept what such a
+      # database records of it, its first identity and the base's text, in `-- replaces:` lines:
+      # each runner refuses a database whose version table records what its file does not accept
+      # (internal/pgmigrate, Reconcile), so an edit of an applied file, a comment included, is
+      # caught here, before any database boots it. The base is what this run's tree lands onto. On
+      # a pull request and in the merge queue it is the first parent of the commit the run checked
+      # out: of the pull request's merge commit, and of a merge-group entry's commit (main, or the
+      # entry before it, whose own run checks its change). A workflow_dispatch run is the bypass
+      # check's, at main's tip after a push the queue never tested, which can carry several
+      # commits: its base is the commit main pointed at before that push (migration-base), and a
+      # dispatch that names none fails here rather than compare the tip with its parent alone. The
+      # checkout is one commit deep, so the step fetches the base itself. A push whose `before` is
+      # the all-zero commit, or a commit GitHub no longer serves, fails that fetch, so the check
+      # fails closed: an operator then dispatches the run again by hand with a base GitHub serves,
+      # the newest commit of main the queue tested before the push, as
+      # `gh workflow run ci.yaml --ref main -f migration-base=<that commit>`. The command is built
+      # and then run, not run through `go run`, which turns its exit 2, a check that could not be
+      # taken, into an exit 1.
+      - name: Check that no migration a database may have run is edited without its replaces line
+        env:
+          MIGRATION_BASE: ${{ inputs.migration-base }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ -z "$MIGRATION_BASE" ]; then
+              echo "::error::this workflow_dispatch run names no migration-base, so the check cannot tell which commits it lands; main-bypass-check.yaml passes the commit main pointed at before the push"
+              exit 2
+            fi
+            git fetch --no-tags --depth=1 origin "$MIGRATION_BASE"
+            base=$MIGRATION_BASE
+          else
+            git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
+            base=$(git rev-parse HEAD^1)
+          fi
+          go build -o "$RUNNER_TEMP/edited-migrations" ./internal/pgmigrate/cmd/edited-migrations
+          "$RUNNER_TEMP/edited-migrations" --base "$base"
         working-directory: packages/envoy
       # Every package of the module, its tests included, as macOS compiles it: the agent-secrets
       # command ships for darwin (.github/agent-secrets-client-targets.json), and a file with no
