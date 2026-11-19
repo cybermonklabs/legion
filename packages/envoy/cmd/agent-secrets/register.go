@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // helperConnectPatience is how long cmdRegister retries connecting to a still-starting helper
@@ -123,7 +124,10 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "agent-secrets register: the agent-secrets-helper at %s answered pid %d as the session's root, which is not an ancestor of this process%s, so that session is not this one; relaunch the session under agent-secrets register --exec -- omp …\n", sock, resp.RootPID, why)
 			return 1
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\n", resp.RuntimeID, resp.EnrollmentID, resp.State)
+		// The enrollment is the broker's and the runtime id and state the helper's answer, so
+		// each prints on one line (redact.OneLine) and the line keeps its three tab-separated
+		// fields.
+		fmt.Fprintf(stdout, "%s\t%s\t%s\n", redact.OneLine(resp.RuntimeID), redact.OneLine(resp.EnrollmentID), redact.OneLine(resp.State))
 		if *wait > 0 && resp.State != "enrolled" {
 			fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet: %s\n", resp.Error)
 			return 1
@@ -134,7 +138,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	// starts with no secrets access (helper unreachable), with broker calls that fail NOT_ENROLLED
 	// until the helper's enroll loop succeeds, or, while the helper holds no launcher credential,
 	// with no broker identity at all: its agent-secrets calls fail NO_CREDENTIAL, and identity
-	// exits 1, until the machine is logged in.
+	// exits 1, until the helper holds a credential again, as the helper's own answer says.
 	switch {
 	case err != nil:
 		fmt.Fprintf(stderr, "agent-secrets: helper at %s unreachable (%v); this session has no secrets access until it is relaunched with the helper running\n", sock, err)
@@ -143,9 +147,9 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		// can sign with it, and the renew that confirms it is signed by that same key, so a
 		// login is not what stands between this session and its own enrollment. What the
 		// helper cannot do without one is make a REPLACEMENT if the broker has ended it.
-		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway with the enrollment this session had, which the helper cannot replace if the broker has ended it until it is (run: agent-secrets machine login)")
+		fmt.Fprintf(stderr, "agent-secrets register: launching anyway with the enrollment this session had, which the helper cannot replace if the broker has ended it until it holds a credential again: %v\n", noCredential(resp))
 	case *wait > 0 && resp.State != "enrolled" && resp.Code == helper.CodeNoCredential:
-		fmt.Fprintln(stderr, "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway, and until it is (run: agent-secrets machine login) this session's agent-secrets calls fail")
+		fmt.Fprintf(stderr, "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: %v\n", noCredential(resp))
 	case *wait > 0 && resp.State != "enrolled":
 		fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet (%s); launching anyway, and this session's secrets calls fail until the helper enrolls it\n", resp.Error)
 	}

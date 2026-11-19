@@ -69,7 +69,42 @@ jobs:
       # commit.
       FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A BOUND OF ITS OWN AND A SECOND ATTEMPT, here and in dispatch-two-builds-same below. Of
+      # the 755 checkouts of this file's two jobs in ci.yaml runs created from 2026-11-16 12:52Z
+      # to 2026-11-18 13:39Z, 753 took 96 s at most (median 44 s) and two hung: run
+      # 44143226907's for 44 minutes, until the job's budget cancelled it, and run
+      # 44125069013's for 25 minutes. Each attempt carries 2 minutes, the 96 s plus 15 per cent
+      # rounded up to the next whole minute (dispatch-browser.yaml's rule). The second attempt
+      # runs only when the first did not end in success, and a second failure fails the job
+      # there. A step cut at its budget can leave its git running: the runner signals the
+      # action's own process, not the git processes it started (actions/runner,
+      # ProcessInvoker.cs). A git killed while it wrote refs or config can also leave a lock
+      # (.git/config.lock, packed-refs.lock, a ref's .lock) that actions/checkout does not delete
+      # before it reuses a directory: it deletes index.lock and shallow.lock alone
+      # (src/git-directory-helper.ts). So the step between the two attempts ends every git
+      # process on the runner, which runs this one job, and then empties the workspace, and the
+      # second attempt is a fresh clone.
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: End the git processes and the workspace a first attempt cut at its budget leaves
+        if: steps.checkout.outcome != 'success'
+        timeout-minutes: 2
+        run: |
+          pgrep -a git || true
+          pkill -KILL -x git || true
+          pkill -KILL -f git-remote-http || true
+          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+          pgrep -a git || echo "no git process is left"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out again, after a first attempt that did not complete
+        if: steps.checkout.outcome != 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -224,11 +259,13 @@ jobs:
   #
   # It runs the whole suite unchanged. Each row that depends on the two builds' numbers decides
   # from what the live fleet registers, not from which commit the previous build is, so a
-  # same-build pairing is a case the suite already states. The one row that needs an older build
-  # reads DISPATCH_FIRST_ROLLOUT_BUILD, which this job leaves unset, so that row skips here and
-  # runs in the job above. A row that fails only in this job holds a version assumption it never
-  # stated: that is a finding for the row's owning tree, which fixes the row, and no ground for a
-  # skip.
+  # same-build pairing is a case the suite already states. The one row that needs the first-rollout
+  # build reads DISPATCH_FIRST_ROLLOUT_BUILD, which this job leaves unset, so that row skips here and
+  # runs in the job above. The two owner lock gate rows (twobuild_owner_lock_test.go) skip here too,
+  # by the owner lock protocol the previous build registers: a build at this tree's protocol never
+  # takes the gate they test, and TestTwoBuildsSerialiseOneOwnersWritersBothWays covers this pairing.
+  # A row that fails only in this job holds a version assumption it never stated: that is a finding
+  # for the row's owning tree, which fixes the row, and no ground for a skip.
   #
   # A merge-group run alone runs it, and as a job of its own beside the one above, so the group
   # fails before the merge, its wall time does not grow, and a pull request's run (`full-ci`) or
@@ -254,8 +291,29 @@ jobs:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       # The whole history and the tags, as the job above takes them: build-dispatch-build.sh
-      # refuses a commit older than its floor release, which it reads by its tag.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # refuses a commit older than its floor release, which it reads by its tag. Bounded and
+      # tried again as the job above's checkout is, for the reasons its comment gives.
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: End the git processes and the workspace a first attempt cut at its budget leaves
+        if: steps.checkout.outcome != 'success'
+        timeout-minutes: 2
+        run: |
+          pgrep -a git || true
+          pkill -KILL -x git || true
+          pkill -KILL -f git-remote-http || true
+          while pgrep -x git > /dev/null || pgrep -f git-remote-http > /dev/null; do sleep 1; done
+          pgrep -a git || echo "no git process is left"
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out again, after a first attempt that did not complete
+        if: steps.checkout.outcome != 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 2
         with:
           persist-credentials: false
           fetch-depth: 0

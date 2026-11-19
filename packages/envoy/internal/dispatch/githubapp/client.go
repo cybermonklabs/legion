@@ -149,6 +149,9 @@ type Source struct {
 type cachedToken struct {
 	token   string
 	expires time.Time
+	// permissions is what GitHub's access_tokens answer said this token holds. The client mints
+	// with no narrowing, so it is what the installation had granted the App at the mint.
+	permissions auth.AppPerms
 }
 
 // mintedToken is what the client remembers of a token it minted: the installation that scopes
@@ -551,8 +554,28 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 // cannot be minted for it forgets it at once, so an App moved between installations is looked up
 // again within the TTL, or sooner when the old installation is gone.
 func (c *Client) RepositoryToken(ctx context.Context, owner, repo string) (string, error) {
+	token, _, err := c.RepositoryTokenWithStatuses(ctx, owner, repo)
+	return token, err
+}
+
+// RepositoryTokenWithStatuses is RepositoryToken with whether that token holds Commit statuses at
+// read or write, which is what Dispatch's CI reconcile decides by whether it reads a head's commit
+// statuses at all. Both answers come from the one cached token: the permissions are the ones
+// GitHub's access_tokens answer named for that token, decoded and kept beside it in the one cache
+// entry (token), so a token is never answered beside another mint's permissions.
+//
+// The permission is the token's rather than the installation's, although the installation lookup
+// that resolves owner/repo names the installation's permissions too. A token lives about an hour
+// and is kept until tokenExpirySlack before its expiry, while the installation is remembered apart
+// for installationsCacheTTL. After a person accepts Commit statuses for the App, the installation
+// says the App holds it while the token in hand does not, for up to an hour, and every head the
+// reconcile read in that time would send a status read GitHub refuses, at every pass. The token's
+// own permissions are exact for each request the token makes. A grant can still be taken away
+// while a token lives, so a caller still meets a refused status read, which costs the head its
+// statuses alone.
+func (c *Client) RepositoryTokenWithStatuses(ctx context.Context, owner, repo string) (string, bool, error) {
 	if c == nil {
-		return "", ErrNoAppKey
+		return "", false, ErrNoAppKey
 	}
 	name := owner + "/" + repo
 	installationID, err := c.repositories.get(ctx, name, func(ctx context.Context) (int64, error) {
@@ -560,14 +583,15 @@ func (c *Client) RepositoryToken(ctx context.Context, owner, repo string) (strin
 		return installation.ID, err
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	token, err := c.Token(ctx, installationID)
+	minted, err := c.token(ctx, installationID)
 	if err != nil {
 		c.repositories.forget(name)
-		return "", err
+		return "", false, err
 	}
-	return token, nil
+	statuses := minted.permissions.Statuses == "read" || minted.permissions.Statuses == "write"
+	return minted.token, statuses, nil
 }
 
 // installationRepositoriesPerPage is GitHub's own page size for GET /installation/repositories.
@@ -751,37 +775,46 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 // Token returns an installation access token, minting one only when the
 // cached token is within tokenExpirySlack of GitHub's expiry.
 func (c *Client) Token(ctx context.Context, installationID int64) (string, error) {
+	minted, err := c.token(ctx, installationID)
+	return minted.token, err
+}
+
+// token is Token with the permissions GitHub's access_tokens answer named for the token, which
+// are kept in the one cache entry beside the token they came with.
+func (c *Client) token(ctx context.Context, installationID int64) (cachedToken, error) {
 	if c == nil {
-		return "", ErrNoAppKey
+		return cachedToken{}, ErrNoAppKey
 	}
 	c.mu.Lock()
 	cached, ok := c.tokens[installationID]
 	c.mu.Unlock()
 	if ok && c.now().Before(cached.expires.Add(-tokenExpirySlack)) {
-		return cached.token, nil
+		return cached, nil
 	}
 	jwt, err := c.appJWT()
 	if err != nil {
-		return "", err
+		return cachedToken{}, err
 	}
 	target := c.base + "/app/installations/" + strconv.FormatInt(installationID, 10) + "/access_tokens"
 	body, status, header, err := c.do(ctx, AppScope, http.MethodPost, target, "Bearer "+jwt)
 	if err != nil {
-		return "", err
+		return cachedToken{}, err
 	}
 	if limited := RateLimit(status, header, body); limited != nil {
-		return "", limited
+		return cachedToken{}, limited
 	}
 	if status != http.StatusCreated {
-		return "", fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return cachedToken{}, fmt.Errorf("POST %s: status %d: %s", target, status, body)
 	}
 	var payload struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
+		Token       string        `json:"token"`
+		ExpiresAt   time.Time     `json:"expires_at"`
+		Permissions auth.AppPerms `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", fmt.Errorf("decode installation token: %w", err)
+		return cachedToken{}, fmt.Errorf("decode installation token: %w", err)
 	}
+	fresh := cachedToken{token: payload.Token, expires: payload.ExpiresAt, permissions: payload.Permissions}
 	c.mu.Lock()
 	now := c.now()
 	for token, minted := range c.installationOf {
@@ -789,10 +822,10 @@ func (c *Client) Token(ctx context.Context, installationID int64) (string, error
 			delete(c.installationOf, token)
 		}
 	}
-	c.tokens[installationID] = cachedToken{token: payload.Token, expires: payload.ExpiresAt}
+	c.tokens[installationID] = fresh
 	c.installationOf[payload.Token] = mintedToken{installation: installationID, expires: payload.ExpiresAt}
 	c.mu.Unlock()
-	return payload.Token, nil
+	return fresh, nil
 }
 
 // CheckSource proves end to end that the App can read owner/repo: the

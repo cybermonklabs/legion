@@ -818,7 +818,7 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", labels: [] },
       { issue: "DSP-1", priority: 0 },
       { issue: "DSP-1", priority: null },
-      { issue: "DSP-1", assignee: "alice@theorem.dev" },
+      { issue: "DSP-1", assignee: "alice@example.com" },
       { issue: "DSP-1", assignee: null },
       { issue: "DSP-1", external_links: ["https://github.com/owner/repo/pull/7"] },
       { issue: "DSP-1", route: "" },

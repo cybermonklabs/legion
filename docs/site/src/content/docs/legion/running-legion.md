@@ -120,8 +120,8 @@ decide what they may do there:
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages, statuses, attestations |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts, attestations |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -129,15 +129,21 @@ change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accou
 account granted it. The mint reads that second set before each token and asks for the role's
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
-permission. The daemon itself reads
-GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts,
-which covers what arrived while the daemon was down, and once an agent's handoff has been recorded,
-the moment the daemon next decides on that pull request's state. It runs on no timer, and it reads
-one issue's own pull request rather than a listing of every open one, so a handoff costs the reads
-of its own pull request alone.
-It reads no repository ruleset, no branch protection and no check run: whether CI is red at a head
-reaches the daemon as Envoy's settled observation of that head's checks, and the checks a base
-branch requires the daemon never reads at all, so it names no required check that has never run.
+permission. An App registered before a permission joined its manifest lacks that permission
+until you add it in the App's settings on GitHub and each account that installed the App
+approves it. The controller, which works no repository, holds a read lease of the review App on
+each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
+commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
+itself reads GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts, which covers
+what arrived while the daemon was down, and once an agent's handoff has been recorded, the moment
+the daemon next decides on that pull request's state. It runs on no timer, and it reads one issue's
+own pull request rather than a listing of every open one, so a handoff costs the reads of its own
+pull request alone. It reads no repository ruleset, no branch protection, no check run and no
+commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
+that head's check runs and commit statuses, and the checks a base branch requires the daemon never
+reads at all, so it names no required check that has never run. Dispatch's CI reconcile reads the
+commit statuses of each open head from GitHub where the Envoy App's token holds the Commit statuses
+permission, and the settlement names each one with its state.
 Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
 Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
@@ -281,7 +287,7 @@ Dispatch read them, delete the files, then install every App from
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
   OOM-kills it, which stalls the tree until the pod is relaunched and its roles resume. The
-  `resource-limits` row of `legion state --json` and `legion start --check-config` both name the
+  `resource-limits` row of `legion state --json` and `legion config check` both name the
   `Burstable` pods (`resources: Burstable (a request below the limit): the issue pod; every other
   pod is Guaranteed`). On GKE Autopilot's general-purpose, `Balanced` and `Scale-Out` pods, a
   request below the limit is honoured only in a cluster that supports bursting
@@ -298,8 +304,8 @@ Dispatch read them, delete the files, then install every App from
   [Issue sizing](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#issue-sizing-one-reservation-per-pod)
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
-  250m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time and runs no lane or browser, and a larger probe could keep the daemon from
+  500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
+  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
   booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
@@ -354,8 +360,10 @@ Dispatch read them, delete the files, then install every App from
 
 Every agent runs from `ghcr.io/cybermonklabs/legion-worker`, which carries Oh My Pi, Legion's two plugins
 (`@sjawhar/pi-envoy` and `@sjawhar/pi-legion`), the `legion` CLI, a general toolchain (git, jj, gh,
-Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, kubectl, yq, unzip) and the
-client tools a role's own work needs (`psql`, `redis-cli`, `sqlite3`, `nc`, `dig`): `apt` cannot write a system
+mise, Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, the Google Cloud SDK's
+gcloud and bq, azure-cli's az, kubectl, yq, unzip, tmux, busybox, and the host libraries
+Playwright's WebKit needs) and the client tools a role's own work needs (`psql`, `redis-cli`,
+`sqlite3`, `nc`, `dig`): `apt` cannot write a system
 prefix in an unprivileged container, unpacking
 one by hand works for some tools and not others, and what rules out a client a role unpacks onto
 its own `PATH` is the withheld `operator-setup` capability, not the unpacking itself.
@@ -423,7 +431,7 @@ What each part is for:
   The checking agent names its own next look, with `wake_at` on each `pending` report but the
   check's last, and nothing else wakes a check. `projects.<KEY>.deploys` is still accepted and
   read for nothing: the loader warns once per project that sets it, `legion start` logs each
-  warning as it boots, and `legion start --check-config` prints each after its `Config OK` line
+  warning as it boots, and `legion config check` prints each after its `Config OK` line
   and exits 0. Remove the key.
 - **`projects.<KEY>.memory`** (optional) decides what each tree that project opens runs with.
   The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon
@@ -586,7 +594,7 @@ What each part is for:
   so the second pair would overwrite the first with nothing said; several
   repositories of one owner may move to one owner, and a rename inside the owner (`a/b` to `a/c`)
   counts as a move to that owner, so `a/b` to `a/c` beside `a/e` to `f/g` is refused.
-  `legion start --check-config` prints one line
+  `legion config check` prints one line
   per configured pair, so you can read back what the daemon will treat as one repository before
   the transfer.
 - **`daemon_url`**, **`envoy_url`**, **`dispatch_url`**, every **`nats_urls`** entry and the
@@ -655,7 +663,7 @@ What each part is for:
   value, one with an empty key, one whose key or value does not percent-decode or runs past 255
   characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which
   Legion writes itself. The refusal names that one member and what is wrong with it, never the
-  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  rest of your value, and `legion config check` gives boot's verdict before a restart.
   One such member would cost a launch every attribute of the variable, your own
   `theorem.project` among them, because the detector's caller catches the throw with an empty
   hand. Like every other variable here, the attributes reach a role with the start command of its
@@ -688,23 +696,40 @@ What each part is for:
   token at every start and keeps logging in; no person approves it, provided the broker's
   `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount.
 - **`runtime.kubernetes.setup`** (optional) is a command, as an argv, that every role, in its own
-  namespaces,
-  runs before each start of its Oh My Pi. It runs in the role's working directory with the role's
-  environment, and its `git` answers `https://github.com` from the role's gh bundle: the role's
-  own App token on every owner that App is installed on, with the role's own permissions, each
-  reaching every repository that owner's installation holds, and the controller's read-only.
-  Oh My Pi starts only once it exits 0; a failure is a failed launch, and its
-  output is in the role's log. Under
-  this runtime it must fetch nothing: a clone in a role's launch context ends the pod's gVisor
-  sandbox a few seconds in, so install skills with `skills_repository` below and leave `setup` to
-  check that they are there.
-- **`runtime.kubernetes.skills_repository`** (optional) is the Oh My Pi plugin marketplace your
-  pods' roles load their skills from, as `owner/name`. Each issue pod clones its default branch
-  shallow in an init container of its own, with the project's App token, and every role installs
-  from that clone before Oh My Pi starts — so a pod's skills are that branch as of the pod's start,
-  with no image rebuild and no fetch in any role's launch. Each role then checks that the files Oh
-  My Pi installed are the ones that commit holds, and fails its launch if they are not, so a pod
-  can always say which commit its agents' skills came from.
+  namespaces, runs before each start of its Oh My Pi. It runs in the role's working directory with
+  the role's environment, and its `git` answers `https://github.com` from the role's gh bundle:
+  the role's own App token on every owner that App is installed on, with the role's own
+  permissions, each reaching every repository that owner's installation holds, and the
+  controller's read-only. Oh My Pi starts only once it exits 0; a failure is a failed launch, and
+  its output is in the role's log. It may install an Oh My Pi plugin marketplace from GitHub. Such
+  an install renames a directory in the role's home overlay, which stopped the pod's gVisor
+  sandbox until legion-v19.18.1 mounted that overlay with `userxattr` (gVisor could not write its
+  opaque mark on the renamed directory). For example:
+
+  ```yaml
+  runtime:
+    kubernetes:
+      setup:
+        - /bin/sh
+        - -c
+        - |
+          [ -z "${LEGION_CONTROLLER:-}" ] || exit 0
+          cd "$HOME" || { echo "setup: cd $HOME failed" >&2; exit 0; }
+          repo=acme/agent-skills marketplace=acme-skills plugin=agent-skills
+          omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+          if ! timeout 120 omp plugin marketplace add "$repo"; then
+            echo "setup: omp plugin marketplace add $repo failed" >&2
+          elif ! timeout 60 omp plugin install "$plugin@$marketplace" --force; then
+            echo "setup: omp plugin install $plugin@$marketplace failed" >&2
+          elif ! omp plugin enable "$plugin@$marketplace"; then
+            echo "setup: omp plugin enable $plugin@$marketplace failed" >&2
+          fi
+          omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+          exit 0
+  ```
+
+  This example skips the controller and exits 0 when a step fails, so a failed install stops no
+  role.
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).
@@ -789,12 +814,12 @@ What each part is for:
   you leave out is told exactly what it is told without the key. The loader refuses an unknown
   role, an empty list, a relative path, a path named twice or one every role already names, and a
   role `worker_backends` puts on `claude`. Under Kubernetes each file must be in a mount of
-  `runtime.kubernetes.pod.volume_mounts` (`legion start --check-config` refuses one that is not),
+  `runtime.kubernetes.pod.volume_mounts` (`legion config check` refuses one that is not),
   and the image probe reads each named role's overlays in the pod's mounts at boot, so a file the
   ConfigMap lacks, or one Oh My Pi cannot parse, stops the boot naming the role and the file, never
-  that role's start. Under tmux boot and `--check-config` refuse a file the host does not have, and
-  boot refuses one Oh My Pi cannot parse. The capability report's `model-fallback` row reads only
-  the overlays every role names, so a deployment that turns fallback on for some roles alone
+  that role's start. Under tmux boot and `legion config check` refuse a file the host does not have,
+  and boot refuses one Oh My Pi cannot parse. The capability report's `model-fallback` row reads
+  only the overlays every role names, so a deployment that turns fallback on for some roles alone
   records `capabilities.decided.model-fallback`. Only loading is per role: every role of a pod, and every pane
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
   to a running deployment replaces every affected issue pod at the restart: each of its running
@@ -875,14 +900,14 @@ What each part is for:
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.
 
-**Every key in one place: `legion config-reference --json`.** The command prints the loader's own
+**Every key in one place: `legion config reference --json`.** The command prints the loader's own
 key table as JSON — one object per top-level key with its `name`, `default`, `required` and
 `description`, and, under `nested`, the keys of the mappings that belong to it — and reads
 nothing: no `legion.yaml`, no daemon, no cluster, so it answers anywhere the binary runs. JSON is
 the one shape it prints, which is why `--json` is required rather than one choice among formats:
 
 ```sh
-legion config-reference --json | jq '.[] | select(.name == "projects") | .nested[] | select(.path | startswith("projects.<KEY>.experiments"))'
+legion config reference --json | jq '.[] | select(.name == "projects") | .nested[] | select(.path | startswith("projects.<KEY>.experiments"))'
 ```
 
 The [configuration reference](/legion/legion/reference/config/) on this site is built from that
@@ -973,8 +998,8 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 ## Secrets and files
 
 - **The operator token** authenticates `legion controller start`, `legion claims` and
-  `legion status <issue> <status>` from an operator's shell. Make one long random string in a file
-  only you can read:
+  `legion issue status <issue> <status>` from an operator's shell. Make one long random string in a
+  file only you can read:
 
   ```sh
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token
@@ -1019,7 +1044,7 @@ To stand it up:
    differs and leaves yours. Either way, stop that tool declaring the ConfigMap first.
 3. Put `pod.yml`'s contents under `runtime.kubernetes.pod` in `legion.yaml`, with your endpoint's
    token audience in place of `${MODEL_TOKEN_AUDIENCE}` and the ServiceAccount your pods run as in
-   place of `${POD_SERVICE_ACCOUNT}`. `legion start --check-config` refuses either placeholder
+   place of `${POD_SERVICE_ACCOUNT}`. `legion config check` refuses either placeholder
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
@@ -1033,12 +1058,12 @@ relaunched.
 
 ## Check and start the daemon
 
-Validate the file first. `--check-config` makes every refusal boot would make from the
+Validate the file first. `legion config check` makes every refusal boot would make from the
 configuration, the environment and the files it names, without starting anything, running a key
 command or writing a file:
 
 ```sh
-legion start --config legion.yaml --check-config
+legion config check --config legion.yaml
 # Config OK: project=WIDGETS design-gate-steps=spec
 ```
 
@@ -1160,7 +1185,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 1. **Pick the new image** and note its digest ([The worker image](#the-worker-image)), and take the
    `legion` binary and both plugins from it.
 2. **Update `legion.yaml`**: set `runtime.kubernetes.image` to the new digest and run
-   `legion start --config legion.yaml --check-config`.
+   `legion config check --config legion.yaml`.
 
    **After the first upgrade to a release that takes the project's repositories from Dispatch,** a
    `legion.yaml` that still sets `projects.<KEY>.repo` is refused at load with
@@ -1172,7 +1197,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **After the first upgrade to a release without `review_workflows`,** a `legion.yaml` that still
    sets `projects.<KEY>.review_workflows` is refused at load with
-   `Unknown key "projects.<KEY>.review_workflows"`, by `legion start --check-config` and by the
+   `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
    image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
    the work back to the implementer, which answers and resolves the bot's threads and pushes, and
@@ -1564,11 +1589,11 @@ Closing the terminal leaves the project without one, and the daemon logs
 
 ## Take a tree out
 
-From an operator's shell, `legion status` sets a root's Dispatch status through the daemon, as the
-controller does through its `legion` tool's `set_status`:
+From an operator's shell, `legion issue status` sets a root's Dispatch status through the daemon, as
+the controller does through its `legion` tool's `set_status`:
 
 ```sh
-legion status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
+legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots

@@ -36,6 +36,7 @@ import {
   settingsTableRow,
   settingsTableWrapper,
 } from "./classes";
+import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -130,7 +131,8 @@ export function SettingsPage(): ReactNode {
     // A write's answer is one row as the server saved it, not the project's mappings when the
     // answer arrives: another write (another browser's default pick, read through a mapping event
     // while this one was on the way) may have changed them since. Reading them again once the
-    // write settles leaves the page on the server's state, as useIssueFieldWrite does an issue's.
+    // write settles leaves the page on the server's state, as issueFieldWrite does an issue's once
+    // no newer live write of the field is left.
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
   const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
@@ -355,6 +357,7 @@ export function SettingsPage(): ReactNode {
           <DeliverySettingsForm />
         </section>
         <IssuePagePreference />
+        <LegionDaemonsSection />
       </div>
     </section>
   );

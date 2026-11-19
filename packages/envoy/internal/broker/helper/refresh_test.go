@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // keptLogin logs a Broker in against f and returns the machine file it kept, for a second Broker
@@ -50,7 +52,7 @@ func TestALoginIsKeptOnDiskAndAStartResumesIt(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	resumed := &Broker{URL: f.srv.URL, OperatorFile: b.OperatorFile, MachineFile: b.MachineFile, HTTP: f.srv.Client()}
+	resumed := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: b.OperatorFile, MachineFile: b.MachineFile, HTTP: f.srv.Client()}
 	t.Cleanup(resumed.Close)
 	if err := resumed.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -84,7 +86,7 @@ func TestALoginIsKeptOnDiskAndAStartResumesIt(t *testing.T) {
 func TestARefusedRefreshDropsTheLoginAndItsFile(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil))}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
@@ -104,7 +106,7 @@ func TestARefusedRefreshDropsTheLoginAndItsFile(t *testing.T) {
 	if _, err := LoadMachineFile(b.MachineFile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the machine file after a refused refresh: %v; want it deleted", err)
 	}
-	line := waitForRecord(t, &out, dropRefreshRefused+"; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)")
+	line := waitForRecord(t, &out, dropRefreshRefused+"; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it")
 	if line["level"] != "ERROR" || line["credential_id"] != held.id || line["code"] != "invalid_grant" {
 		t.Fatalf("the drop line: %v; want an ERROR naming %s and invalid_grant", line, held.id)
 	}
@@ -239,7 +241,7 @@ func TestARefreshMovesTheExpiryAndSilencesTheOldWatch(t *testing.T) {
 	f.mu.Lock()
 	f.loginLifetime = 3 * time.Hour
 	f.mu.Unlock()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil)), expiryWarning: time.Hour}
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
@@ -282,7 +284,7 @@ func TestAMachineFileThatDoesNotParseStopsTheStart(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	b := &Broker{URL: "http://127.0.0.1:1", MachineFile: path}
+	b := &Broker{URL: brokeraddr.New("http://127.0.0.1:1"), MachineFile: path}
 	if err := b.Start(context.Background()); err == nil || errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Start on an unreadable machine file: %v; want an error naming it", err)
 	}
@@ -318,7 +320,7 @@ func heldRefresh(t *testing.T, f *fakeBroker, b *Broker) (release func() error) 
 func TestAnExpiryDuringARefreshNeverUndoesIt(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil))}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
@@ -398,7 +400,7 @@ func TestAStartRefreshesTheKeptLoginBeforeItHoldsIt(t *testing.T) {
 	path, kept := keptLogin(t, f)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -430,7 +432,7 @@ func TestAStartWhoseRefreshIsRefusedHoldsNothing(t *testing.T) {
 	f.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -453,7 +455,7 @@ func TestAStartWhoseRefreshFailsResumesTheLogin(t *testing.T) {
 	f.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), refreshRetry: time.Hour}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), refreshRetry: time.Hour}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -474,7 +476,7 @@ func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -506,7 +508,7 @@ func TestALauncherRefusalTheBrokerStillRefreshesKeepsTheFile(t *testing.T) {
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -568,7 +570,7 @@ func TestAStartWhoseSaveFailsRetriesWithinTheRetryInterval(t *testing.T) {
 	restore := unwritable(t, path)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), refreshRetry: 50 * time.Millisecond}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), refreshRetry: 50 * time.Millisecond}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -591,7 +593,7 @@ func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(), refreshRetry: 50 * time.Millisecond}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(), refreshRetry: 50 * time.Millisecond}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -673,7 +675,7 @@ func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
 	f.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(),
 		startRefreshBound: 200 * time.Millisecond, refreshRetry: time.Hour}
 	// One cleanup, gate first: Close waits on credMu, which a Start that ignored its bound would
 	// hold until the gate opens.
@@ -706,7 +708,7 @@ func TestAShortLivedCredentialIsRefreshedBeforeItLapses(t *testing.T) {
 	f.mu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if err := b.Start(ctx); err != nil {
 		t.Fatal(err)

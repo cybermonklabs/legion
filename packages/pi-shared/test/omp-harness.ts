@@ -470,6 +470,25 @@ function ompEnv(options: { readonly home: string; readonly bin?: string }): {
   };
 }
 
+/** The transcript files under `sessions`, oldest first: one per life of a session, each named
+ *  `<timestamp>_<sessionId>.jsonl`, which sorts chronologically. */
+async function transcripts(sessions: string): Promise<string[]> {
+  return (await readdir(sessions, { recursive: true }))
+    .filter((file) => file.endsWith(".jsonl"))
+    .sort()
+    .map((file) => path.join(sessions, file));
+}
+
+/** The session a resume reopens (`--resume <id>` among `spawnRpc`'s `args`): the newest
+ *  transcript's id under `sessions`, the `<sessionId>` of its name. */
+export async function resumeId(sessions: string): Promise<string> {
+  const newest = (await transcripts(sessions)).at(-1);
+  if (newest === undefined) throw new Error(`no transcript to resume under ${sessions}`);
+  const named = /^[^_]+_(.+)\.jsonl$/.exec(path.basename(newest));
+  if (named?.[1] === undefined) throw new Error(`cannot read a session id from ${newest}`);
+  return named[1];
+}
+
 export interface Interactive {
   /**
    * The screen as the terminal renders it now, scrollback included: one string, each row's
@@ -1103,23 +1122,6 @@ export async function runLegionPane(
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
   await live(prompts, []);
 
-  /** The pane's transcript files, oldest first: one per life, each named
-   * `<timestamp>_<sessionId>.jsonl`, which sorts chronologically. */
-  const transcripts = async (): Promise<string[]> =>
-    (await readdir(sessions, { recursive: true }))
-      .filter((file) => file.endsWith(".jsonl"))
-      .sort()
-      .map((file) => path.join(sessions, file));
-
-  /** The session a resume reopens: the newest transcript's id, the `<sessionId>` of its name. */
-  const resumeId = async (): Promise<string> => {
-    const newest = (await transcripts()).at(-1);
-    if (newest === undefined) throw new Error(`no transcript to resume under ${sessions}`);
-    const named = /^[^_]+_(.+)\.jsonl$/.exec(path.basename(newest));
-    if (named?.[1] === undefined) throw new Error(`cannot read a session id from ${newest}`);
-    return named[1];
-  };
-
   const turns = (): Request[] =>
     requests.filter(
       (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
@@ -1150,7 +1152,7 @@ export async function runLegionPane(
     // than be withheld (dispatch://INFRA-2188).
     transcriptEntries: async (customType) => {
       const entries: unknown[] = [];
-      for (const file of await transcripts()) {
+      for (const file of await transcripts(sessions)) {
         for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
           const entry: unknown = JSON.parse(line);
           if (typeof entry !== "object" || entry === null) continue;
@@ -1162,7 +1164,10 @@ export async function runLegionPane(
     },
     resume: async (more, prompt) => {
       scripted.push(...more);
-      await live(typeof prompt === "string" ? [prompt] : prompt, ["--resume", await resumeId()]);
+      await live(typeof prompt === "string" ? [prompt] : prompt, [
+        "--resume",
+        await resumeId(sessions),
+      ]);
     },
     workspace,
   };

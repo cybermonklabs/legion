@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -100,6 +101,8 @@ type fakeBroker struct {
 	enrollUnauthorizedNext int    // fail the next N Enroll calls with 401 LAUNCHER_INVALID (an expired/revoked credential)
 	lastProof              string // the Proof header the most recent Enroll call carried
 	lastProofURL           string // the exact URL that Proof header was signed for
+
+	enrollHeldFor string
 
 	lastLoginRequest   string // the compact request object the most recent device authorization carried
 	pendingThumbprint  string // the embedded key's thumbprint from that request object
@@ -197,6 +200,11 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				f.enrollUnauthorizedNext--
 			}
 			writeJSON(w, 401, map[string]string{"code": "LAUNCHER_INVALID", "error": "the launcher credential is not valid"})
+			return
+		}
+		if f.enrollHeldFor != "" {
+			writeJSON(w, 403, map[string]string{"code": "MEMBERSHIP_HELD",
+				"error": f.enrollHeldFor + "'s credentials are held by Dispatch; they work again when " + f.enrollHeldFor + " signs in to Dispatch, or when Dispatch can confirm " + f.enrollHeldFor + " with Google again"})
 			return
 		}
 		if f.failFirst > 0 {
@@ -612,7 +620,7 @@ func machineFilePath(t *testing.T) string {
 // without exercising Login itself.
 func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	t.Helper()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -633,7 +641,7 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
 	f := newFakeBroker(t) // records the login request object; issues on the first poll
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	code, err := b.Login(context.Background(), "example-host-devbox")
 	if err != nil || !regexp.MustCompile(`^[A-Z2-9]{4}-[A-Z2-9]{4}$`).MatchString(code) {
@@ -667,7 +675,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 
@@ -822,7 +830,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 // fresh rather than reusing the denied/expired attempt's key.
 func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 
 	f.mu.Lock()
@@ -910,7 +918,7 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 }
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
-	b := &Broker{URL: "http://127.0.0.1:1", OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
+	b := &Broker{URL: brokeraddr.New("http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {

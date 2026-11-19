@@ -103,8 +103,8 @@ const (
 // from it (cmd/legion's piLegionVersion/piEnvoyVersion, PluginsFromBinary field true; PluginsFromBinary
 // source), else nil pair and "" source — the daemon knows no plugin versions, and every stale claim is
 // recorded and reported, never relaunched or refused (supervise.Deps.PluginRelaunchable false). Nil
-// under tmux, whose pane always resumes on the plugin installed on the daemon's host. legion start
-// --check-config and the boot log both read this.
+// under tmux, whose pane always resumes on the plugin installed on the daemon's host. `legion
+// config check` and the boot log both read this.
 func ResolvedPlugins(cfg config.Config) (*runtime.PluginInstall, string) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.Plugins == nil {
@@ -137,7 +137,7 @@ func ProbeBudget(cfg config.Config) (budget time.Duration, derived bool) {
 	return cfg.SlowCommandTimeout, false
 }
 
-// ProbeBudgetLine is the plain line `legion start --check-config` prints under
+// ProbeBudgetLine is the plain line `legion config check` prints under
 // `runtime: kubernetes` when ProbeBudget's bound exceeds slow_command_timeout_seconds: how long
 // each attempt now waits, and which keys pushed it there. "", false when the bound is
 // slow_command_timeout_seconds itself.
@@ -246,15 +246,22 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, navigates headless Chromium to the two compromised chains and its
-// control, and exits. Five fresh runs at 250m / 1Gi took 57.68–77.43 s, so those limits hold the
-// browser probe while the smaller reservation still fits a pool that cannot place a controller or
-// issue pod. It has a 5Gi bound on node disk and a 1Gi disk request. The probe runs at every boot,
-// before anything is served, and a probe that reserved a pod's share — the controller's 1 CPU and
-// 4Gi, or an issue pod's 3 CPU and 19Gi — could leave the daemon unable to boot on a pool full
-// enough to place nothing that large (stage 4b's daemon-controller-liveness restart, whose
-// controller reservation no node can hold, met exactly that).
-var probeReservation = config.Reservation{CPU: "250m", CPURequest: "250m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
+// setting), runs no lane, holds its TLS clients and headless Chromium to the two compromised
+// chains and a control site, and exits. It reserves 500m so the probe ends at least 60 s inside
+// its 240 s command budget at the defaults. Five runs of `legion probe-image --skip-agent-models`
+// at 1 CPU under gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at
+// 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
+// short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
+// because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
+// Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
+// kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
+// still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk
+// and a 1Gi disk request. The probe runs at every boot, before anything is served, and a probe that
+// reserved a pod's share — the controller's 1 CPU and 4Gi, or an issue pod's 3 CPU and 19Gi —
+// could leave the daemon unable to boot on a pool full enough to place nothing that large (stage
+// 4b's daemon-controller-liveness restart, whose controller reservation no node can hold, met
+// exactly that).
+var probeReservation = config.Reservation{CPU: "500m", CPURequest: "500m", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "5Gi", EphemeralStorageRequest: "1Gi"}
 
 // imageProbe is the probe of the daemon's worker image: this daemon's contract, the role prompts
 // every pod is handed — this daemon's, inlined at each launch, so the probe resolves what they name
@@ -370,7 +377,6 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ProvidersSecrets:        providersSecrets(cfg, lookup),
 		SessionStore:            k.SessionStore,
 		Setup:                   k.Setup,
-		SkillsRepository:        k.SkillsRepository,
 		TestPostgres:            k.TestPostgres,
 		MemoryGuard:             memoryGuard,
 		BootTimeout:             cfg.WorkerBootTimeout,
@@ -444,7 +450,16 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	// Every call this client makes to the broker carries a Proof header of its own, so a 3xx
+	// answered for the broker - by the broker, or by anyone who can answer for it - must not
+	// hand that proof to a host this deployment never named. The refusal is written here as
+	// internal/modeltoken writes it, since envoy's redirects package is internal to that
+	// module; its comment is where the whole reason is.
+	broker := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
@@ -456,7 +471,7 @@ type brokerEnroller struct{ client *agentsecrets.Client }
 
 func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
 	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
-		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session,
+		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session, Claim: e.Claim,
 	})
 	if err != nil {
 		return "", err
@@ -660,9 +675,9 @@ func memoryGuardKillEventID(report shimwire.LauncherMemoryKill) string {
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
 // pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (contents, pull requests, issues, Actions and metadata at
-// read, appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache could write
-// with. Every refusal is returned as it came, with no second mint: GitHub's trouble
+// it fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
+// permission at read: appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache
+// could write with. Every refusal is returned as it came, with no second mint: GitHub's trouble
 // (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
 // owner (appauth.ErrNotInstalled), and an installation that is not granted what the reading
 // lease asks for (appauth.ErrNarrowingRefused) alike.

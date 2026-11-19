@@ -7,10 +7,10 @@ description: >-
   elan and the Lean toolchain already there and downloads nothing, and with it missed `lake`
   installs the toolchain lean-toolchain names on its first build.
 
-  The `elan` row of .github/ci-tools.yaml names the version, the one sha256 of the whole release
-  tarball that both sources are checked against, and the second source this install reads when
-  GitHub's release assets do not serve the bytes: the copy of that tarball in
-  ghcr.io/cybermonklabs/legion/ci.
+  The `elan` row of .github/ci-tools.yaml, or its `elan-aarch64` row on an arm64 runner, names the
+  version, the one sha256 of the whole release tarball that both sources are checked against, and
+  the second source this install reads when GitHub's release assets do not serve the bytes: the
+  copy of that tarball in ghcr.io/cybermonklabs/legion/ci.
 runs:
   using: composite
   steps:
@@ -26,8 +26,17 @@ runs:
         if [ -x "$elan_home/bin/elan" ]; then
           exit 0
         fi
-        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field elan primary)")"
-        ci_tools_fetch elan "$tarball"
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64) row=elan ;;
+          aarch64 | arm64) row=elan-aarch64 ;;
+          *)
+            echo "::error::install-elan: .github/ci-tools.yaml holds no elan row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field "$row" primary)")"
+        ci_tools_fetch "$row" "$tarball"
         mkdir -p "$RUNNER_TEMP/elan-init"
         tar -xzf "$tarball" -C "$RUNNER_TEMP/elan-init" elan-init
         ELAN_HOME="$elan_home" "$RUNNER_TEMP/elan-init/elan-init" -y --no-modify-path --default-toolchain none

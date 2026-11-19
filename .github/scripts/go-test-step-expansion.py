@@ -288,6 +288,40 @@ EXCEPTIONS = (
             "records, so the corpus runs only in airlock-lean."
         ),
     ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        functions=("TestModelAgreesOnHostShapes",),
+        requirement=(
+            "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
+            "shapes a rules file may hold through both the Go validation and the Lean model's, "
+            "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
+            "step \"Count the database broker suites' skips\" runs ./internal/broker/... whole "
+            "through packages/envoy/scripts/database-skips.sh, so a listing counts the function "
+            "run there too, but it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz step "
+            "runs FuzzAirlock alone and does not name it."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
+        requirement=(
+            "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
+            "comparison runs a host-less entry carrying guidance, a field the generator never "
+            "writes, through both the Go airlock and the Lean model's, with AIRLOCK_MODEL set. "
+            "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
+            "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
+            "the comparison runs only in airlock-lean."
+        ),
+    ),
 )
 
 # `go test -list` prints one name per line, then a status line per package.
@@ -321,7 +355,7 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         command="go test -json -count=1 -timeout 15m ./internal/broker/...",
-        sha256="e8e058377d522a938e4016fdd88dc6c9f1459b89cf80e12c15b1545b13dd76b0",
+        sha256="1979d457cfa63a7d6c307d7b8cb28410caa7214e4f52abdb9519ce13d8c080d8",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

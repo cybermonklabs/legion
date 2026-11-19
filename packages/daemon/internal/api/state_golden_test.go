@@ -156,7 +156,6 @@ runtime:
       pi_legion: 10.4.0
       pi_envoy: https://legion:fixture-plugin-password@plugins.internal.example/pi-envoy-10.4.0.tgz?token=fixture-plugin-token
     setup: [/bin/sh, -c, 'echo fixture-setup']
-    skills_repository: acme/agent-skills
     repository_cache:
       volume: 40Gi
       refresh_minutes: 15
@@ -500,7 +499,7 @@ func populatedState(t *testing.T) State {
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
 						PendingCause:   supervise.CauseDied,
-						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found",
+						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found",
 					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no

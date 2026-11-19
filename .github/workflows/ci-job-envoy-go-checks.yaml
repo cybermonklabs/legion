@@ -31,6 +31,14 @@ env:
 
 jobs:
   envoy-go-checks:
+    # ubuntu-24.04, the runner release-envoy-listener.yaml builds the release's listener archives
+    # on. The pack step below builds those archives as the release does, with no CGO_ENABLED, and
+    # Go turns cgo on for a native build where gcc is present and off for a cross build: on this
+    # runner that gives the release's own pair, an amd64 listener linked against glibc and a
+    # static arm64 one. On ubuntu-24.04-arm the same step built the reverse pair (measured on run
+    # 44082892660's artifact), so a failure of the release's build mode would pass the pull
+    # request and fail the release after the merge. The job therefore stays on the x86_64 pool,
+    # which changes nothing a release ships.
     runs-on: ubuntu-24.04
     # The builds below download the envoy module's dependencies and compile ./cmd/listener for
     # each release architecture, so the job restores go-envoy, the family whose entry holds that
@@ -102,8 +110,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -118,6 +126,14 @@ jobs:
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       - name: Test the architecture-note and spec-file rules and their commands
         run: go test -count=1 ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+        working-directory: packages/envoy
+      # listenerwire's tests and wirecheck's need no database, and listenerwire's clients test
+      # type-checks the daemon's listener clients, so they run here, their one run, and a change to
+      # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
+      # leaves both packages out, its `grep -Ev` and this step's package list built from
+      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      - name: Test the listener's wire package, its clients and wirecheck
+        run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
         working-directory: packages/envoy
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go

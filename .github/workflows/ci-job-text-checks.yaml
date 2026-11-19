@@ -71,7 +71,7 @@ env:
 
 jobs:
   text-checks:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # About three times the cold measurement in the header, which is what a runner that restores
     # no build cache does on every run - the supervise pins' call, a quarter more cold time on
     # the pod that measured the five against the four, left that nearly as it was.
@@ -104,7 +104,7 @@ jobs:
       # The package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this
       # step from even building their fixtures' work.
       - name: Test the Dispatch API's source guards (no database)
-        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
+        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestNoForUpdateOnOwnerTables|TestOneExpressionDecidesWhoWaitsInOneSpelling|TestOnlyQueueReviewWritesReviews|TestOnlyTheBrokerInsertsEvents|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
         working-directory: packages/envoy
       # The two pure pins of packages/daemon's supervise table: they hold the table to the
       # package's own source — a row or a named ignore for every event in every state, and one

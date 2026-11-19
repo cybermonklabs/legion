@@ -224,7 +224,7 @@ itself, whose tests import its sources by relative path.
   `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
-  `go-daemon-<runner os>-go<version>`, before it runs that scenario
+  `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
   (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
   there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
   suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in
@@ -300,7 +300,7 @@ go test -timeout 20m ./internal/dispatch/api
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
-gives it 30 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
+gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
 steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone

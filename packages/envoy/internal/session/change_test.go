@@ -45,11 +45,11 @@ func awaitSessionChange(t *testing.T, changes <-chan sessionChange, want func(se
 
 func TestOnChangeReportsWritesDeletesAndAnotherListenersWrites(t *testing.T) {
 	client := setupNATS(t)
-	writer, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	writer, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open the writing registry: %v", err)
 	}
-	follower, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
+	follower, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute))
 	if err != nil {
 		t.Fatalf("open the following registry: %v", err)
 	}

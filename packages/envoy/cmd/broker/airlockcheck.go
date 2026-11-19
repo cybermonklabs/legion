@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
@@ -168,6 +169,7 @@ func writeEntryChanges(out io.Writer, name string, was, is airlock.SecretRule) b
 		{"allow", allowText(was.Allow), allowText(is.Allow)},
 		{"kind", shown(was.Kind), shown(is.Kind)},
 		{"judge", judgeText(was.Judge), judgeText(is.Judge)},
+		{"guidance", strconv.Quote(was.Guidance), strconv.Quote(is.Guidance)},
 	} {
 		if field.was != field.is {
 			fmt.Fprintf(out, "secret %q: %s %s → %s\n", name, field.what, field.was, field.is)

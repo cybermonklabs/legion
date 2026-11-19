@@ -341,7 +341,7 @@
               }
             },
             "pendingCause": "died",
-            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -917,7 +917,6 @@
           "-c",
           "echo fixture-setup"
         ],
-        "skills_repository": "acme/agent-skills",
         "test_postgres": false,
         "repository_cache": {
           "volume": "40Gi",

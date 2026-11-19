@@ -5,6 +5,7 @@ import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
 import {
@@ -12,6 +13,9 @@ import {
   borderStrong,
   enabledCardHoverBorder,
   inputClasses,
+  pageInkText,
+  pageLineBorder,
+  pageQuietText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
@@ -30,6 +34,7 @@ import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
+import { UnsentText } from "./UnsentText";
 
 export type CreateReply = (
   issueKey: string,
@@ -76,11 +81,96 @@ function AskReply({
 export type AskThreadQuery = UseQueryResult<AskRead, Error>;
 
 /**
- * The reply form under an answered ask. It posts to the ask's issue, or to its document for a
- * project-document ask, then invalidates the shared thread so the reply shows first. Its draft is
- * the ask's (`reply-drafts.ts`), and its send is the ask's too: while any composer's reply to this
- * ask is out, every composer for it, including one mounted since, shows the draft disabled. A file
- * pasted or dropped into the field uploads to `uploadOwner` and its text joins the draft.
+ * Whether an ask's thread takes a reply through the reply composer: every ask that is no longer
+ * open, whether it was answered or resolved (resolved, retracted, declined or withdrawn alike),
+ * since the conversation under a question goes on after the question is settled. An open ask has
+ * no reply composer: its card's one composer answers it or asks back.
+ */
+export function takesReply(ask: Pick<Ask, "state">): boolean {
+  return ask.state !== "open";
+}
+
+/**
+ * The text of a reply the reader was writing under a settled ask that has since opened again (a
+ * withdrawn ask whose issue was reopened, a retracted question a document's settlement restored),
+ * or `""` when there is none. An open ask draws no reply composer (`takesReply`), so without this
+ * the draft would sit in `reply-drafts.ts` with nothing showing it: the thread draws it read-only
+ * where the composer stood (`UnsentReply`), as the card draws an answer whose question closed
+ * under it (`unsentAnswer` in `useAskAnswerForm.ts`). The draft stays the ask's, so the composer
+ * picks it up again if the ask is settled once more.
+ */
+export function useUnsentReply(ask: Pick<Ask, "id" | "state">): string {
+  const [draft] = useReplyDraft(ask.id);
+  return takesReply(ask) || draft.trim() === "" ? "" : draft;
+}
+
+/** What the unsent reply's box says, on today's pages and inside `NoTooltips` alike. */
+const UNSENT_REPLY_WHY =
+  "This question opened again before you sent your reply, so it was not sent. Your text is here to copy.";
+
+/**
+ * Each colour the unsent box draws inside `NoTooltips`, the new issue page's: its rule the
+ * page's, what happened to the reader's text in the quiet grey, and that text in the ink. They
+ * stand in a table, as `AskCard`'s do, because `theme/text-on-background.test.ts` reads a class
+ * only where it names an export of `theme/classes.ts`, and the issue page's shared controls test
+ * (`shared-controls.tooltips.test.tsx`) pairs each entry here with the page's grounds.
+ */
+const ON_PAGE = {
+  ink: pageInkText,
+  quiet: pageQuietText,
+  rule: pageLineBorder,
+} as const;
+
+/** Text the reader wrote that no form will send any more, read-only and copyable where its box
+ *  stood: the thread's unsent reply (`UnsentReply`) and the card's unsent answer (`AskCard`).
+ *  `main`'s `UnsentText` outside `NoTooltips`, the same box in the page's colours inside. */
+export function UnsentBox({
+  className,
+  testId,
+  text,
+  why,
+}: {
+  /** The caller's own spacing around the box. */
+  className?: string;
+  testId: string;
+  text: string;
+  why: string;
+}): ReactNode {
+  const tooltips = useTooltips();
+  if (tooltips) {
+    return <UnsentText className={className} testId={testId} text={text} why={why} />;
+  }
+  // Inside `NoTooltips` the box is drawn in the page's colours, which `UnsentText` does not take,
+  // and the reader's own words are a value, which breaks anywhere.
+  return (
+    <div
+      className={`rounded-xl border p-3 ${ON_PAGE.rule} ${className ?? ""}`}
+      data-testid={testId}
+    >
+      <p className={`text-xs ${ON_PAGE.quiet}`}>{why}</p>
+      <p
+        className={`mt-1 max-w-full text-sm whitespace-pre-wrap [overflow-wrap:anywhere] ${ON_PAGE.ink}`}
+      >
+        {text}
+      </p>
+    </div>
+  );
+}
+
+/** `useUnsentReply`'s text, read-only and copyable, in the reply composer's place. */
+export function UnsentReply({ className, text }: { className?: string; text: string }): ReactNode {
+  return (
+    <UnsentBox className={className} testId="ask-unsent-reply" text={text} why={UNSENT_REPLY_WHY} />
+  );
+}
+
+/**
+ * The reply form under an ask that is no longer open (`takesReply`). It posts to the ask's issue,
+ * or to its document for a project-document ask, then invalidates the shared thread so the reply
+ * shows first. Its draft is the ask's (`reply-drafts.ts`), and its send is the ask's too: while
+ * any composer's reply to this ask is out, every composer for it, including one mounted since,
+ * shows the draft disabled. A file pasted or dropped into the field uploads to `uploadOwner` and
+ * its text joins the draft.
  */
 export function AskReplyComposer({
   ask,
@@ -181,7 +271,7 @@ export interface AskThreadProps {
   /** The shared ask-thread query AskCard owns; this component never requests thread data itself. */
   thread: AskThreadQuery;
   createReply?: CreateReply;
-  /** False where the caller renders the answered-ask composer itself: a collapsed thread
+  /** False where the caller renders the reply composer itself: a collapsed thread
    *  (Conversation, decision blocks) puts it after its own Write a reply control. */
   showComposer?: boolean;
   /** A thread inside an open ask card inherits the card's compact flow. */
@@ -207,9 +297,10 @@ export interface AskThreadProps {
  * (Comment.ask_id) plus their own reply chains, in the reader's thread order, with the replies
  * outside the newest two folded behind **Show N earlier replies** (`threads/thread-layout.ts`,
  * drawn by `threads/EarlierReplies.tsx`, the fold control the Inbox's thread body shares).
- * Answered asks keep a plain reply composer, at the end of that order; open asks reserve their
- * single composer for answering or asking back, and a resolved ask keeps its history without a
- * composer.
+ * An answered or resolved ask keeps a plain reply composer, next to the newest message
+ * (`composerFirst`), and `takesReply` says which asks do; an open ask reserves its single
+ * composer for answering or asking back, and draws a reply the reader had not sent before it
+ * opened again read-only in the composer's place (`useUnsentReply`).
  */
 export function AskThread({
   ask,
@@ -266,10 +357,12 @@ export function AskThread({
       )}
     />
   );
-  const composer =
-    showComposer && ask.state === "answered" ? (
-      <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
-    ) : null;
+  const unsentReply = useUnsentReply(ask);
+  const composer = !showComposer ? null : takesReply(ask) ? (
+    <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
+  ) : unsentReply === "" ? null : (
+    <UnsentReply text={unsentReply} />
+  );
 
   return (
     <section

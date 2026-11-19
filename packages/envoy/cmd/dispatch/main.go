@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -94,6 +95,12 @@ type bootConfig struct {
 	// as. Empty means the CI reconcile pass records no verdict check at all.
 	ReviewerAppID  string
 	IdentityHeader string
+	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
+	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
+	// name; empty under any other identity. IAPKeySetURL is where IAP's signing keys are read,
+	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
+	IAPAudience  string
+	IAPKeySetURL string
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -337,6 +344,23 @@ func main() {
 		agentStream = agentstream.NewNATS(streamConn)
 	}
 
+	// A person's targeted message to a session that neither the listener's registry nor its
+	// known-session store holds is queued on that session's own subject, published through the
+	// NATS client. With test hooks and no NATS it goes to an in-process recorder the e2e harness
+	// reads (GET /api/v1/messages/_test/queued) instead, and with neither such a message settles
+	// failed. Only a value that is there is put in the interface: a nil *bus.Client in it would
+	// read as a publisher.
+	var agentPublisher api.AgentPublisher
+	switch {
+	case natsClient != nil:
+		agentPublisher = natsClient
+	case boot.TestHooksEnabled:
+		agentPublisher = api.NewAgentPublishRecorder()
+		slog.Info("dispatch: targeted messages for a session no store holds go to the test hook's recorder")
+	default:
+		slog.Info("dispatch: a targeted message to a session no store holds fails: queueing it needs NATS")
+	}
+
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
@@ -432,6 +456,9 @@ func main() {
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
+	if boot.IAPAudience != "" {
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+	}
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
@@ -505,6 +532,7 @@ func main() {
 		Events:         broker,
 		App:            appCfg,
 		AgentStream:    agentStream,
+		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
 	}
@@ -558,8 +586,9 @@ func main() {
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain) and the
-	//     task progress reconciliation (retrying, briefly, rows another writer held).
+	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
+	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
+	//     rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -667,6 +696,9 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
+	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
+	// this process's count is the same whether or not any project names a daemon.
+	legionSamplerLeases := reserve("Legion sampler")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -905,6 +937,12 @@ func main() {
 	}
 
 	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases)
+
+	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
+	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
+	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
+	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for.
+	go legion.RunSampler(ctx, database.Pool, legionSamplerLeases)
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
@@ -1293,11 +1331,20 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, errors.New("DISPATCH_DEV_SIGNIN_SHARED_KEY is read only with DISPATCH_DEV_SIGNIN=1, by the processes of one local harness; unset it, and set DISPATCH_SIGNING_KEY to give a deployment's processes one key")
 	}
 
+	iapAudience := strings.TrimSpace(env.get("DISPATCH_IAP_AUDIENCE"))
 	switch mode := identityMode; {
 	case mode == "" || mode == "cookie":
 		// Cookie identity takes no sign-in setting: with none set, and no DISPATCH_DEV_SIGNIN,
 		// Dispatch asks nobody to sign in, refuses every cookie an earlier sign-in minted (requestIdentityFor), and serves
 		// its agent-token API alone.
+	case mode == "iap":
+		if iapAudience == "" {
+			return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE required: DISPATCH_IDENTITY=iap admits a request only on an assertion Identity-Aware Proxy signed for that audience, /projects/<project number>/global/backendServices/<backend service id> behind a load balancer")
+		}
+		if !iapAudienceShape.MatchString(iapAudience) {
+			return bootConfig{}, fmt.Errorf("DISPATCH_IAP_AUDIENCE=%q must be the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>", iapAudience)
+		}
+		boot.IAPAudience, boot.IAPKeySetURL = iapAudience, oidc.IAPKeySetURL
 	case strings.HasPrefix(mode, "header:"):
 		boot.IdentityHeader = strings.TrimSpace(strings.TrimPrefix(mode, "header:"))
 		if boot.IdentityHeader == "" {
@@ -1307,7 +1354,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
 		}
 	default:
-		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie or header:<Header-Name>)", mode)
+		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
+	}
+	if iapAudience != "" && boot.IAPAudience == "" {
+		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
 	}
 	envoyURL := strings.TrimSpace(env.get("ENVOY_URL"))
 	if envoyURL == "" {
@@ -1371,7 +1421,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 // or one derived from DISPATCH_DEV_SIGNIN_SHARED_KEY under a dev-only label (sessionSigningKey),
 // which the other processes of its harness derive too and a production server never signs with.
 func devSignInFence(boot bootConfig, env settingValues) error {
-	if boot.IdentityHeader != "" {
+	if boot.IdentityHeader != "" || boot.IAPAudience != "" {
 		return errors.New("DISPATCH_DEV_SIGNIN=1 mints session cookies, so DISPATCH_IDENTITY must be cookie")
 	}
 	if boot.SignInIssuer != "" {
