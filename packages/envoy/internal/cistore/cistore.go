@@ -1124,14 +1124,7 @@ func settlementReady(st State) bool {
 	if st.Overflowed || !terminal(st) {
 		return false
 	}
-	hasCheckRunID := false
-	for _, check := range st.Checks {
-		if check.CheckRunID > 0 {
-			hasCheckRunID = true
-			break
-		}
-	}
-	if !hasCheckRunID {
+	if !hasCheckRunID(st) {
 		return false
 	}
 	for _, suite := range st.Suites {
@@ -1140,6 +1133,17 @@ func settlementReady(st State) bool {
 		}
 	}
 	return true
+}
+
+// hasCheckRunID reports whether one of st's checks has a run id; a record whose checks have none
+// does not settle (settlementReady), and its held line names it (logHeldLocked).
+func hasCheckRunID(st State) bool {
+	for _, check := range st.Checks {
+		if check.CheckRunID > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func terminal(st State) bool {

@@ -320,10 +320,10 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // settlement stands. A check the settlement names as failed failed, one it names as cancelled was
 // cancelled, one whose run GitHub skipped (record.RunSkipped) was skipped, and one it reports as a
 // run and names no other way succeeded - the listener settles a commit once every check it has
-// seen is terminal. Nothing here judges those conclusions: a job GitHub never started reads like
-// any other, and what they mean for the work is the reading worker's (dispatch://INFRA-714/spec
-// R1). The line is the whole of what the daemon knows of that head's CI, so two settlements that
-// leave it the same say nothing new (tellChecks).
+// seen is terminal. Nothing here judges those conclusions: a job GitHub never started is named
+// skipped and decides nothing, and what they mean for the work is the reading worker's
+// (dispatch://INFRA-714/spec R1). The line is the whole of what the daemon knows of that head's
+// CI, so two settlements that leave it the same say nothing new (tellChecks).
 //
 // Each check is named by the word GitHub gave its run (record.AttemptRun.GitHubConclusion) where
 // the settlement carried one, and by the daemon's conclusion where it did not (shownAs). GitHub's

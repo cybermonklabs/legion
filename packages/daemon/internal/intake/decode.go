@@ -34,14 +34,12 @@ type decodedMessage struct {
 	// (subjectforms.IssueEventKey), of any project: the consumer counts and logs those while the
 	// old form is still published (consumeMessage).
 	LegacyName bool
-	// Refused names why the decoder dropped a checks settlement of a repository this daemon hears:
-	// the field it could not read, and how (decodeChecks). It is "" when the decoder refused
-	// nothing, and Fact is nil when it is set. A refused settlement is not poison, since no
-	// redelivery reads it otherwise, so the consumer acknowledges it and logs it, with
-	// RefusedSettlement, once per event id (consumeMessage).
-	Refused string
-	// RefusedSettlement is what a refused settlement's payload gives of its identity.
-	RefusedSettlement settlementRead
+	// Refused is a checks settlement of a repository this daemon hears that the decoder dropped:
+	// the field it could not read, and how (decodeChecks), with what its payload gives of its
+	// identity. It is nil when the decoder refused nothing, and Fact is nil when it is set. A
+	// refused settlement is not poison, since no redelivery reads it otherwise, so the consumer
+	// acknowledges it and logs it once per event id (consumeMessage).
+	Refused *checksRefusal
 }
 
 // settlementRead is what a checks settlement's payload gives of the three fields a settlement is
@@ -87,7 +85,7 @@ func (s settlementRead) attributes() []any {
 }
 
 // checksRefusal is a checks settlement decodeChecks dropped: why, and what its payload gives of
-// its identity, which decodeMessage carries to decodedMessage.Refused and RefusedSettlement.
+// its identity, which decodeMessage carries to decodedMessage.Refused.
 type checksRefusal struct {
 	reason     string
 	settlement settlementRead
@@ -156,11 +154,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	decoded := decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy}
-	if refused != nil {
-		decoded.Refused, decoded.RefusedSettlement = refused.reason, refused.settlement
-	}
-	return decoded, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused}, nil
 }
 
 func (e envoyEnvelope) valid() error {

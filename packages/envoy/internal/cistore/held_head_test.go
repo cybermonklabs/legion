@@ -357,7 +357,7 @@ func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 		cachedAsStored(t, r.store, later)
 		r.pass(heldAt + 2)
 		r.z.mu.Lock()
-		remembered := len(r.z.stuckLogged)
+		remembered := len(r.z.heldLogged)
 		r.z.mu.Unlock()
 		if remembered != 0 {
 			t.Fatalf("the summarizer remembers %d held lines after the records settled, want none", remembered)

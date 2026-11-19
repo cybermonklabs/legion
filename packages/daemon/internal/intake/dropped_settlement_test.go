@@ -72,12 +72,12 @@ func TestDecodeChecksNamesTheFieldOfARefusedSettlement(t *testing.T) {
 			payload := settlementPayload(runs, nil, nil)
 			tc.change(payload)
 			decoded := decodeSettlement(t, payload)
-			if decoded.Fact != nil || decoded.Refused != tc.refused {
-				t.Fatalf("decoded %#v, refused %q; want no fact, refused %q", decoded.Fact, decoded.Refused, tc.refused)
+			if decoded.Fact != nil || decoded.Refused == nil || decoded.Refused.reason != tc.refused {
+				t.Fatalf("decoded %#v, refused %+v; want no fact, refused %q", decoded.Fact, decoded.Refused, tc.refused)
 			}
-			if want := readFromPayload(payload); !reflect.DeepEqual(decoded.RefusedSettlement, want) {
+			if want := readFromPayload(payload); !reflect.DeepEqual(decoded.Refused.settlement, want) {
 				t.Fatalf("the refused settlement reads as %v, want %v: each of sha, generation and snapshot that reads as its type",
-					decoded.RefusedSettlement.attributes(), want.attributes())
+					decoded.Refused.settlement.attributes(), want.attributes())
 			}
 		})
 	}
@@ -92,15 +92,15 @@ func TestDecodeChecksNamesTheFieldOfARefusedSettlement(t *testing.T) {
 			payload := settlementPayload(runs, nil, nil)
 			payload["number"] = "forty-two"
 			tc.change(payload)
-			if decoded := decodeSettlement(t, payload); decoded.Fact != nil || decoded.Refused != "" {
-				t.Fatalf("decoded %#v, refused %q; want no fact and nothing refused: it is no checks settlement of this daemon", decoded.Fact, decoded.Refused)
+			if decoded := decodeSettlement(t, payload); decoded.Fact != nil || decoded.Refused != nil {
+				t.Fatalf("decoded %#v, refused %+v; want no fact and nothing refused: it is no checks settlement of this daemon", decoded.Fact, decoded.Refused)
 			}
 		})
 	}
 	t.Run("a settlement that decodes", func(t *testing.T) {
 		decoded := decodeSettlement(t, settlementPayload(runs, nil, nil))
-		if decoded.Refused != "" || decoded.RefusedSettlement != (settlementRead{}) {
-			t.Fatalf("refused %q with %v, want nothing refused", decoded.Refused, decoded.RefusedSettlement.attributes())
+		if decoded.Refused != nil {
+			t.Fatalf("refused %+v, want nothing refused", decoded.Refused)
 		}
 		settledChecks(t, decoded)
 	})

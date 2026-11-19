@@ -263,20 +263,28 @@ type summarizer struct {
 	mu    sync.Mutex
 	queue deadlineQueue
 	held  map[string]struct{}
-	// stuckLogged holds, for each key whose held line was logged (logHeldLocked), the record's
-	// snapshot (State.Hash) joined with the hold the line named, so the line is logged once for
-	// each. A key's entry is dropped when its record settles or leaves the cache, and every entry
-	// when the cache is emptied for a recreated bucket (takeChanges).
-	stuckLogged map[string]string
+	// heldLogged holds, for each key whose held line was logged (logHeldLocked), the record's
+	// snapshot (State.Hash) and the hold the line named, so the line is logged once for each. A
+	// key's entry is dropped when its record settles or leaves the cache, and every entry when the
+	// cache is emptied for a recreated bucket (takeChanges).
+	heldLogged map[string]heldMark
+}
+
+// heldMark is what a held line was logged for (logHeldLocked): the record's snapshot (State.Hash)
+// and each hold the snapshot does not take. Whether a check has a run id is not one: the snapshot
+// takes each check's run id.
+type heldMark struct {
+	snapshot                    string
+	overflowed, legacy, claimed bool
 }
 
 func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 	return &summarizer{
-		store:       store,
-		debounce:    debounce,
-		queue:       deadlineQueue{index: map[string]int{}},
-		held:        map[string]struct{}{},
-		stuckLogged: map[string]string{},
+		store:      store,
+		debounce:   debounce,
+		queue:      deadlineQueue{index: map[string]int{}},
+		held:       map[string]struct{}{},
+		heldLogged: map[string]heldMark{},
 	}
 }
 
@@ -291,7 +299,7 @@ func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (hel
 	if reset {
 		z.queue = deadlineQueue{index: map[string]int{}}
 		z.held = map[string]struct{}{}
-		z.stuckLogged = map[string]string{}
+		z.heldLogged = map[string]heldMark{}
 	}
 	var batch []string
 	for key := range keys {
@@ -339,12 +347,12 @@ func (z *summarizer) fileLocked(logger *logging.Logger, key string, now int64) (
 	delete(z.held, key)
 	st, cached := z.store.cachedState(key)
 	if !cached {
-		delete(z.stuckLogged, key)
+		delete(z.heldLogged, key)
 		return State{}, false
 	}
 	switch v, at := schedule(st, now, z.debounce); v {
 	case verdictIdle:
-		delete(z.stuckLogged, key)
+		delete(z.heldLogged, key)
 	case verdictWait:
 		z.queue.set(key, at)
 	case verdictStuck:
@@ -370,27 +378,20 @@ const heldRunningNamed = 20
 // under key, from the record itself: the head, its generation and its check count; each check that
 // is not terminal as name:status (sorted, the first heldRunningNamed, and running_count); each
 // suite that is not completed as `<id> app=<app id> status=<status> runs=<count>` (sorted by id),
-// its count `unknown` when the record holds none (Suite.RunCount); and the hold Hash does not take:
-// overflowed, no check with a run id, no schema (a head-gated listener's leftover, legacy), and a
-// claim held. It is WARN where the record holds a check and every one is terminal
-// (every_check_finished, as terminal reads it), and INFO otherwise, which a long job and a lost
-// completion both give. It logs once for each snapshot and hold (stuckLogged): a record filed
+// its count `unknown` when the record holds none (Suite.RunCount); whether no check has a run id
+// (no_run_id); and the hold Hash does not take: overflowed, no schema (a head-gated listener's
+// leftover, legacy), and a claim held. It is WARN where the record holds a check and every one is
+// terminal (every_check_finished, as terminal reads it), and INFO otherwise, which a long job and a
+// lost completion both give. It logs once for each snapshot and hold (heldLogged): a record filed
 // again with the snapshot and hold it logged logs nothing, so no tick or pass logs it twice, and a
 // change of the hold alone logs once more. Callers hold z.mu.
 func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State) {
-	noRunID := true
-	for _, check := range st.Checks {
-		if check.CheckRunID > 0 {
-			noRunID = false
-			break
-		}
-	}
-	legacy, claimed := st.Schema == 0, st.Claim != nil
-	logged := fmt.Sprintf("%s overflowed=%t no_run_id=%t legacy=%t claimed=%t", st.Hash(), st.Overflowed, noRunID, legacy, claimed)
-	if z.stuckLogged[key] == logged {
+	mark := heldMark{snapshot: st.Hash(), overflowed: st.Overflowed, legacy: st.Schema == 0, claimed: st.Claim != nil}
+	if z.heldLogged[key] == mark {
 		return
 	}
-	z.stuckLogged[key] = logged
+	z.heldLogged[key] = mark
+	noRunID := !hasCheckRunID(st)
 
 	running := make([]string, 0)
 	for name, check := range st.Checks {
@@ -441,8 +442,8 @@ func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State)
 		slog.Any("suites", suites),
 		slog.Bool("overflowed", st.Overflowed),
 		slog.Bool("no_run_id", noRunID),
-		slog.Bool("legacy", legacy),
-		slog.Bool("claimed", claimed),
+		slog.Bool("legacy", mark.legacy),
+		slog.Bool("claimed", mark.claimed),
 	)
 }
 

@@ -26,13 +26,10 @@ func settlementPayload(runs []record.AttemptRun, failed, cancelled []string) map
 	for _, run := range runs {
 		listed = append(listed, map[string]any{"name": run.Name, "id": run.ID})
 	}
-	group := func(names []string) map[string]any {
-		return map[string]any{"count": len(names), "checks": append([]string{}, names...)}
-	}
 	return map[string]any{"kind": "checks", "repo": "sjawhar/legion", "number": "42", "sha": statusesHead,
 		"check_runs": listed, "generation": 3, "snapshot": "snapshot-3", "settled_at": 1790124840596,
-		"failed": group(failed), "cancelled": group(cancelled), "passed": group(nil), "running": group(nil),
-		"queued": group(nil), "skipped": group(nil)}
+		"failed": checkGroup(failed), "cancelled": checkGroup(cancelled), "passed": checkGroup(nil), "running": checkGroup(nil),
+		"queued": checkGroup(nil), "skipped": checkGroup(nil)}
 }
 
 // decodeSettlement decodes payload as the consumer does, through its Envoy envelope.

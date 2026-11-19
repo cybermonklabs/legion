@@ -861,8 +861,8 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 	// field refused, and the head, generation and snapshot its payload gives, by which the
 	// listener's line that published the settlement is found. It is written once for each event
 	// id, so the same settlement delivered again writes no second line.
-	if decoded.Refused != "" && dropped.refused.Add(decoded.EventID) {
-		attributes := append([]any{"event_id", decoded.EventID, "reason", decoded.Refused}, decoded.RefusedSettlement.attributes()...)
+	if decoded.Refused != nil && dropped.refused.Add(decoded.EventID) {
+		attributes := append([]any{"event_id", decoded.EventID, "reason", decoded.Refused.reason}, decoded.Refused.settlement.attributes()...)
 		logMessage(spec.Logger, slog.LevelWarn, "intake: a checks settlement was dropped: the decoder refused it", message, attributes...)
 	}
 	if decoded.LegacyName {
