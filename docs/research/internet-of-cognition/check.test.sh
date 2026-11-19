@@ -3443,6 +3443,24 @@ else
         "^check\\.sh cannot run --replay now: GitHub's rate limit refused f-github-read's read of its REST API, so the row's failure is no verdict on the deliverable: GitHub answered 403: API rate limit exceeded for installation ID 119\\.; its core rate limit has 0 of its 5000 requests left until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\$" "$out"
 fi
 
+# 120. Each candidate page's landing component is Legion, Envoy or Dispatch (test round 38).
+# The specification's R9 lists the eleven things a page carries, among them "the landing
+# component, which is Legion, Envoy or Dispatch". At 3df528a3 the page 'An execution record
+# under the gen_ai. names' reads "Legion, for the phase key, and the spend collector, for its
+# keep-list and a view", and the spend collector is a program of theorem-labs/agent-infra,
+# none of the three; --shape passed it, since page-parts holds only that the line is there.
+# The case writes that line into the first page of the fixture's judgement whose landing
+# component is Legion, and runs --shape, which must fail, naming the page and its landing
+# component.
+dir="$(fresh landing-outside-r9)"
+sed -i '0,/^- \*\*Landing component:\*\* Legion$/s//- **Landing component:** Legion, for the phase key, and the spend collector, for its keep-list and a view./' "$dir/judgement.md"
+grep -qF 'and the spend collector, for its keep-list' "$dir/judgement.md" || {
+    printf 'FAIL the landing component could not be planted in the fixture judgement\n'
+    exit 1
+}
+case_result "a page whose landing component names one outside Legion, Envoy and Dispatch fails --shape, naming the page" \
+    'page-[a-z-]+: .*[Ll]anding component' "$(fixture_run "$dir" --shape)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
