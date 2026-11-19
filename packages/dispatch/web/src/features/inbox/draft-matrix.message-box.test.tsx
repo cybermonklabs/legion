@@ -1,10 +1,11 @@
 /**
  * The draft matrix, Inbox message box row (INFRA-1503).
  *
- * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
- * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
- * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * Every composer host is held to one rule (`.dispatch/architecture/dispatch-web.md`, "A composer's
+ * draft - typed, refused or stopped - goes where the person takes it, and stays where the host
+ * moved away from"): the reader's own move with the composer's own control takes the draft with
+ * it, and a move of the host's carries nothing: the text stays with the address it was written
+ * for, and is there when the reader comes back to it. A refused or stopped send's note
  * stays at its own address. Each cell writes a draft in one state, typed and never sent, refused
  * by Dispatch, or stopped by the reader, makes one move, and asserts where the text ends.
  *

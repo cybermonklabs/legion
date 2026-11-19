@@ -1,9 +1,10 @@
 /**
  * The draft matrix, comment edit row (INFRA-1503).
  *
- * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
- * composer's address"): "a move of the host's ... carries nothing: the text stays with the
- * address it was written for, and is there when the reader comes back to it." An edit's address
+ * Every composer host is held to one rule (`.dispatch/architecture/dispatch-web.md`, "A composer's
+ * draft - typed, refused or stopped - goes where the person takes it, and stays where the host
+ * moved away from"): a move of the host's carries nothing: the text stays with the address it
+ * was written for, and is there when the reader comes back to it. An edit's address
  * is the comment it edits, and what the reader wrote there was written over one body of that
  * comment. A kept edit comes back in the field only while the comment still holds that body. If
  * another writer changed the comment meanwhile, the field shows the newer body, the kept edit is

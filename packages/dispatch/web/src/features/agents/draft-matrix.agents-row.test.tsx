@@ -1,10 +1,11 @@
 /**
  * The draft matrix, Agents row (INFRA-1503).
  *
- * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
- * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
- * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * Every composer host is held to one rule (`.dispatch/architecture/dispatch-web.md`, "A composer's
+ * draft - typed, refused or stopped - goes where the person takes it, and stays where the host
+ * moved away from"): the reader's own move with the composer's own control takes the draft with
+ * it, and a move of the host's carries nothing: the text stays with the address it was written
+ * for, and is there when the reader comes back to it. A refused or stopped send's note
  * stays at its own address. Each cell writes a draft in one state, typed and never sent, refused
  * by Dispatch, or stopped by the reader, makes one move, and asserts where the text ends.
  *
@@ -498,8 +499,9 @@ async function leaveTheAgentsPageAndComeBack(user: UserEvent): Promise<void> {
 
 // The Agents page is the route element of `/agents` (`app.tsx`), so leaving it for another page
 // unmounts the page, its rows and the composer, and the reader's way back opens the row again.
-// AGENTS.md holds it to "what it holds when its host takes it off the page ... waits the same way
-// for the composer drawn at that address next."
+// `.dispatch/architecture/dispatch-web.md` holds it to "a composer its host moves from reply to
+// reply, or takes off the page ... keeps what the field holds for the reply it answers, or for
+// none."
 for (const held of HELD) {
   test(`${HOST} · the Agents page left, then back · ${held}`, async () => {
     const page = await openAgents();

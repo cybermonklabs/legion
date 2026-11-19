@@ -448,7 +448,8 @@ interface MentionComposerProps {
    *  the reader types into a standing box and does not send is its thread's, kept under the
    *  box's send name (`unsent-drafts.ts`), so the box drawn when the column comes back to the
    *  thread shows it again, and a newer message the host moves the box onto leaves it in the
-   *  field rather than prefilling over it. */
+   *  field rather than prefilling over it. Escape in its field leaves the draft there, since
+   *  nothing ends that reply. */
   readonly standing?: boolean;
   /** The send of this composer's that the reader stopped, waiting aside since its host gave the
    *  composer a newer address that carries nothing - the margin's compose at other words of the

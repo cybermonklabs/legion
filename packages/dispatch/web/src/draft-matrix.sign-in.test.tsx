@@ -2,7 +2,7 @@
  * The draft matrix, sign-in (INFRA-1503).
  *
  * What the reader typed and has not sent is theirs alone, and a field on screen holds it in the
- * shell itself (packages/dispatch/AGENTS.md, "A write belongs to the person who pressed it"). So
+ * shell itself (`AuthGate` in `app.tsx`, "A write belongs to the person who pressed it"). So
  * the shell is drawn for the person the session cookie names, and drawn again only when another
  * person is signed in. Each cell has words typed into a composer on screen (an Agents row's),
  * makes the page read who is signed in again, and asserts whose shell is drawn and where the

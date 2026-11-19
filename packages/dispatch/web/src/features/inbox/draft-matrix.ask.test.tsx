@@ -1,8 +1,8 @@
 /**
  * The draft matrix, ask card rows (INFRA-1503).
  *
- * An ask's answer and its replies are the ask's, not the field's showing them (packages/dispatch
- * AGENTS.md): every field for one ask reads and writes the same draft, by the ask's id, in a
+ * An ask's answer and its replies are the ask's, not the field's showing them (`createDraftStore`):
+ * every field for one ask reads and writes the same draft, by the ask's id, in a
  * store that outlives every card (`answer-drafts.ts`, `reply-drafts.ts`), and the tab keeps each
  * for a reload of the page (`draft-store.ts`). Each cell writes a draft typed and never sent,
  * makes one move, and asserts where the text ends. A refused or stopped answer or reply is its

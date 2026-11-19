@@ -261,6 +261,11 @@ function pressCallbacks<TData, TVariables, TContext>(
  * field ends at the value the person chose last. A Retry after Dispatch's own refusal is a press
  * of its own too, since Dispatch would answer the old key with that refusal.
  *
+ * A Retry (`retry`, `again`) runs the newest render's `write` or `request`, and its callbacks,
+ * with the press's own variables. So a press carries every value they read - an upload's base
+ * and summary (`UploadPress`), the ask a card's press is of (`AskPress`) - and its Retry sends
+ * what its key covers, whatever the surface shows by then.
+ *
  * TanStack runs each press as the hook made it (`KeyedPress`), the key with it, so the key goes
  * with its own press however many are out at once; the surface's callbacks and the result's
  * `variables` are the press's own variables, as from a `useMutation` of its own. It runs whether

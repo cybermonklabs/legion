@@ -1043,6 +1043,9 @@ export class DispatchApiClient {
     );
   }
 
+  /** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}`: remove the repository's mapping. A
+   *  repository with no mapping answers the same 204, so a removal made again after one that
+   *  landed needs no `removedEvenIfGone`. */
   async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
