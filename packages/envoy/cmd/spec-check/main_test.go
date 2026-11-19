@@ -408,13 +408,17 @@ func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...strin
 	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
 }
 
-// childEnv is this process's environment without GITHUB_ACTIONS, then extra. These tests run in a
-// GitHub Actions job, where compare refuses to run, so every child starts outside one unless a row
-// sets GITHUB_ACTIONS itself. CI stays as this process has it: GitHub and an agent's shell both set
-// CI=true, and compare runs under it.
+// childEnv is this process's environment without GITHUB_ACTIONS, then GOMAXPROCS=1, then extra.
+// These tests run in a GitHub Actions job, where compare refuses to run, so every child starts
+// outside one unless a row sets GITHUB_ACTIONS itself. CI stays as this process has it: GitHub and
+// an agent's shell both set CI=true, and compare runs under it. GOMAXPROCS=1 runs each child on
+// one P, except the one row that starts it behind env -i to drop the whole environment: the
+// parallel rows keep dozens of children alive at once, and a child left to size GOMAXPROCS to the
+// host starts a thread for each P its collector's idle mark workers take, about 80 on a 288-CPU
+// host.
 func childEnv(extra ...string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(v string) bool { return strings.HasPrefix(v, "GITHUB_ACTIONS=") })
-	return append(env, extra...)
+	return append(append(env, "GOMAXPROCS=1"), extra...)
 }
 
 // expect fails the test unless got is want.

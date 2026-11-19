@@ -23,13 +23,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -145,7 +148,9 @@ type initRig struct {
 	// network is what every process reaching a remote is told: the egress proxy, the trust store
 	// holding the stand-in's CA, and the hosts reached directly.
 	network []string
-	pod     int
+	// cpus is what an agent's own command is told in place of the issue pod's CPU limit (podCPUs).
+	cpus []string
+	pod  int
 	// host is the server a plant named, when it named one.
 	host *recordingHost
 }
@@ -166,7 +171,8 @@ type rigPod struct {
 
 func newInitRig(t *testing.T, legion string) *initRig {
 	t.Helper()
-	r, err := configure(goldenOptions())
+	options := goldenOptions()
+	r, err := configure(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +195,7 @@ func newInitRig(t *testing.T, legion string) *initRig {
 		"HTTPS_PROXY=" + rig.github.proxy.URL, "https_proxy=" + rig.github.proxy.URL,
 		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost", "GIT_SSL_CAINFO=" + rig.github.caFile,
 	}
+	rig.cpus = podCPUs(options.Resources.Issue.Limits[corev1.ResourceCPU])
 	askpass := filepath.Join(root, "any-host-askpass")
 	if err := os.WriteFile(askpass, []byte(anyHostAskpass), 0o700); err != nil {
 		t.Fatal(err)
@@ -441,6 +448,7 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 	}
 	env = append(env, "PATH="+rig.bin+":/usr/bin:/bin", "HOME="+home)
 	env = append(env, rig.network...)
+	env = append(env, podCPUs(c.Resources.Limits[corev1.ResourceCPU])...)
 	argv := make([]string, len(c.Command))
 	for i, arg := range c.Command {
 		argv[i] = remap(kubeExpand(arg, declared))
@@ -495,6 +503,17 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 	return nil
 }
 
+// podCPUs is what the rig tells a process in place of the CPU limit, limit, of the container it
+// would run in. In a pod that limit is the cgroup quota the Go runtime sizes GOMAXPROCS to, the
+// host's CPUs or max(ceil(limit), 2) where that is fewer (runtime/cgroup_linux.go), and jj its
+// thread pool to. The rig runs every process under no quota, where both size themselves to the
+// host: on a 288-CPU host each legion started about 80 threads and each jj about 290, with the
+// vectors' pods side by side.
+func podCPUs(limit resource.Quantity) []string {
+	cpus, host := (limit.MilliValue()+999)/1000, int64(goruntime.NumCPU())
+	return []string{"GOMAXPROCS=" + strconv.FormatInt(min(host, max(cpus, 2)), 10), "RAYON_NUM_THREADS=" + strconv.FormatInt(min(host, max(cpus, 1)), 10)}
+}
+
 // chmodTree adds or removes every owner write permission under dir.
 func chmodTree(dir string, writable bool) error {
 	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
@@ -530,11 +549,11 @@ func (rig *initRig) jj(dir string, args ...string) string {
 
 func (rig *initRig) tool(dir, name string, args ...string) string {
 	rig.t.Helper()
-	runner := fixturegit.Runner{TB: rig.t, Env: append([]string{
+	runner := fixturegit.Runner{TB: rig.t, Env: slices.Concat([]string{
 		"PATH=" + rig.bin + ":" + os.Getenv("PATH"), "HOME=" + filepath.Join(rig.root, "home"),
 		"XDG_CONFIG_HOME=" + filepath.Join(rig.root, "config"), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-	}, rig.network...)}
+	}, rig.network, rig.cpus)}
 	output, _ := runner.Try(dir, append([]string{filepath.Join(rig.bin, name)}, args...)...)
 	return output
 }
