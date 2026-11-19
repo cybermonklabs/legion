@@ -25,7 +25,7 @@ import (
 // (wordFirst).
 func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email> [--session-writer-audience <provider>]]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
+		Use:    "launcher --connect tcp://host:port --sandbox <name> [--pod-uid <uid>] [--stop-grace <duration>] [--test-postgres] [--microvm [--metadata-workload-pool <project>.svc.id.goog --metadata-identity-provider <url>]] [--session-instance <project:region:instance> --session-database <name> --session-user <login> [--session-impersonate-service-account <email> [--session-writer-audience <audience>]]] (--roles-dir <dir> --role <role> [--role <role>…] | --token-file <path> --role <role> --private-dir <dir>)",
 		Short:  "PID 1 of an issue pod's roles container or the controller's pod: starts and stops each role's worker-shim on the daemon's command",
 		Hidden: true,
 	}
@@ -44,7 +44,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	sessionInstance := flags.String("session-instance", "", "the Cloud SQL instance holding the session database: project:region:instance")
 	sessionDatabase := flags.String("session-database", "", "the session database in that instance")
 	sessionUser := flags.String("session-user", "", "the IAM login this pod signs in to the session database as")
-	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates with this pod's own credentials and signs in as; optional, and given only with the three other session flags")
+	sessionAccount := flags.String("session-impersonate-service-account", "", "the Google service account the session proxy impersonates and signs in as, with this pod's own credentials or, with --session-writer-audience, with the launcher's writer token; optional, and given only with the three other session flags")
 	sessionWriterAudience := flags.String("session-writer-audience", "", "the audience of the session writer token that only this launcher reads, a workload identity provider's full resource name: the session proxy exchanges that token to impersonate the service account, in place of this pod's own credentials, and admits only this launcher and the generation's agent; optional, and given only with the four other session flags and --roles-dir")
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
 	microVM := flags.Bool("microvm", false, "the pod runs in a GKE Sandbox microVM rather than under gVisor")

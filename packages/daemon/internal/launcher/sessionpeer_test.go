@@ -599,10 +599,7 @@ func TestTheMetadataEndpointExchangesItsOwnTokenAndNeverTheWriterToken(t *testin
 	}
 	exchanges := sts.answered()
 	if len(exchanges) != 1 || exchanges[0].subject != "fake-workload-identity-token" {
-		t.Fatalf("the endpoint made %d exchanges; want one, of the workload-identity token", len(exchanges))
-	}
-	if exchanges[0].subject == testWriterToken {
-		t.Fatal("the endpoint exchanged the writer token")
+		t.Fatalf("the endpoint made %d exchanges; want one, of the workload-identity token and never the writer token", len(exchanges))
 	}
 }
 

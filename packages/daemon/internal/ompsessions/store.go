@@ -48,8 +48,9 @@ type Store struct {
 type Database struct {
 	Instance, Name, User string
 	// ImpersonateServiceAccount is the email of the Google service account the pod's session proxy
-	// impersonates with the pod's own credentials and signs in as, so User is that account's IAM
-	// login (ServiceAccountLogin). Empty signs in as the pod's own identity.
+	// impersonates and signs in as, so User is that account's IAM login (ServiceAccountLogin). The
+	// pod's own credentials impersonate it, or the launcher's writer token does where
+	// WriterAudience is set. Empty signs in as the pod's own identity.
 	ImpersonateServiceAccount string
 	// WriterAudience is the audience of the projected ServiceAccount token that only the pod's
 	// launcher reads. It is also the audience the session proxy names to Google's security token

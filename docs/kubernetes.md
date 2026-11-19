@@ -1097,7 +1097,7 @@ A deployment that sets the member makes these four things true:
 - The account grants `roles/iam.workloadIdentityUser` to the principal of the pods' ServiceAccount in that pool:
   `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/subject/system:serviceaccount:<namespace>:<service account>`.
   `<namespace>` is `runtime.kubernetes.namespace`, and `<service account>` is the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
-  This grant takes the place of the account's grant to the pod's own principal, the first item of the list above.
+  This grant takes the place of the account's grant to the pod's own principal, the first item of the list under "What a pod signs in as, and what a deployment grants for it" above.
 
 - The Security Token Service API (`sts.googleapis.com`) and the IAM Service Account Credentials API (`iamcredentials.googleapis.com`) are enabled.
 
@@ -1106,7 +1106,7 @@ A deployment that sets the member makes these four things true:
 
 Turn `writer_audience` on in this order:
 
-1. Make the pool and its provider, and the account's grant to the pool's principal.
+1. Make the four things above true: the pool and its provider, the account's grant to the pool's principal, the two APIs, and the admission rule where the cluster has one.
    A pod whose exchange or impersonation Google refuses fails its proof dial, and the generation's start error names the instance and carries Google's refusal.
 
 2. Set `writer_audience`, and restart the daemon on the file.
