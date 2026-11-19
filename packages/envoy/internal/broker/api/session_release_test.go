@@ -42,8 +42,9 @@ func (ts *testServer) releases(t *testing.T, what, bearer string, sessions []str
 // with released: 1. The row stays in oauth_pod_sessions, marked released, and P's trade under S,
 // proved with k, is refused invalid_grant naming S, with a description that does not begin
 // pod_session_not_registered:, which both clients retry: the release is final for that
-// registration. The released row still holds S for A, so daemon B, listed for the same pod
-// account, is still refused S. A's next write of P and S takes the row back, and P trades again.
+// registration. S stays bound to A after the release, as it does for good from A's first
+// registration of it, so daemon B, listed for the same pod account, is still refused S. A's next
+// write of P and S takes the row back, and P trades again.
 func TestAReleasedNameIsNotHonoured(t *testing.T) {
 	ts := newTestServer(t)
 	const session, pod, podB = "implementer-g1", "pod-uid-released", "pod-uid-of-b"
@@ -81,9 +82,9 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 	}
 
 	status, body := ts.registerPodSession(t, daemonB, ts.rolesPodToken(t, podB), session)
-	if refusal := decode[wireError](t, body); status != http.StatusConflict || refusal.Code != "SESSION_HELD_BY_ANOTHER_REGISTRAR" ||
+	if refusal := decode[wireError](t, body); status != http.StatusConflict || refusal.Code != "SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR" ||
 		!strings.Contains(refusal.Error, session) || !strings.Contains(refusal.Error, daemonAccount) {
-		t.Fatalf("%s registering %s for %s, which %s released = %d %s; want 409 SESSION_HELD_BY_ANOTHER_REGISTRAR naming %s and %s: a released registration holds its name until it lapses",
+		t.Fatalf("%s registering %s for %s, which %s released = %d %s; want 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR naming %s and %s: a release leaves the name bound to its registrar",
 			otherDaemonAccount, podB, session, daemonAccount, status, strings.TrimSpace(string(body)), session, daemonAccount)
 	}
 

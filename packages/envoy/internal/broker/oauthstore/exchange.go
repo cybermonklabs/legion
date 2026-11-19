@@ -313,14 +313,16 @@ func (e *PodSessionReleasedError) Error() string {
 // Unwrap is ErrPodSessionReleased.
 func (e *PodSessionReleasedError) Unwrap() error { return ErrPodSessionReleased }
 
-// ErrPodSessionHeld is what RegisterPodSession's refusal (*PodSessionHeldError) is: a live
-// registration of the session name, of any pod, that another registrar wrote.
+// ErrPodSessionHeld is what RegisterPodSession's refusal (*PodSessionHeldError) is: the session
+// name is bound to another registrar, the daemon that first registered it, which holds it for
+// good, whatever the name's live rows.
 var ErrPodSessionHeld = errors.New("another registrar holds this session name")
 
-// PodSessionHeldError is RegisterPodSession's refusal of a session name a live registration of
-// another registrar holds. It is ErrPodSessionHeld (errors.Is); Session is the name and Holder
-// the registrar whose live registration holds it, which the registration route names to the
-// registrar it refuses.
+// PodSessionHeldError is RegisterPodSession's refusal of a session name bound to another
+// registrar: the one that first registered it, which holds it for good, whether its rows are
+// live, lapsed, released or swept. It is ErrPodSessionHeld (errors.Is); Session is the name and
+// Holder the registrar it is bound to, which the registration route names to the registrar it
+// refuses.
 type PodSessionHeldError struct{ Session, Holder string }
 
 func (e *PodSessionHeldError) Error() string {
@@ -329,6 +331,30 @@ func (e *PodSessionHeldError) Error() string {
 
 // Unwrap is ErrPodSessionHeld.
 func (e *PodSessionHeldError) Unwrap() error { return ErrPodSessionHeld }
+
+// ErrPodSessionNotThisRegistrars is what PodSessionRegistered's refusal
+// (*PodSessionNotThisRegistrarsError) is: the pod's live registration for the session was written
+// by a registrar other than the one the session name is bound to.
+var ErrPodSessionNotThisRegistrars = errors.New("the pod's registration for this session is not the registrar's the name is bound to")
+
+// PodSessionNotThisRegistrarsError is PodSessionRegistered's refusal of a live registration whose
+// registrar is not the one its session name is bound to, or of a name bound to none. It is
+// ErrPodSessionNotThisRegistrars (errors.Is). Session is the name, Registrar the registrar that
+// wrote the registration, and Holder the registrar the name is bound to, "" when it is bound to
+// none; the exchange logs all three and answers none of them: neither daemon is the pod's to be
+// told about.
+type PodSessionNotThisRegistrarsError struct{ Session, Registrar, Holder string }
+
+func (e *PodSessionNotThisRegistrarsError) Error() string {
+	holder := e.Holder
+	if holder == "" {
+		holder = "no registrar"
+	}
+	return fmt.Sprintf("%s: %s wrote it, and %s is bound to %s", ErrPodSessionNotThisRegistrars, e.Registrar, e.Session, holder)
+}
+
+// Unwrap is ErrPodSessionNotThisRegistrars.
+func (e *PodSessionNotThisRegistrarsError) Unwrap() error { return ErrPodSessionNotThisRegistrars }
 
 // PodSessionRegistration is one pod's registration for one session name as the broker holds it
 // after a write (RegisterPodSession), and what that write did to it.
@@ -364,23 +390,26 @@ type PodSessionRegistration struct {
 // claim's answer (BindSession).
 //
 // registrar is the login account of the daemon writing (the registration route's serviceAuth
-// caller), and a session name is held by the registrar a live row of it names: while a live row
-// of the name, of any pod and released or not, names another registrar, the write is refused with
-// a *PodSessionHeldError naming the name and that registrar, and writes nothing. So two daemons
-// listed for one pod account cannot each register a pod under one name, and the exchange, which
-// admits a trade only for a live row that names a registrar and is not released
-// (PodSessionRegistered), admits under a name only the pods of the registrar that holds it. A
-// release does not free the name: a released row holds it until it expires, so no other daemon
-// takes a name while a token of the released pod can still be presented. A row that names no
-// registrar, which a broker of the build before this column writes, holds nothing. An empty
+// caller), and a session name is bound to the registrar that first registered it, for good,
+// whatever its live rows: the write binds the name to registrar when no registrar is bound to it
+// yet (bindPodSessionName, a row of pod_session_registrars), and a write of a name bound to
+// another registrar is refused with a *PodSessionHeldError naming the name and that registrar,
+// and writes nothing. No sweep deletes a binding and no route removes one, so the name stays its
+// registrar's while its rows are live, once they have lapsed or been swept, and after its
+// registrar released them. So two daemons listed for one pod account cannot each register a pod
+// under one name, at once or one after the other, and the exchange, which admits a trade only
+// for a live row that is not released and whose registrar is the one the name is bound to
+// (PodSessionRegistered), admits under a name only the pods its registrar registered. The same
+// registrar registering another pod for the name, as a relaunch does, is admitted. An empty
 // registrar is refused, since a row naming none would admit nothing.
 //
-// A row of the pod and name that is released, that names another registrar (which the holder
-// check has found lapsed), or that names none is taken whole: its registrar, key, generation and
-// expiry become this write's and its release mark is cleared. A release ends a registration, so
-// neither its key nor its generation carries over to the next, whose claim may count its
-// generations from lower; nor does another registrar's. A row of this registrar's own that it has
-// not released, live or lapsed, keeps the rules below.
+// A row of the pod and name that is released, that names another registrar, or that names none
+// (a row written before this registrar bound the name, such as one a broker of the build before
+// registrars wrote) is taken whole: its registrar, key, generation and expiry become this write's
+// and its release mark is cleared. A release ends a registration, so neither its key nor its
+// generation carries over to the next, whose claim may count its generations from lower; nor does
+// another registrar's. A row of this registrar's own that it has not released, live or lapsed,
+// keeps the rules below.
 //
 // jkt, when set, binds the registration to the key the session's own role proves, which is what
 // separates the roles of one pod: they read one exchange token and are registered for one pod
@@ -401,25 +430,25 @@ type PodSessionRegistration struct {
 // down: a lower one is not applied until the row has lapsed and the sweep has deleted it, or the
 // registrar has released it.
 //
-// The write is one transaction. It first takes a transaction advisory lock on the session name
-// (lockPodSessionName), which every write of the name takes before its holder check, so of two
-// registrars' first writes of one name the second waits for the first to commit and then finds
-// its row: two first writes of two pods touch no row in common, so without the lock both checks
-// could find no holder before either inserted, and both rows would stand. It then holds the row
-// from its read to its update (writePodSession), so the key it answers it replaced is the key the
-// row held when this write changed it, and a write that waits on another reads the row as that
-// one committed it. One insert ... on conflict do update statement keeps the generation rule as
-// well, but the key it can read beside it is the statement's snapshot's, which a concurrent
-// write's commit postdates: two writes changing one row's key at once name the key both started
-// from. The transaction is its own and names read committed rather than taking
-// default_transaction_isolation: the holder check that follows the advisory lock must see a row
-// the write it waited on committed, and two first writes of one pod can both read no row, the
-// second to insert waiting on the first's insert and then reading that row in a statement of its
-// own; only read committed's snapshot per statement sees either. Under repeatable read the check
-// would miss that row, and that insert fails to serialize instead (SQLSTATE 40001), as the one
-// statement's update of a row committed after its snapshot does. So a ctx already carrying a
-// transaction, whose level and lifetime the write would not choose, is refused; no caller passes
-// one.
+// The write is one transaction. It first binds the name (bindPodSessionName), and its insert of
+// the name's binding conflicts, on that table's primary key, with every other write's insert of
+// it: of two registrars' first writes of one name, the second's insert waits for the first to
+// commit, then does nothing, and the read that follows finds the first's registrar. Two first
+// writes of two pods touch no row of oauth_pod_sessions in common, so that key is the one thing
+// that keeps both from being admitted. It then holds the row from its read to its update
+// (writePodSession), so the key it answers it replaced is the key the row held when this write
+// changed it, and a write that waits on another reads the row as that one committed it. One
+// insert ... on conflict do update statement keeps the generation rule as well, but the key it
+// can read beside it is the statement's snapshot's, which a concurrent write's commit postdates:
+// two writes changing one row's key at once name the key both started from. The transaction is
+// its own and names read committed rather than taking default_transaction_isolation: the
+// binding's read must see the binding the write it waited on committed, and two first writes of
+// one pod under a bound name can both read no row, the second to insert waiting on the first's
+// insert and then reading that row in a statement of its own; only read committed's snapshot per
+// statement sees either. Under repeatable read each insert that waited fails to serialize instead
+// (SQLSTATE 40001) once the write it waited on commits, as the one statement's update of a row
+// committed after its snapshot does. So a ctx already carrying a transaction, whose level and
+// lifetime the write would not choose, is refused; no caller passes one.
 func (s *Store) RegisterPodSession(ctx context.Context, registrar, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
 	if registrar == "" {
 		return PodSessionRegistration{}, errors.New("register the pod's session name: the write names no registrar, and a registration naming none admits nothing")
@@ -433,7 +462,7 @@ func (s *Store) RegisterPodSession(ctx context.Context, registrar, podUID, sessi
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	txCtx := WithTx(ctx, tx)
-	err = s.lockPodSessionName(txCtx, registrar, session)
+	err = s.bindPodSessionName(txCtx, registrar, session)
 	var stored PodSessionRegistration
 	if err == nil {
 		stored, err = s.writePodSession(txCtx, registrar, podUID, session, jkt, generation)
@@ -447,31 +476,31 @@ func (s *Store) RegisterPodSession(ctx context.Context, registrar, podUID, sessi
 	return stored, nil
 }
 
-// lockPodSessionName takes the transaction advisory lock of the session name, in the transaction
-// ctx carries, and refuses with a *PodSessionHeldError a name a live row of another registrar
-// holds, of any pod and released or not. Every write of the name takes the lock before this read,
-// so the read runs only once any write of the name begun before it has committed or rolled back,
-// and under read committed it sees what that write committed.
-func (s *Store) lockPodSessionName(ctx context.Context, registrar, session string) error {
-	if _, err := s.db(ctx).Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('oauth_pod_sessions:' || $1, 0))`, session); err != nil {
-		return fmt.Errorf("lock the session name: %w", err)
+// bindPodSessionName binds the session name to registrar, in the transaction ctx carries, when no
+// registrar is bound to it yet, and refuses with a *PodSessionHeldError a name bound to another.
+// The insert does nothing for a name already bound, so a binding never moves once written, and
+// registered_at is the moment of the name's first registration. A first binding of the name that
+// another write has inserted and not yet committed makes this insert wait on the primary key until
+// that write commits or rolls back, and under read committed the read that follows, a statement
+// of its own, sees what that write committed.
+func (s *Store) bindPodSessionName(ctx context.Context, registrar, session string) error {
+	if _, err := s.db(ctx).Exec(ctx, `insert into pod_session_registrars (session_name, registrar, registered_at) values ($1, $2, now()) on conflict (session_name) do nothing`, session, registrar); err != nil {
+		return fmt.Errorf("bind the session name: %w", err)
 	}
 	var holder string
-	err := s.db(ctx).QueryRow(ctx, `select registrar from oauth_pod_sessions
-		where session = $1 and expires_at > now() and registrar is not null and registrar <> $2
-		limit 1`, session, registrar).Scan(&holder)
+	err := s.db(ctx).QueryRow(ctx, `select registrar from pod_session_registrars where session_name = $1 and registrar <> $2`, session, registrar).Scan(&holder)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return nil
 	case err != nil:
-		return fmt.Errorf("read who holds the session name: %w", err)
+		return fmt.Errorf("read the registrar the session name is bound to: %w", err)
 	}
 	return &PodSessionHeldError{Session: session, Holder: holder}
 }
 
 // writePodSession is RegisterPodSession's write, in the transaction ctx carries, once
-// lockPodSessionName has found no other registrar holding the name. It locks the row and reads
-// it, inserts it when there is none, takes it whole when it is released or not registrar's, and
+// bindPodSessionName has found the name bound to registrar. It locks the row and reads it,
+// inserts it when there is none, takes it whole when it is released or not registrar's, and
 // otherwise applies the generation rule to the row it locked and updates it. A row another write
 // inserts after the read began is invisible to that read, but the insert waits for that write to
 // commit and then finds the row, which is read again, locked, as that write left it.
@@ -508,8 +537,9 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 	var row pgx.Row
 	switch {
 	case locked.released || locked.registrar != registrar:
-		// A release ended the row's registration, or it is another registrar's, lapsed, or no
-		// registrar's: nothing of it carries over, so the write sets it as a first write would.
+		// A release ended the row's registration, or it is another registrar's or no registrar's,
+		// written before registrar bound the name: nothing of it carries over, so the write sets
+		// it as a first write would.
 		row = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
 			set registrar = $3, expires_at = $4, jkt = nullif($5, ''), generation = $6, released_at = null
 			where pod_uid = $1 and session = $2
@@ -558,20 +588,24 @@ func (s *Store) lockPodSession(ctx context.Context, podUID, session string) (loc
 }
 
 // PodSessionRegistered reports whether a registration still says the pod podUID may exchange
-// under session with a DPoP proof of the key whose thumbprint is jkt: true when a live row names
-// a registrar, is not released, and names no key or names this one; false when no live row
-// exists, and when the live row names no registrar, which a broker of the build before
-// registrars wrote and which holds no name, so it is answered as no row is; false with a
-// *PodSessionReleasedError naming the registrar when that registrar released the live row; and
-// false with a *PodSessionBoundError naming the row's key when the live row names another. It
-// reads through s.db(ctx), so the exchange's own transaction asks it, and it asks the cluster
-// nothing: a pod that no longer runs goes on being registered until its row runs out, exactly as
-// its own token goes on verifying until its expiry.
+// under session with a DPoP proof of the key whose thumbprint is jkt. It reads the pod's live row
+// of the name beside the name's binding (pod_session_registrars, RegisterPodSession) and answers,
+// in this order: false when no live row exists; false when the live row names no registrar,
+// which a broker of the build before registrars wrote, so it is answered as no row is; false with
+// a *PodSessionReleasedError naming the registrar when that registrar released the live row;
+// false with a *PodSessionNotThisRegistrarsError when the live row's registrar is not the one the
+// name is bound to, or the name is bound to none, so only a row of the daemon the name is bound
+// to admits a trade, whichever daemon wrote the row; false with a *PodSessionBoundError naming
+// the row's key when the live row names another; and true for a row that names no key or this
+// one. It reads through s.db(ctx), so the exchange's own transaction asks it, and it asks the
+// cluster nothing: a pod that no longer runs goes on being registered until its row runs out,
+// exactly as its own token goes on verifying until its expiry.
 func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt string) (bool, error) {
-	var bound, registrar string
+	var bound, registrar, holder string
 	var released bool
-	err := s.db(ctx).QueryRow(ctx, `select coalesce(jkt, ''), coalesce(registrar, ''), released_at is not null from oauth_pod_sessions
-		where pod_uid = $1 and session = $2 and expires_at > now()`, podUID, session).Scan(&bound, &registrar, &released)
+	err := s.db(ctx).QueryRow(ctx, `select coalesce(p.jkt, ''), coalesce(p.registrar, ''), p.released_at is not null, coalesce(b.registrar, '')
+		from oauth_pod_sessions p left join pod_session_registrars b on b.session_name = p.session
+		where p.pod_uid = $1 and p.session = $2 and p.expires_at > now()`, podUID, session).Scan(&bound, &registrar, &released, &holder)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
@@ -581,6 +615,8 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 		return false, nil
 	case released:
 		return false, &PodSessionReleasedError{Registrar: registrar}
+	case registrar != holder:
+		return false, &PodSessionNotThisRegistrarsError{Session: session, Registrar: registrar, Holder: holder}
 	case bound != "" && bound != jkt:
 		return false, &PodSessionBoundError{Bound: bound}
 	}
@@ -594,14 +630,14 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 // daemon has stopped writing the names it releases.
 //
 // The exchange refuses a released registration (PodSessionRegistered answers a
-// *PodSessionReleasedError), and the row still holds its name for registrar until it expires:
-// nothing is deleted and no expiry moves, so no other registrar takes the name while a token of
-// the released pod can still be presented (RegisterPodSession), and the sweep deletes the row when
-// it would have anyway. A row released before keeps the moment of its first release, so a repeat
-// changes nothing and answers the same, and a retry after a lost answer is safe. Only registrar's
-// own rows are released or counted: a row of the same name that another registrar, or none, wrote
-// is neither touched nor revealed. registrar's next write of a released row's pod and name takes
-// the row whole and makes that one registration live again (writePodSession).
+// *PodSessionReleasedError), and the name stays bound to registrar, as every name stays bound to
+// the registrar that first registered it (RegisterPodSession), so no other registrar registers it
+// after the release either. Nothing is deleted and no expiry moves, and the sweep deletes the row
+// when it would have anyway. A row released before keeps the moment of its first release, so a
+// repeat changes nothing and answers the same, and a retry after a lost answer is safe. Only
+// registrar's own rows are released or counted: a row of the same name that another registrar,
+// or none, wrote is neither touched nor revealed. registrar's next write of a released row's pod
+// and name takes the row whole and makes that one registration live again (writePodSession).
 //
 // A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
 // is dropped as matching nothing rather than refused, and a name given twice matches the same
@@ -610,15 +646,15 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 // and Postgres refuses it in text (invalid byte sequence for encoding "UTF8": 0x00), so without
 // the filter a release naming it would fail, and the route would answer 500.
 //
-// It is one transaction of its own, the update then the count, and takes no advisory lock: it
-// inserts no row, so it cannot race another registrar's first write of a name as two inserts can
-// (lockPodSessionName), and a write of a row it updates locks that row (lockPodSession), so it
-// waits for the release to commit and then finds the row released. The transaction names read
-// committed, as RegisterPodSession's does, so that two releases of one name by one registrar both
-// commit: the second's update waits on the first's rows, then finds them released and leaves them,
-// and its count, a statement of its own, reads them as the first committed them; under repeatable
-// read that update would fail to serialize instead (SQLSTATE 40001). So a ctx already carrying a
-// transaction is refused; no caller passes one.
+// It is one transaction of its own, the update then the count, and touches no binding: it inserts
+// no row and moves no name, so it cannot race another registrar's first write of a name as two
+// inserts of its binding can (bindPodSessionName), and a write of a row it updates locks that row
+// (lockPodSession), so it waits for the release to commit and then finds the row released. The
+// transaction names read committed, as RegisterPodSession's does, so that two releases of one
+// name by one registrar both commit: the second's update waits on the first's rows, then finds
+// them released and leaves them, and its count, a statement of its own, reads them as the first
+// committed them; under repeatable read that update would fail to serialize instead (SQLSTATE
+// 40001). So a ctx already carrying a transaction is refused; no caller passes one.
 func (s *Store) ReleasePodSessions(ctx context.Context, registrar string, sessions []string) (released int, err error) {
 	if _, joined := TxFrom(ctx); joined {
 		return 0, errors.New("release the pod session names: the release opens a read-committed transaction of its own, and the context already carries one")

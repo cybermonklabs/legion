@@ -311,14 +311,16 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/oauth/revoke", accountAuth(relaysDecisions, (*server).revokeOAuthToken)},
 		// Register that one pod may exchange under one session name: the row the token exchange
 		// reads before it mints a token for a pod of an account that fixes no session, written by
-		// the deployment's own daemon as it starts that pod. Mounted only when the broker runs its
-		// OAuth provider.
+		// the deployment's own daemon as it starts that pod. A name's first registration binds it,
+		// for good, to the daemon that wrote it, and another daemon's registration of the name is
+		// 409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR. Mounted only when the broker runs its OAuth
+		// provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions", serviceAuth((*server).registerPodSession)},
 		// Release session names the caller's login account registered: each live registration of
 		// each name that the account wrote, whichever of its pods wrote it, is marked released, so
 		// the token exchange refuses the trade under it of the pod the registration names, and the
-		// row keeps the name bound to that account until it expires. Mounted only when the broker
-		// runs its OAuth provider.
+		// name stays bound to that account, as it is for good. Mounted only when the broker runs
+		// its OAuth provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", serviceAuth((*server).releasePodSessions)},
 		// Extend the calling session's lease.
 		{http.MethodPost, "/v1/enrollments/{id}/renew", renewAuth((*server).renewEnrollment)},

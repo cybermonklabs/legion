@@ -1189,13 +1189,13 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // registeredPodSession refuses an exchange whose claims name an instance (exchange.Claims.Instance,
 // a pod uid) that no live registration names for the session the token would write under,
 // reading oauthstore.Store.PodSessionRegistered in the exchange's own transaction. A registration
-// counts only while it names the registrar that wrote it and that registrar has not released it:
-// the registrar a live registration names holds the name (oauthstore.Store.RegisterPodSession
-// refuses it to every other), so a pod trades under a name only when the daemon holding that
-// name registered it. A row no registrar is named on, which a broker of the build before
-// registrars wrote, is answered as no row is. An exchange whose claims carry no instance is not
-// gated: a fixed-session entry's pod, a workflow run and a dev box each carry a name their
-// configuration or their person decides, and nothing of theirs is registered.
+// counts only while it names a registrar, that registrar has not released it, and the session
+// name is bound to that registrar: a name is bound for good to the daemon that first registered
+// it (oauthstore.Store.RegisterPodSession refuses it to every other), so a pod trades under a name
+// only when the daemon holding that name registered it. A row no registrar is named on, which a
+// broker of the build before registrars wrote, is answered as no row is. An exchange whose claims
+// carry no instance is not gated: a fixed-session entry's pod, a workflow run and a dev box each
+// carry a name their configuration or their person decides, and nothing of theirs is registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
 // another principal the name, and this refuses another pod of the same principal, which the claim
@@ -1231,6 +1231,15 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // daemon: the pod asking is not that daemon's, and a private project's daemon account carries
 // the project's name. It logs a WARN line naming the principal, the pod, the session and the
 // registrar, which the operator reads and the pod does not.
+//
+// A live registration written by a daemon other than the one the session name is bound to, or of
+// a name bound to none, is refused invalid_grant with a description beginning
+// oauthwire.SessionNameNotThisRegistrars and a colon, never oauthwire.PodSessionNotRegistered: no
+// later trade cures it, since the name is the other daemon's for good and only that daemon's
+// registration of the pod would admit it, so both clients read it as final. Its hint names the
+// session and nothing of the daemon that holds it, for the reason the released refusal names no
+// daemon. It logs a WARN line naming the principal, the pod, the session, the registrar that
+// wrote the registration and the holder, which the operator reads and the pod does not.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
@@ -1240,11 +1249,18 @@ func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore
 	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, presented)
 	var bound *oauthstore.PodSessionBoundError
 	var released *oauthstore.PodSessionReleasedError
+	var notThisRegistrars *oauthstore.PodSessionNotThisRegistrarsError
 	switch {
 	case errors.As(err, &released):
 		slog.Warn("broker: the token exchange refused a pod's trade under a registration its registrar released",
 			"principal", session.Principal, "pod", session.Instance, "session", name, "registrar", released.Registrar)
 		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' was released; a pod trades only under a registration its registrar has not released.", name)
+	case errors.As(err, &notThisRegistrars):
+		slog.Warn("broker: the token exchange refused a pod's trade under a session name another daemon holds",
+			"principal", session.Principal, "pod", session.Instance, "session", name,
+			"registrar", notThisRegistrars.Registrar, "holder", notThisRegistrars.Holder)
+		return oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars+":").
+			WithHintf("The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", name)
 	case errors.As(err, &bound):
 		slog.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
 			"principal", session.Principal, "pod", session.Instance, "session", name,

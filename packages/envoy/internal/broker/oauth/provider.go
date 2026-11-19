@@ -495,10 +495,11 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 // generation, and answers the registration as it stands after this write, with whether the write
 // set it and the key it replaced (oauthstore.Store.RegisterPodSession): a write naming no key
 // keeps the one a live row of the registrar's names, a write of a lower generation than such a
-// row's changes nothing, and a name a live registration of another registrar holds is refused
-// with an *oauthstore.PodSessionHeldError (oauthstore.ErrPodSessionHeld) naming that registrar.
-// It is what POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token,
-// and the only way a row the exchange's gate reads is written.
+// row's changes nothing, and a name bound to another registrar, the one that first registered it
+// and holds it for good, is refused with an *oauthstore.PodSessionHeldError
+// (oauthstore.ErrPodSessionHeld) naming that registrar. It is what POST
+// /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the only way
+// a row the exchange's gate reads is written.
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
@@ -516,8 +517,8 @@ func (p *Provider) RegisterPodSession(ctx context.Context, registrar, account, p
 // sessions that the registrar registrar, the login account of the caller, wrote, and answers how
 // many of the registrar's live registrations of those names are released after the call
 // (oauthstore.Store.ReleasePodSessions). From its commit the exchange refuses a pod's trade under
-// each such registration, and the rows keep each name bound to the registrar until they expire.
-// It is what POST /v1/oauth/exchange/pod-sessions/release does. The policy is not asked: a release
+// each such registration, and each name stays bound to the registrar, as it is for good. It is
+// what POST /v1/oauth/exchange/pod-sessions/release does. The policy is not asked: a release
 // admits nothing, and a name no registration could have taken matches no row, so there is nothing
 // the configuration has to refuse.
 func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, sessions []string) (int, error) {
