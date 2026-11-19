@@ -107,7 +107,8 @@ func describeSenderLimit(l *senderLimit) string {
 // credential the request presented: a secrets-broker token names the sender and does not make the
 // message count. Such a message is another system's delivery, Dispatch's or Envoy's own among
 // them, or a request its caller wrote itself. The Envoy tools send the source agent and give an
-// agent no argument for it, so the limit holds agents' own tools and is not a security boundary.
+// agent no argument for it, so the limit counts each of their messages that has a sender and is
+// not a security boundary.
 func (l *senderLimit) take(r *http.Request, item contracts.Envelope) (*senderCharge, *senderRefusal) {
 	if l == nil || item.Source != "agent" {
 		return nil, nil
