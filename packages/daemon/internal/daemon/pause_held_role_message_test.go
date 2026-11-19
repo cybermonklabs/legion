@@ -20,7 +20,7 @@ import (
 // the pause held for a role the pause stopped is such held work: the role was live when the pause
 // stopped it, so without the pause it would have had the message. Main's rule that a role message
 // to a released role is not worth a wake (outbox.roleMessage) is for a role an idle release took,
-// not for one the pause stopped (the architect's decision on review of 7385a210).
+// not for one the pause stopped (the architect's decision during the review of #4115).
 //
 // So after the resume the role is woken once, as the pause's wake with no release, at the wake
 // pacing, and the message reaches it once its session holds its topic. The listener answers the
@@ -197,8 +197,9 @@ func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyA
 // the role once it is back.
 //
 // The negative control is heldMessageOwed asking that the pause that held the row be the pause
-// that stopped the role (c16617d0's `pause != row.HeldByPause`): once the second resume lets the
-// row run, it ends undelivered, and the test fails where it reads the row's mark or the message.
+// that stopped the role (an earlier head's `pause != row.HeldByPause`): once the second resume
+// lets the row run, it ends undelivered, and the test fails where it reads the row's mark or the
+// message.
 func TestARoleMessageThePauseHeldForARoleItStoppedSurvivesASecondPauseBeforeTheRoleIsBack(t *testing.T) {
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)
