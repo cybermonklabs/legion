@@ -907,9 +907,9 @@ func (r *Runtime) killOpened(ctx context.Context, window string, err error) erro
 	return err
 }
 
-// splitWindow splits pane into window and tiles the layout (splitWindow, tmux.ts). The pane is
-// open once split-window reports it, so a select-layout that fails, by its exit or by a signal
-// ending its client, is logged and the pane returned, never an error that would leave it unowned.
+// splitWindow splits pane into window and tiles the layout (splitWindow, tmux.ts). A select-layout
+// that does not succeed, by its exit or by a signal ending its client, is logged and the pane
+// returned: the pane is open once split-window reports it.
 func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string) (paneReport, error) {
 	res, err := r.run(ctx, splitWindowArgv(r.socket, window, pane))
 	if err != nil {
@@ -924,9 +924,9 @@ func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string)
 	}
 	report.window = window
 	if res, err := r.run(ctx, selectLayoutArgv(r.socket, window)); err != nil {
-		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", err.Error())
+		return paneReport{}, err
 	} else if res.exitCode != 0 {
-		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", failure(res))
+		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", strings.TrimSpace(failed(res)))
 	}
 	return report, nil
 }

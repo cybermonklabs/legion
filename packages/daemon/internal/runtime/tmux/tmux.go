@@ -427,19 +427,25 @@ func (r *Runtime) ReplacePod(context.Context, runtime.Known, func(context.Contex
 func (r *Runtime) CleanupTree(context.Context, string) error { return nil }
 
 // result is one tmux invocation's outcome. timedOut is the budget the client was killed at, zero
-// when it returned on its own; exitCode is then -1, which a message never prints (failed, exited).
+// when it returned on its own; signal is the words of the signal that ended the client
+// (`signal: killed`), empty when it exited. In either case exitCode is -1, which a message never
+// prints (failed, exited).
 type result struct {
 	stdout, stderr string
 	exitCode       int
 	timedOut       time.Duration
+	signal         string
 }
 
 // runTmux runs one argv against the private server under the pane environment, bounded by the
-// command timeout. A client that ran and failed is a result; one that could not run at all, that
-// a signal ended, or whose caller's context ended, is an error. The client timed out only when
-// the timeout killed it (procgroup.KilledByContext): once the client has exited on its own,
-// pipeDrainDelay can hold Run open past the timeout for a server still holding the client's
-// pipes, and the client's exit is then its answer.
+// command timeout. A client that ran and did not succeed is a result: one that exited non-zero,
+// one its timeout killed, and one some other signal ended (the kernel's out-of-memory kill), so
+// each caller reads them alike as a failed run, and a message about one names its exit, its
+// timeout or its signal (failed, exited). One that could not run at all, or whose caller's context
+// ended, is an error. The client timed out only when the timeout killed it
+// (procgroup.KilledByContext): once the client has exited on its own, pipeDrainDelay can hold Run
+// open past the timeout for a server still holding the client's pipes, and the client's exit is
+// then its answer.
 func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 	bounded, cancel := context.WithTimeout(ctx, r.commandTimeout)
 	defer cancel()
@@ -461,8 +467,12 @@ func (r *Runtime) runTmux(ctx context.Context, argv []string) (result, error) {
 		res.exitCode, res.timedOut = -1, r.commandTimeout
 		return res, nil
 	}
+	if end := procgroup.Ended(err); end.Signal != "" {
+		res.exitCode, res.signal = -1, end.Signal
+		return res, nil
+	}
 	if runErr := procgroup.Err(err); runErr != nil {
-		return result{}, fmt.Errorf("run tmux %s: %w", verb(argv), procgroup.Said(runErr, res.stderr))
+		return result{}, fmt.Errorf("run tmux %s: %w", verb(argv), runErr)
 	}
 	res.exitCode = cmd.ProcessState.ExitCode()
 	return res, nil
@@ -492,20 +502,27 @@ func failure(res result) string {
 }
 
 // failed is the end of an error message about a tmux client that did not succeed, after the
-// command it ran: ` failed (exit 3): <stderr>`, or ` timed out after 10s` for a client its timeout
-// killed, which left it no exit of its own.
+// command it ran: ` failed (exit 3): <stderr>`, ` was ended by signal: killed: <stderr>` for a
+// client a signal ended, or ` timed out after 10s` for a client its timeout killed. Neither of the
+// last two left the client an exit of its own.
 func failed(res result) string {
-	if res.timedOut > 0 {
+	switch {
+	case res.timedOut > 0:
 		return fmt.Sprintf(" timed out after %s", res.timedOut)
+	case res.signal != "":
+		return fmt.Sprintf(" was ended by %s%s", res.signal, failure(res))
 	}
 	return fmt.Sprintf(" failed (exit %d)%s", res.exitCode, failure(res))
 }
 
-// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`, or
-// ` timed out after 10s`.
+// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`,
+// ` was ended by signal: killed: <stderr>`, or ` timed out after 10s`.
 func exited(res result) string {
-	if res.timedOut > 0 {
+	switch {
+	case res.timedOut > 0:
 		return fmt.Sprintf(" timed out after %s", res.timedOut)
+	case res.signal != "":
+		return fmt.Sprintf(" was ended by %s%s", res.signal, failure(res))
 	}
 	return fmt.Sprintf(" exited %d%s", res.exitCode, failure(res))
 }

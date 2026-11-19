@@ -2,11 +2,9 @@ package tmux
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -84,17 +82,40 @@ func TestRunTmuxReportsAClientItsTimeoutKilledAsTimedOut(t *testing.T) {
 	}
 }
 
-// A client a signal ended after it printed its refusal keeps that refusal beneath the signal, as
-// a client that exited keeps it (failure): `run tmux list-panes: signal: killed` alone says nothing
-// of why.
-func TestRunTmuxKeepsWhatAClientASignalEndedPrinted(t *testing.T) {
+// A client a signal ended is a failed run, as a client that exited non-zero is, so every caller
+// reads it as main read its -1 exit; a message about it names the signal and keeps what the client
+// printed (failed, exited), where it said `failed (exit -1)`.
+func TestRunTmuxReadsAClientASignalEndedAsAFailedRunNamingTheSignal(t *testing.T) {
 	client := fakeTmuxClient(t, t.TempDir(), "echo 'no server running on /tmp/tmux-1000/legion-test' >&2; kill -KILL $$")
 	r := &Runtime{tmuxPath: client, commandTimeout: time.Minute, environ: []string{"PATH=" + os.Getenv("PATH")}}
 
-	_, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
+	res, err := r.runTmux(context.Background(), []string{"tmux", "-L", "legion-test", "list-panes"})
 
-	if want := "run tmux list-panes: signal: killed\nno server running on /tmp/tmux-1000/legion-test"; err == nil || err.Error() != want {
-		t.Errorf("runTmux = %v, want %q", err, want)
+	if err != nil || res.exitCode != -1 || res.signal != "signal: killed" {
+		t.Fatalf("runTmux = %+v, %v; want a result with exit -1 and the signal, and no error", res, err)
+	}
+	if want := "tmux list-panes was ended by signal: killed: no server running on /tmp/tmux-1000/legion-test"; "tmux list-panes"+failed(res) != want {
+		t.Errorf("failed = %q, want %q", "tmux list-panes"+failed(res), want)
+	}
+	if want := " was ended by signal: killed: no server running on /tmp/tmux-1000/legion-test"; exited(res) != want {
+		t.Errorf("exited = %q, want %q", exited(res), want)
+	}
+}
+
+// A stop's wait for a pane to go keeps waiting through a list-panes client a signal ended, as it
+// waits through any listing that proves nothing, and ends once tmux says the pane is gone: the
+// stand-in client dies of SIGKILL the first time and answers `can't find pane` after that.
+func TestAStopsWaitOutlivesAListingASignalEnded(t *testing.T) {
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "seen")
+	client := fakeTmuxClient(t, dir, "if [ -e '"+seen+"' ]; then echo \"can't find pane: %1\" >&2; exit 1; fi\n: >'"+seen+"'; kill -KILL $$")
+	r := &Runtime{tmuxPath: client, socket: "legion-test", commandTimeout: time.Minute, environ: []string{"PATH=" + os.Getenv("PATH")}}
+	r.run = r.runTmux
+
+	v, err := r.awaitNotRunning(context.Background(), "%1", incarnation{pid: 4242, ticks: 1}, 10*time.Second)
+
+	if err != nil || v.reason != reasonPaneGone {
+		t.Errorf("awaitNotRunning = %+v, %v; want the pane gone and no error", v, err)
 	}
 }
 
@@ -112,21 +133,15 @@ func TestKillUnrecordedNamesItsTimeoutNotAnExit(t *testing.T) {
 	}
 }
 
-// A tmux client a signal ends after new-window or split-window opened its pane leaves no pane the
-// daemon does not own. openWindowIn kills the window it opened when its ownership marker's client
-// is killed, as it does when the marker exits non-zero, and when the bootstrap window's cleanup
-// fails either way after new-window opened the agent's window; splitWindow keeps the pane it split
-// when select-layout's client is killed, as it does when select-layout exits non-zero, so the
-// launch records it. Read as an error alone, each left an agent pane running beside the claim's
-// relaunch.
-func TestATmuxClientASignalEndsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) {
-	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
-	if killed == nil {
-		t.Fatal("a shell that sent itself SIGKILL exited 0")
-	}
+// A tmux client that fails after new-window or split-window opened its pane, by its exit or by a
+// signal ending it, leaves no pane the daemon does not own. openWindowIn kills the window it opened
+// when its ownership marker fails, and when the bootstrap window's cleanup fails after new-window
+// opened the agent's window, where it left that window running; splitWindow keeps the pane it
+// split when select-layout fails, so the launch records it.
+func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) {
 	// calls records each tmux command a run makes, the target of a kill-window beside its verb.
 	// dies names the command that fails: a verb, or `kill-window <target>`; exits says whether it
-	// exits 1 rather than dying of the signal.
+	// exits 1 rather than dying of a signal.
 	runner := func(dies string, exits bool, calls *[]string) func(context.Context, []string) (result, error) {
 		return func(_ context.Context, argv []string) (result, error) {
 			command := verb(argv)
@@ -138,7 +153,7 @@ func TestATmuxClientASignalEndsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T
 			case command == dies && exits:
 				return result{exitCode: 1, stderr: "can't find window"}, nil
 			case command == dies:
-				return result{}, fmt.Errorf("run tmux %s: %w", command, killed)
+				return result{exitCode: -1, signal: "signal: killed", stderr: "lost server"}, nil
 			case command == "new-window":
 				return result{stdout: "@7 %9 4242\n"}, nil
 			case command == "split-window":
@@ -164,8 +179,8 @@ func TestATmuxClientASignalEndsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T
 		var calls []string
 		r := &Runtime{socket: "legion-test", run: runner("set-option", false, &calls)}
 		_, err := r.openWindowIn(context.Background(), "tree", []string{"true"}, false)
-		if !errors.Is(err, killed) {
-			t.Errorf("openWindowIn = %v, want the marker's signal", err)
+		if want := "tmux window ownership marker was ended by signal: killed: lost server"; err == nil || err.Error() != want {
+			t.Errorf("openWindowIn = %v, want %q", err, want)
 		}
 		if want := []string{"new-window", "set-option", "kill-window @7"}; !slices.Equal(calls, want) {
 			t.Errorf("tmux ran %q, want %q: the window the marker could not own is left open", calls, want)
