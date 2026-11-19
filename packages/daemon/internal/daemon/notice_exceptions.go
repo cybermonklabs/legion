@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -461,14 +460,12 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 // where the role went. It waits its delay, as does a later copy that failed on the claim's own
 // ready session and every copy while the claim has not reported ready, so a claim that reads live
 // while its session hears nothing (a reconnecting connection, a death the supervisor has not seen)
-// keeps the notice for the whole schedule instead of spending its copies in seconds. The claim
-// holds its session as the store keeps it (supervise's register), so recipient is compared as the
-// store would keep it (storetext.Text).
+// keeps the notice for the whole schedule instead of spending its copies in seconds.
 func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false
 	}
-	return resends == 0 || recipient != "" && storetext.Text(recipient) != held.Session
+	return resends == 0 || recipient != "" && !held.HoldsSession(recipient)
 }
 
 // reportedNotice is the notice a failed publish was, as exceptionNotice reads it from a report or

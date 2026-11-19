@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -583,9 +582,7 @@ func (s *server) readOptionalBody(w http.ResponseWriter, r *http.Request, into a
 }
 
 // forgetSession clears a recorded session only when the operator names that exact session and the
-// claim has no live process. The session store is deliberately untouched. The claim holds its
-// session as the store keeps it (supervise's register), so the session the operator names is
-// compared as the store would keep it (storetext.Text).
+// claim has no live process. The session store is deliberately untouched.
 func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	var req ForgetSessionRequest
 	if !s.readBody(w, r, &req, nil) {
@@ -601,7 +598,7 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := m.Claim()
-	if storetext.Text(req.Session) != c.Session {
+	if !c.HoldsSession(req.Session) {
 		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf(
 			"forget-session refused: %s records session %s; pass --session %s to start fresh", c.Token, c.Session, c.Session)))
 		return

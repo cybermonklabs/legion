@@ -32,7 +32,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -654,6 +653,12 @@ func IsPluginRound(round string) bool { return strings.HasPrefix(round, PluginRo
 func (c Claim) LeftPodRound(round string) bool {
 	return IsPodRound(round) && c.UpdateRound == round && c.UpdateLeftRound == round
 }
+
+// HoldsSession is whether session is the one the claim holds. The claim holds its session as the
+// store keeps it (storetext.Text): register sets it so, and a restart reads it back so. A session
+// is therefore compared as the store would keep it, and an agent whose session id holds a NUL is
+// the claim's own agent before a restart and after one.
+func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
 // operator's, which holds until an operator resumes the claim.
@@ -2338,16 +2343,13 @@ func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uin
 }
 
 // fenceRequest is the fence on an agent's own request: it must come from the claim's current
-// generation, and — once the claim has recorded a session — from that session. The claim holds
-// its session as the store keeps it (register), the same before a restart and after one, so the
-// request's session is compared as the store would keep it (storetext.Text): an agent whose
-// session id holds a NUL is still the claim's own agent once the claim is read back.
+// generation, and — once the claim has recorded a session — from that session (HoldsSession).
 func (m *Machine) fenceRequest(request string, generation uint64, session string) (bool, error) {
 	if generation != m.claim.Generation {
 		return false, fmt.Errorf("%s for %s at generation %d, the claim is at %d: %w",
 			request, m.claim.Token, generation, m.claim.Generation, claim.StaleGeneration)
 	}
-	if m.claim.Session != "" && storetext.Text(session) != m.claim.Session {
+	if m.claim.Session != "" && !m.claim.HoldsSession(session) {
 		return false, fmt.Errorf("%s for %s as session %q, the claim resumes %q: %w",
 			request, m.claim.Token, session, m.claim.Session, claim.SameAgentRefusal)
 	}
@@ -2925,15 +2927,15 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the
 // verdict it reached, so a cause reads as a sentence wherever it is repeated. A runtime that gave
 // no detail leaves the verdict alone. The account is a pod's events and the last lines of its log,
-// so it is made storable (storetext.Text) and loses the credentials a URL in it carries
-// (redact.URLCredentials) before the claim, the state, the store and ended work repeat it. It keeps
-// the runtime's own bound rather than taking FarSideError's: that bound keeps the last lines,
-// which are what name the death, where FarSideError's would keep the start.
+// so it is made storable and loses the credentials a URL in it carries (storetext.FarSideText)
+// before the claim, the state, the store and ended work repeat it. It keeps the runtime's own bound
+// rather than taking FarSideError's: that bound keeps the last lines, which are what name the
+// death, where FarSideError's would keep the start.
 func deathCause(observation runtime.Observation) string {
 	if observation.Detail == "" {
 		return string(observation.Kind)
 	}
-	return redact.URLCredentials(storetext.Text(fmt.Sprintf("%s: %s", observation.Kind, observation.Detail)))
+	return storetext.FarSideText(fmt.Sprintf("%s: %s", observation.Kind, observation.Detail))
 }
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded

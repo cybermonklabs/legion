@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -42,14 +41,7 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 		answer: func(w http.ResponseWriter, permissions map[string]string) {
 			mintedToken(w, leakCheckLease, permissions)
 		}})
-	held, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hold a port: %v", err)
-	}
-	dead := held.Addr().String()
-	if err := held.Close(); err != nil {
-		t.Fatalf("let the port go: %v", err)
-	}
+	dead := fmt.Sprintf("127.0.0.1:%d", idleRigFreePort(t))
 	download := "http://" + dead + "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/" + leakCheckTag
 	repo := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/theorem-labs/agent-infra/tarball/"+leakCheckTag {

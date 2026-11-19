@@ -152,17 +152,6 @@ func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 	}
 }
 
-func TestErrorIsTheErrorsTextWithItsURLCredentialsRemoved(t *testing.T) {
-	if got := Error(nil); got != "" {
-		t.Errorf("Error(nil) = %q, want empty", got)
-	}
-	wrapped := fmt.Errorf("leak check: reading the tarball of v1: %w", redirectError())
-	want := `leak check: reading the tarball of v1: Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`
-	if got := Error(wrapped); got != want {
-		t.Errorf("Error(%q) = %q, want %q", wrapped, got, want)
-	}
-}
-
 // stringer is a fmt.Stringer that is no error, as a *url.URL is.
 type stringer struct{ text string }
 

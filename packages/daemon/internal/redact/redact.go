@@ -121,17 +121,6 @@ func orLen(i, n int) int {
 	return i
 }
 
-// Error is the text of err with URLCredentials applied, or "" for a nil error. A *url.Error writes
-// its URL into its own text (`Op "URL": err`), and Go's HTTP client keeps that URL's query and its
-// user name (it masks only a password), so the rule reaches the error's own URL and every other URL
-// the text holds, a wrapped error's among them.
-func Error(err error) string {
-	if err == nil {
-		return ""
-	}
-	return URLCredentials(err.Error())
-}
-
 // HandlerOptions is a copy of opts, or of the zero options when opts is nil, whose ReplaceAttr
 // gives the text of every attribute through URLCredentials: a string value, an error value (its
 // Error()) and a fmt.Stringer value (its String()), the record's message among them. An error or a

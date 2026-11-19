@@ -2552,11 +2552,10 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
 // rather than resuming the turns the operator asked to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
-// later session. The claim holds its session as the store keeps it (register), so the session
-// the operator names is compared as the store would keep it (storetext.Text).
+// later session.
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
-	if storetext.Text(request.Session) != m.claim.Session {
+	if !m.claim.HoldsSession(request.Session) {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}

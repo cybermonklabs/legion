@@ -15,8 +15,8 @@
 // escape does. Every other character stays as written, and a text that is already storable is
 // returned as it is, with no allocation, so a caller can give every string it stores through the
 // rule. The rule leaves URLs alone: the store holds text that people and agents wrote, whose links
-// keep their queries. Only a far side's error text loses its URL credentials (FarSideError and
-// LogWhole).
+// keep their queries. Only a far side's error text loses its URL credentials (FarSideText, which
+// FarSideError and LogWhole apply).
 //
 // The rule is a package of its own, under internal/store, because internal/store imports
 // internal/supervise, and internal/supervise stores a far side's error text by this rule too (a
@@ -65,27 +65,7 @@ func Text(s string) string {
 	if storable(s) {
 		return s
 	}
-	var out strings.Builder
-	out.Grow(len(s) + len(replacement))
-	invalid := false // the byte before was part of a run of bytes that is not UTF-8
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			if !invalid {
-				out.WriteString(replacement)
-			}
-			invalid = true
-		case r == 0:
-			out.WriteString(replacement)
-			invalid = false
-		default:
-			out.WriteString(s[i : i+size])
-			invalid = false
-		}
-		i += size
-	}
-	return out.String()
+	return strings.ReplaceAll(strings.ToValidUTF8(s, replacement), "\x00", replacement)
 }
 
 // storable reports whether Text keeps s as it is: s is valid UTF-8 and holds no NUL.
@@ -99,26 +79,7 @@ func TextBytes(b []byte) []byte {
 	if utf8.Valid(b) && bytes.IndexByte(b, 0) < 0 {
 		return b
 	}
-	out := make([]byte, 0, len(b)+len(replacement))
-	invalid := false // the byte before was part of a run of bytes that is not UTF-8
-	for i := 0; i < len(b); {
-		r, size := utf8.DecodeRune(b[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			if !invalid {
-				out = append(out, replacement...)
-			}
-			invalid = true
-		case r == 0:
-			out = append(out, replacement...)
-			invalid = false
-		default:
-			out = append(out, b[i:i+size]...)
-			invalid = false
-		}
-		i += size
-	}
-	return out
+	return bytes.ReplaceAll(bytes.ToValidUTF8(b, []byte(replacement)), []byte{0}, []byte(replacement))
 }
 
 // JSON is the rule of Text on each string of the JSON text b, keys included, as a jsonb column
@@ -255,14 +216,20 @@ func hex4[T string | []byte](s T, i int) (rune, bool) {
 // package's doc gives the measure).
 const FarSideErrorRunes = 2048
 
-// FarSideError is a far side's error text as the daemon stores it: Text, then
-// redact.URLCredentials, then, when that is more than FarSideErrorRunes runes, its first
-// FarSideErrorRunes-1 runes and "…". The result is at most FarSideErrorRunes runes, and
-// FarSideError(FarSideError(s)) == FarSideError(s). The order is the point: the text is valid
-// before the URL rule reads it, and the credentials are removed before the cut, so a cut can never
-// leave a part of a userinfo or a query behind.
+// FarSideText is a far side's error text, whole, as the daemon stores and logs it: Text, then
+// redact.URLCredentials. The order is the point: the text is made valid before the URL rule reads
+// it.
+func FarSideText(s string) string {
+	return redact.URLCredentials(Text(s))
+}
+
+// FarSideError is a far side's error text as the daemon stores it: FarSideText, then, when that is
+// more than FarSideErrorRunes runes, its first FarSideErrorRunes-1 runes and "…". The result is at
+// most FarSideErrorRunes runes, and FarSideError(FarSideError(s)) == FarSideError(s). The
+// credentials are removed before the cut, so a cut can never leave a part of a userinfo or a query
+// behind.
 func FarSideError(s string) string {
-	s = redact.URLCredentials(Text(s))
+	s = FarSideText(s)
 	if utf8.RuneCountInString(s) <= FarSideErrorRunes {
 		return s
 	}
@@ -280,16 +247,16 @@ func FarSideError(s string) string {
 const logPartBytes = 32 << 10
 
 // LogWhole writes to log the whole of text, a far side's error text, when FarSideError would cut
-// it, so that what the store does not keep is in the log: redact.URLCredentials(Text(text)), the
-// text FarSideError cuts. It is written at Info in parts of at most 32 KiB, cut at rune
-// boundaries, one record of msg for each part, with args, then "part" (from 1) and "parts" (their
-// number), then the part itself as "error". The parts in the order of "part" join to the whole
-// text. A text FarSideError keeps whole is not logged, because the store holds it whole.
+// it, so that what the store does not keep is in the log: FarSideText(text), the text FarSideError
+// cuts. It is written at Info in parts of at most 32 KiB, cut at rune boundaries, one record of msg
+// for each part, with args, then "part" (from 1) and "parts" (their number), then the part itself
+// as "error". The parts in the order of "part" join to the whole text. A text FarSideError keeps
+// whole is not logged, because the store holds it whole.
 func LogWhole(log *slog.Logger, msg string, text string, args ...any) {
 	if !log.Enabled(context.Background(), slog.LevelInfo) {
 		return
 	}
-	text = redact.URLCredentials(Text(text))
+	text = FarSideText(text)
 	if utf8.RuneCountInString(text) <= FarSideErrorRunes {
 		return
 	}
