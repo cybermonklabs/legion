@@ -865,10 +865,11 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
 // The completion that ends the retro rates the plan, and this skill's step that gives the two
 // fields is the one place the rule of the rating is stated in prose: the implementer prompt sends
 // the agent here (prompts_test.go), and the daemon refuses a completion that breaks the rule
-// (planRatingOf in packages/daemon/internal/api/handoff_rating.go). So the step names the two
+// (the daemon's planRatingOf and planRatingRefusal). So the step names the two
 // fields, the three codes the daemon refuses with, and the scale and the bound of the reason as the
-// contract holds them: a new scale or bound fails here until the skill states it. This shows the
-// text ships, never that a role follows it.
+// contract holds them: a new scale or bound fails here until the skill states it. The bound is
+// pinned with the space before it, since step 5's "32,000 characters" holds "2,000 characters"
+// without it. This shows the text ships, never that a role follows it.
 test("the retro skill names the rating's fields, its refusals, its scale and its bound", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   for (const token of [
@@ -879,7 +880,7 @@ test("the retro skill names the rating's fields, its refusals, its scale and its
     "`PLAN_RATING_INPUT`",
     `${LEGION_PLAN_RATING_LEAST} (the plan cost the work)`,
     `${LEGION_PLAN_RATING_MOST} (the plan fit the work)`,
-    `${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters`,
+    ` ${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters`,
   ]) {
     expect(retro).toContain(token);
   }
