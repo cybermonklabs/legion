@@ -230,3 +230,32 @@ func TestOpenNamesNoPartOfTheUserPartWhenItCannotConnect(t *testing.T) {
 		}
 	}
 }
+
+// CheckVersions, `envoy-dispatch versions`, reads DATABASE_URL as Census does: a value pgx cannot
+// parse is named by its length, and a database it cannot reach fails naming the host and no part
+// of the user part, where pgx's own parse and connect errors name the user, which can be a token.
+// The control is a URL with no user part, whose connect error names the host the same way. The
+// user, the password and the token are made for this test.
+func TestCheckVersionsNamesNoPartOfTheUserPart(t *testing.T) {
+	const (
+		user     = "made-up-user-9c4e"
+		password = "not-a-secret-2d7f"
+		token    = "not-a-secret-tok5a8"
+	)
+	for _, userPart := range []string{user + ":" + password + "@", token + "@", ""} {
+		unparsed := "postgres://" + userPart + "127.0.0.1:1/x?sslmode=bogus"
+		_, err := CheckVersions(context.Background(), unparsed)
+		if want := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(unparsed), pgsetting.NotParsed); err == nil || err.Error() != want {
+			t.Errorf("user part %q, a value pgx cannot parse: err = %q, want %q", userPart, strings.NewReplacer(user, "<USER>", password, "<PASSWORD>", token, "<TOKEN>").Replace(fmt.Sprint(err)), want)
+		}
+		_, err = CheckVersions(context.Background(), "postgres://"+userPart+"127.0.0.1:1/x?connect_timeout=3")
+		if err == nil || !strings.Contains(err.Error(), "127.0.0.1:1") {
+			t.Fatalf("user part %q: err = %v, want the failed connect naming the host", userPart, err)
+		}
+		for _, part := range []string{user, password, token} {
+			if strings.Contains(err.Error(), part) {
+				t.Errorf("user part %q: the error holds a part of the user part: %q", userPart, err)
+			}
+		}
+	}
+}

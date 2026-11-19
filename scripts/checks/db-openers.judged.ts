@@ -173,7 +173,7 @@ export const JUDGED: readonly JudgedOpener[] = [
   },
   {
     file: "packages/envoy/internal/dispatch/store/storetest/storetest.go",
-    function: "prepare",
+    function: "openAdmin",
     callee: `${PGX}/pgxpool.ParseConfig`,
     argument: 'databaseURL(shared.server, "postgres")',
     why: TEST_SERVER("DISPATCH_TEST_DATABASE_URL"),
