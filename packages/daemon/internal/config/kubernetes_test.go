@@ -11,7 +11,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -72,8 +71,15 @@ func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
     kubeconfig: kube/legion-daemon
     context: legion-daemon@example
     setup: [/bin/sh, -c, 'omp plugin marketplace add acme/agent-skills']
-    skills_repository: acme/agent-skills
     idle_release: {idle_minutes: 20, backstop_minutes: 120}
+    sandbox:
+      type: microvm
+      canary_issues: [LEGSMOKE-7]
+      microvm:
+        compute_class: example-microvm
+        metadata:
+          workload_pool: `+testWorkloadPool+`
+          identity_provider: `+testIdentityProvider+`
     repository_cache:
       volume: 50Gi
       refresh_minutes: 5
@@ -131,9 +137,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		Context:      "legion-daemon@example",
 		// A store that keeps sessions in a database is required under this runtime, so the one
 		// kubernetesFile names settles on every load of the block.
-		SessionStore:     ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Setup:            []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
-		SkillsRepository: ghrepo.MustParse("acme/agent-skills"),
+		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Setup:        []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
 		Scheduling: Scheduling{
 			NodeSelector: map[string]string{"karpenter.k8s.aws/instance-family": "m7i", "zone": "4"},
 			Tolerations: []Toleration{
@@ -183,8 +188,16 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 			Resources: Reservation{CPU: "2", CPURequest: "2", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"},
 		},
 		IdleRelease: IdleReleaseConfig{IdleMinutes: 20, BackstopMinutes: 120},
+		// A microVM project whose one canary runs in gVisor. The microvm block names no storage
+		// class, so its pods' is runtime.kubernetes.storage_class.
+		Sandbox: SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGSMOKE-7"}, MicroVM: &MicroVMConfig{
+			ComputeClass: "example-microvm", StorageClass: "gp2",
+			Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider},
+		}},
 		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
 		MemoryGuard: DefaultMemoryGuard(),
+		// The file sets no volume_trim, so the whole block settles on the daemon's defaults.
+		VolumeTrim: DefaultVolumeTrim(),
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)
@@ -324,7 +337,6 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 		{"pod", block.Pod, PodConfig{}},
 		{"session_store", block.SessionStore, ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"}},
 		{"setup", block.Setup, []string(nil)},
-		{"skills_repository", block.SkillsRepository, ghrepo.Repository{}},
 		{"test_postgres", block.TestPostgres, false},
 		{"repository_cache", block.RepositoryCache, RepositoryCacheConfig{
 			Volume: "20Gi", RefreshMinutes: 10, RetainHours: 168,
@@ -425,7 +437,7 @@ func TestAPodRaisingALimitAloneStaysGuaranteed(t *testing.T) {
 }
 
 // A cpu or memory request is held to its settled limit, whichever side the file set, and must be a
-// positive quantity; each refusal names the key, as `legion start --check-config` prints it.
+// positive quantity; each refusal names the key, as `legion config check` prints it.
 func TestAPodRequestMustBeAQuantityNoGreaterThanItsLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name, resources, want string
@@ -708,7 +720,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			// The tree-volume layout's key (LEGION-632): refused naming the key that replaced it, not
-			// as a generic unknown key, so --check-config says what to edit.
+			// as a generic unknown key, so `legion config check` says what to edit.
 			name: "the tree-volume layout's tree_volume",
 			body: kubernetesFile + "    tree_volume: 30Gi\n",
 			want: "runtime.kubernetes.tree_volume is now issue_volume: one volume per issue",
@@ -863,9 +875,16 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "unknown key runtime.kubernetes.role_profiles: an issue pod's reservation is runtime.kubernetes.resources.issue, its cpu and memory limits with optional lower cpu_request and memory_request, and a field absent there takes the daemon's default",
 		},
 		{
-			name: "skills_repository that is no owner/name",
-			body: kubernetesFile + "    skills_repository: agent-skills\n",
-			want: `runtime.kubernetes.skills_repository must be "owner/name" (got "agent-skills")`,
+			name: "skills_repository naming a repository",
+			body: kubernetesFile + "    skills_repository: acme/agent-skills\n",
+			want: "runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key",
+		},
+		{
+			// describedMembers leaves a null member out, so the key written with no value is
+			// refused too, rather than read as unset.
+			name: "skills_repository with no value",
+			body: kubernetesFile + "    skills_repository:\n",
+			want: "runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key",
 		},
 		{
 			name: "session_store omitted",

@@ -3,6 +3,7 @@ package api_test
 import (
 	"crypto/ecdsa"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -24,8 +25,9 @@ const judgedModel = "claude-opus-4-6"
 // DEEL_API_KEY, and the grant chain verifier built against those rules, as cmd/broker builds it
 // from the rules file it loaded. Without the rebuild the verifier would hold every judge
 // approval to no bound at all and refuse them all, which would pass the tests below for the
-// wrong reason.
-func newJudgeServer(t *testing.T) *testServer {
+// wrong reason. chainSeconds, when it is not judgedSeconds, is the entry the verifier is built
+// against instead: rules that moved under a grant after its request was written.
+func newJudgeServer(t *testing.T, chainSeconds uint32) *testServer {
 	t.Helper()
 	return newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Airlock = airlock.Rules{Secrets: []airlock.SecretRule{
@@ -33,7 +35,10 @@ func newJudgeServer(t *testing.T) *testServer {
 		}}
 		d.Machine.AirlockProxyURL = "http://127.0.0.1:13381"
 		d.Machine.AirlockCACertificate = "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
-		d.Machine.Chain = requests.NewChainVerifier(d.Machine.Store, d.PublicURL, time.Minute, d.Machine.Airlock)
+		chain := airlock.Rules{Secrets: []airlock.SecretRule{
+			{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(chainSeconds)},
+		}}
+		d.Machine.Chain = requests.NewChainVerifier(d.Machine.Store, d.PublicURL, time.Minute, chain)
 	})
 }
 
@@ -78,34 +83,41 @@ func grantOfJudgedRecord(t *testing.T, ts *testServer, enrollmentID string, sess
 // TestAForgedJudgedRecordReleasesNothing: a grant whose record carries the model judge's actor
 // releases only while the airlock rules still admit that record — the whole of what a judge's
 // approval rests on, since no person's login stands behind it. Every release re-derives the
-// chain (VerifyChain), so the three records the rules never admit are refused at the route a
+// chain (VerifyChain), so the two records the rules do not admit are refused at the route a
 // session reads values through, whether the row was forged outright or the rules moved under a
-// grant that was honestly judged: a record naming two secrets, one whose signed lifetime is past
-// the seconds its own entry gives the judge, and one whose signed reason names no Dispatch
-// issue. The record the rules do admit releases, which is what makes the three refusals the
-// rules' doing and not the rewrite's.
+// grant that was honestly judged: a record naming a key that needed a decision and that the rules
+// give the judge nothing of, and one whose signed lifetime is past the seconds the entry gives
+// the judge now. The records the rules do admit release — one whose reason names an issue and one
+// whose reason names none, since what the reason says is the judge's to read and no condition of
+// the chain, and one whose judge key stands beside WORKER_TOKEN, which the session got at once and
+// which needed no decision of anyone's — which is what makes the two refusals the rules' doing
+// and not the rewrite's.
 func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 	const judgeableReason = "INFRA-1353 needs the key to drive the stack"
 	for _, c := range []struct {
-		name     string
-		reason   string
-		lifetime int
-		secrets  []string
-		released bool
+		name         string
+		reason       string
+		lifetime     int
+		secrets      []string
+		chainSeconds uint32
+		released     bool
 	}{
 		{
-			name: "a record naming two secrets", reason: judgeableReason,
-			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY", "WORKER_TOKEN"},
+			name: "a record naming a key that needed a decision and that the rules give the judge nothing of", reason: judgeableReason,
+			lifetime: judgedSeconds, secrets: []string{"SHARED_KEY"},
 		},
 		{
-			// Ten minutes: inside the 15 the class allows, past the five this
-			// name's entry gives the judge.
-			name: "a lifetime past the seconds the entry gives the judge", reason: judgeableReason,
-			lifetime: 600, secrets: []string{"DEEL_API_KEY"},
+			name: "a judge key beside a key the session got at once", reason: judgeableReason,
+			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY", "WORKER_TOKEN"}, released: true,
+		},
+		{
+			// The entry gave the judge five minutes when the request was written, and two now.
+			name: "a lifetime past the seconds the entry gives the judge now", reason: judgeableReason,
+			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY"}, chainSeconds: 120,
 		},
 		{
 			name: "a reason naming no issue", reason: "the demo needs the key",
-			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY"},
+			lifetime: judgedSeconds, secrets: []string{"DEEL_API_KEY"}, released: true,
 		},
 		{
 			name: "a record the rules admit", reason: judgeableReason,
@@ -113,7 +125,11 @@ func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ts := newJudgeServer(t)
+			chainSeconds := c.chainSeconds
+			if chainSeconds == 0 {
+				chainSeconds = judgedSeconds
+			}
+			ts := newJudgeServer(t, chainSeconds)
 			enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 			grantID := grantOfJudgedRecord(t, ts, enrollmentID, sessionKey, c.reason, c.lifetime, c.secrets...)
 
@@ -133,6 +149,9 @@ func TestAForgedJudgedRecordReleasesNothing(t *testing.T) {
 			}
 			if _, named := answer.Airlock.Names["DEEL_API_KEY"]; !named {
 				t.Fatalf("the airlock names %v; want the judged name among them", answer.Airlock.Names)
+			}
+			if slices.Contains(c.secrets, "WORKER_TOKEN") && answer.Values["WORKER_TOKEN"] != "worker-v1" {
+				t.Fatalf("the values are %v; want WORKER_TOKEN, which the session got at once, released beside the judged name", answer.Values)
 			}
 		})
 	}

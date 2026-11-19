@@ -121,12 +121,12 @@ func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *rol
 func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn, options ...session.SessionRegistryOption) *roleRig {
 	t.Helper()
 	bustest.Fixture(conn)
-	registry, err := envoystore.Open(conn)
+	registry, err := envoystore.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn, options...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

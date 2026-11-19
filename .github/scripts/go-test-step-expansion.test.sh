@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Tests for `go-test-step-expansion.py`'s reading of one line of a step's script: which command a
-# line runs, and which shapes it refuses rather than guesses at.
+# line runs, and which shapes it refuses rather than guesses at; and that each script
+# AUDITED_SCRIPTS reads still has the SHA-256 its entry pins.
 #
-# Only the line reader. What the script makes of a command - the packages a `go test -list` names,
-# the pairs two steps share, the exceptions - needs all three Go modules' test binaries built,
-# which is minutes of compile and why no CI job runs that script (its own header says so). This
-# harness needs no Go at all: every case is one line of text.
+# Only the line reader and the pins. What the script makes of a command - the packages a
+# `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
+# test binaries built, which is minutes of compile and why no CI job runs that script (its own
+# header says so). This harness needs no Go at all: every case is one line of text, or a file's
+# hash.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -129,5 +131,58 @@ else:
   check "$form does not leave its pattern among the packages" "$(is "$in_packages" "no")"
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
+
+# Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's count,
+# which runs the broker's packages less the race lane's, and its command, and envoy-go-race-api's
+# race step, which runs the API package. Each step is read out of the file that holds it, in the
+# directory GitHub runs it from, so the case holds the entry to the steps as written; an argument
+# list the entry does not list is refused, since what the script runs then is a reading nobody
+# made.
+echo "case: a step that runs an audited script is read through its entry, by its argument list"
+read_audited() { py 'import pathlib, yaml
+document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
+found = [(job, step) for job in document["jobs"].values() for step in job["steps"]
+         if step.get("name") == sys.argv[2]]
+job, step = found[0]
+try:
+    read = ex.audited_step(sys.argv[1], "(a job)", sys.argv[2], ex.step_workdir(document, job, step),
+                           step["run"] + sys.argv[3])
+except ex.Refused:
+    print("refused")
+else:
+    print(read.workdir, read.script)' "$@"; }
+check "envoy-go's count runs the broker's packages less the race lane's, and its command" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
+    "packages/envoy go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | xargs go test -json -count=1 -timeout 20m")"
+check "envoy-go-race-api's race step runs the API package under -race through the counter" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
+    "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
+check "the race step with one more argument, which the entry does not list, is refused" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
+
+# AUDITED_SCRIPTS holds a person's reading of each script, pinned by its SHA-256, and the script
+# refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
+# the pull request that edits an audited script: #2856 changed database-skips.sh's
+# EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
+# ci.yaml's go_test_step_expansion_test filter names each audited script, so this case runs on
+# that pull request. It also holds each audited script to the reads ci_job_reads.py declares for
+# this harness's gate, which ci-filters holds to that filter, so a new AUDITED_SCRIPTS entry fails
+# here until its script selects this harness. Both lists are read into variables first: a
+# failed read then stops the harness under `set -e`, where a process substitution's failure
+# would leave the loop with nothing to check.
+echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
+repo=$(cd "$script_dir/../.." && pwd)
+pins=$(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
+check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"
+declared=$(cd "$repo" && py 'import ci_job_reads
+print("\n".join(read.glob for gate in ci_job_reads.SCRIPT_TEST_GATES
+                if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
+while IFS=$'\t' read -r path pinned; do
+  actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
+  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go-test-step-expansion.py)" \
+    "$(is "$actual" "$pinned")"
+  check "$path is among the reads ci_job_reads.py declares for the go_test_step_expansion_test gate (add it there and to that ci.yaml filter)" \
+    "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
+done <<<"$pins"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"

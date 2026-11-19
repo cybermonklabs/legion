@@ -279,12 +279,15 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
-// SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the launcher
-// sends the report on the connection of the role whose process it was, and the daemon tells that
-// role why the process is gone. The session gives it the issue key, the claim token of the role
-// the connection authenticated for, the uid of the pod the launcher runs in and the report; the
-// three are the session's own and never the report's, so a launcher cannot name another role,
-// issue or pod.
+// SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the role's session), which the launcher's guest watch names
+// (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
+// process it was, and the daemon tells that role why the process is gone. The session gives it the
+// issue key, the claim token of the role the connection authenticated for, the uid of the pod the
+// launcher runs in and the report; the three are the session's own and never the report's, so a
+// launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages, so the import is acyclic, and a second copy of the report would
@@ -294,6 +297,29 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
 // and the guard's kill line in the pod's own log is then the one record of the kill.
 type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
+// VolumeReported is the daemon's reading of one sweep of an issue pod's volume, as the cache
+// trimmer in that pod's launcher process reported it: the launcher sends at most one such frame
+// per sweep that ended with the volume still above its low mark, none for a sweep the settings
+// stopped, and one when the trimmer has switched itself off after three faults
+// (shimwire.LauncherVolumeReport). The session gives it the issue key, the uid of the pod the
+// launcher runs in and the report; the trimmer's own identifier, which is what makes a restarted
+// roles container a new counting line for the daemon's notice bounds, is inside the report.
+//
+// It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
+// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
+// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
+// are already the price of a durable notice.
+//
+// A store that does not answer is logged and the report is dropped there. The launcher cannot
+// hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
+// the next sweep that ends above the low mark reports the volume again, under the same trimmer
+// and the episode it is then in, so the state a dropped report would have told reaches the
+// architect from a later one, as far as the notice bounds let that one through (workflow's
+// volumeNoticeHeldBy; internal/runtime/sandbox's volumeReported, as restoreReported's own
+// comment says of its delete). The report that the trimmer switched itself off is its last, and
+// one dropped here is not sent again.
+type VolumeReported func(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
@@ -576,6 +602,68 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
+	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
+	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the
+	// one that costs an issue its work. It is a field rather than a shape of Detail for the
+	// reason Displaced is: Detail is prose for an operator and nothing else. The Detail the
+	// Sandbox runtime writes beside a pod end holds this same reason and message, and after them
+	// a tail of the role's log and the container's, over many lines and the role's own in words
+	// a role chose: it reads a container's own log to its logTailBytes and the issue pod's one
+	// container's, which every role writes to, to its sharedLogBytes, and quotes at most
+	// logTailLines of the role's lines and as many of the container's own from what it read.
+	//
+	// An eviction ends every role of the pod, and a sibling's launch can replace the ended pod
+	// before a role's next check reads it. Where that launch finds the Sandbox not yet
+	// suspended, the Sandbox runtime records the ended pod's end on its Sandbox, keyed by the
+	// pod's uid, in the write that suspends it, so a role recorded in that pod reads the same
+	// PodEnd once the pod is gone or another has taken its name, a restarted daemon included
+	// (sandbox's endedPodAnnotation), until the end of a later pod is recorded in its place: the
+	// Sandbox holds one. A launch that finds the Sandbox already suspended records nothing, and a
+	// Sandbox a migrating launch deletes and creates again does not carry the record over.
+	//
+	// Detail is kept whole on the claim, behind its verdict (supervise.Claim.LastDeathCause), and
+	// reaches a notice two ways: whole, as the `death` of the failure record a claim that failed
+	// with a cause carries (workflow's noticeFailure), and as its first line alone, quoted, cut
+	// at PodEndRunes and without the header of the log tail, in the tree architect's worker-died
+	// reason, which carries no failure record, for a claim that failed because its process died
+	// and holds no pod end (workflow's deathReason). Where there is one, that reason names this
+	// field in Detail's place: the pod's cause once, on one line, and nothing of the log.
+	//
+	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
+	// message above is 120 runes, and the longest the kubelet writes names each resource it
+	// reclaimed. A longer one is cut at that bound with an ellipsis.
+	PodEnd string
+}
+
+// PodEndRunes bounds Observation.PodEnd: a few hundred runes, which is a kubelet's reason and
+// message whole and nothing of a log. The bound exists because the field is what a worker-died's
+// reason names whole, on the one line the architect reads (workflow's deathReason), beside the
+// supervisor's sentence and, where it names one, the first line of the runtime's account of the
+// death, each cut to this same bound before it is quoted (workflow's quoteBounded), so what the
+// reason carries of each is bounded by this number rather than by the size a node's message or a
+// provider's happened to have. The claim keeps the runtime's whole account beside it
+// (supervise.Claim.LastDeathCause); this field is the part of it a reason carries.
+const PodEndRunes = 400
+
+// PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
+// reason alone when there is no message, "" when there is no reason, and a value cut at the
+// bound with an ellipsis when the two together pass it. Both the runtime that observes a pod and
+// any test that asserts on the field build the value here, so one rule decides what a claim and
+// a notice carry.
+func PodEnd(reason, message string) string {
+	if reason == "" {
+		return ""
+	}
+	end := reason
+	if message != "" {
+		end += ": " + message
+	}
+	runes := []rune(end)
+	if len(runes) <= PodEndRunes {
+		return end
+	}
+	return string(runes[:PodEndRunes-1]) + "…"
 }
 
 // GitIdentity is the author a worker's commits carry.

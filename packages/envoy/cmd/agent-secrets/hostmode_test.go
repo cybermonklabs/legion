@@ -23,34 +23,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
-// AGENT_SECRETS_KEY_DIR has a readable key.pem, helper mode when it doesn't but
-// AGENT_SECRETS_HELPER_SOCK is set, and an error naming both variables when neither is usable.
-// XDG_RUNTIME_DIR points at an empty directory so a helper running on the test machine, at the
-// default socket buildSigner falls back to, cannot change the answer.
+// AGENT_SECRETS_KEY_DIR has a readable key.pem, helper mode when it doesn't but the helper at
+// AGENT_SECRETS_HELPER_SOCK says this process is in a session it registered, a stop naming the
+// helper when the socket that variable names is not there, and the chain's refusal naming both
+// variables when neither is set. XDG_RUNTIME_DIR points at an empty
+// directory so a helper running on the test machine, at the default socket buildSigner falls back
+// to, cannot change the answer, and the state directory and the broker URL are the test's own, so
+// no sign-in, machine cache or broker of the machine running it can either.
 func TestBuildSignerSelectsMode(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 	if _, _, err := buildSigner(); err == nil ||
+		!strings.Contains(err.Error(), "no broker identity for this process") ||
 		!strings.Contains(err.Error(), "AGENT_SECRETS_KEY_DIR") ||
 		!strings.Contains(err.Error(), "AGENT_SECRETS_HELPER_SOCK") {
 		t.Fatalf("no identity must name both variables: %v", err)
 	}
 
 	emptyDir := t.TempDir()
+	sock, _ := fakeHelper(t, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
 	t.Setenv("AGENT_SECRETS_KEY_DIR", emptyDir)
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
 	_, signer, err := buildSigner()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := signer.(*helperSigner); !ok {
 		t.Fatalf("a key dir without key.pem falls through to the helper: %T", signer)
+	}
+
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
+	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "agent-secrets-helper at /x/h.sock") ||
+		strings.Contains(err.Error(), "no broker identity for this process") {
+		t.Fatalf("a named socket that is not there is a stopped helper, which stops the chain: %v", err)
 	}
 
 	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
@@ -64,6 +76,20 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	if id != testEnrollmentID {
 		t.Fatalf("enrollment id: got %q, want %q", id, testEnrollmentID)
 	}
+}
+
+// isolateChain gives an in-process walk of the chain a home, a state directory and a runtime
+// directory of the test's own, no broker URL and no machine identity setting, so neither a
+// sign-in, a machine cache, a broker nor a machine identity of the machine running the test
+// reaches its answer.
+func isolateChain(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("AGENT_SECRETS_SIGNIN_DIR", "")
+	t.Setenv("AGENT_SECRETS_URL", "")
+	t.Setenv("AGENT_SECRETS_MACHINE_IDENTITY", "")
 }
 
 // TestBuildSignerNamesTheEnrollmentErrorDiagnostic covers the enrollment.error side-channel: when
@@ -99,12 +125,13 @@ func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 // socket at $XDG_RUNTIME_DIR/agent-secrets/helper.sock, and falls back to neither when its file
 // is not there.
 func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
+	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 
 	runtime := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
-	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "no session identity") {
+	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "no broker identity for this process") {
 		t.Fatalf("an empty runtime dir is no identity: %v", err)
 	}
 
@@ -250,7 +277,7 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: "eyJ.fake.request"})
 	signer := &helperSigner{sock: sock}
 	lifetime := 120
-	ro, err := signer.SignRequestObject("https://secrets.test", []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime)
+	ro, err := signer.SignRequestObject(brokeraddr.New("https://secrets.test"), []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime)
 	if err != nil || ro != "eyJ.fake.request" {
 		t.Fatalf("sign-request: %q %v", ro, err)
 	}
@@ -264,63 +291,9 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	}
 
 	sock2, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
-	if _, err := (&helperSigner{sock: sock2}).SignRequestObject("https://secrets.test", []string{"DEEL_API_KEY"}, "why", nil); err == nil ||
+	if _, err := (&helperSigner{sock: sock2}).SignRequestObject(brokeraddr.New("https://secrets.test"), []string{"DEEL_API_KEY"}, "why", nil); err == nil ||
 		!strings.Contains(err.Error(), helper.CodeNotASession) {
 		t.Fatalf("the helper's code reaches the caller: %v", err)
-	}
-}
-
-// TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
-// --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
-func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled"})
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	var stdout, stderr bytes.Buffer
-	code := cmdRegister(nil, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("register: exit %d, stderr %q", code, stderr.String())
-	}
-	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
-		t.Fatalf("register output: got %q, want %q", got, want)
-	}
-}
-
-// TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
-// and state isn't enrolled".
-func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver"})
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	var stdout, stderr bytes.Buffer
-	code := cmdRegister([]string{"--wait", "1"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("register --wait, not enrolled: exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
-	}
-}
-
-// TestRegisterFindsTheHelperOnItsDefaultSocket pins that register, like machine login and every
-// other helper-mode form, reaches a helper listening on its default socket
-// ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
-// up by starting the helper with no settings registers its sessions without exporting the variable.
-func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
-	runtimeDir := shortTempDir(t)
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-	reqs := fakeHelperAt(t, filepath.Join(runtimeDir, "agent-secrets", "helper.sock"),
-		helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled"})
-	var stdout, stderr bytes.Buffer
-	if code := cmdRegister(nil, &stdout, &stderr); code != 0 {
-		t.Fatalf("register with only the default socket: exit %d, stderr %q", code, stderr.String())
-	}
-	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
-		t.Fatalf("register output: got %q, want %q", got, want)
-	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" {
-			t.Fatalf("request sent to the default socket: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the helper on the default socket never saw a request")
 	}
 }
 
@@ -377,7 +350,7 @@ func TestRegisterExecWarnsWhenWaitedButNotEnrolled(t *testing.T) {
 	}
 }
 
-// TestRegisterExecRunsTheCommandAsTheRegisteredPid lives in hostmode_linux_test.go (//go:build
+// TestRegisterExecStillPinsTheReplacedProcess lives in hostmode_linux_test.go (//go:build
 // linux): it needs fakeHelperWithPids, which pins the connecting pid with helper.PeerOf
 // (SO_PEERPIDFD, Linux-only).
 
@@ -541,75 +514,10 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
 func TestIdentity(t *testing.T) {
-	type paths struct{ home, keyDir, sock string }
-	// A row's notice gives the text it expects on stderr, "" for none; mode is "named" or "defaults".
-	type notice func(mode string, p paths) string
-	unreachable := func(_ string, p paths) string {
-		return "agent-secrets: helper unreachable at " + p.sock + "; not an agent session"
-	}
-	// namedOnly: the notice appears only when AGENT_SECRETS_HELPER_SOCK names the absent socket,
-	// since an explicit path says a helper was expected there.
-	namedOnly := func(mode string, p paths) string {
-		if mode == "named" {
-			return unreachable(mode, p)
-		}
-		return ""
-	}
-	cases := []struct {
-		name   string
-		setup  func(t *testing.T, p paths)
-		exit   int
-		stderr notice
-		slow   bool
-	}{
-		{name: "key.pem", setup: func(t *testing.T, p paths) { copyKeyDir(t, newKeyDir(t), p.keyDir) }, exit: 0},
-		{name: "fresh marker", setup: func(t *testing.T, p paths) { writePendingMarker(t, p.keyDir, 0) }, exit: 0},
-		{name: "stale marker", setup: func(t *testing.T, p paths) { writePendingMarker(t, p.keyDir, 200*time.Second) }, exit: 1, stderr: namedOnly},
-		{name: "helper OK", setup: func(t *testing.T, p paths) {
-			fakeHelperAt(t, p.sock, helper.Response{OK: true, Proof: "eyJ.fake.proof", EnrollmentID: "enr-h"})
-		}, exit: 0},
-		{name: "helper NOT_ENROLLED", setup: func(t *testing.T, p paths) {
-			fakeHelperAt(t, p.sock, helper.Response{Code: helper.CodeNotEnrolled, Error: "not enrolled yet"})
-		}, exit: 0},
-		{name: "helper NOT_A_SESSION", setup: func(t *testing.T, p paths) {
-			fakeHelperAt(t, p.sock, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
-		}, exit: 1},
-		{name: "helper answers an unknown code", setup: func(t *testing.T, p paths) {
-			fakeHelperAt(t, p.sock, helper.Response{Code: "SOME_LATER_CODE", Error: "a code this client predates"})
-		}, exit: 1, stderr: func(string, paths) string {
-			return "answered SOME_LATER_CODE: a code this client predates; not an agent session"
-		}},
-		{name: "nothing listening", setup: func(t *testing.T, p paths) { staleSocketAt(t, p.sock) }, exit: 1, stderr: unreachable},
-		{name: "unit installed, no socket", setup: func(t *testing.T, p paths) { installHelperUnit(t, p.home) }, exit: 1, stderr: unreachable},
-		{name: "unit under XDG_CONFIG_HOME, no socket", setup: func(t *testing.T, p paths) {
-			t.Setenv("XDG_CONFIG_HOME", filepath.Join(p.home, "xdg"))
-			installHelperUnit(t, p.home)
-			if _, err := os.Stat(filepath.Join(p.home, "xdg", "systemd", "user", "agent-secrets-helper.service")); err != nil {
-				t.Fatal(err)
-			}
-		}, exit: 1, stderr: unreachable},
-		{name: "helper never answers", setup: func(t *testing.T, p paths) { silentHelperAt(t, p.sock) }, exit: 1, stderr: unreachable, slow: true},
-		{name: "nothing", setup: func(t *testing.T, p paths) {}, exit: 1, stderr: namedOnly},
-	}
 	for _, mode := range []string{"named", "defaults"} {
-		for _, tc := range cases {
+		for _, tc := range identityCases() {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				runtime := shortTempDir(t)
-				p := paths{home: t.TempDir()}
-				t.Setenv("HOME", p.home)
-				t.Setenv("XDG_CONFIG_HOME", "")
-				t.Setenv("XDG_RUNTIME_DIR", runtime)
-				if mode == "named" {
-					p.keyDir = filepath.Join(t.TempDir(), "keys")
-					p.sock = filepath.Join(shortTempDir(t), "h.sock")
-					t.Setenv("AGENT_SECRETS_KEY_DIR", p.keyDir)
-					t.Setenv("AGENT_SECRETS_HELPER_SOCK", p.sock)
-				} else {
-					p.keyDir = filepath.Join(runtime, "agent-secrets")
-					p.sock = filepath.Join(runtime, "agent-secrets", "helper.sock")
-					t.Setenv("AGENT_SECRETS_KEY_DIR", "")
-					t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-				}
+				p := identityPaths(t, mode)
 				tc.setup(t, p)
 
 				var stdout, stderr bytes.Buffer
@@ -648,6 +556,131 @@ func TestIdentity(t *testing.T) {
 			t.Fatalf("identity with an argument: exit %d, want %d", code, exitUsageError)
 		}
 	})
+}
+
+// TestIdentityWithoutSourceAsksNothing: identity with no flag keeps its contract after the use
+// command became a chain of four sources. For every row of TestIdentity it answers the row's exit
+// code while a broker that names an exchange audience and a metadata server both stand by, and
+// neither is asked anything: it reads neither the sign-in, nor the machine cache, nor the network.
+// A process holding only a machine session, in the machine cache or in the key dir where a client
+// before #4143 kept one, answers 1.
+func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
+	cases := append(identityCases(),
+		identityCase{name: "only a machine cache", setup: func(t *testing.T, p identityRowPaths) {
+			writeSessionFiles(t, filepath.Join(p.state, "agent-secrets", "machine"), "cached-enrollment")
+		}, exit: 1},
+		identityCase{name: "an old key-dir machine session", setup: func(t *testing.T, p identityRowPaths) {
+			writeSessionFiles(t, p.keyDir, "old-machine-enrollment")
+			if err := os.WriteFile(filepath.Join(p.keyDir, "machine-session"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, exit: 1},
+	)
+	for _, mode := range []string{"named", "defaults"} {
+		for _, tc := range cases {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				p := identityPaths(t, mode)
+				broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
+				t.Setenv("AGENT_SECRETS_URL", broker.URL())
+				metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+				tc.setup(t, p)
+
+				var stdout, stderr bytes.Buffer
+				if code := cmdIdentity(nil, &stdout, &stderr); code != tc.exit {
+					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
+				}
+				if broker.callCount() != 0 || metadata.totalRequests() != 0 {
+					t.Fatalf("identity asked the broker %d times and the metadata server %d times; it asks neither", broker.callCount(), metadata.totalRequests())
+				}
+			})
+		}
+	}
+}
+
+// identityRowPaths is where one identity row's process keeps its state: its home, its key dir and
+// helper socket, as the row's mode names them, and its XDG state directory.
+type identityRowPaths struct{ home, keyDir, sock, state string }
+
+// identityCase is one row of TestIdentity: what it puts on disk, the exit code identity answers,
+// the notice it prints (nil for none; mode is "named" or "defaults"), and whether the row waits
+// out a helper that never answers.
+type identityCase struct {
+	name   string
+	setup  func(t *testing.T, p identityRowPaths)
+	exit   int
+	stderr func(mode string, p identityRowPaths) string
+	slow   bool
+}
+
+// identityPaths gives one row a home, a runtime directory and a state directory of its own, with
+// the key dir and the helper socket named by AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK
+// (mode "named") or left at the $XDG_RUNTIME_DIR defaults with both unset (mode "defaults").
+func identityPaths(t *testing.T, mode string) identityRowPaths {
+	t.Helper()
+	runtime := shortTempDir(t)
+	p := identityRowPaths{home: t.TempDir(), state: t.TempDir()}
+	t.Setenv("HOME", p.home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", runtime)
+	t.Setenv("XDG_STATE_HOME", p.state)
+	if mode == "named" {
+		p.keyDir = filepath.Join(t.TempDir(), "keys")
+		p.sock = filepath.Join(shortTempDir(t), "h.sock")
+		t.Setenv("AGENT_SECRETS_KEY_DIR", p.keyDir)
+		t.Setenv("AGENT_SECRETS_HELPER_SOCK", p.sock)
+	} else {
+		p.keyDir = filepath.Join(runtime, "agent-secrets")
+		p.sock = filepath.Join(runtime, "agent-secrets", "helper.sock")
+		t.Setenv("AGENT_SECRETS_KEY_DIR", "")
+		t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+	}
+	return p
+}
+
+// identityCases is every row of TestIdentity.
+func identityCases() []identityCase {
+	type paths = identityRowPaths
+	unreachable := func(_ string, p paths) string {
+		return "agent-secrets: helper unreachable at " + p.sock + "; not an agent session"
+	}
+	// namedOnly: the notice appears only when AGENT_SECRETS_HELPER_SOCK names the absent socket,
+	// since an explicit path says a helper was expected there.
+	namedOnly := func(mode string, p paths) string {
+		if mode == "named" {
+			return unreachable(mode, p)
+		}
+		return ""
+	}
+	return []identityCase{
+		{name: "key.pem", setup: func(t *testing.T, p paths) { copyKeyDir(t, newKeyDir(t), p.keyDir) }, exit: 0},
+		{name: "fresh marker", setup: func(t *testing.T, p paths) { writePendingMarker(t, p.keyDir, 0) }, exit: 0},
+		{name: "stale marker", setup: func(t *testing.T, p paths) { writePendingMarker(t, p.keyDir, 200*time.Second) }, exit: 1, stderr: namedOnly},
+		{name: "helper OK", setup: func(t *testing.T, p paths) {
+			fakeHelperAt(t, p.sock, helper.Response{OK: true, Proof: "eyJ.fake.proof", EnrollmentID: "enr-h"})
+		}, exit: 0},
+		{name: "helper NOT_ENROLLED", setup: func(t *testing.T, p paths) {
+			fakeHelperAt(t, p.sock, helper.Response{Code: helper.CodeNotEnrolled, Error: "not enrolled yet"})
+		}, exit: 0},
+		{name: "helper NOT_A_SESSION", setup: func(t *testing.T, p paths) {
+			fakeHelperAt(t, p.sock, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
+		}, exit: 1},
+		{name: "helper answers an unknown code", setup: func(t *testing.T, p paths) {
+			fakeHelperAt(t, p.sock, helper.Response{Code: "SOME_LATER_CODE", Error: "a code this client predates"})
+		}, exit: 1, stderr: func(string, paths) string {
+			return "answered SOME_LATER_CODE: a code this client predates; not an agent session"
+		}},
+		{name: "nothing listening", setup: func(t *testing.T, p paths) { staleSocketAt(t, p.sock) }, exit: 1, stderr: unreachable},
+		{name: "unit installed, no socket", setup: func(t *testing.T, p paths) { installHelperUnit(t, p.home) }, exit: 1, stderr: unreachable},
+		{name: "unit under XDG_CONFIG_HOME, no socket", setup: func(t *testing.T, p paths) {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(p.home, "xdg"))
+			installHelperUnit(t, p.home)
+			if _, err := os.Stat(filepath.Join(p.home, "xdg", "systemd", "user", "agent-secrets-helper.service")); err != nil {
+				t.Fatal(err)
+			}
+		}, exit: 1, stderr: unreachable},
+		{name: "helper never answers", setup: func(t *testing.T, p paths) { silentHelperAt(t, p.sock) }, exit: 1, stderr: unreachable, slow: true},
+		{name: "nothing", setup: func(t *testing.T, p paths) {}, exit: 1, stderr: namedOnly},
+	}
 }
 
 // staleSocketAt leaves a socket file at sock that nothing listens on: the state a helper killed

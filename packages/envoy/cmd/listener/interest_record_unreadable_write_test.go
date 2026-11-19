@@ -33,12 +33,12 @@ func TestTheInterestWriteRoutesAnswerOverAnUnreadableInterestRecord(t *testing.T
 	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
 	logs := &lockedBuffer{}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1),
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1),
 		store.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -198,7 +199,8 @@ func runSeed(args []string) error {
 			config.TTL = *ttl
 		}
 		if *create {
-			_, err = bus.EnsureKeyValue(conn, js, config)
+			// A rig command, run by hand until it ends: it runs under no context of its own.
+			_, err = bus.EnsureKeyValue(context.Background(), conn, js, config)
 			if err == nil && kind == "sessions" && *ttl > 0 {
 				// A fixture provisions the bucket with the listener's 5 minutes first, and an
 				// existing bucket keeps its age, so -ttl sets it on the bucket there is: no

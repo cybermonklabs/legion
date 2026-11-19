@@ -104,10 +104,21 @@ const (
 	// PodSessionNotRegistered, then a colon, begins the error_description of the exchange's
 	// invalid_grant for a pod whose session no registration names yet (internal/broker/oauth,
 	// registeredPodSession). A pod's trade can reach the broker before its registration does, so
-	// it is the one refusal of the broker's state a later trade cures: the Go client's
+	// it is a refusal of the broker's state that a later trade cures: the Go client's
 	// RefusedError.Permanent and the TypeScript client's BrokerRefusedError.permanent read it
 	// off these words, and both clients trade again on it for as long as their caller runs.
 	PodSessionNotRegistered = "pod_session_not_registered"
+	// SessionNameNotThisRegistrars, then a colon, begins the error_description of the exchange's
+	// final invalid_grant for a pod a daemon other than the one its session name is bound to
+	// registered, or that a daemon registered under a name bound to none (internal/broker/oauth,
+	// registeredPodSession). A name belongs, for good, to the daemon that first registered it, and
+	// only a registration, never a later trade, binds a name bound to none, so no later trade cures
+	// the refusal. Both clients read it as final: of the exchange's invalid_grant refusals, they
+	// trade again only on one whose description begins PodSessionNotRegistered.
+	SessionNameNotThisRegistrars = "session_name_not_this_registrars"
+	// MembershipHeld is the token endpoint's refusal of a credential whose person Dispatch holds
+	// until they sign in to Dispatch again, or a refresh confirms them. It is not permanent.
+	MembershipHeld = "membership_held"
 )
 
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries

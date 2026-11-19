@@ -22,11 +22,12 @@ import (
 	"cmp"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -81,12 +82,13 @@ func keyDir() string {
 	return filepath.Dir(helper.DefaultSocket(os.Getenv))
 }
 
-// brokerBaseURL is the broker's address as brokerURLVar gives it, without the slashes it ends in
-// (brokerclient.WithoutTrailingSlashes, the rule both halves of this client read an address by),
-// and empty when the variable is unset or holds nothing but slashes: the one place every form
-// reads it.
-func brokerBaseURL() string {
-	return brokerclient.WithoutTrailingSlashes(os.Getenv(brokerURLVar))
+// brokerBaseURL is the broker's address as brokerURLVar gives it (clientGetenv: the environment,
+// else the settings file), without the slashes it ends in (brokerclient.WithoutTrailingSlashes,
+// the rule both halves of this client read an address by), and the empty Address when neither
+// gives one or it holds nothing but slashes: the one place every form reads it, and as a
+// brokeraddr.Address, so no form holds it as a string it could print.
+func brokerBaseURL() brokeraddr.Address {
+	return brokeraddr.New(brokerclient.WithoutTrailingSlashes(clientGetenv(brokerURLVar)))
 }
 
 // helperSocket is AGENT_SECRETS_HELPER_SOCK, else the helper's default socket; named reports
@@ -121,8 +123,32 @@ func approveURL() string {
 // enrollment session_id of its own, so an unset result here is what the broker's requests.
 // Session answers for both Request and Enrollment, and the credential request names no session
 // at all.
+//
+// The Codex CLI sets CODEX_THREAD_ID in every shell command it runs. A shell that
+// carries it beside another session's id, because a Codex session was started from a Claude Code
+// or Oh My Pi shell or the other way round, names whichever of `codex`, `claude` and `omp` is
+// this process's nearest ancestor; where the walk finds none of them, the order above, with
+// CODEX_THREAD_ID after CLAUDE_CODE_SESSION_ID, as before Codex was a host.
 func requestSessionID() string {
-	return cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	codex := os.Getenv("CODEX_THREAD_ID")
+	others := cmp.Or(os.Getenv("OMP_SESSION_ID"), os.Getenv("ENVOY_SESSION_ID"), os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	if codex != "" && (others == "" || nearestHarness("codex", "claude", "omp") == "codex") {
+		return codex
+	}
+	return others
+}
+
+// harnessName is the name nearestHarness compares for a process's comm: the command name, with a
+// trailing ".exe" taken off.
+//
+// A name is the base name of the binary the process executed, cut to 15 characters, with a
+// trailing ".exe" taken off: Claude Code's npm package runs its binary as bin/claude.exe. A host
+// started through an interpreter (an npm install that runs as node) has the interpreter's name,
+// so the walk passes it and may stop at a host further out, and a Claude Code run that way inside
+// a Codex shell names the Codex thread. dispatch's walk (nearestAncestorNamed,
+// packages/envoy-client/src/process-ancestry.ts) reads names by the same rule.
+func harnessName(comm string) string {
+	return strings.TrimSuffix(strings.TrimSpace(comm), ".exe")
 }
 
 func exists(path string) bool {
@@ -135,6 +161,15 @@ func exists(path string) bool {
 func freshMarker(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, pendingMarker))
 	return err == nil && time.Since(info.ModTime()) < pendingMarkerLife
+}
+
+// launcherKeyDir reports whether dir is a launcher's key dir, which puts the process that reads
+// it inside a session: dir holds a key.pem with no machine-session marker beside it, or a fresh
+// enrollment.pending while the launcher is still enrolling it. A key.pem with the marker is a
+// machine's own session that a client before #4143 left there, not a launcher's key, so it
+// puts no process inside a session. identity and grant revoke both read the key dir by this rule.
+func launcherKeyDir(dir string) bool {
+	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir)
 }
 
 // enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait.
@@ -165,11 +200,11 @@ func awaitEnrollment(dir string, wait time.Duration) (gaveUp bool) {
 }
 
 // helperInstalled reports whether this machine has the helper's user unit, the file
-// `agent-secrets-helper install` writes and the agent launchers' shims also read as "the helper is installed".
-// Its socket being absent then means the helper is stopped (a clean stop removes the socket),
-// not that this machine has none.
+// `agent-secrets-helper install` writes and the agent launchers' shims also read as "the helper is installed",
+// under this user's home (homeGetenv). Its socket being absent then means the helper is stopped
+// (a clean stop removes the socket), not that this machine has none.
 func helperInstalled() bool {
-	return exists(helper.UnitPath(os.Getenv))
+	return exists(helper.UnitPath(homeGetenv))
 }
 
 // cmdIdentity implements "identity": exit 0 when this process has a broker identity, 1 when it
@@ -178,52 +213,90 @@ func helperInstalled() bool {
 // secret-run, legion's envoy scripts), and it never registers anything: `register` from an
 // unregistered process would create a session, and self or whoami would ask the broker.
 //
-// A process has an identity when its key dir holds key.pem or a fresh enrollment.pending, or when
-// the helper's sign op — which signs a throwaway proof and changes nothing — answers OK (enrolled)
-// or NOT_ENROLLED (registered and still enrolling) for it. Such a process uses the broker even if
-// its enrollment later fails, and the failure is the broker call's. A registered session on a
-// helper holding no launcher credential (NO_CREDENTIAL: never logged in, or its login lapsed or was
-// refused, until the operator logs the machine in) has none, since that helper enrolls no one; it is exit 1 with
-// the not-logged-in notice. A helper that cannot be asked — its socket refuses connections, is
-// absent although AGENT_SECRETS_HELPER_SOCK names it or the helper is installed, or gives no
-// answer within identityDeadline — is exit 1 with a notice on stderr, so a caller that then uses
-// its other backend does not do so silently. With no key dir, no socket named or present, and no
-// helper installed (a laptop), it is exit 1 and silent.
+// A process has an identity when its key dir holds a launcher's key.pem (one with no
+// machine-session marker beside it, which a client before #4143 left for a machine's own
+// session) or a fresh enrollment.pending, or when the helper's sign op — which signs a throwaway
+// proof and changes nothing — answers OK (enrolled) or NOT_ENROLLED (registered and still
+// enrolling) for it. Such a process uses the broker even if its enrollment later fails, and the
+// failure is the broker call's. It reads neither a person's sign-in nor the machine cache, and
+// asks no metadata server: those are the chain's later sources, which --source reports. A
+// registered session on a helper holding no launcher credential (NO_CREDENTIAL: never logged in,
+// its login lapsed or was refused, or, in identity mode, its trade loop has not traded or has
+// stopped) has none, since that helper enrolls no one; it is exit 1, quoting the helper's own
+// answer, which names the cure of its mode (brokerclient.Hint). A helper that cannot be asked
+// — its socket refuses connections, is absent although AGENT_SECRETS_HELPER_SOCK names it or the
+// helper is installed, or gives no answer within identityDeadline — is exit 1 with a notice on
+// stderr, so a caller that then uses its other backend does not do so silently. With no key dir,
+// no socket named or present, and no helper installed (a laptop), it is exit 1 and silent.
+//
+// With --source it walks the chain the use command walks (chain.go), may ask the broker and the
+// metadata server, and registers nothing: it prints the source it would use on stdout as
+// "<name>: <detail>", then "helper: <socket>" whenever the helper answered and is not that source,
+// and exits 0; with no source, stdout is empty, the chain's refusal is on stderr and it exits 1.
 func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
-	if err := newFlagSet("identity", stderr).Parse(flagArgs); err != nil {
+	flags := newFlagSet("identity", stderr)
+	source := flags.Bool("source", false, "print the source of this process's broker identity a use command would take, asking the broker and the metadata server where it must")
+	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
 		fmt.Fprintf(stderr, "agent-secrets identity: unexpected argument %q\n", positional[0])
 		return exitUsageError
 	}
-	dir := keyDir()
-	if exists(filepath.Join(dir, keyFile)) || freshMarker(dir) {
+	if *source {
+		return identitySource(stdout, stderr)
+	}
+	if launcherKeyDir(keyDir()) {
 		return 0
 	}
-	sock, named := helperSocket()
-	if !exists(sock) {
-		if named || helperInstalled() {
-			fmt.Fprintf(stderr, "agent-secrets: helper unreachable at %s; not an agent session (the socket is absent)\n", sock)
+	answer := probeHelper()
+	if !answer.there {
+		if _, named := helperSocket(); named || helperInstalled() {
+			fmt.Fprintf(stderr, "agent-secrets: helper unreachable at %s; not an agent session (the socket is absent)\n", answer.sock)
 		}
 		return 1
 	}
-	resp, err := helper.Call(sock, helper.Request{Op: "sign", Method: http.MethodGet, URL: identityProbeURL}, identityDeadline)
-	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets: helper unreachable at %s; not an agent session (%v)\n", sock, err)
+	if answer.err != nil {
+		fmt.Fprintf(stderr, "agent-secrets: helper unreachable at %s; not an agent session (%v)\n", answer.sock, answer.err)
 		return 1
 	}
-	switch {
+	switch resp := answer.resp; {
 	case resp.OK, resp.Code == helper.CodeNotEnrolled:
 		return 0
 	case resp.Code == helper.CodeNotASession:
 		return 1
 	case resp.Code == helper.CodeNoCredential:
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", errNoCredential)
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", noCredential(resp).sessionLine())
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: helper at %s answered %s: %s; not an agent session\n", sock, resp.Code, resp.Error)
+		fmt.Fprintf(stderr, "agent-secrets: helper at %s answered %s: %s; not an agent session\n", answer.sock, resp.Code, resp.Error)
 		return 1
 	}
+}
+
+// identitySource is `identity --source`: the source the use command would take this process's
+// identity from, waiting out a launcher's enrollment as the use command does.
+func identitySource(stdout, stderr io.Writer) int {
+	wait, err := enrollWait()
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets identity: %v\n", err)
+		return exitUsageError
+	}
+	dir := keyDir()
+	awaitEnrollment(dir, wait)
+	name, detail, err := describeSource(dir)
+	if err != nil {
+		reportError(stderr, "agent-secrets identity", err)
+		return 1
+	}
+	if name == "helper" {
+		fmt.Fprintf(stdout, "helper: %s%s\n", detail, helperVersionSuffix(detail))
+	} else {
+		fmt.Fprintf(stdout, "%s: %s\n", name, detail)
+		if answer := probeHelper(); answer.answered() {
+			fmt.Fprintf(stdout, "helper: %s%s\n", answer.sock, helperVersionSuffix(answer.sock))
+		}
+	}
+	return 0
 }

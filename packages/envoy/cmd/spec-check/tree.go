@@ -41,19 +41,20 @@ func runTree(args []string, stdout, stderr io.Writer) int {
 	}
 
 	j, err := judge(stderr, dir, o)
+	what, empty := noSpecFile(j, err)
 	var refused *notes.SizeRefusal
 	switch {
 	case errors.As(err, &refused):
 		// The importer refuses a set with a file above the bound before it parses any, so the tree
 		// is refused with no block read.
-	case errors.Is(err, notes.ErrNoDirectory) && *allowEmpty:
+	case empty && !*allowEmpty:
+		say(stderr, "%s: %s, and tree reads it as the empty tree only with --allow-empty", dir, what)
+		return 2
+	case empty:
 		// Git keeps no empty directory, so a repository with no spec file yet has no directory, and
 		// the importer reads a missing directory as the empty set.
 	case err != nil:
 		return cannotJudge(stderr, dir, err)
-	case j.files == 0 && !*allowEmpty:
-		say(stderr, "%s: holds no spec file", dir)
-		return 2
 	}
 	if o.Retired == nil {
 		say(stderr, "%s: no --retired list, so no id is checked against the ids the approved spec removed", dir)

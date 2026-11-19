@@ -1210,8 +1210,19 @@ PR body: the READY format from the legion-worker skill, first line `Dispatch: LE
 ## Part C — Tester runbook
 
 Both smokes run on this host against the production listener at `http://127.0.0.1:9020`. If a
-`curl` to `/v1/*` answers 401, the deployment has `ENVOY_API_TOKEN` set: add
-`-H "Authorization: Bearer $ENVOY_TOKEN"` to every curl. Never print a token.
+`curl` to `/v1/*` answers 401, the deployment has `ENVOY_API_TOKEN` set: define `envoy_curl` below
+and use it instead of `curl` for every call to the listener. It writes the bearer header to a file
+only you can read (`umask 077`, `mktemp`), passes the file to curl (`-H @file`) and removes it when
+the call ends, also on failure. The token is never on a command line, which any user of this host
+can read in `/proc/<pid>/cmdline`. Never print a token.
+
+```bash
+envoy_curl() (
+  header=$(umask 077; mktemp) || exit
+  trap 'rm -f "$header"' EXIT
+  printf 'Authorization: Bearer %s\n' "$ENVOY_TOKEN" >"$header" && curl -H @"$header" "$@"
+)
+```
 
 ### Acceptance 1 (and live evidence for 2 and 3): a real session re-holds `smoke-legion-29`
 

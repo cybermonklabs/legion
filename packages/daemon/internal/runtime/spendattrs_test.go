@@ -11,9 +11,10 @@ import (
 )
 
 // operatorSpendAttributesFor is the value the live deployment's operator writes, one per project
-// (legion/Pulumi.prod.yaml of theorem-labs/agent-infra), with the project's own lane.
+// (legion/Pulumi.prod.yaml of example-org/deployment), with the project's own lane and a
+// placeholder person.
 func operatorSpendAttributesFor(lane string) string {
-	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@theorem.dev"
+	return "theorem.project=legion,theorem.lane=" + lane + ",theorem.credential=gateway,theorem.person=sami@example.com"
 }
 
 // liveAttributes is what the detector reads out of operatorSpendAttributesFor("legion-infra"),
@@ -23,7 +24,7 @@ func liveAttributes(pairs ...string) map[string]string {
 		"theorem.project":    "legion",
 		"theorem.lane":       "legion-infra",
 		"theorem.credential": "gateway",
-		"theorem.person":     "sami@theorem.dev",
+		"theorem.person":     "sami@example.com",
 	}
 	for i := 0; i < len(pairs); i += 2 {
 		attrs[pairs[i]] = pairs[i+1]
@@ -195,6 +196,21 @@ func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.
 			"legion.issue=INFRA-312%2Cx%3Dy,legion.role=role%20one",
 			map[string]string{"legion.issue": "INFRA-312,x=y", "legion.role": "role one"},
 		},
+		{
+			"a launch in an arm of each of two experiments, in the order the spec names them", live,
+			SpawnSpec{Issue: issue, Role: claim.RoleImplementer, Variants: []Variant{
+				{Experiment: "memory", Name: "memory", ConfigFiles: []string{"/etc/m.yml"}},
+				{Experiment: "open-model", Name: "kimi"},
+			}},
+			live + "," + launchOnly + ",legion.arms=memory%3Amemory%2Copen-model%3Akimi",
+			liveAttributes("legion.issue", issue, "legion.role", "implementer", "legion.arms", "memory:memory,open-model:kimi"),
+		},
+		{
+			"a launch in a control arm, which names no file", "",
+			SpawnSpec{Issue: issue, Role: claim.RoleImplementer, Variants: []Variant{{Experiment: "memory", Name: "none"}}},
+			launchOnly + ",legion.arms=memory%3Anone",
+			map[string]string{"legion.issue": issue, "legion.role": "implementer", "legion.arms": "memory:none"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SpendResourceAttributes(tc.operator, tc.spec)
@@ -208,11 +224,12 @@ func TestSpendResourceAttributesAppendsTheLaunchAfterTheOperatorsOwn(t *testing.
 	}
 }
 
-// Nothing the daemon writes is refused by the names it writes itself, and the two keys are the
+// Nothing the daemon writes is refused by the names it writes itself, and the three keys are the
 // ones the refusal keeps an operator out of.
 func TestSpendAttributeKeysAreTheOnesTheComposerWrites(t *testing.T) {
-	composed := SpendResourceAttributes("", SpawnSpec{Issue: "INFRA-312", Role: claim.RoleTester})
-	for _, key := range []string{SpendIssueAttribute, SpendRoleAttribute} {
+	composed := SpendResourceAttributes("", SpawnSpec{Issue: "INFRA-312", Role: claim.RoleTester,
+		Variants: []Variant{{Experiment: "memory", Name: "memory"}}})
+	for _, key := range []string{SpendIssueAttribute, SpendRoleAttribute, SpendArmsAttribute} {
 		if !strings.Contains(composed, key+"=") {
 			t.Errorf("the composed value %q holds no %s member", composed, key)
 		}
@@ -236,7 +253,7 @@ func TestSpendEncodeDoesNotAllocateWhatNeedsNoEscape(t *testing.T) {
 	}
 }
 
-// Every value the live deployment writes is accepted, and each way the detector throws is
+// Every value of the live deployment's shape is accepted, and each way the detector throws is
 // refused by the member that would throw, named with what is wrong with it.
 func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 	const prefix = "theorem.project=legion,theorem.note="
@@ -261,6 +278,7 @@ func TestSpendAttributesRefusalAppliesTheDetectorsOwnRules(t *testing.T) {
 		{"an empty key", "=value", `its member "=value" has an empty key`},
 		{"a member naming legion.issue", "theorem.project=legion,legion.issue=INFRA-1", `its member "legion.issue=INFRA-1" names legion.issue, which the runtime writes into every launch itself`},
 		{"a member naming legion.role, percent-encoded", "legion%2Erole=tester", `its member "legion%2Erole=tester" names legion.role, which the runtime writes into every launch itself`},
+		{"a member naming legion.arms", "theorem.project=legion,legion.arms=memory%3Anone", `its member "legion.arms=memory%3Anone" names legion.arms, which the runtime writes into every launch that runs in an experiment's arm`},
 		// The two code points the detector's trim and Go's unicode.IsSpace differ in
 		// (spendDetectorSpace): the detector keeps U+0085 and drops U+FEFF, so each is refused or
 		// accepted by what the detector does with it rather than by what strings.TrimSpace would.
@@ -290,7 +308,7 @@ func TestSpendAttributesRefusalNamesOnlyTheMemberItRefuses(t *testing.T) {
 	if got == "" {
 		t.Fatal("SpendAttributesRefusal refuses nothing for a member with two =")
 	}
-	for _, other := range []string{"theorem.person", "sami@theorem.dev", "gateway", "legion-infra"} {
+	for _, other := range []string{"theorem.person", "sami@example.com", "gateway", "legion-infra"} {
 		if strings.Contains(got, other) {
 			t.Errorf("SpendAttributesRefusal = %q, which repeats %q from another member", got, other)
 		}

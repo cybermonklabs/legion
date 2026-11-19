@@ -3,9 +3,12 @@
 # Go closures recomputed with go list (with -race for a -race command), the table of go commands
 # must say what ci.yaml and the workflows its jobs call say, a claimed go command the check does
 # not reduce (another form, a
-# step that is more than the go line, a shell, a container, a BASH_ENV) and a step off its exact
-# entry's pinned script count as reading every Go file of the repository and every file under a
-# Go module's directory, a why that cites a step must name a workflow file that still holds it,
+# step that is more than the go line, a shell, a container, a BASH_ENV) counts as reading every
+# Go file of the repository and every file under a Go module's directory, a step off its exact
+# entry's pinned script or directory is refused naming the first line that differs, or both
+# directories, and on a -run or -skip list each test one side names and the other lacks, a step
+# an exact entry pins under an env, shell, container or job that could move it is refused naming
+# what does, a why that cites a step must name a workflow file that still holds it,
 # CI_OK_SELECTED_BY must map every job changes gates, it and CI_OK_PULL_REQUEST_ONLY must say what
 # each job's if: tests, every job of ci.yaml must be in exactly one of ci-ok's three classes
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
@@ -17,7 +20,8 @@
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
-# the key and the paths ci.yaml's restore of that family names, its own restores being lookups,
+# the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
+# its own restores being lookups,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -73,7 +77,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -1509,6 +1513,113 @@ check "names the script's command and its line" \
   "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (its line is `go build ./cmd/app ./other`, not the text alone), so it counts as reading every Go file of the repository')"
 check "and the file the module adds" "$(contains "$out" '::error file=mod/other/other.go::')"
 
+# A script's go command is read under each job's steps up to the last one whose run: names the
+# script, since a later step runs after the script; and under every step of a job that names it
+# nowhere, since it may be started some way this check does not see. script_job <root>:
+# script-line's Run of build.sh, its line the text alone.
+script_job() {
+  printf '#!/bin/sh\ngo build ./cmd/app\n' > "$1/build.sh"
+  replace "$1/.github/scripts/ci_job_reads.py" 'text="go test ./cmd/app ./lib"),' \
+    'text="go test ./cmd/app ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+}
+path_write=$'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n'
+build_step=$'      - name: Build the app\n        run: sh build.sh\n'
+report_step="      - name: Report ci-ok when this job decides a merge-group run"
+
+echo "case: a write after the step that runs a script reaches none of the script's commands"
+root=$(fixture script-write-after)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$report_step"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a write before the step that runs a script widens the script's commands"
+root=$(fixture script-write-before)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$build_step$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" \
+  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
+echo "case: a write anywhere in a job no step of which names the script widens the script's commands"
+root=$(fixture script-write-unnamed)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$path_write$report_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script's command and the write" \
+  "$(contains "$out" 'build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
+# The forms a workflow starts a script in: after a path a directory ends (the workspace, the
+# repository's top level) or inside a substitution. Each is a start after a write the plain start
+# before it does not see, so the script's commands are read under the write.
+widened='build.sh, which job app runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)'
+for form in workspace-variable workspace-expression substitution backticks rev-parse; do
+  case $form in
+    workspace-variable) start='sh "$GITHUB_WORKSPACE/build.sh"' ;;
+    workspace-expression) start='sh ${{ github.workspace }}/build.sh' ;;
+    substitution) start='version=$(build.sh --version)' ;;
+    backticks) start='version=`build.sh --version`' ;;
+    rev-parse) start='sh "$(git rev-parse --show-toplevel)/build.sh"' ;;
+  esac
+  echo "case: a script started again after a write, as $start, is read under the write"
+  root=$(fixture "script-start-$form")
+  script_job "$root"
+  again=$'      - name: Build the app again\n        run: '"$start"$'\n'
+  replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$again$report_step"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the script's command and the write" "$(contains "$out" "$widened")"
+done
+
+# A path that only begins with the script's - a copy beside it, a longer name - names no start of
+# it, and nor does a name whose letters merely end with it (xbuild.sh): the write before such a
+# step is no write before the script.
+for other in build.sh.bak build.sh-old build.shx xbuild.sh; do
+  echo "case: a step that runs $other after a write does not start the script"
+  root=$(fixture "script-other-$other")
+  script_job "$root"
+  again=$'      - name: Build something else\n        run: sh '"$other"$'\n'
+  replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$again$report_step"
+  run_check "$root"
+  check "exits 0" "$(is "$status" 0)"
+done
+
+# A script of the same name in another directory is another script: tools/build.sh does not start
+# build.sh, whose path a `/` after anything but a variable, a `}` or a `)` does not begin. Were it
+# read as a start, a write before it would count where it reaches nothing of build.sh's, and a job
+# that names build.sh nowhere would be read only up to it, so a write after it would be missed.
+other_dir_step=$'      - name: Build the tools\n        run: sh tools/build.sh\n'
+echo "case: a step that runs a same-named script of another directory does not start the script"
+root=$(fixture script-other-directory)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$build_step$path_write$other_dir_step$report_step"
+run_check "$root"
+check "after the script's own start and a write, exits 0" "$(is "$status" 0)"
+root=$(fixture script-other-directory-only)
+script_job "$root"
+replace "$root/.github/workflows/ci.yaml" "$report_step" "$other_dir_step$path_write$report_step"
+run_check "$root"
+check "in a job that names the script nowhere, a write after it still widens the script's commands" \
+  "$(contains "$out" "$widened")"
+
+echo "case: a job of the called workflow that names the script nowhere is read whole beside one that names it"
+root=$(fixture called-script-other-job)
+called_input_gate "$root"
+printf '#!/bin/sh\ngo build ./cmd/app\n' > "$root/build.sh"
+replace "$root/.github/scripts/ci_job_reads.py" 'text="go test ./lib"),' \
+  'text="go test ./lib"), run("mod", ["./cmd/app"], "build.sh: go build ./cmd/app", mode="build", source="build.sh", text="go build ./cmd/app"),'
+replace "$root/.github/workflows/called.yaml" "$report_step" "$build_step$report_step"
+run_check "$root"
+check "passes while the job that starts the script writes nothing before it" "$(is "$status" 0)"
+replace "$root/.github/workflows/called.yaml" "  called:" \
+  $'  other:\n    runs-on: ubuntu-24.04\n    steps:\n'"$path_write"'  called:'
+run_check "$root"
+check "fails once another job of the file writes the path, naming the script nowhere" "$(is "$status" 1)"
+check "and names the script's command and the write" \
+  "$(contains "$out" 'build.sh, which job called runs, runs `go build ./cmd/app`, which this check does not reduce (step "Put a tool on the path of the steps after" runs `$GITHUB_PATH`, which every later step inherits)')"
+
 echo "case: a claimed simple go command whose step runs it in another directory"
 root=$(fixture moved-working-directory)
 mkdir -p "$root/alt/cmd/app" "$root/alt/lib"
@@ -1567,6 +1678,15 @@ replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" $'      -
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file that closure reads outside the filter, or the GITHUB_ENV write" "$(contains "$out" 'other\|GITHUB_ENV')"
+
+# A write after the step reaches none of its go commands, so the command stays reduced.
+echo "case: a later step writes GITHUB_PATH after a claimed simple go command"
+root=$(fixture github-path-after)
+replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n      - name: Report ci-ok when this job decides a merge-group run'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and still reduces the command to its closure" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
 echo "case: go env -w sets GOFLAGS before a claimed simple go command"
 root=$(fixture go-env-w-goflags)
@@ -1763,15 +1883,282 @@ check "fails once the closure reads a file outside the filter" "$(is "$status" 1
 check "and names it with the exact entry's run" \
   "$(contains "$out" '::error file=mod/other/other.go::app reads mod/other/other.go.*"Test the app" (its pinned script): go test of each package of the loop (go list -deps)')"
 
-echo "case: a step one character off its pinned script falls to everything"
+# A step off its pin is refused rather than read as reading everything: the pin is also what the
+# table says the step runs, and a step read wide passes unseen wherever its filter already selects
+# every Go file.
+echo "case: a step one character off its pinned script is refused, naming the line that differs"
 root=$(fixture exact-step-changed)
 exact_step_table "$root"
 replace "$root/.github/workflows/ci.yaml" "-count=1" "-count=2"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the step and why it falls" \
-  "$(contains "$out" 'job app step "Test the app".s pinned script, which this check does not reduce (the step.s script is not the pinned text), so it counts as reading every Go file of the repository and every file under a Go module.s directory; filter app must select them all on any Go change')"
-check "and a file it falls to" "$(contains "$out" '::error file=mod/other/other.go::')"
+check "names the file, the step, the gate and both lines" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; make the step run that text there again, or change the entry')"
+check "and still reads the step as its runs, not as everything" \
+  "$(is "$(contains "$out" '::error file=mod/other/other.go::')" false)"
+
+echo "case: a step pinned whole that runs in another directory is refused, naming both"
+root=$(fixture exact-step-moved)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" "        working-directory: mod/cmd"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the two directories" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: it runs in mod/cmd, the entry.s in mod; ')"
+
+# A no-break space where the pin has a space: bash reads `test<NBSP>-count=1` as one word, so the
+# refusal names the character on the differing line, and names it once - the step is not refused
+# a second time for the character its script holds.
+echo "case: a step off its pin by a no-break space is refused once, naming the character"
+root=$(fixture exact-step-nbsp)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "go test -count=1" "go test"$'\xc2\xa0'"-count=1"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line and the character" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `.*` where the pinned text.s reads `  go test -count=1 ".pkg"`, and holds the character U+00A0 there; ')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
+echo "case: a step off its pin by a blank line names the blank line and the pinned line it stands for"
+root=$(fixture exact-step-blank-line)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" $'; do\n            go test' $'; do\n\n            go test'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the blank line and the pinned line" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 is a blank line where the pinned text.s reads `  go test -count=1 ".pkg"`; ')"
+check "and quotes no empty line" "$(is "$(contains "$out" 'reads ``')" false)"
+
+# What surrounds a pinned step can move what it compiles or which tests it runs while its text
+# stays the pin's - a GOFLAGS -skip in its env skips a test its -run names - so such a step is
+# refused too, naming what moves it, rather than read as reading everything. Each plant below is
+# one such surrounding of the app job's pinned step.
+for around in env shell container github-env; do
+  case $around in
+    env) what="an env naming GOFLAGS" ;;
+    shell) what="a shell of its own" ;;
+    container) what="a job container" ;;
+    github-env) what="an earlier step's \$GITHUB_ENV write" ;;
+  esac
+  echo "case: a step pinned whole under $what is refused, naming what moves it"
+  root=$(fixture "exact-step-$around")
+  exact_step_table "$root"
+  case $around in
+    env)
+      replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+        $'        working-directory: mod\n        env:\n          GOFLAGS: -skip=^TestData$'
+      why='step "Test the app".s env sets GOFLAGS' ;;
+    shell)
+      replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+        $'        working-directory: mod\n        shell: sh'
+      why='step "Test the app" runs under shell: `sh`' ;;
+    container)
+      replace "$root/.github/workflows/ci.yaml" \
+        "    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')" \
+        "    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')"$'\n    container: golang:1.21'
+      why='the job runs in a container:' ;;
+    github-env)
+      replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+        $'      - name: Skip a test in every later step\n        run: echo "GOFLAGS=-skip=^TestData$" >> "$GITHUB_ENV"\n      - name: Test the app'
+      why='step "Skip a test in every later step" runs `$GITHUB_ENV`, which every later step inherits' ;;
+  esac
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the step, the gate and what moves it" \
+    "$(contains "$out" "::error file=.github/workflows/ci.yaml::job app step \"Test the app\" is pinned whole by gate app.s exact entry, but $why, and that can change what its go commands compile, or which tests they run, where no pin holds it; ")"
+  check "and is that one problem, reading nothing wide" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+  check "and says how to keep a setting that moves nothing" "$(contains "$out" 'or, for a name with which go compiles the same files and runs the same tests, add it to ENV_ALLOWED$')"
+done
+
+# A write of $GITHUB_ENV or $GITHUB_PATH reaches only the steps after the one that makes it, so a
+# write after the pinned step moves nothing it runs, while the same write before it does (the
+# github-env case above).
+echo "case: a step that writes GITHUB_PATH after a step pinned whole moves nothing it runs"
+root=$(fixture exact-step-github-path-after)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n      - name: Report ci-ok when this job decides a merge-group run'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and reads the step as its runs" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+
+# A pinned step's own script is the pin's to hold: a write on its last line reaches only the steps
+# after it, so it refuses none of the step's own commands, while a pinned step after it is
+# refused for it.
+echo "case: a pinned step whose own script ends with an env write is not refused for it"
+root=$(fixture exact-step-own-write)
+exact_step_table "$root"
+replace "$root/.github/scripts/ci_job_reads.py" "\\ndone', [" "\\ndone\\necho \"X=1\" >> \"\$GITHUB_ENV\"', ["
+replace "$root/.github/workflows/ci.yaml" $'            go test -count=1 "$pkg"\n          done' \
+  $'            go test -count=1 "$pkg"\n          done\n          echo "X=1" >> "$GITHUB_ENV"'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+GATES[0] = gate("app", "app", exact=GATES[0].exact + (
+    exact("Test the library again", "mod", 'for pkg in ./lib; do\n  go test "$pkg"\ndone', [
+        run("mod", ["./lib"], at("app", "Test the library again") + " (its pinned script): go test of the library"),
+    ]),
+), reads=GATES[0].reads)
+PY
+replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Test the library again\n        run: |\n          for pkg in ./lib; do\n            go test "$pkg"\n          done\n        working-directory: mod\n      - name: Report ci-ok when this job decides a merge-group run'
+run_check "$root"
+check "but a pinned step after it is refused for it" \
+  "$(contains "$out" 'job app step "Test the library again" is pinned whole by gate app.s exact entry, but step "Test the app" runs `$GITHUB_ENV`, which every later step inherits, ')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
+# Both at once: a step off its pin and under an env that moves it fails on each, so neither
+# refusal hides the other - a check that asked about the env first, and compared the text only
+# without one, would name the env alone.
+echo "case: a step off its pin and under an env that moves it is refused for both"
+root=$(fixture exact-step-changed-env)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "-count=1" "-count=2"
+replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+  $'        working-directory: mod\n        env:\n          GOFLAGS: -tags=probe'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line that differs" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; ')"
+check "and the env" \
+  "$(contains "$out" 'job app step "Test the app" is pinned whole by gate app.s exact entry, but step "Test the app".s env sets GOFLAGS, and that can change ')"
+check "and is those two problems" "$(contains "$out" '^::error::2 CI filter problem(s)$')"
+
+# guard_list_table <root>: the app job runs the library's two tests by name, its -run built in
+# ci_job_reads.py from one list as this repository's text-check job's guard step is built from
+# TEXT_CHECK_TESTS, and pinned whole by an exact entry. The app filter selects the whole module, as
+# the text_checks filter selects every Go file, so a step off its pin that counted as reading
+# everything would pass: these cases exit 0 on a check that reads such a step wide.
+guard_list_table() {
+  printf 'package lib\n\nimport "testing"\n\nfunc TestGuard(t *testing.T) {}\n' > "$1/mod/lib/guard_test.go"
+  cat > "$1/.github/scripts/ci_job_reads.py" <<'PY'
+from ci_filter_coverage import Read, at, exact, gate, run
+
+GUARD_TESTS = ["TestData", "TestGuard"]
+GUARD_SCRIPT = f"go test -count=1 -run '^({'|'.join(sorted(GUARD_TESTS))})$' ./lib"
+RULES = {"mod/lib/lib_test.go": [Read("fixtures/data.json", "lib_test.go reads ../../fixtures/data.json")]}
+GATES = [
+    gate("app", "app", exact=[
+        exact("Test the app", "mod", GUARD_SCRIPT, [
+            run("mod", ["./lib"], at("app", "Test the app") + " (its pinned script): go test -run of the library's tests"),
+        ]),
+    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),
+]
+EXCLUDED = {"image": "an image build another check proves"}
+PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
+WORKSPACES = ["packages/widget"]
+DAEMON_RACE_PACKAGES = ["lib"]
+TAG_RUNS = []
+PY
+  replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
+    "        run: go test -count=1 -run '^(TestData|TestGuard)\$' ./lib"
+  replace "$1/.github/workflows/ci.yaml" "              - 'mod/cmd/app/*'" "              - 'mod/**'"
+}
+
+echo "case: a step whose -run one list builds passes while it runs exactly that list"
+root=$(fixture guard-list)
+guard_list_table "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the runs' closure" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+
+echo "case: a test the list names and the step's -run drops is refused, naming the step and the test"
+root=$(fixture guard-list-dropped)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" ")"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the step and the test the step lacks" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run leaves out TestGuard, which the pinned -run names; ')"
+check "and refuses it once" "$(is "$(grep -c 'is off the script and directory' <<<"$out" || true)" 1)"
+
+echo "case: a test the step's -run names and the list does not is refused, naming the test"
+root=$(fixture guard-list-added-to-the-step)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" "|TestGuard|TestOther)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the test the list lacks" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run names TestOther, which the pinned -run does not; ')"
+
+echo "case: a test added to the list and not to the step's -run is refused, naming the test"
+root=$(fixture guard-list-added-to-the-list)
+guard_list_table "$root"
+printf '\nfunc TestNewGuard(t *testing.T) {}\n' >> "$root/mod/lib/guard_test.go"
+replace "$root/.github/scripts/ci_job_reads.py" 'GUARD_TESTS = ["TestData", "TestGuard"]' \
+  'GUARD_TESTS = ["TestData", "TestGuard", "TestNewGuard"]'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step and the test the step lacks" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run leaves out TestNewGuard, which the pinned -run names; ')"
+
+echo "case: a -run that turns a name into a pattern is refused, quoting the line rather than naming tests"
+root=$(fixture guard-list-pattern)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" "|TestGuard.*)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes both lines around the difference" \
+  "$(contains "$out" 'is off the script and directory gate app.s exact entry pins it to: its line 1 reads `[.][.][.]test -count=1 -run ..(TestData|TestGuard[.][*])[$]. ./lib` where the pinned text.s reads `[.][.][.]test -count=1 -run ..(TestData|TestGuard)[$]. ./lib`; ')"
+check "and does not read the pattern as a test it leaves out" "$(is "$(contains "$out" 'leaves out TestGuard')" false)"
+
+echo "case: a -skip list that drops a test says the step no longer skips it"
+root=$(fixture guard-list-skip)
+guard_list_table "$root"
+replace "$root/.github/scripts/ci_job_reads.py" "-count=1 -run '" "-count=1 -skip '"
+replace "$root/.github/workflows/ci.yaml" "-count=1 -run '" "-count=1 -skip '"
+run_check "$root"
+check "passes while the step skips exactly the list" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" ")"
+run_check "$root"
+check "fails once it skips one test fewer" "$(is "$status" 1)"
+check "and names the test it no longer skips" \
+  "$(contains "$out" 'is off the script and directory gate app.s exact entry pins it to: on its line 1, its -skip no longer skips TestGuard, which the pinned -skip skips; ')"
+
+echo "case: a name list moved along its line, the rest reading the same without it, is quoted"
+root=$(fixture guard-list-moved)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "-count=1 -run '^(TestData|TestGuard)\$' ./lib" \
+  "-count=1  ./lib-run '^(TestData|TestGuard)\$'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes both lines, as the lists alone cannot say what differs" \
+  "$(contains "$out" 'pins it to: its line 1 reads `go test -count=1  ./lib-run ..(TestData|TestGuard)[$].` where the pinned text.s reads `go test -count=1 -run ..(TestData|TestGuard)[$]. ./lib`; ')"
+check "and gives no empty reason" "$(is "$(contains "$out" 'on its line 1, ;')" false)"
+
+# shared_pin <root>: over guard_list_table, a second gate, app_step, gates the app job's step by
+# a filter of its own and pins it by the same exact entry, as this repository's two two-build
+# gates both pin that job's two Go steps.
+shared_pin() {
+  cat >> "$1/.github/scripts/ci_job_reads.py" <<'PY'
+GATES.append(gate("app_step", "app", step="Test the app", exact=GATES[0].exact,
+                  reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]))
+PY
+  replace "$1/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    $'      image: ${{ steps.filter.outputs.image }}\n      app_step: ${{ steps.filter.outputs.app_step }}'
+  replace "$1/.github/workflows/ci.yaml" "            image:" \
+    $'            app_step:\n              - \'.github/workflows/ci.yaml\'\n              - *workspace\n              - \'mod/lib/*\'\n              - \'fixtures/**\'\n            image:'
+  replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
+    $'      - name: Test the app\n        if: needs.changes.outputs.app_step == \'true\''
+}
+
+echo "case: a step two gates pin passes while it runs their text"
+root=$(fixture shared-pin)
+guard_list_table "$root"
+shared_pin "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a step two gates pin, off their pin, is refused once, naming both gates"
+root=$(fixture shared-pin-dropped)
+guard_list_table "$root"
+shared_pin "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" ")"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both gates and the test" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory the exact entries of gates app, app_step pin it to: on its line 1, its -run leaves out TestGuard, which the pinned -run names; make the step run that text there again, or change the entries, ')"
+check "and refuses it once" "$(is "$(grep -c 'is off the script and directory' <<<"$out" || true)" 1)"
 
 for odd in cr nbsp; do
   echo "case: a hidden command after a ${odd} that Python reads as a comment and bash runs"
@@ -1909,6 +2296,65 @@ check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
 
+# release_restore <root> <key>: a workflow ci.yaml does not call - a release build, as
+# release.yaml and release-envoy-infra.yaml are here - restoring the go-app entry ci-caches.yaml
+# fills, under <key>. Its restore misses as silently as one of ci.yaml's when its key drifts, so
+# the save is held to it too; only the existence check stays ci.yaml's.
+release_restore() {
+  cat > "$1/.github/workflows/release.yaml" <<YAML
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: $2
+          restore-keys: go-app-\${{ runner.os }}-
+YAML
+}
+
+echo "case: a release workflow restoring a filled family under the key ci-caches.yaml saves"
+root=$(fixture cache-release-same)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a release workflow's restore key that drifted from the key ci-caches.yaml saves"
+root=$(fixture cache-release-drift)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}-v2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the release workflow's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*, but job build of .github/workflows/release.yaml restores it under .*-v2')"
+
+echo "case: a family only a release workflow restores"
+root=$(fixture cache-release-only)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}'
+replace "$root/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-other-${{ runner.os }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "still names the family ci.yaml restores nowhere" \
+  "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+echo "case: a lookup of ci-caches.yaml whose key drifted from the key its own save writes"
+root=$(fixture cache-lookup-drift)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" $'          key: go-app-${{ runner.os }}\n          lookup-only: true' $'          key: go-app-${{ runner.os }}-v2\n          lookup-only: true'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the lookup's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*, but job fill of .github/workflows/ci-caches.yaml restores it under .*-v2')"
+
 echo "case: a lookup of ci-caches.yaml that downloads the entry"
 root=$(fixture cache-lookup-only)
 cache_workflow "$root"
@@ -1928,10 +2374,10 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores the browser and apt archive families in the shard and alone
-# jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it reads ci.yaml's
-# own, and names the file that holds them. Read over ci.yaml alone, the fill below would be a
-# family nothing restores.
+# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
+# embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
+# reads ci.yaml's own, and names the file that holds them. Read over ci.yaml alone, the fill below
+# would be a family nothing restores.
 #
 # suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
 # the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
@@ -2017,6 +2463,137 @@ check "names the workflow and what it no longer builds" \
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
 
+# Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
+# darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
+# per set carrying that platform and those tags, as ci_job_reads.py's darwin_vet pins this
+# repository's three. lib gets a file under the build tag probe, and three no tag choice brings
+# to darwin/arm64: one under linux, one under race, which the toolchain sets, and one under
+# amd64.v1, an architecture feature. The app filter takes all of mod, which `./...` reads.
+darwin_vet() {
+  local root=$1 runs="" set
+  shift
+  for set in "$@"; do
+    runs+="        run(\"mod\", [\"./...\"], \"the darwin vet\", tags=\"$set\", mode=\"vet\", env={\"GOOS\": \"darwin\", \"GOARCH\": \"arm64\"}),"$'\n'
+  done
+  printf '//go:build probe\n\npackage lib\n\nfunc Probe() {}\n' > "$root/mod/lib/probe.go"
+  printf '//go:build linux\n\npackage lib\n\nfunc Linux() {}\n' > "$root/mod/lib/linux_only.go"
+  printf '//go:build race\n\npackage lib\n\nconst Race = true\n' > "$root/mod/lib/race_on.go"
+  printf '//go:build amd64.v1\n\npackage lib\n\nconst Feature = true\n' > "$root/mod/lib/feature.go"
+  replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" "              - 'mod/**'"
+  replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+    "      - name: Vet the library for darwin"$'\n'"        run: GOOS=darwin GOARCH=arm64 go vet ./..."$'\n'"        working-directory: mod"$'\n'"      - name: Test the app"
+  replace "$root/.github/scripts/ci_job_reads.py" "from ci_filter_coverage import Read, at, gate, run" \
+    "from ci_filter_coverage import Read, at, exact, gate, run"
+  replace "$root/.github/scripts/ci_job_reads.py" '    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),' \
+    "    ], exact=[exact(\"Vet the library for darwin\", \"mod\", \"GOOS=darwin GOARCH=arm64 go vet ./...\", ["$'\n'"$runs    ])], reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\")]),"
+}
+
+echo "case: a darwin vet whose tag set names every tag its module's files are built under"
+root=$(fixture vet-tags-whole)
+darwin_vet "$root" probe
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and reports what it judged" \
+  "$(contains "$out" 'report: job app step "Vet the library for darwin": vets mod for darwin/arm64 under -tags probe; go list compiles 5 of the 8 .go files on disk there, 0 of the rest name a tag, and 0 of those build for darwin/arm64 under tags no set holds')"
+
+echo "case: a darwin vet whose tag set leaves out a tag a file of its module is built under"
+root=$(fixture vet-tags-missing)
+darwin_vet "$root" ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the tags that would compile it" \
+  "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags (none), and none of them compiles mod/lib/probe.go, which go builds for darwin/arm64 with -tags probe')"
+check "and passes over the platform's, the toolchain's and the feature's files" \
+  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go')" false)"
+
+echo "case: one tag set beside a file under the negated tag"
+root=$(fixture vet-tags-negated)
+darwin_vet "$root" probe
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file the set leaves out and the empty set that builds it" \
+  "$(contains "$out" '::error file=mod/lib/noprobe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags probe, and none of them compiles mod/lib/noprobe.go, which go builds for darwin/arm64 with -tags (none)')"
+
+echo "case: two tag sets, one with the tag and one without, beside the negated file"
+root=$(fixture vet-tags-negated-covered)
+darwin_vet "$root" probe ""
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a package whose every file is under a tag, a tag in another script, a +build line, and headers gofmt would rewrite"
+root=$(fixture vet-tags-unlisted)
+darwin_vet "$root" probe
+mkdir -p "$root/mod/only"
+printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
+printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
+printf '// +build legacy\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+# Three headers go/build reads a constraint from although gofmt would rewrite each: one behind a
+# block comment, one indented, one after a byte-order mark.
+printf '/* A block comment. */\n//go:build blocked\n\npackage lib\n\nfunc Blocked() {}\n' > "$root/mod/lib/blocked.go"
+printf '  //go:build indented\n\npackage lib\n\nfunc Indented() {}\n' > "$root/mod/lib/indented.go"
+printf '\xef\xbb\xbf//go:build marked\n\npackage lib\n\nfunc Marked() {}\n' > "$root/mod/lib/marked.go"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file of the package go list ./... leaves out" \
+  "$(contains "$out" '::error file=mod/only/only.go::.*which go builds for darwin/arm64 with -tags hidden')"
+check "names the file under the tag a byte-wise reader would cut short" \
+  "$(contains "$out" $'::error file=mod/lib/beta.go::.*which go builds for darwin/arm64 with -tags probe_\xce\xb2:')"
+check "names the file whose only constraint is a +build line" \
+  "$(contains "$out" '::error file=mod/lib/legacy.go::.*which go builds for darwin/arm64 with -tags legacy')"
+check "names the file whose constraint follows a block comment" \
+  "$(contains "$out" '::error file=mod/lib/blocked.go::.*which go builds for darwin/arm64 with -tags blocked')"
+check "names the file whose constraint is indented" \
+  "$(contains "$out" '::error file=mod/lib/indented.go::.*which go builds for darwin/arm64 with -tags indented')"
+check "names the file whose constraint follows a byte-order mark" \
+  "$(contains "$out" '::error file=mod/lib/marked.go::.*which go builds for darwin/arm64 with -tags marked')"
+
+# go_build_tags.py, the script the vet steps take their sets from, over a module holding each
+# shape above: the first set is every tag, and the file under the negated tag adds a set
+# without it, which also builds the file whose +build line wants legacy and not probe. No set
+# names the platform's, the toolchain's or the feature's names. go list decides every answer,
+# so a go command that fails fails the script, and the step that takes its sets stops there.
+echo "case: go_build_tags.py's sets for a module with a negated tag, a tag-only package and +build lines"
+root=$(fixture vet-tags-sets)
+darwin_vet "$root" probe
+mkdir -p "$root/mod/only"
+printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
+printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
+printf '// +build legacy,!probe\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
+check "prints every tag, then the set without probe, each as a whole -tags= flag" \
+  "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
+status=0
+sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+check "and fails when go list fails" "$(is "$status" 1)"
+check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+
+# The typecheck step's own run text, taken from its workflow, over a module with one tag and a
+# file under its negation that does not compile: the script's last set is the one with no tag,
+# and a shell's command substitution drops a trailing empty line, so a transport of bare sets
+# would vet only -tags=feature and pass. The module sits two directories deep, as
+# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script.
+echo "case: the typecheck step's own loop vets the file under a negated tag"
+root=$(fixture vet-tags-loop)
+mkdir -p "$root/deep/module"
+printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
+printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
+printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"].values()
+step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith("Vet the Go daemon for darwin"))
+open(sys.argv[2], "w").write(step["run"])
+PY
+status=0
+loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
+check "fails" "$(is "$status" 1)"
+check "vets under both sets" \
+  "$(is "$(grep -c '^Vetting for darwin with -tags=' <<<"$loop")" 2)"
+check "and names the file only the set with no tag compiles" "$(contains "$loop" 'off.go:5:9: undefined: notDefined')"
+
 # No case runs this rule, or any other rule of check-ci-filters.sh, over this repository's own
 # tree: ci.yaml's ci-filters job runs the whole check there (.github/workflows/ci-job-ci-filters.yaml,
 # "Check every CI filter matches every file its job reads"), so such a case would only reach the
@@ -2078,7 +2655,7 @@ COMPILERS = (
 # (measured: zero claude-envoy files in packages/pi-legion's program), and check-ts-filters.sh
 # cannot hold the filter to it.
 READS = (
-    ("envoy_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
+    ("broker_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
      "packages/broker-client/src/__tests__/wire.test.ts:25-26"),
     ("contracts", "packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json",
      "packages/contracts/src/dispatch-block-ref.test.ts:98-102"),
@@ -2093,10 +2670,10 @@ READS = (
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "packages/pi-legion/src/skills-guard.test.ts:24,275, which spawns that builder and asserts an "
+     "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:41-46), bundled into "
+     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
@@ -2681,42 +3258,5 @@ check "names the step, the size and the cap" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter step filter passes a filters string of $size bytes, within 32768 bytes of the 131072-byte cap Linux puts on the INPUT_FILTERS environment variable")"
 check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
-
-echo "case: the slow-suite list a reader is given names the jobs the label gates"
-# AGENTS.md's "The slow test suites run in the merge queue, not on a pull-request push" item is
-# the only place a person is told which suites the full-ci label holds back, and it names them
-# one by one. The set it must equal is derivable from the jobs rather than from the outputs: a
-# slow suite is a job whose `if:` tests a changes output whose own expression carries the
-# `full-ci` term. Reading the outputs alone is not enough, because two jobs can share one output
-# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name seven
-# jobs while eight are held back. Nothing else holds the two together, so a job another tree adds
-# or deletes, which a forward merge then brings here, leaves the guide naming a job that does not
-# exist or missing one that does, in the file every agent of this repository loads.
-mismatch=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci.yaml" "$script_dir/../../AGENTS.md" <<'PY'
-import re, sys, yaml
-from pathlib import Path
-
-workflow = yaml.safe_load(Path(sys.argv[1]).read_text())
-outputs = {name for name, value in workflow["jobs"]["changes"].get("outputs", {}).items()
-           if "full-ci" in str(value)}
-gated = {job for job, body in workflow["jobs"].items()
-         if any(re.search(rf"needs\.changes\.outputs\.{output}\b", str(body.get("if", "")))
-                for output in outputs)}
-
-guide = Path(sys.argv[2]).read_text()
-line = next((l for l in guide.splitlines() if "jobs of `ci.yaml`" in l and "held back" in l), "")
-named = set(re.findall(r"`([a-z0-9-]+)`", line.split("(", 1)[1].rsplit(")", 1)[0])) if "(" in line else set()
-
-problems = [f"AGENTS.md names {job}, which the full-ci label does not gate"
-            for job in sorted(named - gated)]
-problems += [f"the label gates {job}, which AGENTS.md's list does not name"
-             for job in sorted(gated - named)]
-if not line:
-    problems.append("AGENTS.md holds no slow-suite list to read")
-print("; ".join(problems))
-PY
-)
-check "the guide's list and the label's gates are the same set" \
-  "$(is "$mismatch" "")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

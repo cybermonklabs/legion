@@ -36,7 +36,7 @@ func TestTheMonitorLeavesTheKnownSessionBucketToAStoreThatCannotReadIt(t *testin
 		t.Fatalf("connect the store's user: %v", err)
 	}
 	t.Cleanup(storeClient.Close)
-	known, err := session.OpenKnownSessions(storeClient.Conn, session.WithKnownSessionReplicas(1))
+	known, err := session.OpenKnownSessions(t.Context(), storeClient.Conn, session.WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the known-session store under a grant that does not carry its bucket: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestAHeldStartReadsAnUnreadableKnownSessionBucketOnce(t *testing.T) {
 		if bucket == bus.KnownSessionBucket {
 			continue
 		}
-		if _, err := bus.CreateCopiedBucket(conn, js, bucket, 1); err != nil {
+		if _, err := bus.CreateCopiedBucket(t.Context(), conn, js, bucket, 1); err != nil {
 			t.Fatalf("create %s: %v", bucket, err)
 		}
 	}
@@ -199,7 +199,7 @@ func TestAStartGoesOnAtOnceOverAKnownSessionBucketTheServerRefuses(t *testing.T)
 	conn, js := client.Connection(), client.JS()
 	copied := listenerCopiedBuckets(false)
 	for _, bucket := range copied {
-		if _, err := bus.CreateCopiedBucket(conn, js, bucket, 1); err != nil {
+		if _, err := bus.CreateCopiedBucket(t.Context(), conn, js, bucket, 1); err != nil {
 			t.Fatalf("create %s: %v", bucket, err)
 		}
 	}
@@ -251,7 +251,7 @@ func TestAStartTheHubDidNotAnswerAtFirstIsHeldForAMissingKnownSessionBucket(t *t
 		if bucket == bus.KnownSessionBucket {
 			continue
 		}
-		if _, err := bus.CreateCopiedBucket(conn, js, bucket, 1); err != nil {
+		if _, err := bus.CreateCopiedBucket(t.Context(), conn, js, bucket, 1); err != nil {
 			t.Fatalf("create %s: %v", bucket, err)
 		}
 	}
@@ -300,7 +300,7 @@ func TestAStartTheHubDidNotAnswerAtFirstIsHeldForAMissingKnownSessionBucket(t *t
 	case <-time.After(2 * (bucketCheckTimeout + bucketWaitInterval)):
 	}
 
-	if _, err := bus.CreateCopiedBucket(conn, js, bus.KnownSessionBucket, 1); err != nil {
+	if _, err := bus.CreateCopiedBucket(t.Context(), conn, js, bus.KnownSessionBucket, 1); err != nil {
 		t.Fatalf("create %s: %v", bus.KnownSessionBucket, err)
 	}
 	select {

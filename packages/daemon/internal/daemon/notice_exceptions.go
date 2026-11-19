@@ -31,8 +31,8 @@ import (
 // notification stream, so the report goes over core NATS and reaches only a subscriber connected
 // when it is sent. The role topic has two forms while every reader takes both
 // (dispatch://INFRA-3862), the role alone and its project first, so the subscription takes every
-// name under the role lanes' prefix, which the daemon's grant names whole
-// (daemonpermissions.Grant), and exceptionNotice reads either form.
+// name under the role lanes' prefix, which the daemon's grant names whole (natsgrant.Daemon), and
+// exceptionNotice reads either form.
 const noticeExceptionSubjects = "notifications.envoy.exceptions." + notify.RoleTopicPrefix + ">"
 
 // The listener's own liveness windows for a role holder (packages/envoy/internal/session), read
@@ -169,6 +169,8 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // published is that answer, payload the row's own Notice, which gives the notice as it went out
 // and its dedupe key (Notice.Published), and tree the snapshot the row was routed against.
 //
+// A publish the listener took writes one line naming the architect it reached (noticePublished).
+//
 // A delivery its architect's session did not confirm (504 `receipt_timeout`) is queued again as a
 // copy of its own (reholdNotice). A holder that does not advertise the notice's delivery mode, and
 // a forward the listener's own NATS grant denies, refuse every attempt until something outside
@@ -196,6 +198,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 	var denied notify.ErrPublishDenied
 	switch {
 	case published == nil:
+		r.noticePublished(row, payload, architect)
 		// The architect has the catch-up and reads its whole context from it, so this attempt is
 		// the wake the pacing held the row for, and the line it writes is written here: once for
 		// the row, whatever the attempts before it met (wakeRan).
@@ -249,6 +252,21 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		return nil
 	}
 	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published)
+}
+
+// noticePublished is the one line a notice the listener took writes: its kind, its issue, its row
+// and the architect claim it reached, and for a catch-up the generation it states, the launch it
+// was written for and how many issues it lists. It is written on the attempt that publishes, so
+// once per publish: a row that waited or failed before writes nothing for those attempts, and a
+// copy a re-hold queues is a row of its own, which writes its own line when it publishes. It is
+// how the daemon's log shows which architect each notice reached, a sub-architect's catch-up at
+// its launch among them.
+func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, architect claim.Token) {
+	fields := []any{"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect}
+	if payload.CatchUp != nil {
+		fields = append(fields, "generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch, "issues", len(payload.CatchUp.Issues))
+	}
+	r.log.Info("outbox notice published", fields...)
 }
 
 // reholdNotice queues reported's notice again after a publish its architect's session did not
@@ -342,11 +360,11 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if notice.CatchUp != nil {
-			root, err := r.records.Issue(scoped, tx, issue)
+			recorded, err := r.records.Issue(scoped, tx, issue)
 			if err != nil {
 				return err
 			}
-			if superseded = catchUpSuperseded(*notice.CatchUp, held.Claim, root); superseded {
+			if superseded = catchUpSuperseded(*notice.CatchUp, held.Claim, recorded); superseded {
 				return nil
 			}
 		}
@@ -374,11 +392,11 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 		// The copy this re-hold would have queued is the only thing that would have taken the row's
 		// claims on (MoveKeptClaims), so what the row named is handed over here exactly as a
 		// superseded catch-up's own ending hands it over (supersededKept): unclaimed, and named at
-		// once by a fresh catch-up while the root has an architect to tell. A catch-up is enqueued
-		// for the root whose tree it states (workflow.QueueCatchUp), so the row's issue is that
-		// root. The hand-over is its own transaction, after this one: a receipt timeout marks no
-		// telling, so the told check supersededKept makes answers no here unless an earlier run of
-		// this row published.
+		// once by a fresh catch-up while the root has an architect to tell. Only a root's catch-up
+		// names kept decisions, and it is enqueued on the root whose tree it states
+		// (workflow.QueueCatchUp), so the row's issue is that root. The hand-over is its own
+		// transaction, after this one: a receipt timeout marks no telling, so the told check
+		// supersededKept makes answers no here unless an earlier run of this row published.
 		if notice.CatchUp.Kept != nil && reported.claims != 0 {
 			if err := r.supersededKept(ctx, issue, reported.claims, key); err != nil {
 				return err
@@ -412,20 +430,21 @@ func (r *outbox) issueTree(ctx context.Context, issue string) (root string, ling
 	return root, lingers, nil
 }
 
-// catchUpSuperseded says whether a newer catch-up than catchUp exists for its architect: held, the
-// claim as this daemon supervises it, has said it is ready at a later launch than the one catchUp
-// was written for, and that launch's ready wrote one (workflow's claimReady), queued or delivered;
-// or root, as recorded now, is at a later generation, and its re-admission's start writes one,
-// whether it finds the claim running or relaunches it. Neither holds for a catch-up that may be
-// the architect's only one: a claim relaunching or not yet ready has had no later ready, and one
-// its later ready will write drops the queued copy. The newer catch-up was composed from what
+// catchUpSuperseded says whether a newer catch-up than catchUp exists for its architect, the
+// architect of the catch-up's own issue: held, that claim as this daemon supervises it, has said it
+// is ready at a later launch than the one catchUp was written for, and that launch's ready wrote
+// one (workflow's claimReady), queued or delivered; or issue, the catch-up's own issue as recorded
+// now, is at a later generation — a root re-admitted, or a child re-entered — whose start writes
+// one, whether it finds the claim running or relaunches it. Neither holds for a catch-up that may
+// be the architect's only one: a claim relaunching or not yet ready has had no later ready, and
+// one its later ready will write drops the queued copy. The newer catch-up was composed from what
 // nobody claimed, so the superseded one's decisions are its own to hand over rather than leave
 // with its row (the outbox's notice, workflow.HandOverKept).
-func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, root *record.Issue) bool {
+func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *record.Issue) bool {
 	if supervise.SaidReady(held.State) && held.Generation > catchUp.Launch {
 		return true
 	}
-	return root != nil && root.Generation > catchUp.Generation
+	return issue != nil && issue.Generation > catchUp.Generation
 }
 
 // copyDueAtOnce says whether the next copy of a notice is due at once, given held, the architect's
@@ -495,21 +514,21 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	return reportedNotice{issue: issue, notice: notice, row: row, architect: claim.Token(token)}, true
 }
 
-// releaseWaiting makes due at once every notice waiting for a later attempt that one of architects
-// now owns, once their claims are ready: each agent said it can be prompted (supervise.SaidReady),
-// having booted or taken its Envoy role back. A boot's ready comes before the name — the session
-// claims its role at its first turn — so a notice this releases, and the catch-up that same ready
-// writes, can still be refused no_holder and wait the outbox's own backoff (retryBackoff, one
-// second doubling to a cap of 64) until the name is taken. What the release ends is the wait for
-// the architect, not the wait for the role. That covers a copy waiting out its re-send delay,
-// whichever session it failed on (a Go relaunch resumes the claim's session file, so the
-// relaunched agent registers the very session id the stopped one had), and a notice held on the
-// outbox's backoff while nobody held the role. A copy waiting minutes for a stopped session's
-// registration to lapse would otherwise hold back every later notice to that architect behind the
-// fence, after the architect is back. Released, the notices go in the order they were written,
-// ahead of the ones behind them. The waiting notices and their trees are one repeatable read, each
-// tree read once; the fence is not read, since a release only makes a notice due and its send
-// still passes the fence.
+// releaseWaiting makes due at once every notice waiting for a later attempt that goes to one of
+// architects now (noticeArchitect), once their claims are ready: each agent said it can be
+// prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
+// before the name — the session claims its role at its first turn — so a notice this releases, and
+// the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
+// backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
+// the release ends is the wait for the architect, not the wait for the role. That covers a copy
+// waiting out its re-send delay, whichever session it failed on (a Go relaunch resumes the
+// claim's session file, so the relaunched agent registers the very session id the stopped one
+// had), and a notice held on the outbox's backoff while nobody held the role. A copy waiting
+// minutes for a stopped session's registration to lapse would otherwise hold back every later
+// notice to that architect behind the fence, after the architect is back. Released, the notices
+// go in the order they were written, ahead of the ones behind them. The waiting notices and their
+// trees are one repeatable read, each tree read once; the fence is not read, since a release only
+// makes a notice due and its send still passes the fence.
 //
 // A catch-up the wake pacing still holds to its turn is left where it stands: its wait is not the
 // architect being away — the architect is running, which is why a start wrote a catch-up instead
@@ -544,7 +563,7 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 			if err != nil {
 				return err
 			}
-			if owner, err := owningArchitect(route.project, route.issues, issue, notice.Kind, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
+			if owner, err := noticeArchitect(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
 				released = append(released, row)
 			}
 		}

@@ -32,15 +32,7 @@ type wireTokenLogin struct {
 // (negative for one already expired), signed by the local OIDC issuer the test server trusts.
 func (ts *testServer) accountToken(t *testing.T, account, podUID string, lifetime time.Duration) string {
 	t.Helper()
-	claims := ts.podIssuer.Claims(account, podAudience)
-	now := time.Now()
-	claims["iat"] = now.Add(min(lifetime, 0) - 5*time.Second).Unix()
-	claims["nbf"] = claims["iat"]
-	claims["exp"] = now.Add(lifetime).Unix()
-	if podUID != "" {
-		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
-	}
-	return ts.podIssuer.Mint(t, ts.podKey, claims)
+	return ts.audienceToken(t, account, podUID, podAudience, lifetime)
 }
 
 // tokenLogin posts token and request to POST /v1/launcher-credentials/token.

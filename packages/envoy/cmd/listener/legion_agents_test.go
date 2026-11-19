@@ -37,7 +37,7 @@ type legionListener struct {
 // bucket.
 func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	t.Helper()
-	sessions, err := session.OpenSessionRegistry(bustest.Fixture(client.Conn), session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), bustest.Fixture(client.Conn), session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -46,7 +46,7 @@ func newLegionListener(t *testing.T, client *bus.Client) *legionListener {
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
 	}
-	agents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
@@ -444,12 +444,12 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 	failing.Store(true)
 	var opens atomic.Int32
 	logs := &lockedBuffer{}
-	registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(conn *natsgo.Conn) (*legionagents.Store, error) {
+	registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(ctx context.Context, conn *natsgo.Conn) (*legionagents.Store, error) {
 		opens.Add(1)
 		if failing.Load() {
 			return nil, errors.New("nats: timeout")
 		}
-		return legionagents.Open(conn, legionagents.WithReplicas(1))
+		return legionagents.Open(ctx, conn, legionagents.WithReplicas(1))
 	}, 10*time.Millisecond, 40*time.Millisecond)
 	t.Cleanup(func() { registry.close(context.Background()) })
 	l.deps.legionAgents = registry
@@ -516,7 +516,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 	var opens atomic.Int32
 	var openedOn atomic.Pointer[natsgo.Conn]
 	logs := &lockedBuffer{}
-	started := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(conn *natsgo.Conn) (*legionagents.Store, error) {
+	started := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", logs), func(ctx context.Context, conn *natsgo.Conn) (*legionagents.Store, error) {
 		switch opens.Add(1) {
 		case 1:
 			// The first open fails, so the retry runs the opens after it.
@@ -531,7 +531,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 			}
 		}
 		openedOn.Store(conn)
-		return legionagents.Open(conn, legionagents.WithReplicas(1))
+		return legionagents.Open(ctx, conn, legionagents.WithReplicas(1))
 	}, 10*time.Millisecond, 40*time.Millisecond)
 	registry.Store(started)
 	t.Cleanup(func() { started.close(context.Background()) })
@@ -575,7 +575,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 	var opens atomic.Int32
 	inOpen := make(chan struct{})
 	release := make(chan struct{})
-	registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", &lockedBuffer{}), func(*natsgo.Conn) (*legionagents.Store, error) {
+	registry := startLegionAgentRegistry(l.deps.client.Conn, logging.NewWithWriter("test", &lockedBuffer{}), func(context.Context, *natsgo.Conn) (*legionagents.Store, error) {
 		if opens.Add(1) == 2 {
 			close(inOpen)
 			<-release

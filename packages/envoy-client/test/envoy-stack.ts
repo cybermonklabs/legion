@@ -1,5 +1,4 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { createServer, type Server } from "node:net";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
@@ -51,6 +50,19 @@ export function useEnvoyStackDirectory(): string {
   return temporaryDirectory("envoy-stack");
 }
 
+/**
+ * A server a stack starts on a port the stack chooses and holds. natsd is none: it binds ports the
+ * kernel chooses for it.
+ */
+export type StackServer = "dispatch" | "listener";
+
+/**
+ * Called with each port a stack chooses, once it has chosen the port for `server` and before it
+ * starts `server`: a test takes the port here, as any other program on the machine could, to show
+ * that the stack starts its servers all the same.
+ */
+export type PortChosen = (server: StackServer, port: number) => Promise<void>;
+
 /** What a caller may change about the stack it starts. */
 export interface EnvoyStackOptions {
   /**
@@ -66,6 +78,8 @@ export interface EnvoyStackOptions {
    * is the only way to cross them in a test's seconds rather than the deployment's hour.
    */
   readonly listenerEnv?: Readonly<Record<string, string>>;
+  /** Called with each port the stack chooses, before the server it is for starts. */
+  readonly portChosen?: PortChosen;
 }
 
 /** The Go module both rigs build their binaries from. */
@@ -106,35 +120,73 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
   }
 }
 
+/** How a stack starts one of its servers. */
+interface ServerStart {
+  readonly command: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  /** The file the server's output is appended to. */
+  readonly log: string;
+  readonly cwd?: string;
+}
+
 /**
- * `count` distinct loopback ports nothing listens on now. Every probe socket stays open until all
- * of them are bound, so the kernel cannot hand one ephemeral port out twice; one at a time, each
- * closed before the next opened, it can, and two processes of one stack then race for one port.
+ * Starts a stack's server with its output appended to `start.log`. With `held`, the server
+ * inherits the descriptor `held.fd` as its own descriptor 3, which `held.fdEnv` names.
  */
-export async function freePorts(count: number): Promise<number[]> {
-  const servers: Server[] = [];
+function startServer(
+  start: ServerStart,
+  held?: { readonly fd: number; readonly fdEnv: string }
+): Subprocess {
+  const out = openSync(start.log, "a");
   try {
-    const ports: number[] = [];
-    for (let i = 0; i < count; i++) {
-      const server = createServer();
-      servers.push(server);
-      const listening = Promise.withResolvers<void>();
-      server.once("error", listening.reject);
-      server.listen(0, "127.0.0.1", () => listening.resolve());
-      await listening.promise;
-      const address = server.address();
-      if (address === null || typeof address === "string") throw new Error("no free loopback port");
-      ports.push(address.port);
-    }
-    return ports;
+    return Bun.spawn([...start.command], {
+      // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
+      ...(start.cwd === undefined ? {} : { cwd: start.cwd }),
+      // stdio entry 3 is the server's descriptor 3.
+      env: held === undefined ? { ...start.env } : { ...start.env, [held.fdEnv]: "3" },
+      stdio: held === undefined ? ["ignore", out, out] : ["ignore", out, out, held.fd],
+    });
   } finally {
-    await Promise.all(
-      servers.map((server) => {
-        const closed = Promise.withResolvers<void>();
-        server.close(() => closed.resolve());
-        return closed.promise;
-      })
-    );
+    closeSync(out);
+  }
+}
+
+/**
+ * Starts `server` on a loopback port the kernel chooses and the stack holds from that moment until
+ * the server serves on it, so no other program can take the port in between: the stacks' form of
+ * the Go tests' `cmdtest.HoldPort` and `Pass` (packages/envoy/internal/cmdtest). The stack opens a
+ * listening socket on port 0, shows its port to `portChosen`, and starts the server with what
+ * `start` makes of the port; the server inherits the socket as its descriptor 3, which `fdEnv`
+ * names (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD), and serves on it without binding anything.
+ *
+ * A port found free, released and bound later can be taken in that gap, and the server then exits
+ * with `bind: address already in use`; many stacks starting at one time on one machine meet that.
+ */
+export async function startOnHeldPort(
+  server: StackServer,
+  fdEnv: string,
+  portChosen: PortChosen | undefined,
+  start: (port: number) => ServerStart
+): Promise<{ readonly child: Subprocess; readonly port: number }> {
+  // Bun.listen binds and listens before it returns, so the port is held from the moment it is
+  // known, on a close-on-exec socket that no other process this one starts inherits.
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  try {
+    // Bun's types leave the listener's descriptor out; Bun 1.4 has it as `fd`.
+    if (!("fd" in listener) || typeof listener.fd !== "number") {
+      throw new Error(
+        `Bun.listen gave the socket held for ${server} no descriptor (fd) to pass on`
+      );
+    }
+    const fd = listener.fd;
+    await portChosen?.(server, listener.port);
+    return { child: startServer(start(listener.port), { fd, fdEnv }), port: listener.port };
+  } finally {
+    // This process's copy closes once the server has started or failed to, as cmdtest.Start
+    // closes a socket Pass handed on: from then on the server alone holds it, and its exit frees
+    // the port. Nothing waits between the start and this close, so this process accepts no
+    // connection on the socket.
+    listener.stop(true);
   }
 }
 
@@ -208,13 +260,12 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
 
 /**
  * Starts natsd (JetStream on), provisions it with the buckets a listener copies (the
- * fixturebuckets command; no listener creates one) and starts the listener on free
- * loopback ports, and resolves once the listener's /healthz answers healthy and natsd holds the
- * `ENVOY_NOTIFICATIONS` stream. Throws, naming why, when `go` is missing, a build fails, the
- * provisioning fails or either process does not come up. The NATS server runs with no
- * authorization at all, so every client may do anything, and the listener holds the grant this
- * checkout's `infra/core.ListenerPermissions` renders, which answers every registration
- * `consumer`.
+ * fixturebuckets command; no listener creates one) and starts the listener on loopback ports, and
+ * resolves once the listener's /healthz answers healthy and natsd holds the `ENVOY_NOTIFICATIONS`
+ * stream. Throws, naming why, when `go` is missing, a build fails, the provisioning fails or either
+ * process does not come up. The NATS server runs with no authorization at all, so every client may
+ * do anything, and the listener holds the grant this checkout's `infra/core.ListenerPermissions`
+ * renders, which answers every registration `consumer`.
  *
  * `options.listenerEnv` is merged over the listener's own environment, which is how a caller
  * shortens the session windows the session states are judged by.
@@ -222,6 +273,10 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
  * The stack works in `options.work`, which the caller reserved with
  * {@link useEnvoyStackDirectory}: `stop` leaves it, and the fixture removes it when the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
+ *
+ * No port is free between its choice and its server's bind. natsd takes no socket, so it binds
+ * ports the kernel chooses (`-p -1 -m -1`, nats-server's RANDOM_PORT) and the stack reads them
+ * from natsd's own log; the listener serves on a socket the stack holds ({@link startOnHeldPort}).
  */
 export async function startEnvoyStack(options: EnvoyStackOptions): Promise<EnvoyStack> {
   const { PATH = "" } = process.env;
@@ -242,48 +297,33 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       stack: "Envoy",
       binaries: "natsd, fixturebuckets and the listener",
     });
-    const [natsPort, monitorPort, listenerPort] = await freePorts(3);
     const natsHome = path.join(work, "nats-home");
     const listenerHome = path.join(work, "listener-home");
     mkdirSync(natsHome);
     mkdirSync(listenerHome);
-    const machineID = `envoy-stack-${process.pid}`;
-    const natsArgs = [
-      "-p",
-      String(natsPort),
-      "-m",
-      String(monitorPort),
-      "-store_dir",
-      path.join(work, "nats-store"),
-    ];
-    const listenerEnv = {
-      PATH,
-      HOME: listenerHome,
-      PORT: String(listenerPort),
-      ENVOY_LISTEN_HOST: "127.0.0.1",
-      ENVOY_MACHINE_ID: machineID,
-      NATS_URLS: `nats://127.0.0.1:${natsPort}`,
-    };
     const natsLog = path.join(work, "natsd.log");
-    const natsOut = openSync(natsLog, "a");
-    const natsd = Bun.spawn([path.join(bin, "natsd"), ...natsArgs], {
+    // -1 is nats-server's RANDOM_PORT: natsd binds client (-p) and monitoring (-m) ports the
+    // kernel chooses, and logs them. A -p of 0 would mean the default 4222, and an -m of 0 no
+    // monitoring at all.
+    const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
+    const natsd = startServer({
+      command: [path.join(bin, "natsd"), ...natsArgs],
       env: { PATH, HOME: natsHome },
-      stdout: natsOut,
-      stderr: natsOut,
+      log: natsLog,
     });
-    closeSync(natsOut);
     processes.push(natsd);
-    const monitor = `http://127.0.0.1:${monitorPort}`;
-    await awaitReady(
-      "natsd",
-      natsd,
-      natsLog,
-      ENVOY_READY,
-      async () => (await getJson(`${monitor}/healthz`, StatusSchema))?.status === "ok"
-    );
-
-    const natsHostPort = `127.0.0.1:${natsPort}`;
+    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async () => {
+      const reported = natsdAddresses(natsLog);
+      if (reported === undefined) return false;
+      return (await getJson(`http://${reported.monitor}/healthz`, StatusSchema))?.status === "ok";
+    });
+    // Ready means natsd reported both addresses, and its log only grows.
+    const addresses = natsdAddresses(natsLog);
+    if (addresses === undefined) throw new Error(`natsd reported no ports: ${tail(natsLog, 10)}`);
+    const natsHostPort = addresses.client;
     const natsUrl = `nats://${natsHostPort}`;
+    const monitor = `http://${addresses.monitor}`;
+    // No listener creates a bucket it copies: the stack's own natsd is given them first.
     const provision = Bun.spawn([path.join(bin, "fixturebuckets"), "-url", natsUrl], {
       env: { PATH },
       stdout: "ignore",
@@ -296,17 +336,30 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     if (provisionCode !== 0) {
       throw new Error(`fixturebuckets -url ${natsUrl} exited ${provisionCode}: ${provisionError}`);
     }
-    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
+
     const listenerLog = path.join(work, "listener.log");
-    const listenerOut = openSync(listenerLog, "a");
-    const listener = Bun.spawn([path.join(bin, "listener")], {
-      // The caller's environment last, so a test may replace a setting of the stack's own.
-      env: { ...listenerEnv, ...options.listenerEnv },
-      stdout: listenerOut,
-      stderr: listenerOut,
-    });
-    closeSync(listenerOut);
+    const { child: listener, port: listenerPort } = await startOnHeldPort(
+      "listener",
+      "ENVOY_LISTEN_FD",
+      options.portChosen,
+      (port) => ({
+        command: [path.join(bin, "listener")],
+        // The caller's environment last, so a test may replace a setting of the stack's own.
+        env: {
+          PATH,
+          HOME: listenerHome,
+          // With ENVOY_LISTEN_FD these name the held socket's address, which the listener checks.
+          PORT: String(port),
+          ENVOY_LISTEN_HOST: "127.0.0.1",
+          ENVOY_MACHINE_ID: `envoy-stack-${process.pid}`,
+          NATS_URLS: natsUrl,
+          ...options.listenerEnv,
+        },
+        log: listenerLog,
+      })
+    );
     processes.push(listener);
+    const envoyUrl = `http://127.0.0.1:${listenerPort}`;
     await awaitReady(
       "the listener",
       listener,
@@ -331,4 +384,20 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     await stop();
     throw error;
   }
+}
+
+/**
+ * The client and monitoring addresses natsd reports in `log` once it has bound them and is ready,
+ * each as `127.0.0.1:<port>`, or undefined before then. It logs the ports it bound, which are the
+ * kernel's choice, "Starting http monitor on 127.0.0.1:<port>" and "Listening for client
+ * connections on 127.0.0.1:<port>", and then "Server is ready", so a log that holds that last line
+ * holds both addresses whole.
+ */
+function natsdAddresses(log: string): { client: string; monitor: string } | undefined {
+  // startServer creates the log before natsd starts, so it is there to read.
+  const text = readFileSync(log, "utf8");
+  if (!text.includes("Server is ready")) return undefined;
+  const client = /Listening for client connections on (\S+:\d+)/.exec(text)?.[1];
+  const monitor = /Starting http monitor on (\S+:\d+)/.exec(text)?.[1];
+  return client === undefined || monitor === undefined ? undefined : { client, monitor };
 }

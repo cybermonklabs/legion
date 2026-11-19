@@ -56,7 +56,7 @@ func (e leaderEntry) Operation() nats.KeyValueOp { return nats.KeyValuePut }
 // What that buys is the one hazard a direct get carries. Every bucket this package opens is
 // created AllowDirect, so nats.go answers each of its reads with a direct get, and nats-server
 // hands such a read to any copy of the stream that is 90% caught up rather than to the leader
-// (kv_replicas.go:52-53 records the same hazard against the same bucket family, from
+// (kv_ensure.go:406-407 records the same hazard against the same bucket family, from
 // server/jetstream_cluster.go:2622-2641, v2.10.29). A copy that has not applied a Put made a
 // moment ago answers that the key is not there. A caller that only enriches what it holds can
 // read again; a caller that takes something away on the strength of a key being absent cannot,
@@ -98,7 +98,11 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	if err != nil {
 		return nil, named(err)
 	}
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	// A read the grant refuses draws no answer; the record names the refusal after the read's own
+	// wait (refusedAfter), which costs a read the leader answers nothing.
+	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
+		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	})
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound
 	}

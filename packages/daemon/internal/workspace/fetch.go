@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // isolatedGitConfig is the configuration Fetch's git reads besides its own: none. Not the system's,
@@ -206,7 +207,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		return FetchReport{}, err
 	}
 	defer func() {
-		_ = os.RemoveAll(staging)
+		_ = rolefile.RemoveTree(staging)
 	}()
 	if request.CacheURL == "" {
 		clone := feedTransfer{verb: "clone", argv: []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", GitHubURL(request.Repo), staging}, destination: staging, dir: filepath.Dir(staging)}
@@ -438,8 +439,9 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	if target == "" {
 		return nil
 	}
-	current, err := runCommandTimeout(ctx, run, []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}, isolatedGitConfig, gitDir, run.Timeout())
-	if err != nil {
+	symbolicRef := []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}
+	current, err := runCommandTimeout(ctx, run, symbolicRef, isolatedGitConfig, gitDir, run.Timeout())
+	if err := answered(symbolicRef, current, err); err != nil {
 		return err
 	}
 	was := strings.TrimSpace(current.Stdout)
@@ -653,7 +655,7 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	bounded, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stream := &countingReader{window: time.After}
-	go stream.watchStall(bounded, cancel)
+	stream.watchStall(bounded, cancel)
 	response, err := askCache(bounded, request, "/tar", true)
 	if response != nil {
 		defer response.Body.Close()
@@ -915,14 +917,25 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // its body run under, once a whole CacheStreamLowSpeedTime has passed in which fewer than
 // CacheStreamLowSpeedBytes arrived. It reads the count the Reads keep rather than checking inside
 // one, so a stream whose Read has blocked on a cache that sends nothing is ended at the same
-// bound as one that dribbles. It returns when ctx ends, which unpackCache's own cancel does as
-// soon as the answer has been read to its end.
+// bound as one that dribbles. It opens the first window and reads the count that window starts
+// from before it returns, and only then starts the goroutine that judges the windows, so the first
+// window and its baseline are set before the ask and every Read: taken when the scheduler first
+// ran that goroutine, after Reads had begun, they would leave those bytes out of the window and
+// could end a stream that delivered them. The goroutine returns when ctx ends, which
+// unpackCache's own cancel does as soon as the answer has been read to its end.
 func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc) {
-	for at := r.read.Load(); ; {
+	window, at := r.window(CacheStreamLowSpeedTime), r.read.Load()
+	go r.judgeWindows(ctx, stop, window, at)
+}
+
+// judgeWindows is watchStall's goroutine: it waits out window, whose count started at at, and each
+// window after it, and ends the stream at the first window that fell below the bound.
+func (r *countingReader) judgeWindows(ctx context.Context, stop context.CancelFunc, window <-chan time.Time, at int64) {
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-r.window(CacheStreamLowSpeedTime):
+		case <-window:
 		}
 		read := r.read.Load()
 		if read-at < CacheStreamLowSpeedBytes {
@@ -931,6 +944,7 @@ func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc
 			return
 		}
 		at = read
+		window = r.window(CacheStreamLowSpeedTime)
 	}
 }
 
@@ -1010,7 +1024,7 @@ func stageBeside(feed string, log func(string)) (string, error) {
 		return "", err
 	}
 	for _, left := range stale {
-		if err := os.RemoveAll(left); err != nil {
+		if err := rolefile.RemoveTree(left); err != nil {
 			return "", fmt.Errorf("remove the clone an earlier fetch left at %s: %w", left, err)
 		}
 		log("removed the clone an earlier fetch left at " + left)
@@ -1089,7 +1103,7 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		request.Log(fmt.Sprintf("%s attempt %d failed; retrying in %s: %s", transfer.verb, attempt, wait,
 			strings.ReplaceAll(strings.TrimSpace(result.Stderr), "\n", " | ")))
 		if transfer.destination != "" {
-			if err := os.RemoveAll(transfer.destination); err != nil {
+			if err := rolefile.RemoveTree(transfer.destination); err != nil {
 				return Result{}, fmt.Errorf("remove what %s attempt %d left at %s: %w", transfer.verb, attempt, transfer.destination, err)
 			}
 		}

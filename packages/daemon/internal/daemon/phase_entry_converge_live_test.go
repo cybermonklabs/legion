@@ -9,41 +9,46 @@
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers, the real outbox lanes and the real
 // entry sweep. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
-// stream for the pushes onto the base branch that arm each conflict, the implementer's own
-// pushes and the synchronizes; the daemon's own HTTP routes for each role's registration,
-// readiness, grants and completions; and the daemon's worker stream for each role's turns,
-// which this driver speaks as `legion worker-shim` does (shimwire frames).
-// Each check prints `== <name>`, what it observed and `ok <name>`; the first that fails ends the
-// run non-zero, naming it.
+// stream for the implementer's push and its synchronize; the daemon's own HTTP routes for each
+// role's registration, readiness, grants, completions and backward moves; and the daemon's worker
+// stream for each role's turns, which this driver speaks as `legion worker-shim` does (shimwire
+// frames). Each check prints `== <name>`, what it observed and `ok <name>`; the first that fails
+// ends the run non-zero, naming it.
 //
-// Run one, in two checks. The configuration holds the daemon to six wakes a minute in bursts of
+// Run one, in three checks. The configuration holds the daemon to six wakes a minute in bursts of
 // one (convergeWakeRate, convergeWakeBurst), and the boot's relaunch of the implementer spends the
 // burst, so the daemon's wake pacing has not yet let the next role's launch run and that role's
-// start waits for it. The implementer's completion hands testing to the tester, whose phases row
-// is raised to entry 1 with that entry's own task, and whose claim is queued that task while its
-// launch waits. The issue's phase then changes twice while the start waits: the head starts
-// conflicting with its base, which sends the issue back to implementing, and the implementer's
-// merge forward at a second head hands testing out again, which raises the tester's row to entry
-// 2 and writes that entry's
-// own task. The daemon then lets the launch run: the tester comes up on its own worker-stream
-// connection and is sent the task it was queued, entry 1's, because the claim held it throughout
-// (supervise's queue refuses a second delivery while one is pending); the completion the tester
-// reports for it is refused 409 HANDOFF_STALE_ENTRY naming both entries and recording
-// nothing, and the entry the phase is on then reaches the same connection as a task of its own,
-// whose completion the daemon takes. That is the whole of R5 on a running daemon, and the entry on
-// each delivery is what tells the two tasks apart (record.PhaseRow.Entry,
-// supervise.Claim.GivenEntry, both on GET /legion/v1/state as `phaseEntry` and `givenEntry`).
+// start waits for it. The implementer's completion, made from a turn of its own that it goes on in,
+// hands testing to the tester, whose phases row is raised to entry 1 with that entry's own task,
+// and whose claim is queued that task while its launch waits. The pace then lets the launch run,
+// and the tester comes up on its own worker-stream connection with that task still held on its
+// claim: the daemon sends no role a task that adopts the issue's working copy while another role
+// of the issue is in a turn (supervise's sendPending), and the implementer is in its. The issue's
+// phase then changes twice while the claim holds that task. The tester asks for the work back with
+// its own backward move (POST /legion/v1/phase/backward, behind_entry_fence_live_test.go's
+// moveBack), from a turn of its own, since the engine takes a backward move from no role but the
+// one running the issue's phase (workflow's Engine.backward, BACKWARD_REFUSED); and the
+// implementer, still in its turn, pushes a second head and completes there, which hands testing
+// out again, raises the tester's row to entry 2 and writes that entry's own task. The claim still
+// holds the task of entry 1 (supervise's queue refuses a second delivery while one is pending), so
+// the start row of entry 2 waits behind it. Once both turns end, the tester is sent the task it
+// held, entry 1's; the completion the tester reports for it is refused 409 HANDOFF_STALE_ENTRY
+// naming both entries and recording nothing, and the entry the phase is on then reaches the same
+// connection as a task of its own, whose completion the daemon takes. That is the whole of R5 on a
+// running daemon, and the entry on each delivery is what tells the two tasks apart
+// (record.PhaseRow.Entry, supervise.Claim.GivenEntry, both on GET /legion/v1/state as `phaseEntry`
+// and `givenEntry`).
 //
 // Run two. The same rig deletes a start row from the outbox before any lane runs it: the driver
 // holds the advisory lock a lane takes before it claims a lifecycle row of the issue
-// (record.Postgres.ClaimRow's `legion.outbox.lifecycle:<issue>`), drives the conflicting head
-// that raises the implementer's entry and writes that entry's start row, deletes that row, and
-// lets the lock
-// go, so the row's work exists only in the record. With no fact of the project arriving after it,
-// the daemon's own entry sweep (intake.EntrySweep, workflowRuntime.tickEntrySweep) sends the
-// entry's own task to the implementer's live connection. The sweep's period is a Go constant with
-// a test override (the overrides' entrySweep, convergeEntrySweep here); the shipped binary keeps
-// entrySweepInterval's minute, which is why the driver sets the override rather than waiting one.
+// (record.Postgres.ClaimRow's `legion.outbox.lifecycle:<issue>`), drives the reviewer's own
+// backward move that raises the implementer's entry and writes that entry's start row, deletes that
+// row, and lets the lock go, so the row's work exists only in the record. With no fact of the
+// project arriving after it, the daemon's own entry sweep (intake.EntrySweep,
+// workflowRuntime.tickEntrySweep) sends the entry's own task to the implementer's live connection.
+// The sweep's period is a Go constant with a test override (the overrides' entrySweep,
+// convergeEntrySweep here); the shipped binary keeps entrySweepInterval's minute, which is why the
+// driver sets the override rather than waiting one.
 //
 // One more read. The driver reads GET /legion/v1/state once and holds that the issue carries both
 // numbers on the wire, which is R6 on a booted daemon.
@@ -51,15 +56,17 @@
 // What stands in lies outside the rule. The broker is a native nats-server the script starts and
 // names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the one pull request the
 // proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull request's state,
-// head, base and mergeable — the answer the driver arms to drive a conflict — and no branch rule
-// of any kind, with this proof's pause of its read of that pull request (pullRequestReadPause).
-// Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
-// live_proof_test.go).
-// The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is
-// launched by the package's fake runtime, which says it provisions each workspace in the
-// claim's own pod, as the Agent Sandbox runtime does, so the daemon clones nothing from GitHub.
-// The issue, its pull request, its slot and the implementer's claim are seeded through the
-// store, as every daemon test seeds its fixture; what is driven is the change.
+// head, base and mergeable, the last of them mergeable throughout, and no branch rule of any kind:
+// what it does not serve it answers 404, which the daemon's own reads take as GitHub being
+// unreadable — the implementer's completion is applied unread on that answer (api/handoff.go's
+// implementationPullRequest) — so no read of this proof reaches github.com. Dispatch is the board
+// the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go), which holds
+// the handoff record each completion names and takes the reason each backward move posts. The two
+// Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is launched by
+// the package's fake runtime, which says it provisions each workspace in the claim's own pod, as
+// the Agent Sandbox runtime does, so the daemon clones nothing from GitHub. The issue, its pull
+// request, its slot and the implementer's claim are seeded through the store, as every daemon test
+// seeds its fixture; what is driven is the change.
 package daemon
 
 import (
@@ -82,25 +89,30 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// convergeBase is the pull request's base branch, the repository's default: a head that
-// conflicts with it is the one answer of a pull request that still moves an issue (workflow's
-// mergeability), and this proof's two phase changes back to implementing are that answer.
+// convergeBase is the pull request's base branch, the repository's default.
 const convergeBase = "main"
 
-// The two heads the proof drives: the implementer's seeded head, which run one's conflict stands
-// at, and the merge forward it pushes for the second testing entry, which run two's conflict
-// stands at.
+// The two heads the proof drives: the implementer's seeded head, which the tester's first entry
+// is for, and the head the implementer pushes once the tester has asked for the work back, which
+// the second testing entry is for and the record holds from then on.
 const (
 	convergeFirstHead  = "pe1"
 	convergeSecondHead = "pe2"
 )
 
+// The reasons the two backward moves of the proof give, each of which the move posts on the issue
+// and composes into the task of the implementer's entry it raises (workflow's task, `Reason:`).
+const (
+	convergeTesterReason   = "the tests show a fault in the code; back to implementing"
+	convergeReviewerReason = "the review finds a fault in the code; back to implementing"
+)
+
 // The pace the daemon is held to, set on the configuration as daemon_test.go sets it
 // (config.Config.WorkerWakesPerMinute, WorkerWakeBurst): six wakes a minute in bursts of one, so
 // one wake costs ten seconds. The boot's relaunch of the seeded implementer spends the burst, so
-// the launch of the next role the daemon starts cannot run until that interval has passed, and
-// run one drives the issue's two phase changes inside it, which it does in well under a second;
-// the check holds that the launch is still waiting when they are done, so a pace this proof
+// the launch of the next role the daemon starts cannot run until that interval has passed. Run
+// one's first check reads the tester's start waiting for that launch, which it does in well under
+// a second, and holds that the launch is still waiting when it is done, so a pace this proof
 // outran would fail it rather than pass quietly.
 const (
 	convergeWakeRate  = 6
@@ -115,32 +127,35 @@ const convergeEntrySweep = 2 * time.Second
 
 // convergeOwedBound is how long a step waits for a task the daemon sends by itself. It outlasts
 // the longest wait either run can owe: the outbox's own retry backoff, which doubles to a minute
-// and is capped there (retryBackoff), for the start row run one leaves waiting behind the task the
-// claim already holds, and one sweep period for run two.
+// and is capped there (record.RetryBackoffMost), for the start row run one leaves waiting behind the
+// task the claim already holds, and one sweep period for run two.
 const convergeOwedBound = 2 * time.Minute
 
 // phaseEntryConvergeLive is one run of the proof: the booted daemon, the one issue it drives, the
-// GitHub stand-in its facts are read against with the pause this proof adds to it, and the two
-// roles the driver acts as over the worker stream.
+// GitHub stand-in its facts are read against, and the three roles the driver acts as over the
+// worker stream.
 type phaseEntryConvergeLive struct {
 	liveIssueProof
-	// reads is the pause of the stand-in's read of the pull request (pullRequestReadPause.pause).
-	reads *pullRequestReadPause
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
+	// queued is the delivery of entry 1's task, which the tester's claim is queued while its
+	// launch waits and holds until run one's last check sends it.
+	queued string
 }
 
-// TestAPhaseEntryConvergesOnARunningDaemonLive drives the proof's four checks against one booted
-// daemon, in the order each one's state follows from the last: the phase changing twice while the
-// tester's start waits for the launch the pacing holds, the launch running and the entry the phase
-// is on reaching the tester after the entry it had been queued is refused, a start row deleted
-// before any lane runs it whose work the sweep sends all the same, and the state's two numbers.
+// TestAPhaseEntryConvergesOnARunningDaemonLive drives the proof's five checks against one booted
+// daemon, in the order each one's state follows from the last: the tester's start waiting for the
+// launch the pacing holds, the phase changing twice while the tester's claim, up on that launch,
+// holds the task of entry 1, the entry the phase is on reaching the tester after that held task
+// is sent and its completion refused, a start row deleted before any lane runs it whose work the
+// sweep sends all the same, and the state's two numbers.
 func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newPhaseEntryConvergeLive(t)
-	r.step("run1-the-phase-changes-twice-while-the-testers-start-waits-for-its-launch", r.phaseChangesWhileTheStartWaits)
-	r.step("run1-the-launch-runs-and-the-entry-the-phase-is-on-is-worked", r.theLaunchRunsAndTheEntryIsWorked)
+	r.step("run1-the-testers-start-waits-for-the-launch-the-pace-holds", r.theStartWaitsForTheLaunch)
+	r.step("run1-the-phase-changes-twice-while-the-testers-claim-holds-the-task-of-entry-1", r.phaseChangesWhileTheClaimHoldsItsTask)
+	r.step("run1-the-held-task-is-refused-and-the-entry-the-phase-is-on-is-worked", r.theHeldTaskIsRefusedAndTheEntryIsWorked)
 	r.step("run2-a-start-row-deleted-before-any-lane-ran-it-loses-no-work", r.aDeletedStartRowLosesNoWork)
 	r.step("the-state-carries-the-phase-entry-and-the-entry-the-role-was-given", r.stateCarriesBothNumbers)
 }
@@ -154,7 +169,7 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	t.Helper()
 	r := &phaseEntryConvergeLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/phase-entry-converge.sh",
 		convergeBase, "the issue whose phase entries converge")}
-	r.reads = r.newPullRequestReadPause()
+	r.serveGitHub(&liveGitHub{sha: convergeFirstHead})
 	r.seed()
 	r.cfg.WorkerWakesPerMinute, r.cfg.WorkerWakeBurst = convergeWakeRate, convergeWakeBurst
 	r.boot(func(o *overrides) {
@@ -169,7 +184,7 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 
 // seed records the issue as seedImplementing does, on an open pull request at its first head. No
 // phases row is written: every entry this proof reads is raised live, by the transitions the
-// completions and the conflicting heads make.
+// completions and the backward moves make.
 func (r *phaseEntryConvergeLive) seed() {
 	r.t.Helper()
 	r.seedImplementing(convergeFirstHead)
@@ -254,20 +269,20 @@ type convergeClaimant struct {
 func (r *phaseEntryConvergeLive) servedClaimant(role claim.Role, session string) *convergeClaimant {
 	r.t.Helper()
 	c := &convergeClaimant{liveSession: r.register(role, session), prompts: make(chan shimwire.Prompt, 8)}
-	go c.serve()
+	c.sh.serve(c.serve)
 	c.ready()
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt — answering it and starting the turn, as Oh My Pi does — for the step to read. It runs
-// for the claim's whole life, because a step that left the connection unread would have the
-// daemon's own requests time out and the task it was sending wait for a retry.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs), and takes each prompt — answering it and starting the turn, as Oh My Pi
+// does — for the step to read. It runs for the claim's whole life, because a step that left the
+// connection unread would have the daemon's own requests time out and the task it was sending wait
+// for a retry.
 func (c *convergeClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -292,7 +307,11 @@ func (c *convergeClaimant) serve() {
 			c.turn, c.prompt = true, f.ID
 			c.mu.Unlock()
 			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			c.prompts <- f
+			select {
+			case c.prompts <- f:
+			case <-c.sh.stopping:
+				return
+			}
 		}
 	}
 }
@@ -369,36 +388,25 @@ func (c *convergeClaimant) drainPrompts() []shimwire.Prompt {
 	}
 }
 
-// Check 1 of run one. The seeded implementer completes implementing, which hands testing to the
-// tester: the transition raises the tester's phases row to entry 1 and writes that entry's own
-// task in its own transaction (workflow.Engine.enter), and the start it writes creates the
-// tester's claim and queues it that task. The launch of that claim does not run: the boot's
-// relaunch of the implementer spent the burst of the pace this daemon is held to, so the daemon's
-// wake pacing has not let this one run yet and the start waits for it, which the state names
-// (api.State.WakesWaiting). The issue's phase then changes twice inside that wait — the daemon's
-// read of the pull request answers the first head as conflicting with its base, which sends the
-// issue back to implementing, and the implementer's merge forward at a second head hands
-// testing out again — which raises the tester's row to entry 2 with that entry's own task, while
-// the claim still holds the task of entry 1 and the start row carrying entry 2 waits behind it.
-func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
+// Check 1 of run one. The seeded implementer completes implementing from a turn of its own, and
+// goes on in that turn, as an agent does that has more to do once it has reported: the completion
+// hands testing to the tester. The transition raises the tester's phases row to entry 1 and writes
+// that entry's own task in its own transaction (workflow.Engine.enter), and the start it writes
+// creates the tester's claim and queues it that task. The launch of that claim does not run: the
+// boot's relaunch of the implementer spent the burst of the pace this daemon is held to, so the
+// daemon's wake pacing has not let this one run yet and the start waits for it, which the state
+// names (api.State.WakesWaiting).
+func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
 	r.imp = r.servedClaimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch; that launch spent the burst of %d wake(s) a minute in bursts of %d",
 		convergeWakeRate, convergeWakeBurst)
-	// The conflict is armed before this completion, and the read that completion queues is held
-	// at the stand-in while this check reads the state the completion left (armConflict,
-	// pullRequestReadPause.pause): the read is where an issue in testing learns its head conflicts,
-	// and held, it cannot land between the completion and the reads below it.
-	releaseRead := r.reads.pause()
-	defer releaseRead()
-	r.armConflict()
 	r.imp.startOwnTurn()
 	if status, failure := r.imp.complete("implemented it", convergeFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
-	r.imp.endTurn()
-	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s, then its agent_end: 200", convergeFirstHead)
+	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s from a turn of its own, which it goes on in: 200", convergeFirstHead)
 	got := r.waitFor("the issue in testing", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
@@ -429,73 +437,118 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 		t.Fatalf("the state reads phaseEntry %d, givenEntry %d with the tester holding %+v, want entry 1 queued as the testing phase's task",
 			phaseEntry, givenEntry, queued)
 	}
+	if _, held = r.waitingLaunch(tester); !held || r.launched(tester) {
+		t.Fatalf("the launch of %s has run while this check read the start, want it still held by the pace", tester)
+	}
+	r.queued = queued.ID
 	r.note("read back: the tester's claim holds delivery %s, the %s phase's task, with phaseEntry %d and givenEntry %d; its launch is due at %s and no process has been started for it",
 		queued.ID, queued.Phase, phaseEntry, givenEntry, waiting.DueAt.UTC().Format(time.RFC3339Nano))
+}
 
-	// The first phase change inside that wait: the held read runs and answers the head
-	// conflicting with its base, which sends the issue back to implementing, and the
-	// implementer, which is live, is prompted its merge-forward task at once.
-	releaseRead()
+// Check 2 of run one. The pace lets the tester's launch run, and the tester comes up on its own
+// worker-stream connection with the task of entry 1 still held on its claim and sent nowhere: the
+// task adopts the working copy every role of the issue shares, and the daemon sends no such task
+// while another role of the issue is in a turn (supervise's sendPending), as the implementer is.
+// The issue's phase then changes twice while the claim holds that task. The tester, in a turn of
+// its own that no task of the daemon's began, asks for the work back with its own backward move
+// to implementing, which raises the implementer's entry; that entry's task waits on the
+// implementer's claim, since the implementer is in its turn and the tester in its own. The
+// implementer, still in the turn its first completion was made from, pushes a head of its own and
+// completes there — its claim has served no entry, so its completion is of the entry the task it
+// holds carries (supervise's serving) — which hands testing out again, raises the tester's row to
+// entry 2 and writes that entry's own task. The claim still holds the task of entry 1 (supervise's
+// queue refuses a second delivery while one is pending), so the start row carrying entry 2 waits
+// behind it.
+func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
+	t := r.t
+	tester, implementer := r.token(claim.RoleTester), r.token(claim.RoleImplementer)
+	r.awaitLaunch(tester)
+	r.note("the pace let the tester's launch run: the fake runtime started its process")
+	r.test = r.servedClaimant(claim.RoleTester, "ses_tester")
+	time.Sleep(liveSettle)
+	if sent := r.test.drainPrompts(); len(sent) != 0 {
+		t.Fatalf("the tester was sent %s while the implementer's turn ran, want no task: one that adopts the working copy waits for that turn", sent[0].DeliveryID)
+	}
+	ready := r.d.claim(tester)
+	if (ready.State != string(supervise.StateReady) && ready.State != string(supervise.StateIdle)) ||
+		ready.Pending == nil || ready.Pending.ID != r.queued || ready.Pending.DeliveredAt != nil {
+		t.Fatalf("the tester is %s holding %+v, want it ready with the task of entry 1 (%s) held and unsent", ready.State, ready.Pending, r.queued)
+	}
+	r.note("read back over %s: the tester is %s on its own connection, holding delivery %s unsent while the implementer's turn runs", liveSettle, ready.State, r.queued)
+
+	// The first phase change: the tester's own move back, from a turn of its own.
+	r.test.startOwnTurn()
+	if status, failure := r.test.moveBack(phase.Implementing, convergeTesterReason); status != http.StatusOK {
+		t.Fatalf("the tester's backward move to implementing = %d %s %s, want 200", status, failure.Code, failure.Error)
+	}
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
-	fix := r.imp.awaitPrompt("the implementer's merge-forward task after the conflict", convergeOwedBound)
-	r.note("let the held read of #%d run, with GitHub answering %s conflicting with %s: %s is in implementing and the implementer was prompted its merge-forward task (%s)",
-		r.number, convergeFirstHead, convergeBase, r.key, firstLine(fix.Message))
+	var owed *api.DeliveryView
+	testwait.Eventually(t, "the implementer's claim queued the task of the entry the move back raised", func() bool {
+		owed = r.d.claim(implementer).Pending
+		return owed != nil && owed.Phase == phase.Implementing
+	})
+	if owed.DeliveredAt != nil || len(r.imp.drainPrompts()) != 0 {
+		t.Fatalf("the implementer was sent its new entry's task %+v while it and the tester were in their turns, want it held", owed)
+	}
+	r.note("drove POST /legion/v1/phase/backward for the tester, to implementing, from a turn of its own: 200; %s is in implementing, and the implementer's claim holds the task %s of that entry unsent",
+		r.key, owed.ID)
 
-	// The second: the implementer's merge forward at a head of its own hands testing out again,
-	// which raises the tester's row to entry 2 and writes that entry's own task. GitHub answers
-	// the new head mergeable, as it does once the base is merged forward into it.
-	r.github.conflicts(false)
-	r.push(convergeFirstHead, convergeSecondHead, "fix the red")
-	if status, failure := r.imp.complete("merged the base forward", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	// The second: the implementer, still in its turn, pushes a head of its own and completes there.
+	r.push(convergeFirstHead, convergeSecondHead, "fix the fault the tests showed")
+	if status, failure := r.imp.complete("fixed the fault the tests showed", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
-	r.imp.endTurn()
+	r.note("drove the implementer's push of %s and GitHub's synchronize of #%d to it, then its completion there, still in its first turn: 200", convergeSecondHead, r.number)
 	r.waitFor("the issue in testing again", func(got api.Issue) bool { return got.Phase == phase.Testing })
 	testwait.Eventually(t, "the tester's phases row raised to entry 2", func() bool {
-		phaseEntry, _ = r.entries()
+		phaseEntry, _ := r.entries()
 		return phaseEntry == 2
 	})
-	phaseEntry, givenEntry = r.entries()
-	held = false
-	if _, held = r.waitingLaunch(tester); !held || r.launched(tester) {
-		t.Fatalf("the launch of %s has run while the proof drove two phase changes, want it still held by the pace", tester)
+	phaseEntry, givenEntry := r.entries()
+	if now := r.d.claim(tester).Pending; now == nil || now.ID != r.queued || now.DeliveredAt != nil {
+		t.Fatalf("the tester holds %+v, want the task of entry 1 (%s) it was queued before the phase changed, still unsent", now, r.queued)
 	}
-	if now := r.d.claim(tester).Pending; now == nil || now.ID != queued.ID {
-		t.Fatalf("the tester holds %+v, want the task of entry 1 (%s) it was queued before the phase changed", now, queued.ID)
+	if phaseEntry != 2 || givenEntry != 1 {
+		t.Fatalf("the state reads phaseEntry %d, givenEntry %d where the tester's claim holds entry 1's task, want 2 and 1", phaseEntry, givenEntry)
 	}
 	starts := r.startRows()
 	if len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].entry != 2 {
 		t.Fatalf("the start rows of %s = %+v, want the one the second testing entry wrote for the tester", r.key, starts)
 	}
-	r.note("read back: phaseEntry %d, givenEntry %d — the tester still holds entry 1's task (%s), and the start row of entry 2 (#%d, %d attempt(s)) waits: %s",
-		phaseEntry, givenEntry, queued.ID, starts[0].id, starts[0].attempts, starts[0].lastErr)
+	r.note("read back: phaseEntry %d, givenEntry %d — the tester still holds entry 1's task (%s) unsent, and the start row of entry 2 (#%d, %d attempt(s)) waits: %s",
+		phaseEntry, givenEntry, r.queued, starts[0].id, starts[0].attempts, starts[0].lastErr)
 }
 
-// Check 2 of run one. The pace lets the tester's launch run. The tester comes up on its own
-// worker-stream connection and is sent the task it was queued, entry 1's, which the claim held
-// throughout; the completion it reports for that work is refused 409 HANDOFF_STALE_ENTRY,
-// which names the entry the phase is on and says that entry's task is owed and arrives by itself,
-// and records nothing. The turn ends, the task of entry 2 reaches the same connection, and the
-// completion reported for it is taken: the issue moves to reviewing.
-func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
+// Check 3 of run one. The tester's turn ends, and the task of entry 1 still waits, since the
+// implementer's turn runs. Then the implementer's turn ends: the task its move back raised, queued
+// for the implementing phase the issue has left, is dropped unsent (supervise's phaseHolds), and
+// the tester is sent the task its claim held throughout, entry 1's. The completion it reports for
+// that work is refused 409 HANDOFF_STALE_ENTRY, which names the entry the phase is on and says
+// that entry's task is owed and arrives by itself, and records nothing. The turn ends, the task of
+// entry 2 reaches the same connection, and the completion reported for it is taken: the issue moves
+// to reviewing.
+func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 	t := r.t
-	tester := r.token(claim.RoleTester)
-	stale := r.d.claim(tester).Pending
-	if stale == nil {
-		t.Fatalf("the tester holds no task where the check before this one left it one")
+	implementer := r.token(claim.RoleImplementer)
+	r.test.endTurn()
+	r.note("the tester's own turn ended; the task of entry 1 still waits, since the implementer is in its turn")
+	r.imp.endTurn()
+	r.note("the implementer's turn ended")
+	first := r.test.awaitPrompt("the task of entry 1 the tester's claim held", convergeOwedBound)
+	if first.DeliveryID != r.queued {
+		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, r.queued)
 	}
-	r.awaitLaunch(tester)
-	r.note("the pace let the tester's launch run: the fake runtime started its process")
-	r.test = r.servedClaimant(claim.RoleTester, "ses_tester")
-	first := r.test.awaitPrompt("the tester's first task", convergeOwedBound)
-	if first.DeliveryID != stale.ID {
-		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, stale.ID)
+	testwait.Eventually(t, "the implementer's task of the implementing phase dropped unsent", func() bool {
+		return r.d.claim(implementer).Pending == nil
+	})
+	if sent := r.imp.drainPrompts(); len(sent) != 0 {
+		t.Fatalf("the implementer was sent %s, want no task: the one its entry held was for implementing, which the issue has left", sent[0].DeliveryID)
 	}
 	phaseEntry, givenEntry := r.entries()
 	if phaseEntry != 2 || givenEntry != 1 {
 		t.Fatalf("the state reads phaseEntry %d, givenEntry %d where the tester works entry 1's task, want 2 and 1", phaseEntry, givenEntry)
 	}
-	r.note("read back: the tester was sent %s on its own connection (%s) — the work of entry %d, with the phase on entry %d",
+	r.note("read back: the tester was sent %s on its own connection (%s) — the work of entry %d, with the phase on entry %d; the implementer's implementing task was dropped unsent",
 		first.DeliveryID, firstLine(first.Message), givenEntry, phaseEntry)
 
 	status, failure := r.test.complete("tested the first head", convergeFirstHead, "pass", r.test.handoff("test"))
@@ -536,24 +589,28 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 //
 // The row is held unclaimable while the driver deletes it: a lane takes an advisory lock keyed by
 // the issue before it claims a lifecycle row (record.Postgres.ClaimRow), and this step holds that
-// lock across the conflict that writes the row, so no lane can have run it. The conflict reaches
-// the issue as it reaches any issue short of an approval standing in reviewing: the daemon's own
-// read of the pull request after a worker's completion (armConflict), which here is the
-// reviewer's completion of the round the issue is in. The reviewer is brought up before the lock
-// is taken, since no start of this issue runs while that lock is held. With the row gone, the
-// implementer's phases row names an entry its claim was never given, and no queued start carries
-// it — which is what the daemon reads as work owed (workflow.OwedEntry) — and no fact of the
-// project arrives after the delete. The entry sweep is what sends it: on its own period the daemon
-// applies an intake.EntrySweep and admission sends the role the work the entry its phases row
-// names stands for (admit's resumeSlottedWorkers, workflow's SendOwedEntry).
+// lock across the move that writes the row, so no lane can have run it. The move is the
+// reviewer's own backward move to implementing, from the turn its review task began and under a
+// grant its session minted (behind_entry_fence_live_test.go's moveBack): the issue stands in
+// reviewing, and the engine takes a backward move from no role but the one running the issue's
+// phase (workflow's Engine.backward, BACKWARD_REFUSED). The move raises the implementer's entry
+// and writes that entry's start row in the transaction that applies it, as every transition
+// writes its start. The reviewer is brought up before the lock is taken, since no start of this
+// issue runs while that lock is held. With the row gone, the implementer's phases row names an
+// entry its claim was never given, and no queued start carries it — which is what the daemon
+// reads as work owed (workflow.OwedEntry) — and no fact of the project arrives after the delete.
+// The entry sweep is what sends it: on its own period the daemon applies an intake.EntrySweep and
+// admission sends the role the work the entry its phases row names stands for (admit's
+// resumeSlottedWorkers, workflow's SendOwedEntry).
 //
-// The implementer's connection may still hold a prompt run one sent it and no step read, and such
-// a prompt carries the same conflict's task, so read as the sweep's delivery it would let this run
-// pass on a daemon that re-sends nothing. The step therefore drains every prompt the connection
-// has received before it lets the lock go, while no start of the issue can be on its way, and
-// then holds that the task which arrives was minted from an outbox row written after the deleted
-// one: an `outbox:<id>` delivery whose row id is above the deleted row's, which outbox ids, drawn
-// from one sequence, give only to a row the sweep wrote after the delete.
+// The implementer's connection may hold a prompt no step read. Run one leaves none there, since
+// the task its move back raised was dropped unsent, but such a prompt, read as the sweep's
+// delivery, would let this run pass on a daemon that re-sends nothing. The step therefore drains
+// every prompt the connection has received before it lets the lock go, while no start of the issue
+// can be on its way, and then holds that the task which arrives was minted from an outbox row
+// written after the deleted one: an `outbox:<id>` delivery whose row id is above the deleted row's,
+// which outbox ids, drawn from one sequence, give only to a row the sweep wrote after the delete,
+// and that it is the task of the entry the reviewer's move raised, its reason behind `Reason:`.
 func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	t := r.t
 	ctx := context.Background()
@@ -564,15 +621,15 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 			before.State, before.Pending)
 	}
 
-	// The reviewer, on the start the move to reviewing wrote. Its completion is what asks the
-	// daemon to read the pull request, and that read is what carries the conflicting head.
+	// The reviewer, on the start the move to reviewing wrote. Its own backward move is what
+	// raises the implementer's entry, from the turn its review task began.
 	r.rev = r.servedClaimant(claim.RoleReviewer, "ses_reviewer")
 	r.rev.awaitPrompt("the reviewer's task", convergeOwedBound)
-	r.note("the reviewer came up on the start the move to reviewing wrote, before the lock below")
+	r.note("the reviewer came up on the start the move to reviewing wrote, and took its task, before the lock below")
 
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
-	// lane of this daemon can claim a lifecycle row of the issue, so the row the conflict writes
-	// below is a row no lane has run.
+	// lane of this daemon can claim a lifecycle row of the issue, so the row the move writes below
+	// is a row no lane has run.
 	lock, err := r.st.Pool().Begin(ctx)
 	if err != nil {
 		t.Fatalf("take the lane's lock: %v", err)
@@ -586,12 +643,10 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	if _, err := lock.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.outbox.lifecycle:' || $1::text))", r.key); err != nil {
 		t.Fatalf("take the lane's lock on %s: %v", r.key, err)
 	}
-	r.note("holding the advisory lock a lane takes before it claims a lifecycle row of %s, so the start row the conflict writes cannot be run", r.key)
+	r.note("holding the advisory lock a lane takes before it claims a lifecycle row of %s, so the start row the move writes cannot be run", r.key)
 
-	r.armConflict()
-	r.rev.startOwnTurn()
-	if status, failure := r.rev.complete("reviewed the fix", "", "", r.rev.handoff("review")); status != http.StatusOK {
-		t.Fatalf("the reviewer's completion = %d %s %s, want 200: it is what asks the daemon to read the pull request", status, failure.Code, failure.Error)
+	if status, failure := r.rev.moveBack(phase.Implementing, convergeReviewerReason); status != http.StatusOK {
+		t.Fatalf("the reviewer's backward move to implementing = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.rev.endTurn()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
@@ -616,8 +671,8 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 		t.Fatalf("let the lane's lock go: %v", err)
 	}
 	locked = false
-	r.note("drove the base of %s past %s and the reviewer's completion, whose read of #%d answers the head conflicting, and deleted the start row that move wrote (#%d, entry %d, %d attempt(s)) before any lane ran it; the state reads phaseEntry %d, givenEntry %d",
-		r.key, convergeSecondHead, r.number, deleted.id, deleted.entry, deleted.attempts, phaseEntry, givenEntry)
+	r.note("drove POST /legion/v1/phase/backward for the reviewer, to implementing, from its review task's turn, and deleted the start row that move wrote (#%d, entry %d, %d attempt(s)) before any lane ran it; the state reads phaseEntry %d, givenEntry %d",
+		deleted.id, deleted.entry, deleted.attempts, phaseEntry, givenEntry)
 	if deleted.attempts != 0 || phaseEntry != deleted.entry || givenEntry >= phaseEntry {
 		t.Fatalf("the deleted row %+v left the state at phaseEntry %d, givenEntry %d, want an untried row of the entry the phase is on with the claim behind it",
 			deleted, phaseEntry, givenEntry)
@@ -647,8 +702,8 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 		t.Fatalf("the implementer was sent delivery %s, of row %d, at or below the deleted row %s%d, want a row the sweep wrote after the delete",
 			task.DeliveryID, row, outboxDeliveryPrefix, deleted.id)
 	}
-	if !strings.Contains(task.Message, "the head conflicts with "+convergeBase) {
-		t.Fatalf("the implementer was sent %q, want the task entry %d names, which the conflict at %s wrote", task.Message, deleted.entry, convergeSecondHead)
+	if !strings.Contains(task.Message, "Reason: "+convergeReviewerReason) {
+		t.Fatalf("the implementer was sent %q, want the task entry %d names, which the reviewer's move back wrote", task.Message, deleted.entry)
 	}
 	testwait.Eventually(t, "the implementer given the entry its phases row names", func() bool {
 		phaseEntry, givenEntry = r.entries()
@@ -684,82 +739,4 @@ func (r *phaseEntryConvergeLive) stateCarriesBothNumbers() {
 		t.Fatalf("the state's %s carries phaseEntry %t and givenEntry %t, want both keys", r.key, carriesPhase, carriesGiven)
 	}
 	r.note("read back from GET /legion/v1/state: %s carries phaseEntry %s and givenEntry %s", r.key, phaseEntry, givenEntry)
-}
-
-// armConflict makes GitHub answer the pull request's head as conflicting with its base, and
-// publishes the push onto that base that a live daemon sees first: the push records that the
-// base moved (workflow's basePush), which is what makes the daemon's next read of the pull
-// request apply its answer even where that answer only confirms what is stored (daemon's
-// applyMergeability).
-//
-// What delivers the conflict is the read, not the push, and an issue short of an approval
-// standing in reviewing has one source for that read: the one the daemon makes after a worker's
-// completion (the API's handoffCompleted, daemon's readHandedOff, readIssuePullRequest). No
-// GitHub envelope carries mergeability at all (intake's decode), and the base push asks for a
-// merge-state read only for an approved issue in reviewing (workflow's askMergeStateFor,
-// reviewRound's waitsOnMergeState), which is why every caller here arms the answer before the
-// completion whose read is to carry it rather than after it.
-func (r *phaseEntryConvergeLive) armConflict() {
-	r.t.Helper()
-	r.github.conflicts(true)
-	r.publishBasePush()
-}
-
-// pullRequestReadPause is the one thing this proof adds to the harness's GitHub stand-in
-// (liveGitHub, the proof's github): a pause of the read of the pull request itself. The stand-in
-// serves no branch rule, and what it does not serve it answers 404, which the daemon's own reads
-// take as GitHub being unreadable — the implementer's completion is applied unread on that answer
-// (api/handoff.go's implementationPullRequest) — so no read of this proof reaches github.com.
-type pullRequestReadPause struct {
-	// mu guards held apart from the stand-in's own lock, which a held read waits outside of.
-	mu sync.Mutex
-	// held holds every read of the pull request while a check means that read to land later
-	// (pause); nil holds none.
-	held chan struct{}
-}
-
-// newPullRequestReadPause starts the stand-in for the proof's pull request at its first head
-// (serveGitHub), with the pause's waitForRelease run before each read of the pull request, and
-// returns the pause.
-func (r *phaseEntryConvergeLive) newPullRequestReadPause() *pullRequestReadPause {
-	r.t.Helper()
-	g := &pullRequestReadPause{}
-	r.serveGitHub(&liveGitHub{sha: convergeFirstHead, hold: g.waitForRelease})
-	return g
-}
-
-// pause holds every read of the pull request itself at the stand-in until the function it
-// answers with is called, which is how a check reads the state a completion left before the read
-// that completion queued lands: the read is the one place an issue short of reviewing learns its
-// head conflicts (armConflict), so the proof arms the answer, drives the completion, reads, and
-// then lets the read run. It holds nothing else GitHub answers, and the release may be called
-// twice — a check defers it and calls it where it means the read to land.
-func (g *pullRequestReadPause) pause() func() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	held := make(chan struct{})
-	g.held = held
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			g.mu.Lock()
-			if g.held == held {
-				g.held = nil
-			}
-			g.mu.Unlock()
-			close(held)
-		})
-	}
-}
-
-// waitForRelease holds a read of the pull request while pause holds one. The stand-in runs it
-// before each read of the pull request and outside its own lock (liveGitHub's hold), so it holds
-// nothing else.
-func (g *pullRequestReadPause) waitForRelease() {
-	g.mu.Lock()
-	held := g.held
-	g.mu.Unlock()
-	if held != nil {
-		<-held
-	}
 }

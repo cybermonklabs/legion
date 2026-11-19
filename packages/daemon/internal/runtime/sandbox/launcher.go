@@ -54,7 +54,11 @@ type launchers struct {
 	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
 	// no receiver took it, and drops it (memoryKilled).
 	guardKilled runtime.MemoryGuardKilled
-	log         *slog.Logger
+	// volume takes a cache trimmer's sweep report into the daemon's fact path
+	// (Options.VolumeReported). A launchers built without it reads the frame, logs that no
+	// receiver took it, and drops it (volumeReported).
+	volume runtime.VolumeReported
+	log    *slog.Logger
 }
 
 type launcherSession struct {
@@ -92,9 +96,9 @@ type launcherSession struct {
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
+	guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
+		saved: saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated. The newest
@@ -161,6 +165,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 			s.owner.restoreReported(s, value)
 		case shimwire.LauncherMemoryKill:
 			s.owner.memoryKilled(s, value)
+		case shimwire.LauncherVolumeReport:
+			s.owner.volumeReported(s, value)
 		default:
 			return
 		}
@@ -590,10 +596,13 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "release", report.Release)
 }
 
-// memoryKilled hands the daemon one process the pod's memory guard ended with SIGKILL, as
-// the launcher reported it on the connection of the role whose process it was
+// memoryKilled hands the daemon one process of a role that was stopped because the pod was out
+// of memory, by the pod's memory guard or, in a microVM pod, by the pod's own kernel, as the
+// launcher reported it on the connection of the role whose process it was
 // (shimwire.LauncherMemoryKill). The launcher sends it unasked, and only on a connection whose
-// acknowledgement carried guard settings, which is a daemon that knows the frame.
+// acknowledgement carried guard settings (a gVisor pod's launcher) or KernelKills (a microVM
+// pod's), which is a daemon that knows the frame and its cause. The report goes on whole, its
+// cause included, which chooses the note the role is told (workflow's memoryGuardKill).
 //
 // The issue, the role and the pod the kill is credited to are the session's own, as the hello's
 // authentication bound them (launcherCredential), and never anything the frame says: a launcher
@@ -635,6 +644,68 @@ func (d *launchers) memoryKilled(s *launcherSession, report shimwire.LauncherMem
 	if err := d.guardKilled(ctx, s.issue, s.token, s.podUID, report); err != nil {
 		d.log.Warn("launcher memory guard: the pod's launcher reported a kill the daemon could not record, which is dropped",
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "error", err)
+	}
+}
+
+// volumeReported hands the daemon one sweep of the pod's volume as that pod's cache trimmer
+// reported it (shimwire.LauncherVolumeReport). The launcher sends one unasked per sweep that
+// ended with the volume still above its low mark, unless the settings stopped that sweep, and
+// one when the trimmer has switched itself off; a sweep that reached the low mark sends none, so
+// every frame that arrives here is one the issue's architect may need to hear about, and the
+// daemon's own bounds decide which of them it is told (workflow's volumeNearFull).
+//
+// The pod a report is of is the one this connection authenticated for, so the uid is the
+// session's and never the report's: a launcher cannot name another pod's volume. The trimmer's
+// own identifier is inside the report, which is what counts a restarted roles container apart
+// from the first episode.
+//
+// A store that does not answer is logged and the report is dropped here. The launcher cannot
+// hold it again once the daemon has read it — nothing acknowledges this frame — and it is not
+// asked to: the trimmer goes on sweeping, and its next sweep that ends above the low mark reports
+// the volume again under the same trimmer, and under the same episode unless a recovery or a rise
+// raised it in between, so what a dropped sweep's report would have said reaches the architect
+// from a later one, within the notice bounds. A dropped report of a trimmer that switched itself
+// off is not sent again: that trimmer sends nothing more. That is the same bargain
+// restoreReported makes with its delete, for the same reason.
+//
+// A report the frame's own rule refuses (LauncherVolumeReport.Validate) — one naming no trimmer,
+// which is the identity the notice bounds count a restarted roles container apart by, one whose
+// episode is below the 1 the trimmer counts from, and one holding more entries in a list than
+// that list's cap, every entry of which the notice would carry — is logged with the reason and
+// dropped, as the launcher drops a bundle slice it cannot validate (internal/launcher's
+// bundleRestore.receive). The connection is not closed on it: closing costs a redial a second of
+// the one role's connection that carries the pod's reports (ServeLauncher's `default: return`),
+// and it would not have the report sent again: nothing acknowledges this frame, and a launcher
+// holds a report only where its send failed (internal/launcher's deliver).
+//
+// It runs on the launcher's own frame loop rather than in a goroutine of its own, as
+// restoreReported does and under the same bounded context: two reports of one launcher then
+// reach the fact path in the order the trimmer made them, which is what the notice bounds count
+// episodes by, and the cost is the one the precedent already accepts — the launcher's other
+// frames wait behind one row's write.
+func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherVolumeReport) {
+	if err := report.Validate(); err != nil {
+		d.log.Warn("launcher volume: the pod's cache trimmer sent a report the daemon refuses, which is dropped; the connection stays open",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
+		return
+	}
+	if d.volume == nil {
+		// A runtime built with no receiver drops every report of every pod, and nothing else shows
+		// it: no architect is told and the trimmer goes on sweeping. So the drop is logged naming
+		// the line that sets the receiver.
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep and this runtime has no receiver for it, which is dropped; "+
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.VolumeReported = reports.report)",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode)
+		return
+	}
+	if s.issue == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancel()
+	if err := d.volume(ctx, s.issue, s.podUID, report); err != nil {
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep the daemon could not record, which is dropped",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
 	}
 }
 
@@ -835,7 +906,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		claudeDir = claudeConfigDir(l.spec.Role)
 		files[claudeMCPFile] = l.claude.mcp
 	}
-	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, l.skillsInstall(r), r.setup,
+	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
@@ -849,8 +920,8 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 // bound a prompt still meets in a pod (runtime.PromptTooLarge, which supervise charges no launch
 // failure). prepare runs it on the start a pod built now would receive, before anything of the pod
 // is touched, and relaunch again on the start it sends, which carries what the launch learned from
-// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays,
-// enrollment and skills repository that pod was built with.
+// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays and
+// enrollment that pod was built with.
 func (l launch) checkStartFrame(command shimwire.LauncherStart) error {
 	frame, err := shimwire.FrameLen(command)
 	if err != nil {

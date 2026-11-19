@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -38,9 +39,10 @@ var ErrBucketExists = errors.New("bucket exists; a create-only open creates only
 
 // CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
 // copies (CopiedBucketConfig), or opens it as it is when it exists: the operator's creation,
-// `envoy-infra buckets`, and a test fixture's (internal/bus/bustest), on a server of its own.
-func CreateCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
-	return openCopiedBucket(conn, js, bucket, replicas, openOrCreate)
+// `envoy-infra buckets`, and a test fixture's (internal/bus/bustest), on a server of its own. Its
+// waits end with ctx, the caller's, or at the start's hang guard (EnsureKeyValue).
+func CreateCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
+	return openCopiedBucket(ctx, conn, js, bucket, replicas, openOrCreate)
 }
 
 // CreateMissingCopiedBucket creates bucket, one a listener copies, with its configuration at
@@ -50,16 +52,16 @@ func CreateCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string
 // a create the server leaves unanswered again (sentAgain), and opens the handle it answers with
 // once the member answering has applied the create (wrapKeyValue). `envoy-infra buckets create
 // --break-glass` calls it.
-func CreateMissingCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
-	return openCopiedBucket(conn, js, bucket, replicas, createOnly)
+func CreateMissingCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
+	return openCopiedBucket(ctx, conn, js, bucket, replicas, createOnly)
 }
 
 // openCopiedBucket opens bucket, one a listener copies, with its configuration at replicas copies
 // (CopiedBucketConfig), as mode says: CreateCopiedBucket's and CreateMissingCopiedBucket's one body.
-func openCopiedBucket(conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, mode bucketOpen) (KeyValue, error) {
+func openCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, mode bucketOpen) (KeyValue, error) {
 	config, ok := CopiedBucketConfig(bucket, replicas)
 	if !ok {
 		return KeyValue{}, fmt.Errorf("%s is no bucket a listener copies", bucket)
 	}
-	return openKeyValue(conn, js, &config, mode)
+	return openKeyValue(ctx, startHangGuard, conn, js, &config, mode)
 }

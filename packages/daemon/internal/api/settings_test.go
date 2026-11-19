@@ -113,12 +113,20 @@ var settingsEmitted = map[string]string{
 	"Kubernetes.SessionStore":                        "runtime.kubernetes.session_store (the kind alone: neither the Secret key nor the instance and login behind it is emitted)",
 	"Kubernetes.Plugins":                             "runtime.kubernetes.plugins",
 	"Kubernetes.Setup":                               "runtime.kubernetes.setup",
-	"Kubernetes.SkillsRepository":                    "runtime.kubernetes.skills_repository",
 	"Kubernetes.TestPostgres":                        "runtime.kubernetes.test_postgres",
 	"Kubernetes.RepositoryCache":                     "runtime.kubernetes.repository_cache",
 	"Kubernetes.IdleRelease":                         "runtime.kubernetes.idle_release",
 	"IdleReleaseConfig.IdleMinutes":                  "runtime.kubernetes.idle_release.idle_minutes",
 	"IdleReleaseConfig.BackstopMinutes":              "runtime.kubernetes.idle_release.backstop_minutes",
+	"Kubernetes.Sandbox":                             "runtime.kubernetes.sandbox",
+	"SandboxConfig.Type":                             "runtime.kubernetes.sandbox.type",
+	"SandboxConfig.CanaryIssues":                     "runtime.kubernetes.sandbox.canary_issues",
+	"SandboxConfig.MicroVM":                          "runtime.kubernetes.sandbox.microvm",
+	"MicroVMConfig.ComputeClass":                     "runtime.kubernetes.sandbox.microvm.compute_class",
+	"MicroVMConfig.StorageClass":                     "runtime.kubernetes.sandbox.microvm.storage_class (runtime.kubernetes.storage_class when the block names none)",
+	"MicroVMConfig.Metadata":                         "runtime.kubernetes.sandbox.microvm.metadata",
+	"MetadataConfig.WorkloadPool":                    "runtime.kubernetes.sandbox.microvm.metadata.workload_pool",
+	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
 	"Kubernetes.MemoryGuard":                         "runtime.kubernetes.memory_guard",
 	"MemoryGuardConfig.IssuePods":                    "runtime.kubernetes.memory_guard.issue_pods",
 	"MemoryGuardPodConfig.Enabled":                   "runtime.kubernetes.memory_guard.issue_pods.enabled",
@@ -126,6 +134,12 @@ var settingsEmitted = map[string]string{
 	"MemoryGuardPodConfig.FloorPercent":              "runtime.kubernetes.memory_guard.issue_pods.floor_percent",
 	"MemoryGuardPodConfig.WaitSeconds":               "runtime.kubernetes.memory_guard.issue_pods.wait_seconds",
 	"MemoryGuardPodConfig.IntervalMilliseconds":      "runtime.kubernetes.memory_guard.issue_pods.interval_milliseconds",
+	"Kubernetes.VolumeTrim":                          "runtime.kubernetes.volume_trim",
+	"VolumeTrimConfig.Enabled":                       "runtime.kubernetes.volume_trim.enabled",
+	"VolumeTrimConfig.HighPercent":                   "runtime.kubernetes.volume_trim.high_percent",
+	"VolumeTrimConfig.LowPercent":                    "runtime.kubernetes.volume_trim.low_percent",
+	"VolumeTrimConfig.MinAgeMinutes":                 "runtime.kubernetes.volume_trim.min_age_minutes",
+	"VolumeTrimConfig.IntervalSeconds":               "runtime.kubernetes.volume_trim.interval_seconds",
 	"RepositoryCacheConfig.Volume":                   "runtime.kubernetes.repository_cache.volume",
 	"RepositoryCacheConfig.RefreshMinutes":           "runtime.kubernetes.repository_cache.refresh_minutes",
 	"RepositoryCacheConfig.RetainHours":              "runtime.kubernetes.repository_cache.retain_hours",
@@ -209,7 +223,7 @@ var settingsExcluded = map[string]string{
 	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
 	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
+	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
@@ -345,8 +359,11 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	kubernetesKeys := keysOf(t, runtimeKeys["kubernetes"])
 	assertKeys(t, "settings.runtime.kubernetes", kubernetesKeys, []string{
 		"namespace", "image", "storage_class", "issue_volume", "scheduling", "resources", "session_store",
-		"agent_secrets", "plugins", "setup", "skills_repository", "test_postgres", "repository_cache", "idle_release",
-		"memory_guard",
+		"agent_secrets", "plugins", "setup", "test_postgres", "repository_cache", "idle_release",
+		"memory_guard", "volume_trim", "sandbox",
+	})
+	assertKeys(t, "settings.runtime.kubernetes.volume_trim", keysOf(t, kubernetesKeys["volume_trim"]), []string{
+		"enabled", "high_percent", "low_percent", "min_age_minutes", "interval_seconds",
 	})
 	assertKeys(t, "settings.runtime.kubernetes.idle_release", keysOf(t, kubernetesKeys["idle_release"]), []string{
 		"idle_minutes", "backstop_minutes",
@@ -434,9 +451,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)
 	}
-	if got := settings.Runtime.Kubernetes.SkillsRepository; got != "acme/agent-skills" {
-		t.Errorf("runtime.kubernetes.skills_repository = %q, want the file's acme/agent-skills", got)
-	}
 	cache := settings.Runtime.Kubernetes.RepositoryCache
 	if cache.Volume != "40Gi" || cache.RefreshMinutes != 15 || cache.RetainHours != 48 || cache.Resources.CPU != "500m" || cache.Resources.CPURequest != "500m" || cache.Resources.Memory != "1Gi" || cache.Resources.EphemeralStorage != "2Gi" {
 		t.Errorf("runtime.kubernetes.repository_cache = %+v, want the file's volume, refresh, retention, cpu and memory with the default ephemeral storage", cache)
@@ -469,6 +483,70 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	want := PluginsSettings{PiLegion: "10.4.0", PiEnvoy: "https://xxxxx@plugins.internal.example/pi-envoy-10.4.0.tgz"}
 	if plugins := settings.Runtime.Kubernetes.Plugins; plugins == nil || *plugins != want {
 		t.Errorf("runtime.kubernetes.plugins = %+v, want %+v", plugins, want)
+	}
+}
+
+// The sandbox rides the settings as the loader settles it. The maximal file names no block, so it
+// shows gVisor, `canary_issues` as `[]` and no `microvm`. A block shows each member the file
+// names. An inert microvm block, which no issue pod uses, shows no compute class, and its storage
+// class is runtime.kubernetes.storage_class. None of it is a credential (settingsEmitted).
+func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
+	const pool = "example-project.svc.id.goog"
+	const provider = "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"
+	const metadata = `
+        metadata:
+          workload_pool: ` + pool + `
+          identity_provider: ` + provider + `
+`
+	for _, tc := range []struct {
+		name, block string
+		want        SandboxSettings
+		wire        string
+	}{
+		{
+			name: "no block",
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}},
+			wire: `{"type":"gvisor","canary_issues":[]}`,
+		},
+		{
+			name:  "a canary list on a gVisor project",
+			block: "    sandbox:\n      canary_issues: [LEGION-208, LEGION-209]\n      microvm:\n        compute_class: example-microvm\n        storage_class: example-microvm-disk" + metadata,
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{"LEGION-208", "LEGION-209"}, MicroVM: &MicroVMSettings{
+				ComputeClass: "example-microvm", StorageClass: "example-microvm-disk",
+				Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
+			}},
+			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk",` +
+				`"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+		},
+		{
+			name:  "a microVM project",
+			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm}\n",
+			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3"}},
+			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3"}}`,
+		},
+		{
+			name:  "an inert microvm block",
+			block: "    sandbox:\n      microvm:" + metadata,
+			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{
+				StorageClass: "gp3", Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
+			}},
+			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
+			}
+			encoded, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			kubernetes := keysOf(t, keysOf(t, keysOf(t, encoded)["runtime"])["kubernetes"])
+			if got := string(kubernetes["sandbox"]); got != tc.wire {
+				t.Errorf("settings.runtime.kubernetes.sandbox =\n%s\nwant\n%s", got, tc.wire)
+			}
+		})
 	}
 }
 

@@ -1,5 +1,13 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -246,11 +254,13 @@ describe("a setup that fails after install_model_route", () => {
     mkdirSync(path.join(co, "skills/asd-ste100"), { recursive: true });
     writeFileSync(path.join(co, "skills/asd-ste100/SKILL.md"), "# STE\n");
     writeFileSync(path.join(co, ".omp-pin"), "omp@pin\n");
-    // The real key-file route, with the lib it sources for its base URL's check.
-    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh"]) {
+    // The real key-file route, with the libs it sources: model-endpoint.sh for its base URL's
+    // check, and omp-home.sh for the line that shuts the setup wizard, whose make_omp_home is then
+    // replaced by one that only makes the home's .omp.
+    for (const file of ["install-key-file-model-route.sh", "model-endpoint.sh", "omp-home.sh"]) {
       cpSync(path.join(root, "scripts/e2e/lib", file), path.join(co, "scripts/e2e/lib", file));
     }
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { mkdir -p "$1/.omp"; }\n'
     );
@@ -318,7 +328,7 @@ describe("a setup that fails after install_model_route", () => {
       "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
     ].join("\n");
     // The bare profile's home cannot be made, after the ste profile's route is installed.
-    writeFileSync(
+    appendFileSync(
       path.join(co, "scripts/e2e/lib/omp-home.sh"),
       'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
     );
@@ -774,10 +784,19 @@ echo done
     );
     expect(existsSync(path.join(skills, "writing-plans/SKILL.md"))).toBe(true);
     expect(existsSync(path.join(label, "superpowers"))).toBe(true);
-    const env = readFileSync(path.join(bin, "env.txt"), "utf8");
-    expect(env).toContain("ENVOY_URL=http://127.0.0.1:1\n");
-    expect(env).toContain("OMP_PROFILE=skills-s1\n");
-    expect(env).toContain(`HOME=${label}/home\n`);
+    // Each variable is read whole, by name: a substring would also match a longer name such as
+    // X_OMP_PROFILE, and env can print any variable first.
+    const env = new Map(
+      readFileSync(path.join(bin, "env.txt"), "utf8")
+        .split("\n")
+        .flatMap((line): [string, string][] => {
+          const eq = line.indexOf("=");
+          return eq > 0 ? [[line.slice(0, eq), line.slice(eq + 1)]] : [];
+        })
+    );
+    expect(env.get("ENVOY_URL")).toBe("http://127.0.0.1:1");
+    expect(env.get("OMP_PROFILE")).toBe("skills-s1");
+    expect(env.get("HOME")).toBe(`${label}/home`);
     expect(readFileSync(path.join(label, "built-from"), "utf8")).toContain(
       "superpowers-skill writing-plans "
     );
@@ -846,7 +865,7 @@ fi
 {
   printf 'argv %s\\n' "$0" "$@"
   printf 'env %s\\n' "PWD=$PWD" "HOME=$HOME" "OMP_PROFILE=$OMP_PROFILE"
-  env | grep -q LEGION_E2E && echo "env LEGION_E2E set"
+  compgen -e | grep -q '^LEGION_E2E' && echo "env LEGION_E2E set"
   probe read-outside cat "$OUTSIDE"
   probe read-home-ssh ls "$OPERATOR_HOME/.ssh"
   probe list-work ls "$WORK/runs"

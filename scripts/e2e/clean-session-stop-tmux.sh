@@ -62,17 +62,19 @@
 # evicts the pod with every role in it.
 #
 # ---- the tmux this needs, and where a pod gets one ----------------------------------------------
-# `legion start` refuses to boot without tmux on PATH, and a Legion pod's worker image carries no
-# tmux, no root and no package manager, so the run builds one from source:
+# `legion start` refuses to boot without tmux on PATH. A worker image from dispatch://INFRA-3257 on
+# carries Debian trixie's tmux at /usr/bin/tmux, and the run uses it as it stands. A Legion pod on
+# an older digest has no tmux, no root and no package manager, so there the run builds one from
+# source:
 #   PATH="$(bash scripts/e2e/lib/build-tmux.sh):$PATH"
 # That script is idempotent and pins every tarball by version and sha256. It builds, under
 # ${TMUX_BUILD_PREFIX:-$TMPDIR/tmux-build}, GNU make 4.4.1 first through its own bootstrap, since
 # the pod has gcc and no make, then ncurses 6.5, byacc 20240109 (tmux's configure requires a yacc
 # and the pod has none), libevent 2.1.12-stable and tmux 3.5a; a cold build takes about nine
-# minutes and a built one prints its bin directory at once. This run calls it itself, so a caller
-# that has not built tmux needs no step of its own; a tmux already first on PATH is used as it
-# stands. The panes read terminfo from that prefix's own share/terminfo, which ncurses installs
-# in full, rather than from the image's /usr/share/terminfo.
+# minutes and a built one prints its bin directory at once. This run calls it itself, and only
+# when no tmux is on PATH, so a caller that has not built tmux needs no step of its own. The panes
+# of a built tmux read terminfo from that prefix's own share/terminfo, which ncurses installs in
+# full, rather than from the image's /usr/share/terminfo.
 #
 # ---- the windows, and why they are these numbers ------------------------------------------------
 # The listener judges every record with
@@ -603,8 +605,9 @@ kill_the_agent() {
 # ---- prerequisites --------------------------------------------------------------------------------
 begin prerequisites
 note "selection: $selection (${#selected[@]} checks)"
-# A pod carries no tmux, so the run builds one rather than refusing for it; a tmux already on
-# PATH is used as it stands, and the build prints its bin directory at once once it is built.
+# A pod on a worker image from before dispatch://INFRA-3257 carries no tmux, so there the run
+# builds one rather than refusing for it; a tmux already on PATH, the image's own from that change
+# on, is used as it stands, and the build prints its bin directory at once once it is built.
 if ! command -v tmux >/dev/null; then
   note "no tmux on PATH; building one (scripts/e2e/lib/build-tmux.sh), which takes about nine minutes the first time"
   tmux_bin=$(bash "$root/scripts/e2e/lib/build-tmux.sh") ||
@@ -799,9 +802,10 @@ echo "ok services"
 begin daemon
 keep_port daemon_keeper daemon_port
 # omp_invocation is left out of the file: it takes the `mise x <tool> -- omp` form alone, and a pod
-# has no mise, so the Oh My Pi under proof is named by LEGION_OMP_PATH in the daemon's own
-# environment (omplaunch.ResolveInvocation), which the daemon resolves to its real path for every
-# pane and for its own boot gate.
+# on a worker image from before dispatch://INFRA-3257 has no mise, while the image's mise since
+# then holds no Oh My Pi until it downloads one, so the Oh My Pi under proof is named by
+# LEGION_OMP_PATH in the daemon's own environment (omplaunch.ResolveInvocation), which the daemon
+# resolves to its real path for every pane and for its own boot gate.
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $daemon_port

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The two routes that read one session's interest record - GET /v1/registry/<session_id> and GET
@@ -51,14 +52,14 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	}
 	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// The control GET /v1/sessions below reports each session's roles, so it is refused the
 	// bus-unavailable 503 until the role claim view answers, whatever the bus is doing.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	interests := func(id string) (*httptest.ResponseRecorder, time.Duration) {
 		return get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+id)
 	}
-	wantTopics := func(t *testing.T, info sessionInfo, want []string) {
+	wantTopics := func(t *testing.T, info listenerwire.SessionInfo, want []string) {
 		t.Helper()
 		if !slices.Equal(info.Topics, want) {
 			t.Fatalf("%s's topics = %v, want %v", info.SessionID, info.Topics, want)
@@ -126,7 +127,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions with the bus answering: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode the session list %s: %v", recorder.Body.String(), err)
 	}
@@ -167,7 +168,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		if recorder.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route, recorder.Code, recorder.Body.String())
 		}
-		var refusal apiError
+		var refusal listenerwire.APIError
 		if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 			t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 		}
@@ -192,7 +193,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		if elapsed >= within {
 			t.Fatalf("GET /v1/sessions with the bus silent answered after %s, want inside %s: the listing waited on the bus", elapsed, within)
 		}
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 			t.Fatalf("decode the session list %s: %v", recorder.Body.String(), err)
 		}

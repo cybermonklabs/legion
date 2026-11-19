@@ -198,7 +198,10 @@ type keptRace struct {
 // keptPublisher is the listener as a role publish meets it, under one mode the run switches. It
 // counts the answer each catch-up drew, so a run reports which modes its catch-ups actually met,
 // holds one publish open for the interleaving a step armed (keptRace), and records, for each
-// catch-up it takes, the generation that catch-up's root stood at then (atPublish).
+// catch-up it takes, the generation that catch-up's own issue stood at then (atPublish): a root's,
+// or an adopted child's own. A kept publish (PublishKept) is answered by the run's mode as any
+// other is and never kept: the mode's no-holder is the 404 a listener before #4079 answers a
+// claim whose holder is gone.
 type keptPublisher struct {
 	mu        sync.Mutex
 	mode      keptPublishMode
@@ -208,9 +211,9 @@ type keptPublisher struct {
 	raceMu sync.Mutex
 	race   *keptRace
 
-	// atPublish is the generation the root whose architect holds a topic stands at, false for a
-	// topic no driven tree's architect holds. genMu guards what it answered: genAt, by the
-	// notice's dedupe key, and genErr, the read that failed, which ends the run.
+	// atPublish is the generation of the issue whose architect holds a topic (a root, or the
+	// adopted child), false for a topic no driven architect holds. genMu guards what it answered:
+	// genAt, by the notice's dedupe key, and genErr, the read that failed, which ends the run.
 	atPublish func(topic string) (uint64, bool, error)
 	genMu     sync.Mutex
 	genAt     map[string]uint64
@@ -218,14 +221,22 @@ type keptPublisher struct {
 }
 
 func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	return p.publish(topic, message, payload, key, false)
+}
+
+func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.publish(topic, message, payload, key, true)
+}
+
+func (p *keptPublisher) publish(topic, message string, payload any, key string, keep bool) error {
 	notice, isNotice := payload.(record.Notice)
 	catchUp := isNotice && notice.CatchUp != nil
 	var raced *keptRace
 	if catchUp {
 		// The generation is read before anything else of this publish: it is the one the daemon
-		// decided to send this catch-up at, where its lease-time check read the root, and a
-		// re-admission landing inside the publish is followed by its own catch-up rather than
-		// making this telling wrong.
+		// decided to send this catch-up at, where its lease-time check read the catch-up's own
+		// issue (catchUpSuperseded), and a re-admission landing inside the publish is followed by
+		// its own catch-up rather than making this telling wrong.
 		p.noteGeneration(topic, key)
 		raced = p.disarm()
 	}
@@ -249,13 +260,13 @@ func (p *keptPublisher) Publish(_ context.Context, topic, message string, payloa
 	if err != nil {
 		return err
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: keep})
 	return nil
 }
 
-// noteGeneration records the generation the publish's root stands at now, under the notice's
-// dedupe key, keeping the first reading of a key: one key is one telling, and that telling is the
-// first delivery under it.
+// noteGeneration records the generation of the issue whose architect holds the publish's topic, as
+// it stands now, under the notice's dedupe key, keeping the first reading of a key: one key is one
+// telling, and that telling is the first delivery under it.
 func (p *keptPublisher) noteGeneration(topic, key string) {
 	if p.atPublish == nil {
 		return
@@ -272,8 +283,8 @@ func (p *keptPublisher) noteGeneration(topic, key string) {
 	}
 }
 
-// generationAtPublish is the generation the root stood at when the listener took the catch-up
-// published under key, and whatever read of one failed, which ends the run.
+// generationAtPublish is the generation the catch-up's own issue stood at when the listener took
+// the catch-up published under key, and whatever read of one failed, which ends the run.
 func (p *keptPublisher) generationAtPublish(key string) (uint64, bool, error) {
 	p.genMu.Lock()
 	defer p.genMu.Unlock()
@@ -654,11 +665,12 @@ func (c keptCounts) String() string {
 		c.publishes[keptReceiptTimeout], c.publishes[keptDenied], c.publishes[keptDeliveryFailed])
 }
 
-// keptTree is one root the run drives and the architect that hears for it: the root every run
-// opens with, the members it leaves the tree with (the child and the grandchild below it), which
-// are roots of their own from then on, and the second root that waits for an admission slot. Each
-// has its claim, its agent's connection and its role topic, and the decisions on the issues of
-// its tree are owed to its architect.
+// keptTree is one issue whose architect the run drives: the root every run opens with, the members
+// it leaves the tree with (the child and the grandchild below it), which are roots of their own
+// from then on, and the second root that waits for an admission slot, which becomes a child with
+// an architect of its own once a live tree adopts it. Each has its claim, its agent's connection
+// and its role topic, and a decision on an issue of a tree is owed to the architect of that tree's
+// root.
 type keptTree struct {
 	key   string
 	issue record.Issue
@@ -1850,8 +1862,10 @@ func (r *keptRun) adoptionTarget() *keptTree {
 
 // adoptQueued is a person making the second root a child of a live tree: admission's sweep of its
 // queue moves it into that tree with every record of its own (adoptQueuedRoots, workflow's
-// Engine.Adopt), where it takes no slot and no architect of its own ever again. From then on the
-// decisions a person made on it while it waited for its slot are owed to that tree's architect.
+// Engine.Adopt), where it never takes a tree of its own again. Its own architect starts with its
+// first phase, as every child's does (workflow's Engine.StartFirstPhase), but that architect is
+// told no kept decision (workflow.QueueCatchUp): from then on the decisions a person made on it
+// while it waited for its slot are owed to that tree's architect.
 func (r *keptRun) adoptQueued() {
 	target := r.adoptionTarget()
 	if target == nil {
@@ -2455,7 +2469,8 @@ func (r *keptRun) noteRefusal(tree *keptTree) {
 	r.refused[tree.key] = true
 }
 
-// claimStates is the state of every driven tree's architect claim now, by root key.
+// claimStates is the state of every driven architect claim now, by the key of its issue: a root,
+// or the adopted child.
 func (r *keptRun) claimStates() map[string]supervise.ClaimState {
 	states := make(map[string]supervise.ClaimState, len(r.roots))
 	for _, tree := range r.roots {
@@ -2487,8 +2502,9 @@ func keptClaimState(state supervise.ClaimState) supervise.ClaimState {
 
 // claimFailed tells the workflow that an architect's claim spent its launch budget, as the
 // daemon's terminal hook does (workflowRuntime.applyTerminal), carrying the same cause, counters
-// and limits that hook carries: the engine writes the tree's worker-died notice, which goes to
-// that same architect and waits ahead of its catch-ups.
+// and limits that hook carries: the engine writes a worker-died of that architect. A root's goes
+// to that same architect, with a copy to the controller, and waits ahead of its catch-ups, and the
+// adopted child's goes to the architect above it.
 func (r *keptRun) claimFailed(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2561,11 +2577,16 @@ func (r *keptRun) ready(tree *keptTree) {
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	launch := machine.Claim().Generation
 	r.handle(machine, supervise.StreamHello{Claim: tree.token, Generation: launch})
+	// Each architect is a session of its own, with a file of its own: the daemon holds a session's
+	// id and its file's path and name to the first claim of the project that recorded them
+	// (supervise's holdRecorded), so two trees' architects registering one would have the second
+	// refused.
+	session := "ses-architect-" + tree.key
 	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"})
+		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: session, SessionFile: "/tmp/" + session + ".jsonl"})
 	}
 	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: "ses-architect"})
+		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: session})
 	}
 	r.waitMachines()
 	r.tracef("ready tree=%s launch=%d state=%s", tree.key, launch, machine.Claim().State)
@@ -3534,7 +3555,7 @@ func (r *keptRun) tell(telling keptTelling) {
 			telling.ref, telling.how, telling.tree)
 	case !telling.prompt && telling.named != telling.root:
 		r.fatalf("%s was told by %s, which names generation %d, while %s stood at generation %d when the daemon decided to send it: "+
-			"every catch-up names the generation its root is at when it is sent",
+			"every catch-up names the generation of its own issue when it is sent",
 			telling.ref, telling.how, telling.named, telling.tree, telling.root)
 	}
 	r.told[telling.ref] = append(r.told[telling.ref], telling)
@@ -3774,10 +3795,10 @@ func (r *keptRun) storedGeneration(key string) uint64 {
 	return generation
 }
 
-// rootGeneration is the generation the root whose architect holds topic stands at, false for a
-// topic no driven tree's architect holds. The publisher reads it as it takes a catch-up, on
-// whichever lane is publishing, so it answers the error rather than ending the run from a
-// goroutine of its own.
+// rootGeneration is the generation of the issue whose architect holds topic (a root, or the
+// adopted child), false for a topic no driven architect holds. The publisher reads it as it takes
+// a catch-up, on whichever lane is publishing, so it answers the error rather than ending the run
+// from a goroutine of its own.
 func (r *keptRun) rootGeneration(topic string) (uint64, bool, error) {
 	tree := r.treeTopic(topic)
 	if tree == nil {

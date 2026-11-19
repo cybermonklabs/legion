@@ -369,11 +369,14 @@ func (s *KnownSessions) repairUntilStopped() {
 // retryRepair is the background retry's attempt (attemptRepair), which retires the retry when it
 // found nothing left to repair. The retirement is made in the same hold as that reading, so no
 // second retry is armed between this goroutine's last attempt and its end, and no attempt of
-// another caller's lands between them either.
+// another caller's lands between them either. The attempt runs until the store stops
+// (untilStopped), so a stop ends an open that waits on the cluster (bus.EnsureKeyValue).
 func (s *KnownSessions) retryRepair() (repairResult, error) {
 	s.repairMu.Lock()
 	defer s.repairMu.Unlock()
-	result, err := s.attemptRepair(context.Background())
+	ctx, cancel := s.untilStopped()
+	defer cancel()
+	result, err := s.attemptRepair(ctx)
 	if err == nil && result == repairNothing {
 		s.repairing = false
 	}

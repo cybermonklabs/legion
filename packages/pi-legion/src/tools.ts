@@ -250,6 +250,8 @@ function toolSchema(pi: PiApi): unknown {
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
     wake_at: phaseOp.wake_at,
+    plan_rating: phaseOp.plan_rating,
+    plan_reason: phaseOp.plan_reason,
     round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
@@ -289,9 +291,10 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
- * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
- * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
+ * `handoff_complete` is refused here only for the root architect's session, and finds what it
+ * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
+ * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
+ * operation. `read_state` and `set_status` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;

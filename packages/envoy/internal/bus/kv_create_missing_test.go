@@ -31,10 +31,10 @@ func serverJetStream(t *testing.T, uri string) (*nats.Conn, nats.JetStreamContex
 // of its own, so the two streams are compared whole.
 func TestCreateMissingCopiedBucketCreatesWhatCreateCopiedBucketCreates(t *testing.T) {
 	stream := "KV_" + SessionBucket
-	streamOf := func(create func(*nats.Conn, nats.JetStreamContext, string, int) (KeyValue, error)) (nats.StreamConfig, KeyValue) {
+	streamOf := func(create func(context.Context, *nats.Conn, nats.JetStreamContext, string, int) (KeyValue, error)) (nats.StreamConfig, KeyValue) {
 		_, uri := testnats.Start(t)
 		conn, js := serverJetStream(t, uri)
-		kv, err := create(conn, js, SessionBucket, 1)
+		kv, err := create(t.Context(), conn, js, SessionBucket, 1)
 		if err != nil {
 			t.Fatalf("create %s: %v", SessionBucket, err)
 		}
@@ -77,7 +77,7 @@ func TestCreateMissingCopiedBucketLeavesABucketItFindsAsItIs(t *testing.T) {
 	}
 	writes := testnats.WatchStreamWrites(t, uri, "DELETE", "PURGE")
 
-	_, err = CreateMissingCopiedBucket(conn, js, SessionBucket, 3)
+	_, err = CreateMissingCopiedBucket(t.Context(), conn, js, SessionBucket, 3)
 	if !errors.Is(err, ErrBucketExists) || !strings.Contains(err.Error(), stream+" STREAM.INFO") {
 		t.Fatalf("a create-only open of a bucket its lookup finds = %v, want ErrBucketExists named for the lookup", err)
 	}
@@ -89,7 +89,7 @@ func TestCreateMissingCopiedBucketLeavesABucketItFindsAsItIs(t *testing.T) {
 		t.Fatalf("the bucket after the create-only open: %v, %+v; want it as it was, %+v", err, after, before)
 	}
 
-	if _, err := CreateCopiedBucket(conn, js, SessionBucket, 3); err != nil {
+	if _, err := CreateCopiedBucket(t.Context(), conn, js, SessionBucket, 3); err != nil {
 		t.Fatalf("control: CreateCopiedBucket of the bucket at three copies: %v", err)
 	}
 	if got := writes.Take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.UPDATE."+stream {
@@ -116,7 +116,7 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 	}
 
 	start := time.Now()
-	kv, err := CreateMissingCopiedBucket(conn, &behindMember{JetStreamContext: js, misses: 1}, SessionBucket, 1)
+	kv, err := CreateMissingCopiedBucket(t.Context(), conn, &behindMember{JetStreamContext: js, misses: 1}, SessionBucket, 1)
 	waited := time.Since(start)
 	if !errors.Is(err, ErrBucketExists) || !errors.Is(err, nats.ErrStreamNameAlreadyInUse) || !strings.Contains(err.Error(), stream+" create") || kv.Opened() {
 		t.Fatalf("a create-only open whose create is answered \"already in use\" = %v (handle opened: %t), want ErrBucketExists named for the create and no handle", err, kv.Opened())
@@ -125,7 +125,7 @@ func TestCreateMissingCopiedBucketRefusesABucketItsCreateFindsInUse(t *testing.T
 		t.Fatalf("the refusal took %s, want it answered within %s rather than waited out", waited.Round(time.Millisecond), refusalWait)
 	}
 
-	kv, err = CreateCopiedBucket(conn, &behindMember{JetStreamContext: js, misses: 1}, SessionBucket, 1)
+	kv, err = CreateCopiedBucket(t.Context(), conn, &behindMember{JetStreamContext: js, misses: 1}, SessionBucket, 1)
 	if err != nil || kv.Bucket() != SessionBucket {
 		t.Fatalf("control: CreateCopiedBucket with the same member = %v, want the bucket opened", err)
 	}
@@ -141,7 +141,7 @@ func TestAnUnansweredCreateOfAMissingCopiedBucketIsSentAgain(t *testing.T) {
 	t.Cleanup(func() { _ = js.DeleteKeyValue(SessionBucket) })
 
 	relay.arm(1)
-	kv, err := CreateMissingCopiedBucket(conn, js, SessionBucket, 1)
+	kv, err := CreateMissingCopiedBucket(t.Context(), conn, js, SessionBucket, 1)
 	if err != nil {
 		t.Fatalf("a create-only open whose first create drew no answer = %v, want the bucket created", err)
 	}
@@ -167,7 +167,7 @@ func TestCreateMissingCopiedBucketWaitsForTheMemberToApplyItsCreate(t *testing.T
 	t.Cleanup(func() { _ = js.DeleteKeyValue(SessionBucket) })
 
 	relay.misdirect(1, 1, openSubject("envoy_not_applied_yet"))
-	kv, err := CreateMissingCopiedBucket(conn, js, SessionBucket, 1)
+	kv, err := CreateMissingCopiedBucket(t.Context(), conn, js, SessionBucket, 1)
 	if err != nil {
 		t.Fatalf("a create-only open whose member first answered its handle open \"stream not found\" = %v, want the bucket opened once the member has it", err)
 	}

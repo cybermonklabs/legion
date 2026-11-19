@@ -74,7 +74,7 @@ versions. Never add the module to the root `go.work`.
   Kubernetes provider from its cluster's exec-plugin kubeconfig; with `clusterOnly` it requires
   the `gcp` provider alone and builds no Kubernetes provider, since it registers no
   `RandomPassword`, no tailnet resource and no Kubernetes object.
-  Every Kubernetes child uses that explicit provider and depends on the cluster; none falls back
+  Every Kubernetes child uses that explicit provider; none falls back
   to a default Kubernetes provider. `gcp:ClusteredNatsHub` takes
   the cluster's `kubeconfig` as a secret input and builds its own provider, `<name>-kubernetes`,
   with `enableServerSideApply` and `enableConfigMapMutable` on, and calls no `providers.Require`,
@@ -461,6 +461,8 @@ The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
+flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
 go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```

@@ -34,7 +34,7 @@ func TestTheMonitorOpensAKnownSessionStoreWhoseBucketCameBack(t *testing.T) {
 	if err := js.DeleteKeyValue(bus.KnownSessionBucket); err != nil {
 		t.Fatalf("delete the known-session bucket: %v", err)
 	}
-	known, err := session.OpenKnownSessions(testnats.Connect(t, uri), session.WithKnownSessionReplicas(1))
+	known, err := session.OpenKnownSessions(t.Context(), testnats.Connect(t, uri), session.WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}

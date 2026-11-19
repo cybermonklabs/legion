@@ -16,6 +16,7 @@ import {
 } from "@legion/pi-shared/handoff-record";
 import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool, type LegionToolSession } from "./tools";
 
@@ -67,6 +68,9 @@ const noBranchHead = async (): Promise<string> => {
   throw new Error("branchHead is not expected in this test");
 };
 
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+
 /** A claim's session on LEGION-208: a root architect's, a sub-architect's (its issue is not its
  * tree), or a phase worker's by role. */
 function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession {
@@ -76,7 +80,7 @@ function claimSession(role: LegionRole, issue = "LEGION-208"): LegionToolSession
     sessionID: "ses_208",
     tree: "LEGION-208",
     issue,
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     claimToken: roleToken("omp", issue, role),
     generation: 1,
   };
@@ -138,7 +142,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
   "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A release that suspended no role is woken by " +
   "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. " +
-  "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+  "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
+  "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
   "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
@@ -157,6 +162,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
   "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
   "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
+  "The completion that ends the retro carries `plan_rating` (1 to 5) and `plan_reason`, as " +
+  "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
+  "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
   "write this phase's handoff), " +
@@ -172,8 +180,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every " +
   "role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The " +
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
-  "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
-  "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
+  "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
@@ -336,6 +344,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
+    plan_rating: { type: "integer", minimum: 1, maximum: 5 },
+    plan_reason: { type: "string" },
     round: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
@@ -389,7 +399,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -437,7 +447,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   expect(calls).toEqual([
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "gateRegister",
@@ -751,7 +761,7 @@ test("read_release_records reads the window with this session's claim, and repor
           "LEGION-208",
           session.kind === "architect" ? "architect" : "tester"
         ),
-        secret: "claim-secret",
+        secret: CLAIM_SECRET,
         since: "2026-11-01T00:00:00Z",
       },
     ]);
@@ -990,7 +1000,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     ["state", undefined],
     [
       "grant",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
     ],
     [
       "handoffComplete",
@@ -1010,7 +1020,8 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   // A role that does not work the issue's phase reports its own newest record of the phase it
   // left: the tester at implementing its test record and the head it names, with the verdict as
   // given. A role whose left phase writes no record reports the commit the workspace stands on and
-  // no record: the merger, and a sub-architect, which leaves no phase, each posting @-.
+  // no record: the merger, and a sub-architect, which leaves no phase, each posting @- (the daemon
+  // then refuses the sub-architect's, ACCEPTANCE_IS_SIGN_OFF; this stand-in daemon records it).
   await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
@@ -1184,6 +1195,52 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       },
     ]);
   }
+});
+
+// The agent that does the retro rates the plan the issue ran in the completion that ends the
+// retro. Retro writes no handoff, so the completion reports the commit the workspace stands on,
+// and the rating travels beside it under the daemon's names.
+test("the retro's handoff_complete posts its rating of the plan as planRating and planReason, with the commit the workspace stands on", async () => {
+  const reads: string[] = [];
+  const { calls, daemon } = recordingDaemon({ state: stateAt("retro") });
+  const reason = "The plan's tester step caught the regression the review would have missed.";
+  const result = await createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onPhaseCompleted: () => undefined,
+    onUpdateAnswered: () => undefined,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: paneEnv,
+        jj: paneJj(),
+        latestHandoff: paneDispatch(reads),
+      }),
+    branchHead: noBranchHead,
+    resolveDocument: noDocumentLookup,
+    session: () => claimSession("implementer"),
+  }).execute(
+    "",
+    { op: "handoff_complete", summary: "Retro done.", plan_rating: 5, plan_reason: reason },
+    undefined,
+    undefined,
+    context()
+  );
+  expect(result.isError).toBeUndefined();
+  expect(reads).toEqual([]);
+  expect(calls.at(-1)).toEqual([
+    "handoffComplete",
+    {
+      grantId: "grant-208",
+      summary: "Retro done.",
+      verdict: "",
+      commit: STANDING,
+      planRating: 5,
+      planReason: reason,
+    },
+  ]);
 });
 
 test("a completion once the issue moved on posts the role's own newest record of the phase it left, and @- where that phase writes none", async () => {
@@ -1410,7 +1467,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       ["state", undefined],
       [
         "grant",
-        { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-208" },
+        { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
       ],
       [
         "handoffComplete",

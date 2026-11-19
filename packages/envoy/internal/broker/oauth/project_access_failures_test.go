@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // TestANamedTradeMintsUncheckedOnlyForAnEmptyList: while Dispatch cannot be asked, an operator
@@ -41,9 +42,9 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 		dispatch func(*testing.T) projectaccess.Access
 	}{
 		{"a transport failure", func(t *testing.T) projectaccess.Access {
-			server := httptest.NewServer(http.NotFoundHandler())
-			server.Close()
-			return projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+			// A port the test holds and nothing listens on, so every dial is refused and no other
+			// process can take the port and answer (testport.Refused).
+			return projectaccess.New("http://"+testport.Refused(t), projectaccesstest.StaticAccount("token"), nil)
 		}},
 		{"a 500", answering(http.StatusInternalServerError, `{"code":"INTERNAL","error":"boom"}`)},
 		{"a 503", answering(http.StatusServiceUnavailable, `{"code":"UNAVAILABLE","error":"later"}`)},

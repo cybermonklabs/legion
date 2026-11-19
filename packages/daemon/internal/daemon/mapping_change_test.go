@@ -27,9 +27,9 @@ import (
 // repository both Apps are installed on is served (GitHub intake hears it, its owner joins the
 // owners), one missing an App is left out and not heard, and a repository unmapped while a
 // record names it is still heard, so its running issue's facts still arrive. Its owner leaves the
-// owners every role's gh bundle mints for: one App uninstalled there would otherwise fail every
-// pane's bundle, and the issue's own panes keep that owner as their default (appauth's
-// GitHubCredential mints for a role's own owner whether or not the set holds it).
+// mapping's owners, which decide nothing of any gh bundle: a bundle holds a directory for each
+// owner its App is installed on, read from GitHub at every build (appauth's GitHubCredential),
+// and the issue's own panes keep that owner as their default whether or not the set holds it.
 func TestAMappingChangeAtRuntimeChangesWhatTheDaemonServes(t *testing.T) {
 	t.Run("GitHub answering at once", func(t *testing.T) { mappingChangeAtRuntime(t, 5*time.Second, 0) })
 	// A refresh reads Dispatch and GitHub, which can take longer than the event's acknowledgement

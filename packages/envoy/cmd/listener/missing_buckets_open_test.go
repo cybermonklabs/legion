@@ -60,7 +60,7 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 	done := make(chan opened, 1)
 	go func() {
 		sessions, err := openExisting(wait, func() (*session.SessionRegistry, error) {
-			return session.OpenSessionRegistry(conn, session.WithSessionReplicas(1))
+			return session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1))
 		})
 		done <- opened{sessions, err}
 	}()

@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -165,7 +165,10 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
   const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => ({
     credentials: live,
   }));
+  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  const revokeAnswer = Promise.withResolvers<void>();
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async (id) => {
+    await revokeAnswer.promise;
     live = live.filter((login) => login.credential_id !== id);
   });
   const confirm = spyOn(window, "confirm").mockReturnValue(false);
@@ -192,6 +195,9 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
     await waitFor(() =>
       expect(revokeMachineLogin).toHaveBeenCalledWith("cred-devbox", keyedAttempt)
     );
+    await act(async () => {
+      revokeAnswer.resolve();
+    });
     await waitFor(() => expect(section.queryByText("devbox.example.com")).not.toBeInTheDocument());
     expect(section.getByText("laptop.example.com")).toBeDefined();
     expect(revokeMachineLogin).toHaveBeenCalledTimes(1);

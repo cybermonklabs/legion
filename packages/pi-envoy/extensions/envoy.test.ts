@@ -11,6 +11,7 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -52,7 +53,10 @@ import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { renderSessionAnswers } from "@legion/envoy-client/session-answers";
+import {
+  renderSessionAnswers,
+  sessionAnswersFailureLine,
+} from "@legion/envoy-client/session-answers";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
 import {
   type EnvoyStack,
@@ -85,10 +89,11 @@ import {
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
-import { nkeys, connect as realConnect } from "nats";
+import { ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
@@ -102,6 +107,19 @@ import {
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
+
+/** The Dispatch token a row hands the session in DISPATCH_TOKEN. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
+/** The Dispatch token a row hands the session in its envoy.json's `dispatch.token`. */
+const FILE_DISPATCH_TOKEN = fixtureSecret("dsp");
+/** The listener's bearer a row hands the session in ENVOY_TOKEN. */
+const LISTENER_TOKEN = fixtureSecret("listener");
+/** The listener's bearer a row hands the session in its envoy.json's `envoy.token`. */
+const FILE_LISTENER_TOKEN = fixtureSecret("listener");
+/** The listener's bearer a pane's ENVOY_TOKEN_FILE holds. */
+const PANE_LISTENER_TOKEN = fixtureSecret("listener");
+/** A pod's projected service-account token, which this machine trades at a stub broker. */
+const MACHINE_IDENTITY_TOKEN = fixtureSecret("machine");
 
 /** A message's headers, as nats.js's `MsgHdrs` reads them: a missing one reads `""`. */
 type MessageHeaders = { readonly get: (name: string) => string };
@@ -154,12 +172,24 @@ function relayCarries(subject: string): boolean {
  * Records every registration whatever `fetch` a row installs, so the followed topics are known
  * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
  * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever.
+ * `globalThis.fetch`, which would call the row's own wrapper forever. That mistake fails at once,
+ * by name: a call nested past `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once,
+ * it grew one row's process to 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
+/** How deep the calls of `recordingFetch` are nested in the current call's async context. */
+const fetchDepth = new AsyncLocalStorage<number>();
+/** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
+const MOST_NESTED_FETCHES = 8;
 const recordingFetch: typeof globalThis.fetch = async (input, init) => {
+  const depth = (fetchDepth.getStore() ?? 0) + 1;
+  if (depth > MOST_NESTED_FETCHES) {
+    throw new Error(
+      `a row's fetch handed its request on through globalThis.fetch ${MOST_NESTED_FETCHES} times: globalThis.fetch is this file's recording wrapper, which calls the row's fetch again, so take the fetch to hand on to from rowFetch()`
+    );
+  }
   try {
     if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
       const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -171,7 +201,7 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return installedFetch(input, init);
+  return fetchDepth.run(depth, () => installedFetch(input, init));
 };
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -181,6 +211,22 @@ Object.defineProperty(globalThis, "fetch", {
   set: (next: typeof globalThis.fetch) => {
     if (next !== recordingFetch) installedFetch = next;
   },
+});
+
+test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
+  // The mistake that recursed without end: the row's wrapper takes `globalThis.fetch`, which is
+  // the recording wrapper, and so is handed its own request again on every call, each after an
+  // await, so no stack ever overflows to stop it.
+  const found = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    await Promise.resolve();
+    return found(input, init);
+  };
+  const failure = await fetch("http://broker.test/v1/oauth/token").then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(String(failure)).toContain("take the fetch to hand on to from rowFetch()");
 });
 
 /**
@@ -260,10 +306,19 @@ const natsState = {
   connectedNames: [] as string[],
   /** What each connect was given: its servers, and whether it carried an nkey authenticator. */
   connects: [] as { readonly servers: readonly string[]; readonly authenticated: boolean }[],
+  /** The token each CONNECT presented (`auth_token`), where its authenticator answers one: a
+   *  connect's and each reconnect's, in order. */
+  presented: [] as string[],
+  /** Each `subscribe` and `reconnect`, in order, for a row that holds the two to an order. */
+  timeline: [] as string[],
   /** Each connection `close()` was called on, by the name its dial carried: a dial nothing holds
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
   failConnects: 0,
+  /** The error a failed connect throws, as nats.js throws it: its refusal by default, a
+   *  resolver's (`getaddrinfo`, its text naming the host) for a row that sees what a notice
+   *  carries of it. */
+  failError: (): unknown => NatsError.errorForCode(ErrorCode.ConnectionRefused),
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -319,25 +374,46 @@ const natsStandInConnect = async (options: {
   const { name, servers, authenticator } = options;
   if (natsState.failConnects > 0) {
     natsState.failConnects -= 1;
-    throw new Error("CONNECTION_REFUSED");
+    throw natsState.failError();
   }
   natsState.connectedNames.push(name);
   natsState.connects.push({ servers, authenticated: authenticator !== undefined });
+  // A CONNECT asks the authenticator for its credential over the server's nonce, as nats.js does
+  // at every connect and reconnect.
+  const connectWith = (nonce: string) => {
+    if (typeof authenticator !== "function") return;
+    const credential = (authenticator as (nonce: string) => unknown)(nonce);
+    if (typeof credential === "object" && credential !== null && "auth_token" in credential) {
+      natsState.presented.push(String(credential.auth_token));
+    }
+  };
+  connectWith("stand-in-nonce");
   // Parked only where a test asks for it: every other connect answers at once, as before.
   if (natsState.heldConnect !== undefined) await natsState.heldConnect;
   if (natsState.realConnect) {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
   }
   let closed = false;
+  // nats.js's `closed()`: settles once the connection is closed for good.
+  const ended = Promise.withResolvers<void>();
   return {
     isClosed: () => closed || natsState.connectionsClosed,
+    closed: () => ended.promise,
     close: async () => {
       closed = true;
       natsState.closedNames.push(name);
+      ended.resolve();
     },
     drain: async () => {
       natsState.drainStarted = true;
       if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
+    },
+    // nats.js's client-initiated reconnect: the connection drops and comes back with a CONNECT of
+    // its own, which every reader of its status hears of once it is back.
+    reconnect: async () => {
+      natsState.timeline.push("reconnect");
+      connectWith("stand-in-nonce-again");
+      setTimeout(() => pushNatsStatus("reconnect"), 0);
     },
     // An async iterable of the connection's status events, which a test feeds through
     // `pushNatsStatus`; it ends once the connection is closed.
@@ -389,6 +465,7 @@ const natsStandInConnect = async (options: {
       natsState.onPublish?.(subject);
     },
     subscribe: (topic: string) => {
+      natsState.timeline.push(`subscribe ${topic}`);
       if (natsState.failSubscribes > 0) {
         natsState.failSubscribes -= 1;
         throw new Error("SUBSCRIBE_FAILED");
@@ -594,6 +671,12 @@ const configVariables = [
   "ENVOY_TOKEN_FILE",
   "NATS_NKEY_SEED",
   "NATS_NKEY_SEED_FILE",
+  // A box's broker route and the NATS credential choice: a row that presents a broker token sets
+  // them, and every other row runs with none, whatever the box running the suite holds.
+  "NATS_AUTH",
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
+  "AGENT_SECRETS_MACHINE_TOKEN_FILE",
 ] as const;
 const originalConfigVariables = configVariables.map((name) => [name, process.env[name]] as const);
 /** The envoy.json every test starts with: no Dispatch or Envoy section, and AskGate off. */
@@ -681,6 +764,10 @@ afterEach(async () => {
   // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
   // later suite in the same run (envoy-client's) would read it for the same origin.
   forgetKeyedLayerMemory();
+  // A broker client's retry loop trades on for the process's life, so each row's clients are
+  // closed with it: one whose trades were failing would go on trading, and logging, into the
+  // rows after it.
+  forgetBrokerClients();
   if (originalDispatchUrl === undefined) delete process.env.DISPATCH_URL;
   else process.env.DISPATCH_URL = originalDispatchUrl;
   if (originalDispatchToken === undefined) delete process.env.DISPATCH_TOKEN;
@@ -728,6 +815,8 @@ afterEach(async () => {
   delete process.env.ENVOY_TMUX_PLACE_CACHE_MS;
   natsState.connectedNames.length = 0;
   natsState.connects.length = 0;
+  natsState.presented.length = 0;
+  natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
   // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
   // would park every later test's connect for the rest of the process.
@@ -741,6 +830,7 @@ afterEach(async () => {
   relaySeq = 0;
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
+  natsState.failError = () => NatsError.errorForCode(ErrorCode.ConnectionRefused);
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;
@@ -1146,7 +1236,7 @@ async function bootDirectSession(
 ) {
   process.env.DISPATCH_URL = "http://dispatch.test";
   if (options.dispatchCredential === "broker") delete process.env.DISPATCH_TOKEN;
-  else process.env.DISPATCH_TOKEN = "dispatch-token";
+  else process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
   const accepts: {
     readonly path: string;
     readonly authorization: string | null;
@@ -1301,30 +1391,50 @@ async function bootDirectSession(
 }
 
 /**
+ * The session a stand-in broker minted the token an `Authorization` header presents for, read in
+ * `minted` (each token the broker minted, to the session its trade wrote under). A header that
+ * presents no token the broker minted, under the DPoP scheme, reads as `unminted: <header>`, so a
+ * row that fails shows what was sent.
+ */
+function sessionSignedAs(
+  minted: ReadonlyMap<string, string>,
+  authorization: string | null
+): string {
+  const token = authorization?.startsWith("DPoP ")
+    ? authorization.slice("DPoP ".length)
+    : undefined;
+  return (token === undefined ? undefined : minted.get(token)) ?? `unminted: ${authorization}`;
+}
+
+/**
  * A stub secrets broker, for a row that reads which session a Dispatch request was signed as.
  *
  * Where no bearer is written, a session's Dispatch credential is this machine's own identity
  * traded at the secrets broker (`AGENT_SECRETS_URL`, stood in as
  * `packages/envoy-client/src/__tests__/broker-credential.test.ts` stands one in), and a trade
  * writes under one session: the broker records the minted token against it and Dispatch reads it
- * back there. That trade is the one place a session name reaches the wire, so this broker mints
- * `token-for-<session>` and every Dispatch request of the row says which session resolved it. The
- * listener keeps a written token (ENVOY_TOKEN), so every trade here is Dispatch's own.
+ * back there. That trade is the one place a session name reaches the wire, so this broker keeps
+ * each random token it mints against the session its trade wrote under, and every Dispatch
+ * request of the row says which session resolved it (`sessionSignedAs`). The listener keeps a
+ * written token (ENVOY_TOKEN), so every trade here is Dispatch's own.
  *
  * `trade` answers the broker's token endpoint, which a row hands the boot as its `dispatch`;
- * `watch` records what each Dispatch request presented, from the call on, so a row calls it once
- * the boot has installed its own fetch; `stop` puts the environment back and drops the tokens
- * this process traded, which are held under their session for the life of the process.
+ * `watch` records the session each Dispatch request was signed as, from the call on, so a row
+ * calls it once the boot has installed its own fetch; `signedAs` reads the session of a header
+ * the row recorded itself; `stop` puts the environment back and drops the tokens this process
+ * traded, which are held under their session for the life of the process.
  */
 function stubBroker(label: string) {
   const secrets = mkdtempSync(join(tmpdir(), `envoy-${label}-broker-`));
   // A pod's projected service-account token, which is the identity this machine trades.
   const identityFile = join(secrets, "projected-token");
-  writeFileSync(identityFile, "projected.service.account.token\n");
+  writeFileSync(identityFile, `${MACHINE_IDENTITY_TOKEN}\n`);
   /** The session each trade the stub broker was asked wrote its token under. */
   const traded: string[] = [];
-  /** The credential each Dispatch request presented, by the route it was made to. */
-  const presented: { readonly authorization: string | null; readonly path: string }[] = [];
+  /** Each token the stub broker minted, to the session its trade wrote under. */
+  const minted = new Map<string, string>();
+  /** The session each Dispatch request was signed as, by the route it was made to. */
+  const presented: { readonly signedAs: string; readonly path: string }[] = [];
   const restore = captureEnvironment([
     "AGENT_SECRETS_URL",
     "AGENT_SECRETS_MACHINE_IDENTITY",
@@ -1335,19 +1445,22 @@ function stubBroker(label: string) {
   process.env.AGENT_SECRETS_URL = "http://broker.test";
   process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
   process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = identityFile;
-  process.env.ENVOY_TOKEN = "listener-token";
+  process.env.ENVOY_TOKEN = LISTENER_TOKEN;
   return {
     presented,
     traded,
+    signedAs: (authorization: string | null) => sessionSignedAs(minted, authorization),
     trade: async (url: URL, init?: RequestInit): Promise<Response | undefined> => {
       if (url.origin !== "http://broker.test") return undefined;
-      // The trade's form names the session its token is written under, and the token this one
-      // mints names it back.
+      // The trade's form names the session its token is written under, and the broker keeps
+      // the token it mints against that session.
       const session =
         new URLSearchParams(await new Response(init?.body ?? null).text()).get("session") ?? "";
       traded.push(session);
+      const token = fixtureSecret("broker");
+      minted.set(token, session);
       return Response.json({
-        access_token: `token-for-${session}`,
+        access_token: token,
         expires_in: 600,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
@@ -1359,7 +1472,7 @@ function stubBroker(label: string) {
         const url = new URL(input.toString());
         if (url.host === "dispatch.test") {
           presented.push({
-            authorization: new Headers(init?.headers).get("Authorization"),
+            signedAs: sessionSignedAs(minted, new Headers(init?.headers).get("Authorization")),
             path: url.pathname,
           });
         }
@@ -1579,13 +1692,13 @@ function sessionPodListener(): SessionPodListener {
  * A session `sessionID` in a session pod, registering with `listener`, its transcript starting with
  * `transcript` (a fresh session has none). A `launch` names the role the pod's launch names in
  * `ENVOY_SESSION_ROLE` and, when it names one, the session it names for it in
- * `ENVOY_SESSION_ROLE_SESSION` (agent-infra's sessions workload); with no `launch` the environment
- * is left as it is. The host has one session manager, as Oh My Pi's has: `move` takes it to session
- * `id` the way `reason` does (a `/fork` or a tree branch carries the branch on, a `/new` starts an
- * empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives, where given; a tree
- * branch keeps its own). `heartbeat` runs one heartbeat pass and lets it settle, `records` reads the
- * role claim records the session's transcript holds, and `notices` is every notice the extension
- * showed on screen, as `<level>: <text>`.
+ * `ENVOY_SESSION_ROLE_SESSION` (the deployment repository's sessions workload); with no `launch`
+ * the environment is left as it is. The host has one session manager, as Oh My Pi's has: `move`
+ * takes it to session `id` the way `reason` does (a `/fork` or a tree branch carries the branch on,
+ * a `/new` starts an empty one, and a `/fork`, a `/new` or a resume opens the branch `opens` gives,
+ * where given; a tree branch keeps its own). `heartbeat` runs one heartbeat pass and lets it
+ * settle, `records` reads the role claim records the session's transcript holds, and `notices` is
+ * every notice the extension showed on screen, as `<level>: <text>`.
  */
 async function bootSessionPod(
   query: string,
@@ -4155,7 +4268,7 @@ describe("envoy OMP extension", () => {
     } as unknown as typeof z;
     const fixture = createPi({ zod: injected });
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const { default: envoyExtension } = await import("./envoy.ts?injected-zod-identity");
     envoyExtension(fixture.pi);
 
@@ -4187,7 +4300,7 @@ describe("envoy OMP extension", () => {
 
   test("registers every Envoy tool with lenient host validation so execute is the one error surface", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const { default: envoyExtension } = await import("./envoy.ts?lenient-arg-validation");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4254,6 +4367,54 @@ describe("envoy OMP extension", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0]?.text).toContain("no live session ses_missing");
+  });
+
+  test("envoy_send and envoy_publish show the listener's sentence when the sender is rate limited, after one request each", async () => {
+    const sentence =
+      "Your sending is rate limited. This message was not sent. This listener lets one session " +
+      "send 4 messages a minute and 2 at once. You can send it again after 15 seconds.";
+    const routes: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(input.toString()).pathname;
+      if (path !== "/v1/messages/send" && path !== "/v1/messages/publish") {
+        return responseWithRegistration(input, init, {});
+      }
+      routes.push(path);
+      // The listener's 429 for a session past its sending limit (`senderRateLimitedAnswer`,
+      // packages/envoy/cmd/listener/sender_limit.go).
+      return new Response(
+        JSON.stringify({
+          error: sentence,
+          reason: "sender_rate_limited",
+          retry_after_seconds: 15,
+          messages_per_minute: 4,
+          burst: 2,
+        }),
+        { status: 429, headers: { "Content-Type": "application/json", "Retry-After": "15" } }
+      );
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?sender-rate-limited");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext());
+    const send = fixture.tools.find((tool) => tool.name === "envoy_send");
+    const publish = fixture.tools.find((tool) => tool.name === "envoy_publish");
+    if (send === undefined || publish === undefined) {
+      throw new Error("envoy_send or envoy_publish was not registered");
+    }
+
+    const sent = await send.execute("", { session_id: "ses_target", message: "hello" });
+    const published = await publish.execute("", {
+      topic: "notifications.team.x",
+      message: "hello",
+    });
+
+    for (const result of [sent, published]) {
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toBe(`${sentence} (reason: sender_rate_limited)`);
+    }
+    // One request to each route: neither tool sends a refused message again.
+    expect(routes).toEqual(["/v1/messages/send", "/v1/messages/publish"]);
   });
 
   // slack_post's broker and Slack, as the session's process meets them: the broker's client on
@@ -4758,7 +4919,7 @@ describe("envoy OMP extension", () => {
 
   test("registers no dispatch_* tool where Dispatch is configured: agents run the dispatch command", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const { default: envoyExtension } = await import("./envoy.ts?no-dispatch-tools");
     const fixture = createPi();
 
@@ -4995,7 +5156,11 @@ describe("envoy OMP extension", () => {
       process.env.ENVOY_CONFIG_FILE ?? "",
       JSON.stringify({
         ...ASKGATE_OFF,
-        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "title-token" },
+        dispatch: {
+          enabled: true,
+          serverUrl: "https://dispatch.example",
+          token: FILE_DISPATCH_TOKEN,
+        },
       })
     );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-envoy-off");
@@ -5209,7 +5374,7 @@ describe("envoy OMP extension", () => {
             enabled: true,
             url: "http://envoy-from-file.test",
             natsUrls: ["nats://nats-from-file:4222"],
-            token: "file-listener-token",
+            token: FILE_LISTENER_TOKEN,
             natsSeed: new TextDecoder().decode(user.getSeed()),
           },
         })
@@ -5225,7 +5390,7 @@ describe("envoy OMP extension", () => {
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
-      expect(new Set(auth)).toEqual(new Set(["Bearer file-listener-token"]));
+      expect(new Set(auth)).toEqual(new Set([`Bearer ${FILE_LISTENER_TOKEN}`]));
       expect(natsState.connects).toEqual([
         { servers: ["nats://nats-from-file:4222"], authenticated: true },
       ]);
@@ -5235,7 +5400,7 @@ describe("envoy OMP extension", () => {
       const user = nkeys.createUser();
       const tokenFile = join(configDirectory, "envoy-token");
       const seedFile = join(configDirectory, "nats-seed");
-      writeFileSync(tokenFile, "pane-listener-token\n");
+      writeFileSync(tokenFile, `${PANE_LISTENER_TOKEN}\n`);
       writeFileSync(seedFile, `${new TextDecoder().decode(user.getSeed())}\n`);
       process.env.ENVOY_TOKEN_FILE = tokenFile;
       process.env.NATS_NKEY_SEED_FILE = seedFile;
@@ -5250,7 +5415,7 @@ describe("envoy OMP extension", () => {
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pane_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
-      expect(new Set(auth)).toEqual(new Set(["Bearer pane-listener-token"]));
+      expect(new Set(auth)).toEqual(new Set([`Bearer ${PANE_LISTENER_TOKEN}`]));
       expect(natsState.connects).toEqual([
         { servers: ["nats://nats-under-test:4222"], authenticated: true },
       ]);
@@ -5263,7 +5428,11 @@ describe("envoy OMP extension", () => {
       writeFileSync(
         handed,
         JSON.stringify({
-          dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "handed-token" },
+          dispatch: {
+            enabled: true,
+            serverUrl: "https://dispatch.example",
+            token: FILE_DISPATCH_TOKEN,
+          },
         })
       );
       process.env.ENVOY_CONFIG_FILE = handed;
@@ -5410,7 +5579,7 @@ console.log(JSON.stringify(args));
     test("(a) with Dispatch on and no askgate section, a dispatch ask reaches the gate's model and a revise blocks it", async () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-on");
       const fixture = createPi();
@@ -5445,7 +5614,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       rmSync(file);
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-no-envoy-json");
       const fixture = createPi();
@@ -5476,7 +5645,7 @@ console.log(JSON.stringify(args));
     test("three rules-check failures in a row raise the rules notice, and a new session start does not show it again", async () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-rules-notice");
       const fixture = createPi();
@@ -5529,7 +5698,7 @@ console.log(JSON.stringify(args));
     const gateOn = () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
     };
     /**
@@ -5685,7 +5854,7 @@ console.log(JSON.stringify(args));
     test("no record is written with the switch off, with Dispatch off, or by a task subagent's instance", async () => {
       // The switch off: this suite's default envoy.json turns AskGate off.
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const off = await import("./envoy.ts?askgate-record-off");
       const offFixture = createPi();
@@ -6274,7 +6443,7 @@ console.log(JSON.stringify(args));
     test("a review deadline under 30 s is said at session start, not only logged", async () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       // The host's own default for a tool_call handler, which a profile that sets nothing gets.
       mock.module("@oh-my-pi/pi-coding-agent/extensibility/settings", () => ({
@@ -6306,7 +6475,7 @@ console.log(JSON.stringify(args));
         );
         writeFileSync(
           process.env.ENVOY_CONFIG_FILE ?? "",
-          `${JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: "dispatch-token" } })}\n`
+          `${JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: FILE_DISPATCH_TOKEN } })}\n`
         );
         process.chdir(checkout);
         standInHost();
@@ -6336,7 +6505,7 @@ console.log(JSON.stringify(args));
 
     test("(b) with askgate.enabled false the gate does not bind: the dispatch ask runs and no model is asked", async () => {
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-off");
       const fixture = createPi();
@@ -6392,7 +6561,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, `${JSON.stringify({ askgate: { enabled: "no" } })}\n`);
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-unparsable");
       const fixture = createPi();
@@ -6416,7 +6585,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
         standInHost();
@@ -6463,7 +6632,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       process.env.OMP_ASKGATE = "block";
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
@@ -6509,7 +6678,7 @@ console.log(JSON.stringify(args));
       delete process.env.ENVOY_CONFIG_FILE;
       process.env.XDG_CONFIG_HOME = "relative/config";
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-no-config-path");
       const fixture = createPi();
@@ -13401,7 +13570,7 @@ console.log(JSON.stringify(args));
   });
   test("answers a targeted BTW delivery ephemerally and registers the capability", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const registrations: unknown[] = [];
     const replies: unknown[] = [];
     const replyPosted = Promise.withResolvers<void>();
@@ -13481,7 +13650,7 @@ console.log(JSON.stringify(args));
 
   test("answers a targeted comment BTW through its supplied comment reply address", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: Array<{ readonly path: string; readonly body: unknown }> = [];
     const replyPosted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -13718,7 +13887,7 @@ console.log(JSON.stringify(args));
 
       expect(accepts).toEqual([
         {
-          authorization: "Bearer dispatch-token",
+          authorization: `Bearer ${DISPATCH_TOKEN}`,
           // The accept is a write, so it carries an Idempotency-Key of its own.
           key: expect.stringMatching(/^[A-Za-z0-9._:-]{1,128}$/),
           body: { actor: { id: "ses_delivery", kind: "session" } },
@@ -15501,26 +15670,28 @@ console.log(JSON.stringify(args));
       // `packages/envoy-client/src/__tests__/broker-credential.test.ts` stands one in), and a
       // trade writes under one session: the broker records the minted token against it and
       // Dispatch reads it back there. That trade is the one place a session name reaches the
-      // wire, so the broker below mints `token-for-<session>` and every Dispatch request of
-      // this row says which session resolved it. The listener keeps a written token
-      // (ENVOY_TOKEN), so every trade here is Dispatch's own and the registration of the
-      // session the host moves to adds none.
+      // wire, so the broker below keeps each random token it mints against its session, and
+      // every Dispatch request of this row says which session resolved it. The listener keeps a
+      // written token (ENVOY_TOKEN), so every trade here is Dispatch's own and the registration
+      // of the session the host moves to adds none.
       //
       // The command is accepted, run and answered for ses_delivery while the host leaves as it
       // ends, and both halves present the token the broker minted for ses_delivery. A reply
       // resolved for the session open when it goes out (`currentSessionID`) would be signed
-      // `token-for-ses_after_shell`, and the person's own message would be answered under the
-      // credential of the conversation they never wrote to.
+      // with the token minted for ses_after_shell, and the person's own message would be
+      // answered under the credential of the conversation they never wrote to.
       test("signs the accept and the reply as the addressed session when the host leaves as the command ends", async () => {
         const secrets = mkdtempSync(join(tmpdir(), "envoy-shell-broker-"));
         workDirectories.push(secrets);
         // A pod's projected service-account token, which is the identity this machine trades.
         const identityFile = join(secrets, "projected-token");
-        writeFileSync(identityFile, "projected.service.account.token\n");
+        writeFileSync(identityFile, `${MACHINE_IDENTITY_TOKEN}\n`);
         /** The session each trade the stub broker was asked wrote its token under. */
         const traded: string[] = [];
-        /** The credential each Dispatch request presented, by the route it was made to. */
-        const presented: { readonly authorization: string | null; readonly path: string }[] = [];
+        /** Each token the stub broker minted, to the session its trade wrote under. */
+        const minted = new Map<string, string>();
+        /** The session each Dispatch request was signed as, by the route it was made to. */
+        const presented: { readonly signedAs: string; readonly path: string }[] = [];
         const restore = captureEnvironment([
           "AGENT_SECRETS_URL",
           "AGENT_SECRETS_MACHINE_IDENTITY",
@@ -15532,7 +15703,7 @@ console.log(JSON.stringify(args));
           process.env.AGENT_SECRETS_URL = "http://broker.test";
           process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
           process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = identityFile;
-          process.env.ENVOY_TOKEN = "listener-token";
+          process.env.ENVOY_TOKEN = LISTENER_TOKEN;
           let live = "ses_delivery";
           let switched: Promise<unknown> | undefined;
           const { accepts, agent, fixture, replied, replies } = await bootShellSession(
@@ -15556,14 +15727,16 @@ console.log(JSON.stringify(args));
               dispatch: async (url, init) => {
                 if (url.origin !== "http://broker.test") return undefined;
                 // The broker's token endpoint: the trade's form names the session its token is
-                // written under, and the token this one mints names it back.
+                // written under, and the broker keeps the token it mints against that session.
                 const session =
                   new URLSearchParams(await new Response(init?.body ?? null).text()).get(
                     "session"
                   ) ?? "";
                 traded.push(session);
+                const token = fixtureSecret("broker");
+                minted.set(token, session);
                 return Response.json({
-                  access_token: `token-for-${session}`,
+                  access_token: token,
                   expires_in: 600,
                   issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
                   token_type: "DPoP",
@@ -15580,7 +15753,7 @@ console.log(JSON.stringify(args));
             const url = new URL(input.toString());
             if (url.host === "dispatch.test") {
               presented.push({
-                authorization: new Headers(init?.headers).get("Authorization"),
+                signedAs: sessionSignedAs(minted, new Headers(init?.headers).get("Authorization")),
                 path: url.pathname,
               });
             }
@@ -15610,12 +15783,12 @@ console.log(JSON.stringify(args));
           // broker minted for ses_delivery, and the broker was asked for no other session.
           expect(presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
             {
-              authorization: "DPoP token-for-ses_delivery",
+              signedAs: "ses_delivery",
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
-          expect(accepts.map((accept) => accept.authorization)).toEqual([
-            "DPoP token-for-ses_delivery",
+          expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
+            "ses_delivery",
           ]);
           expect(traded).toEqual(["ses_delivery"]);
         } finally {
@@ -15632,9 +15805,9 @@ console.log(JSON.stringify(args));
       // presents the credential afresh for every attempt (`#send`, in
       // `packages/envoy-client/src/dispatch-http.ts`), so the retry resolves its session after
       // the move, and it is still the session the person wrote to. A credential resolved for
-      // the session open now (`currentSessionID`) would sign that retry
-      // `token-for-ses_after_shell`, and Dispatch would record one person's message as taken by
-      // a conversation they never wrote to.
+      // the session open now (`currentSessionID`) would sign that retry with the token minted
+      // for ses_after_shell, and Dispatch would record one person's message as taken by a
+      // conversation they never wrote to.
       //
       // The command runs nowhere: the session it was addressed to is open nowhere by the time
       // Dispatch accepts it, so the person gets the refusal, answered as that session and
@@ -15676,9 +15849,9 @@ console.log(JSON.stringify(args));
             `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
           ]);
           expect(accepts[1]?.key).toBe(accepts[0]?.key as string);
-          expect(accepts.map((accept) => accept.authorization)).toEqual([
-            "DPoP token-for-ses_delivery",
-            "DPoP token-for-ses_delivery",
+          expect(accepts.map((accept) => broker.signedAs(accept.authorization))).toEqual([
+            "ses_delivery",
+            "ses_delivery",
           ]);
           // The person's own message is answered as the session they wrote to, and that answer
           // is signed as it too.
@@ -15694,7 +15867,7 @@ console.log(JSON.stringify(args));
           ]);
           expect(broker.presented.filter((one) => one.path.endsWith("/reply"))).toEqual([
             {
-              authorization: "DPoP token-for-ses_delivery",
+              signedAs: "ses_delivery",
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
@@ -16208,8 +16381,8 @@ console.log(JSON.stringify(args));
       // (`stubBroker`), so both halves of this delivery say which session resolved them: the
       // accept, made before the move, and the refusal, posted after it. A configuration
       // resolved for the session open when the reply goes out (`currentSessionID`) would sign
-      // the person's answer `token-for-ses_after_send` and trade under a conversation they
-      // never wrote to.
+      // the person's answer with the token minted for ses_after_send and trade under a
+      // conversation they never wrote to.
       test("signs a typed Send's refusal as the addressed session when the host left inside the accept", async () => {
         const broker = stubBroker("typed-send-refusal");
         const warnings: string[] = [];
@@ -16247,11 +16420,11 @@ console.log(JSON.stringify(args));
           ]);
           // And signed as that session: the accept and the refusal both presented the token the
           // broker minted for ses_delivery, and the broker was asked for no other session.
-          expect(accepts.map((accept) => accept.authorization)).toEqual([
-            "DPoP token-for-ses_delivery",
+          expect(accepts.map((accept) => broker.signedAs(accept.authorization))).toEqual([
+            "ses_delivery",
           ]);
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
-            { authorization: "DPoP token-for-ses_delivery", path: replyPath },
+            { signedAs: "ses_delivery", path: replyPath },
           ]);
           // Two trades, both under the session the person wrote to: the accept's, and the
           // refusal's own, since leaving a session drops the key pair and token this process
@@ -16383,8 +16556,8 @@ console.log(JSON.stringify(args));
       // the person asked, and the host leaves while it answers. The answer is posted on that
       // person's message, as the session they asked and under that session's own Dispatch:
       // a configuration resolved for the session open when the reply goes out
-      // (`currentSessionID`) would sign one person's answer `token-for-ses_after_btw_answer`,
-      // the credential of a conversation that was never asked the question.
+      // (`currentSessionID`) would sign one person's answer with the token minted for
+      // ses_after_btw_answer, the credential of a conversation that was never asked the question.
       test("signs a BTW's answer as the session it was asked of when the host left inside the side turn", async () => {
         const broker = stubBroker("btw-answer");
         const warnings: string[] = [];
@@ -16425,7 +16598,7 @@ console.log(JSON.stringify(args));
           // And signed as the session the question was asked of: the broker minted that
           // session's token for this reply and was asked for no other session.
           expect(broker.presented.filter((one) => one.path === replyPath)).toEqual([
-            { authorization: "DPoP token-for-ses_delivery", path: replyPath },
+            { signedAs: "ses_delivery", path: replyPath },
           ]);
           expect(broker.traded).toEqual(["ses_delivery"]);
         } finally {
@@ -16959,8 +17132,9 @@ console.log(JSON.stringify(args));
   // The ring a viewer draws over the session's context window (INFRA-812). The host fires no
   // event for its filling either, so it is read from `ctx.getContextUsage()` after each message of
   // a turn, at each turn's start and after a compaction, at most once in each
-  // `ENVOY_CONTEXT_FRAME_INTERVAL_MS`. A reading no viewer could draw a true ring from is not
-  // sent at all.
+  // `ENVOY_CONTEXT_FRAME_INTERVAL_MS`. A host that reports no window takes the ring away with the
+  // `context-cleared` frame in a reading's place (INFRA-4325); a reading that names a window and
+  // no figure is not sent at all.
   describe("the session's context frame", () => {
     const framesSubject = "agentstream.ses_delivery.frames";
     const message = {
@@ -16969,12 +17143,19 @@ console.log(JSON.stringify(args));
       timestamp: 20,
     };
 
-    /** Every context frame the session published to its attached viewer, oldest first. */
-    const publishedContext = (): { readonly tokens: number; readonly contextWindow: number }[] =>
+    /** Every frame of the context slot the session published to its attached viewer, oldest
+     *  first: each reading, and each clearing frame, which carries no figures. */
+    const publishedContext = (): {
+      readonly v: number;
+      readonly kind: "context" | "context-cleared";
+      readonly seq: number;
+      readonly tokens?: number;
+      readonly contextWindow?: number;
+    }[] =>
       natsState.published
         .filter((each) => each.subject === framesSubject)
         .map((each) => JSON.parse(new TextDecoder().decode(each.data)))
-        .filter((frame) => frame.kind === "context");
+        .filter((frame) => frame.kind === "context" || frame.kind === "context-cleared");
 
     /** A viewer arms this session's publisher, as the relay's watch does. */
     const attachViewer = async (): Promise<void> => {
@@ -17109,26 +17290,67 @@ console.log(JSON.stringify(args));
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
     });
 
+    // A host that reports no window is a session the viewer must draw no ring for, whatever it
+    // drew before: a model with no window, or a runner with no breakdown to answer from.
     for (const [name, usage] of [
       ["the host names no window", { contextWindow: 0, percent: 12, tokens: 24_000 }],
-      ["the host holds no breakdown", { contextWindow: 200_000, percent: null, tokens: 0 }],
       ["the host answers nothing", undefined],
     ] as const) {
-      test(`sends nothing when ${name}`, async () => {
-        const { context, fixture } = await bootDirectSession(`context-frame-refused-${name}`, {
+      test(`publishes the clearing frame and no reading when ${name}`, async () => {
+        const { context, fixture } = await bootDirectSession(`context-frame-cleared-${name}`, {
           contextUsage: () => usage,
         });
         await attachViewer();
 
         await fixture.handlers.get("turn_start")?.({}, context);
 
-        expect(publishedContext()).toEqual([]);
+        expect(publishedContext()).toEqual([
+          { kind: "context-cleared", seq: expect.any(Number), v: 1 },
+        ]);
       });
     }
 
+    // A window with no figure is neither a reading a viewer could draw a true ring from nor a
+    // report of no window, so it sends nothing at all.
+    test("sends nothing when the host holds no breakdown", async () => {
+      const { context, fixture } = await bootDirectSession("context-frame-no-breakdown", {
+        contextUsage: () => ({ contextWindow: 200_000, percent: null, tokens: 0 }),
+      });
+      await attachViewer();
+
+      await fixture.handlers.get("turn_start")?.({}, context);
+
+      expect(publishedContext()).toEqual([]);
+    });
+
+    // A view that opens after a switch to a model with no window draws its ring from the replay,
+    // so the clearing frame takes the reading's place in the replay's tail, right after the
+    // settings (this host lists no commands to ride after it), and the reading before it is gone.
+    test("a window of zero after a reading replays the clearing frame in its place", async () => {
+      process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
+      let contextWindow = 200_000;
+      const { context, fixture } = await bootDirectSession("context-frame-cleared-replay", {
+        contextUsage: () => ({ contextWindow, percent: 25, tokens: 50_000 }),
+      });
+      await attachViewer();
+
+      await fixture.handlers.get("turn_start")?.({}, context);
+      contextWindow = 0;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      await until(() => publishedContext().length > 1, "the clearing frame the interval held");
+
+      expect(publishedContext().map((frame) => frame.kind)).toEqual(["context", "context-cleared"]);
+      const replayed = await replayedFrames("inbox-context-cleared-replay");
+      const kinds = replayed.map((frame) => frame.kind);
+      expect(kinds.slice(-2)).toEqual(["settings", "context-cleared"]);
+      expect(kinds).not.toContain("context");
+      // The very frame the viewer was sent, its `seq` included.
+      expect(replayed.at(-1)).toEqual(publishedContext().at(-1));
+    });
+
     // The negative control of the check: a session context with no `getContextUsage` publishes no
-    // frame at all, and the replay a view opens on carries none either, so the view draws no ring
-    // rather than a stale or invented one.
+    // frame at all, the clearing one included, and the replay a view opens on carries none either,
+    // so the view draws no ring rather than a stale or invented one.
     test("sends nothing on a host too old to report one, and replays none", async () => {
       const { context, fixture } = await bootDirectSession("context-frame-no-method");
       await attachViewer();
@@ -17138,7 +17360,9 @@ console.log(JSON.stringify(args));
 
       expect(publishedContext()).toEqual([]);
       const replayed = await replayedFrames("inbox-context-no-method");
-      expect(replayed.map((frame) => frame.kind)).not.toContain("context");
+      const kinds = replayed.map((frame) => frame.kind);
+      expect(kinds).not.toContain("context");
+      expect(kinds).not.toContain("context-cleared");
     });
   });
 
@@ -18063,7 +18287,7 @@ console.log(JSON.stringify(args));
 
   test("reports an ephemeral delivery rejection to Dispatch without steering it", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     const posted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -18110,7 +18334,7 @@ console.log(JSON.stringify(args));
   // of one that was answered is still dropped.
   test("runs a BTW side turn again for a Retry of one whose side turn failed", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     let posted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -18169,7 +18393,7 @@ console.log(JSON.stringify(args));
 
   test("leaves a BTW that drains in during session_shutdown for the next holder, starting no side turn", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     // The reply Dispatch would be posted if the session took the frame.
     // Deregistration hangs, so the shutdown handler is still running when the frame arrives.
@@ -18213,7 +18437,7 @@ console.log(JSON.stringify(args));
 
   test("fails closed for a malformed targeted frame and reports the error to Dispatch", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     const posted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -18508,7 +18732,7 @@ console.log(JSON.stringify(args));
     readonly item: SessionAnswer;
   } {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const item: SessionAnswer = {
       kind: "answer",
       relation: "answered_your_ask",
@@ -18540,6 +18764,48 @@ console.log(JSON.stringify(args));
     return result.messages as unknown[];
   }
 
+  /** The sentence every list the `context` handler appends carries as its second text block. */
+  const REPLACES =
+    "This list replaces every earlier list of people's answers in this conversation, and every earlier line saying the list could not be read: read only the newest one as current.";
+
+  /** The custom type of an answers message recorded, written as a literal so the cases also load
+   *  against a source without that export. */
+  const ANSWERS_SENT = "envoy-answers-sent";
+
+  /** `sessionContext()` whose session manager hands back what the extension appended (`entries`,
+   *  a fixture's) as the session's branch, as Oh My Pi's hands back what `pi.appendEntry` wrote,
+   *  so each request reads every answers message the requests before it recorded. `id` is read on
+   *  every call, so a case can move the host to another session. */
+  function recordingContext(entries: readonly BranchEntry[], id: () => string): SessionContext {
+    const context = sessionContext();
+    return {
+      ...context,
+      sessionManager: { ...context.sessionManager, getSessionId: id, getBranch: () => entries },
+    };
+  }
+
+  /** The answers messages the extension recorded in the session (`ANSWERS_SENT`), in the order it
+   *  wrote them. */
+  const answersSent = (entries: readonly BranchEntry[]) =>
+    entries.filter((entry) => entry.customType === ANSWERS_SENT);
+
+  /** Tool round `n` of a conversation: a read call and its result. */
+  const toolRound = (n: number) => [
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: `call-${n}`, name: "read", arguments: { path: "x.ts" } }],
+      timestamp: 2 * n,
+    },
+    {
+      role: "toolResult",
+      toolCallId: `call-${n}`,
+      toolName: "read",
+      content: [{ type: "text", text: "export {};" }],
+      isError: false,
+      timestamp: 2 * n + 1,
+    },
+  ];
+
   test("the context handler appends what people wrote to the session after the request's last message", async () => {
     const { reads, item } = answeringDispatch("Go the second way.");
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-top");
@@ -18570,21 +18836,39 @@ console.log(JSON.stringify(args));
 
     expect(reads).toEqual(["/api/v1/agents/ses_answers_top/answers"]);
     // The skill stays at the head, the conversation is untouched, and the list is its own last
-    // message.
+    // message, with the sentence saying it replaces every earlier one as its second block.
     expect(JSON.stringify(messages[0])).toContain("<dispatch-first-skill>");
     expect(messages.slice(1, -1)).toEqual(conversation);
+    const list = renderSessionAnswers([item], { now: Date.now() });
     expect(messages.at(-1)).toEqual({
       role: "user",
-      content: [{ type: "text", text: renderSessionAnswers([item], { now: Date.now() }) }],
+      content: [
+        { type: "text", text: list },
+        { type: "text", text: REPLACES },
+      ],
       timestamp: 0,
     });
+    // The session records the message as it was sent, after the message it followed, so every
+    // later request rebuilds it there with these bytes.
+    expect(answersSent(fixture.entries)).toEqual([
+      {
+        type: "custom",
+        customType: ANSWERS_SENT,
+        data: {
+          after: "toolResult@3#call-1",
+          blocks: [list, REPLACES],
+          words: [expect.any(String)],
+        },
+      },
+    ]);
   });
 
   // Oh My Pi drops everything a `context` handler returns when it throws: whatever Dispatch
-  // answers, the skill stays and the request says the list could not be read.
+  // answers, the skill stays and the request says the list could not be read, in a message of
+  // one block with no sentence after it.
   test("a Dispatch answering 200 with no list keeps the dispatch-first skill and carries the failure line", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     globalThis.fetch = async (input, init) =>
       new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
@@ -18602,16 +18886,24 @@ console.log(JSON.stringify(args));
 
     expect(JSON.stringify(messages[0])).toContain("<dispatch-first-skill>");
     expect(messages.slice(1, -1)).toEqual([prompt]);
-    expect(JSON.stringify(messages.at(-1))).toContain(
+    const failure = sessionAnswersFailureLine(
+      "Dispatch answered with something that is not an answers list"
+    );
+    expect(failure).toStartWith(
       "[Dispatch: people's answers from the last 72 hours could not be read ("
     );
+    expect(messages.at(-1)).toEqual({
+      role: "user",
+      content: [{ type: "text", text: failure }],
+      timestamp: 0,
+    });
   });
 
   // A Dispatch URL of its own: the no-route back-off is process-wide, by URL.
   test("a Dispatch with no answers route adds no line to the model, and the log says so once for the session", async () => {
     const base = "http://dispatch-no-route.test";
     process.env.DISPATCH_URL = base;
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const reads: string[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
@@ -18657,11 +18949,13 @@ console.log(JSON.stringify(args));
     ]);
   });
 
-  // A failed read that gives the cached list with the same items keeps the bytes placed before,
-  // which do not say that the read failed, so the log says it: on the first such request, and
-  // then not until a read has answered again, so a lasting failure is one line. A read that
-  // answers logs nothing: what it gives reaches the model, or is what the model has.
-  test("a failed read whose cached list keeps the placed bytes logs why once, and again only after a read has answered", async () => {
+  // A failed read that gives the cached list with the same items keeps the bytes sent before,
+  // which do not say that the read failed, so the log says it, once per failure episode: on the
+  // first such request, and then not until a read has answered again, so a lasting failure is one
+  // line. A read that answers logs nothing: what it gives reaches the model, or is what the model
+  // has. Each request rebuilds the list where the first put it from the session's record of it,
+  // which the context's branch hands back.
+  test("a failed read whose cached answers list keeps the bytes sent logs why once per failure episode, and again only after a read has answered", async () => {
     answeringDispatch("Go the second way.");
     const answering = rowFetch();
     let failing = false;
@@ -18672,68 +18966,255 @@ console.log(JSON.stringify(args));
     const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
     const fixture = createPi();
     envoyExtension(fixture.pi);
-    const context = sessionContext("ses_answers_kept_failure");
+    const context = recordingContext(fixture.entries, () => "ses_answers_kept_failure");
     await fixture.handlers.get("session_start")?.({}, context);
     const prompt = {
       role: "user",
       content: [{ type: "text", text: "Fix the bug." }],
       timestamp: 1,
     };
-    /** Tool round `n` of the conversation: a read call and its result. */
-    const round = (n: number) => [
-      {
-        role: "assistant",
-        content: [{ type: "toolCall", id: `call-${n}`, name: "read", arguments: { path: "x.ts" } }],
-        timestamp: 2 * n,
-      },
-      {
-        role: "toolResult",
-        toolCallId: `call-${n}`,
-        toolName: "read",
-        content: [{ type: "text", text: "export {};" }],
-        isError: false,
-        timestamp: 2 * n + 1,
-      },
-    ];
     const warnings: string[] = [];
     const stopSink = logger.registerLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
     });
     const unshown = () => warnings.filter((warning) => warning.includes("could not be read"));
     const failure =
-      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not name this read's failure";
+      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the answers messages sent, which do not name this read's failure";
     try {
       const first = contextMessages(
         await fixture.handlers.get("context")?.({ messages: [prompt] }, context)
       );
+      const [skill] = first;
       const placed = first.at(-1);
+      expect(first).toEqual([skill, prompt, placed]);
       expect(JSON.stringify(placed)).toContain("Go the second way.");
+      expect(answersSent(fixture.entries)).toHaveLength(1);
       expect(unshown()).toEqual([]);
-      const rounds = [1, 2, 3, 4, 5].map(round);
-      /** Sends the request after `n` tool rounds, and checks that it keeps the placed bytes where
+      const rounds = [1, 2, 3, 4, 5].map(toolRound);
+      /** Sends the request after `n` tool rounds, and checks that it keeps the bytes sent where
        *  the first request put them. */
       const keeps = async (n: number) => {
         const conversation = [prompt, ...rounds.slice(0, n).flat()];
         const messages = contextMessages(
           await fixture.handlers.get("context")?.({ messages: conversation }, context)
         );
-        expect(messages.slice(1)).toEqual([prompt, placed, ...conversation.slice(1)]);
+        expect(messages).toEqual([skill, prompt, placed, ...conversation.slice(1)]);
       };
 
-      // Three failed reads keep the placed bytes, and only the first logs.
+      // Three failed reads keep the bytes sent, and only the first of the episode logs.
       failing = true;
       for (const n of [1, 2, 3]) {
         await keeps(n);
         expect(unshown()).toEqual([failure]);
       }
-      // Dispatch answers again, with the same item: the placed bytes stay, and nothing is logged.
+      // Dispatch answers again, with the same item: the bytes sent stay, nothing is logged, and
+      // the episode ends.
       failing = false;
       await keeps(4);
       expect(unshown()).toEqual([failure]);
-      // The first failed read after that logs again.
+      // The first failed read after that begins a new episode, and logs again.
       failing = true;
       await keeps(5);
       expect(unshown()).toEqual([failure, failure]);
+      // No request after the first appended a message, so the session holds its one record.
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+    } finally {
+      stopSink();
+    }
+  });
+
+  // A Dispatch that cannot be read, with no list cached: the first request appends the failure
+  // line after its last message, and the log says so once for the failure episode; the requests
+  // after it rebuild that line where it went and log nothing. A read that answers ends the
+  // episode, and its empty window appends nothing, so the failure line stays the newest answers
+  // message; the next failed read begins a new episode and logs once more, now that the request
+  // keeps the answers messages sent. A Dispatch URL and a session of their own: the read's cache
+  // is the process's, by session and URL.
+  test("a Dispatch answering 503 with nothing cached logs one line per failure episode, whether the request shows the failure or keeps the line sent", async () => {
+    const id = "ses_answers_503";
+    process.env.DISPATCH_URL = "http://dispatch-503.test";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
+    let answering = false;
+    const reads: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.host !== "dispatch-503.test") return responseWithRegistration(input, init, {});
+      if (url.pathname.endsWith("/answers")) reads.push(url.pathname);
+      return answering
+        ? Response.json({
+            session_id: id,
+            since: url.searchParams.get("since"),
+            total: 0,
+            items: [],
+          })
+        : Response.json(
+            { code: "UNAVAILABLE", error: "the database is unavailable" },
+            { status: 503 }
+          );
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?session-answers-503");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = recordingContext(fixture.entries, () => id);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("people's answers")) {
+        warnings.push(entry.message);
+      }
+    });
+    const reason = "UNAVAILABLE: the database is unavailable";
+    const shown = `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`;
+    const kept = `envoy: people's answers could not be read (${reason}); the request keeps the answers messages sent, which do not name this read's failure`;
+    const failureLine = {
+      role: "user",
+      content: [{ type: "text", text: sessionAnswersFailureLine(reason) }],
+      timestamp: 0,
+    };
+    const prompt = { role: "user", content: [{ type: "text", text: "Fix it." }], timestamp: 1 };
+    const [round1, round2, round3] = [1, 2, 3].map(toolRound);
+    const request = async (messages: readonly unknown[]) =>
+      contextMessages(await fixture.handlers.get("context")?.({ messages }, context));
+    try {
+      // The first failed read: the failure line after the prompt, recorded alone in its message,
+      // and one line in the log.
+      const first = await request([prompt]);
+      const [skill] = first;
+      expect(first).toEqual([skill, prompt, failureLine]);
+      expect(warnings).toEqual([shown]);
+      expect(answersSent(fixture.entries)).toEqual([
+        {
+          type: "custom",
+          customType: ANSWERS_SENT,
+          data: { after: "user@1", blocks: [sessionAnswersFailureLine(reason)] },
+        },
+      ]);
+
+      // The same failure a tool round later: the line stays after the prompt, the request ends
+      // with the tool result, and nothing is appended, recorded or logged.
+      expect(await request([prompt, ...round1])).toEqual([skill, prompt, failureLine, ...round1]);
+      expect(warnings).toEqual([shown]);
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+
+      // Dispatch answers, with no item in the window: nothing to say, so nothing is appended,
+      // recorded or logged, and the episode ends.
+      answering = true;
+      expect(await request([prompt, ...round1, ...round2])).toEqual([
+        skill,
+        prompt,
+        failureLine,
+        ...round1,
+        ...round2,
+      ]);
+      expect(warnings).toEqual([shown]);
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+
+      // 503 again: a new episode, logged once. The failure line sent is still the newest answers
+      // message, so this request keeps it and appends none.
+      answering = false;
+      expect(await request([prompt, ...round1, ...round2, ...round3])).toEqual([
+        skill,
+        prompt,
+        failureLine,
+        ...round1,
+        ...round2,
+        ...round3,
+      ]);
+      expect(warnings).toEqual([shown, kept]);
+      expect(answersSent(fixture.entries)).toHaveLength(1);
+    } finally {
+      stopSink();
+    }
+    // Every request asked Dispatch: none rode on a read still in flight.
+    expect(reads).toHaveLength(4);
+  });
+
+  // The answers message a request appends is written to the session (`pi.appendEntry`), and the
+  // next request finds it in the branch and carries it where it went, with its bytes, appending
+  // nothing while the read shows nothing new. A request during which the host moved to another
+  // session while the read waited still carries the new list it appends, but records nothing: the
+  // entry would land in the file of the session the host moved to.
+  test("the session records the answers list a request appends, the next request rebuilds it from that record, and a request whose host moved during the read records nothing", async () => {
+    const { item } = answeringDispatch("Go the second way.");
+    const answering = rowFetch();
+    let text = item.text;
+    let live = "ses_answers_recorded";
+    /** The session the host moves to while the next read waits, if it moves. */
+    let moveTo: string | undefined;
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).host !== "dispatch.test") return answering(input, init);
+      if (moveTo !== undefined) live = moveTo;
+      return Response.json({
+        session_id: "ses_answers_recorded",
+        since: item.at,
+        total: 1,
+        items: [{ ...item, text }],
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?session-answers-recorded");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = recordingContext(fixture.entries, () => live);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("people's answers")) {
+        warnings.push(entry.message);
+      }
+    });
+    const prompt = { role: "user", content: [{ type: "text", text: "Fix it." }], timestamp: 1 };
+    const [round1, round2] = [1, 2].map(toolRound);
+    const request = async (messages: readonly unknown[]) =>
+      contextMessages(await fixture.handlers.get("context")?.({ messages }, context));
+    try {
+      const first = await request([prompt]);
+      const [skill] = first;
+      const blocks = [renderSessionAnswers([item], { now: Date.now() }), REPLACES];
+      const placed = {
+        role: "user",
+        content: blocks.map((block) => ({ type: "text", text: block })),
+        timestamp: 0,
+      };
+      expect(first).toEqual([skill, prompt, placed]);
+      const recorded = answersSent(fixture.entries);
+      expect(recorded).toEqual([
+        {
+          type: "custom",
+          customType: ANSWERS_SENT,
+          data: { after: "user@1", blocks, words: [expect.any(String)] },
+        },
+      ]);
+
+      // A tool round later, with the same item: the list is rebuilt from the record, after the
+      // prompt, and nothing is appended or recorded.
+      expect(await request([prompt, ...round1])).toEqual([skill, prompt, placed, ...round1]);
+      expect(answersSent(fixture.entries)).toEqual(recorded);
+
+      // The person edits the answer, and the host moves to another session while the read waits:
+      // the request carries the new list after its last message, and the session gains no record.
+      text = "Go the third way.";
+      moveTo = "ses_answers_moved";
+      const edited = renderSessionAnswers([{ ...item, text }], { now: Date.now() });
+      expect(await request([prompt, ...round1, ...round2])).toEqual([
+        skill,
+        prompt,
+        placed,
+        ...round1,
+        ...round2,
+        {
+          role: "user",
+          content: [
+            { type: "text", text: edited },
+            { type: "text", text: REPLACES },
+          ],
+          timestamp: 0,
+        },
+      ]);
+      expect(live).toBe("ses_answers_moved");
+      expect(answersSent(fixture.entries)).toEqual(recorded);
+      expect(warnings).toEqual([
+        "envoy: the message of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read",
+      ]);
     } finally {
       stopSink();
     }
@@ -19728,8 +20209,9 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, context);
 
     expect(notifications).toEqual([
-      `envoy: Envoy's inbound messages are off: NATS_NKEY_SEED_FILE names ${missing}, which could not be read: ENOENT: no such file or directory, open '${missing}'; the Envoy tools still work`,
+      "envoy: Envoy's inbound messages are off: NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT); the Envoy tools still work",
     ]);
+    expect(notifications.join("\n")).not.toContain(missing);
     expect(natsState.connectedNames.length).toBe(0);
     expect(intervals.length).toBe(0);
     expect(fixture.tools.map((tool) => tool.name)).toContain("envoy_send");
@@ -19831,7 +20313,7 @@ console.log(JSON.stringify(args));
       configure: () => {
         const missing = join(configDirectory, "missing-seed");
         process.env.NATS_NKEY_SEED_FILE = missing;
-        return `NATS_NKEY_SEED_FILE names ${missing}, which could not be read: ENOENT: no such file or directory, open '${missing}'`;
+        return "NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT)";
       },
     },
     {
@@ -19897,6 +20379,13 @@ console.log(JSON.stringify(args));
     expect(
       notifications.some((message) => message.includes("inbound messages are unavailable"))
     ).toBe(true);
+    // The notice names the dial's own failure, the cause a person can act on (a hub with no auth
+    // service under NATS_AUTH=broker says so and what to unset), not only the refusal it led to.
+    expect(
+      notifications.some((message) =>
+        message.includes("because its NATS connection failed: CONNECTION_REFUSED")
+      )
+    ).toBe(true);
     expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_retry")).toBe(false);
     const retry = intervals.at(-1);
     if (retry === undefined) throw new Error("retry interval was not registered");
@@ -19915,6 +20404,488 @@ console.log(JSON.stringify(args));
 
     expect(natsState.connectedNames.length).toBe(connectionsAfterRecovery);
   });
+
+  test("a NATS failure notice never names an address the log would not", async () => {
+    // A throwaway nkey seed pasted as the NATS server: nats.js's resolver error names it as the
+    // host it could not look up, lowercased, and the notice must carry neither form.
+    const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
+    process.env.ENVOY_NATS_URL = seed;
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    natsState.failConnects = 1;
+    natsState.failError = () =>
+      Object.assign(new Error(`getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`), {
+        name: "DNSException",
+        code: "EAI_AGAIN",
+        syscall: "getaddrinfo",
+      });
+    const notifications: string[] = [];
+    const context: SessionContext = {
+      cwd: "/tmp/envoy-omp-test",
+      sessionManager: { ...topLevelSession, getSessionId: () => "ses_seed_notice" },
+      setInterval: () => {},
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?seed-notice");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    expect(
+      notifications.some((message) =>
+        message.includes(
+          "because its NATS connection failed: getaddrinfo EAI_AGAIN); retrying in the background"
+        )
+      )
+    ).toBe(true);
+    expect(notifications.join("\n").toLowerCase()).not.toContain(seed.toLowerCase());
+  });
+
+  // A failing row for #4140 at c8903b20b8, found by the acceptance (AcceptE2-2). Put it in
+  // packages/pi-envoy/extensions/envoy.test.ts, inside `describe("envoy OMP extension", ...)`,
+  // beside "natsCredential follows a session switch", and run
+  // `bun test extensions/envoy.test.ts -t 'a broker that answers no trade'` in packages/pi-envoy.
+  // With the broker trade one retry loop per session (71dc1b565f), a broker that answers 503 is
+  // traded again at 15 s doubling to 5 minutes, and each caller waits on that loop within its own
+  // deadline. A pass of the session's registration holds several such callers: the listener calls
+  // (the pod's broker credential, since it holds no Envoy bearer) and the NATS dial's `ready` (20 s).
+  // Together they outlast the pass's 30 s deadline, so the queue abandons the task, and the notice
+  // says "a queued task did not settle within 30000ms and was abandoned", with no word of the
+  // trade. At 4ec0330624 the same pass names the failed trade. On the real stack (the acceptance's
+  // leak matrix) this was 12 rows whose trade cannot succeed: a broker refusing connections,
+  // answering 500 or a malformed token, an unreadable machine token.
+  test("a broker that answers no trade: the session's notice names the trade, and no pass is abandoned", async () => {
+    // The pass deadline the story above names, 30 s, the deadline's floor (`MIN_PASS_DEADLINE_MS`),
+    // with the heartbeat shortened to it, since a deadline is never shorter than the heartbeat. The
+    // queue's own timer is then the row's bound, on the same loop as the pass: a pass that
+    // outlasts it is abandoned, and the session is told so.
+    const passMs = 30_000;
+    await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
+      const tokenFile = join(configDirectory, "projected-token");
+      writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+      process.env.NATS_AUTH = "broker";
+      process.env.AGENT_SECRETS_URL = "http://broker.test";
+      process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+      process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+      globalThis.fetch = async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).host !== "broker.test")
+          return responseWithRegistration(input, init, []);
+        await request.text();
+        return new Response("the broker is away", { status: 503 });
+      };
+      const notifications: string[] = [];
+      const intervals: { callback: () => void; intervalMs: number }[] = [];
+      const context: SessionContext = {
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: { ...topLevelSession, getSessionId: () => "ses_broker_away" },
+        setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
+        // The one extra call a failed heartbeat arms is not run: the row reads the heartbeat.
+        setTimeout: () => undefined,
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      };
+      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(
+        notifications.some((message) => message.includes("the trade for the session's token"))
+      ).toBe(true);
+      // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it: the
+      // heartbeat's own interval, whose tick says what its pass came to, a failure or a pass the
+      // queue abandoned at its deadline. The 15 s retry the start's failure arms says neither, so a
+      // row that ran it saw nothing of its pass.
+      const heartbeat = intervals.find(({ intervalMs }) => intervalMs === passMs);
+      if (heartbeat === undefined) throw new Error("the heartbeat interval was not registered");
+      const before = notifications.length;
+      heartbeat.callback();
+      // Its pass ends inside the queue's 30 s deadline, the trade failing at 20 s, or is abandoned
+      // there and says so: a heartbeat that says nothing a minute on has hung, and is named.
+      await until(
+        () => notifications.length > before,
+        "the heartbeat's notice of what its pass came to",
+        60_000
+      );
+      expect(notifications.slice(before)).toEqual([
+        expect.stringContaining("envoy: registry heartbeat failed"),
+      ]);
+      expect(notifications.some((message) => message.includes("did not settle within"))).toBe(
+        false
+      );
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    });
+  }, 90_000);
+
+  /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
+   *  as `answer(n)` says for its n-th: a 503, or a token it mints for the trade's session. */
+  function brokerPod(answer: (trade: number) => "503" | "grant"): { minted: Map<string, string> } {
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    const minted = new Map<string, string>();
+    let trades = 0;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      const session = new URLSearchParams(await request.text()).get("session") ?? "";
+      trades += 1;
+      if (answer(trades) === "503") return new Response("the broker is away", { status: 503 });
+      const token = fixtureSecret("nats");
+      minted.set(token, session);
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      });
+    };
+    return { minted };
+  }
+
+  /** A session's context whose notices are kept with how long after `started` each was made: the
+   *  start itself can hold the turn, so the time is taken as the notice is made. */
+  function timedContext(sessionID: string, started: number) {
+    const notifications: { readonly message: string; readonly at: number }[] = [];
+    const context: SessionContext = {
+      cwd: "/tmp/envoy-omp-test",
+      sessionManager: { ...topLevelSession, getSessionId: () => sessionID },
+      setInterval: () => {},
+      ui: {
+        ...sessionContext().ui,
+        notify: (message) => notifications.push({ message, at: Date.now() - started }),
+      },
+    };
+    return { context, notifications };
+  }
+
+  test("a broker that never grants: the start fails at its 20 s bound, naming the 503, inside its pass", async () => {
+    // The start waits for ready within its bound (`TRADE_DEADLINE_MS`, 20 s), through the retry
+    // loop's retries, and then fails naming what the last trade came to, before the pass's
+    // deadline: a pass abandoned at that deadline names no cause at all. The deadline is its floor
+    // here, 30 s (`MIN_PASS_DEADLINE_MS`, the heartbeat shortened to it), and the queue's own
+    // timer is the row's upper bound, on the same loop as the start's: a start that outlasts it is
+    // abandoned, and the session is told that instead of the trade.
+    const passMs = 30_000;
+    await withEnvoyTimings({ heartbeatMs: passMs, passDeadlineMs: passMs }, async () => {
+      brokerPod(() => "503");
+      const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      // Timed from the start itself, not from before the module loads: a module slow to load on a
+      // loaded machine is no slower start.
+      const { context, notifications } = timedContext("ses_broker_503", Date.now());
+      await fixture.handlers.get("session_start")?.({}, context);
+      const notice = notifications.find(({ message }) =>
+        message.includes("the trade for the session's token")
+      );
+      expect(
+        notice,
+        `no notice named the trade: ${notifications.map(({ message }) => message).join(" | ")}`
+      ).toBeDefined();
+      expect(notice?.message).toContain("HTTP 503");
+      // A timer fires no sooner than it is due, so the start waited out its bound however loaded
+      // the machine.
+      expect(notice?.at).toBeGreaterThanOrEqual(19_000);
+      expect(notifications.some(({ message }) => message.includes("did not settle within"))).toBe(
+        false
+      );
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    });
+  }, 60_000);
+
+  test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
+    // The start has nothing to do until it holds a token, so it waits for ready: the retry
+    // loop's next trade, 15 s at most later, grants, and the session's first pass dials and
+    // registers with it, rather than waiting for the next heartbeat, 90 s on.
+    const { minted } = brokerPod((trade) => (trade === 1 ? "503" : "grant"));
+    const started = Date.now();
+    const { context, notifications } = timedContext("ses_broker_once_away", started);
+    const { default: envoyExtension } = await import("./envoy.ts?broker-away-once");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    expect(
+      natsState.presented.map((token) => minted.get(token)),
+      `the start presented no token: ${notifications.map(({ message }) => message).join(" | ")}`
+    ).toEqual(["ses_broker_once_away"]);
+    expect(natsState.controls.get("notifications.agent.ses_broker_once_away")?.active()).toBe(true);
+    expect(
+      notifications.some(({ message }) => message.includes("the trade for the session's token"))
+    ).toBe(false);
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }, 60_000);
+
+  test("natsCredential follows a session switch", async () => {
+    // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
+    // alone, so after a switch the connection presents the new session's token, and is back,
+    // before anything of the new session's is subscribed.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    const traded: string[] = [];
+    /** Each token the stub broker minted, to the session its trade wrote under. */
+    const minted = new Map<string, string>();
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.host !== "broker.test") return responseWithRegistration(input, init, []);
+      const session = new URLSearchParams(await request.text()).get("session") ?? "";
+      traded.push(session);
+      const token = fixtureSecret("nats");
+      minted.set(token, session);
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-switch");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"));
+    // Each CONNECT presented a token the broker minted for the session it names here.
+    expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
+    expect(natsState.controls.get("notifications.agent.ses_switch_from")?.active()).toBe(true);
+
+    natsState.timeline.length = 0;
+    await fixture.handlers.get("session_switch")?.({}, sessionContext("ses_switch_to"));
+    expect(natsState.presented.map((token) => minted.get(token))).toEqual([
+      "ses_switch_from",
+      "ses_switch_to",
+    ]);
+    // The reconnect comes before every subscribe of the new session's subjects.
+    const moved = natsState.timeline.filter(
+      (entry) => entry === "reconnect" || entry.includes("ses_switch_to")
+    );
+    expect(moved[0]).toBe("reconnect");
+    expect(moved.length).toBeGreaterThan(1);
+    expect(natsState.controls.get("notifications.agent.ses_switch_to")?.active()).toBe(true);
+    expect(traded).toContain("ses_switch_to");
+    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"));
+  });
+
+  test("the keeper's warning of a refused token reaches the session as a notice, once", async () => {
+    // A token the server refuses though it is live is a session that stops receiving, which the
+    // session is told of as every other inbound outage is (the review of 2fa6fbf7cf, M2).
+    const { minted } = brokerPod(() => "grant");
+    const { context, notifications } = timedContext("ses_keeper_notice", Date.now());
+    const { default: envoyExtension } = await import("./envoy.ts?keeper-notice");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_keeper_notice"]);
+    const refused = () =>
+      notifications.filter(({ message }) =>
+        message.includes("refused the connection's live broker token")
+      );
+    for (const read of natsState.statusReaders) {
+      read({ type: "error", data: "AUTHORIZATION_VIOLATION" });
+    }
+    // The reader's warning is this process's own work, done within turns of the push; a bound of
+    // two-thirds of the row's time names a hang without failing a machine that stalls.
+    await until(() => refused().length > 0, "the keeper's notice", 20_000);
+    expect(refused().map(({ message }) => message)).toEqual([
+      "envoy: the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
+    ]);
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }, 30_000);
+
+  test("a switch whose new token never comes fails inside a short pass, naming the trade", async () => {
+    // ENVOY_HEARTBEAT_MS=10000 ENVOY_PASS_DEADLINE_MS=10000: the follow takes at most 8 s of the
+    // pass (`followBoundMs`), its trade 4 s of that, so the pass names what the trade came to
+    // rather than being abandoned at its deadline with no word of the cause (the review of
+    // 2fa6fbf7cf, m3: unbounded, the trade alone waited 20 s).
+    await withEnvoyTimings({ heartbeatMs: 10_000, passDeadlineMs: 10_000 }, async () => {
+      brokerPod((trade) => (trade === 1 ? "grant" : "503"));
+      const started = Date.now();
+      // When the follow's trade for the new session reached the broker: the follow starts its
+      // clock just before it, which the switch's own work before the pass can put well after the
+      // row's switch. The pod's fetch is `rowFetch()`: `globalThis.fetch` reads the file's
+      // recording wrapper, which calls whatever a row installed, so a wrapper that called it would
+      // call itself forever.
+      const pod = rowFetch();
+      let followTradeAt: number | undefined;
+      globalThis.fetch = async (input, init) => {
+        const request = new Request(input, init);
+        if (new URL(request.url).host === "broker.test") {
+          const session = new URLSearchParams(await request.clone().text()).get("session");
+          if (session === "ses_follow_to") followTradeAt ??= Date.now() - started;
+        }
+        return await pod(input, init);
+      };
+      const before = timedContext("ses_follow_from", started);
+      const { default: envoyExtension } = await import("./envoy.ts?follow-bound");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, before.context);
+      const after = timedContext("ses_follow_to", started);
+      const switchedAt = Date.now() - started;
+      await fixture.handlers.get("session_switch")?.({}, after.context);
+      const all = () => [...before.notifications, ...after.notifications];
+      const named = () =>
+        all().find(({ message }) => message.includes("could not take the new session's token"));
+      await until(() => named() !== undefined, "a notice naming the follow's trade", 45_000);
+      expect(named()?.message).toContain("HTTP 503");
+      const at = named()?.at ?? Number.POSITIVE_INFINITY;
+      // Not before the trade's 4 s share, which no timer ends early: counted from the switch,
+      // before the follow started its clock.
+      expect(at - switchedAt).toBeGreaterThanOrEqual(3_900);
+      // Inside the follow's own 8 s bound (`followBoundMs`), counted from its trade: the 4 s share
+      // and as much again for a loaded machine to say so, the share the follow would leave the
+      // connection. The pass's own 10 s deadline is the bound the queue keeps: a follow that
+      // outlasted it would be abandoned, which says so below.
+      expect(followTradeAt).toBeDefined();
+      expect(at - (followTradeAt ?? Number.NEGATIVE_INFINITY)).toBeLessThan(8_000);
+      expect(all().some(({ message }) => message.includes("did not settle within"))).toBe(false);
+      await fixture.handlers.get("session_shutdown")?.({}, after.context);
+    });
+  }, 60_000);
+
+  test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
+    // The move to the new session's token fails (its trade is refused outright, a refusal no
+    // trade cures, so the move fails at once rather than at the follow's deadline), so the new
+    // session's agent-stream subject never opens. What the host records next is the new session's,
+    // and the old session's control subject must not answer a replay with it.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      const session = new URLSearchParams(await request.text()).get("session") ?? "";
+      if (session !== "ses_failed_from") {
+        return Response.json({ error: "invalid_client" }, { status: 401 });
+      }
+      return Response.json({
+        access_token: fixtureSecret("nats"),
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-failed-switch");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_failed_from"));
+    const oldControl = "agentstream.ses_failed_from.control";
+    expect(natsState.controls.get(oldControl)?.active()).toBe(true);
+
+    const next = sessionContext("ses_failed_to");
+    await fixture.handlers.get("session_switch")?.({}, next);
+    expect(natsState.controls.has("agentstream.ses_failed_to.control")).toBe(false);
+    const marker = "a turn of the session switched to";
+    await fixture.handlers.get("message_end")?.(
+      { message: { content: [{ text: marker, type: "text" }], role: "assistant", timestamp: 30 } },
+      next
+    );
+
+    // A viewer of the old session asks for its history.
+    const control = natsState.controls.get(oldControl);
+    control?.push(JSON.stringify({ type: "watch", v: 1 }));
+    control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    await Bun.sleep(50);
+    const replayed = natsState.published
+      .filter((each) => each.subject === "inbox-old-viewer")
+      .map((each) => new TextDecoder().decode(each.data));
+    expect(replayed.join("\n")).not.toContain(marker);
+    expect(natsState.controls.get(oldControl)?.active()).toBe(false);
+    await fixture.handlers.get("session_shutdown")?.({}, next);
+  }, 30_000);
+
+  test("after a rollback with no event, a viewer of the session left is replayed nothing of the one returned to", async () => {
+    // Two sessions of one host: it switches from A to B, B's viewer attaches, and the host then
+    // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
+    // is still open; what the host records then is A's, and B's viewer must be replayed only B's.
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const { default: envoyExtension } = await import("./envoy.ts?agent-stream-ring-per-session");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const first = sessionContext("ses_ring_a");
+    await fixture.handlers.get("session_start")?.({}, first);
+    const second = sessionContext("ses_ring_b");
+    await fixture.handlers.get("session_switch")?.({}, second);
+    const control = natsState.controls.get("agentstream.ses_ring_b.control");
+    expect(control?.active()).toBe(true);
+    const say = (text: string, timestamp: number) => ({
+      message: { content: [{ text, type: "text" }], role: "assistant", timestamp },
+    });
+    const ownTurn = "a turn of the session switched to";
+    await fixture.handlers.get("message_end")?.(say(ownTurn, 40), second);
+    // The host returns to A with no event, and records A's next turn.
+    const returnedTurn = "a turn of the session returned to";
+    await fixture.handlers.get("message_end")?.(say(returnedTurn, 50), first);
+
+    control?.push(JSON.stringify({ type: "watch", v: 1 }));
+    control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-viewer-of-b");
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    await Bun.sleep(50);
+    const replayed = natsState.published
+      .filter((each) => each.subject === "inbox-viewer-of-b")
+      .map((each) => new TextDecoder().decode(each.data))
+      .join("\n");
+    // The replay can carry a turn at all: B's own is in it.
+    expect(replayed).toContain(ownTurn);
+    expect(replayed).not.toContain(returnedTurn);
+    await fixture.handlers.get("session_shutdown")?.({}, first);
+  }, 30_000);
+
+  test("natsCredential is kept renewed for the connection's life, and the keeper stops at shutdown", async () => {
+    // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
+    // and the connection reconnects to present it before the old one lapses. Shutdown stops it.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    const minted: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      const token = fixtureSecret("nats");
+      minted.push(token);
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 2,
+      });
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?nats-credential-keeper");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, sessionContext("ses_kept"));
+    const [first] = minted;
+    expect(first).toBeString();
+    expect(natsState.presented[0]).toBe(first);
+    // What the start did is done; from here a reconnect is the keeper's.
+    natsState.timeline.length = 0;
+    const before = natsState.presented.length;
+    const deadline = Date.now() + 5_000;
+    while (!natsState.timeline.includes("reconnect") && Date.now() < deadline) await Bun.sleep(50);
+    expect(natsState.timeline).toContain("reconnect");
+    expect(natsState.presented.length).toBeGreaterThan(before);
+    expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
+    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"));
+    // Stopped, it trades and reconnects no more.
+    const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
+    const traded = minted.length;
+    await Bun.sleep(2_500);
+    expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
+    expect(minted).toHaveLength(traded);
+  }, 15_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
     globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
@@ -20591,8 +21562,9 @@ console.log(JSON.stringify(args));
         attempted += 1;
         if (attempted >= reached.at) reached.resolve();
       }
-      // The symptom from production: the registration call itself times out under listener load.
-      if (registryDown) throw new Error("The operation timed out.");
+      // The symptom from production: the registration call itself times out under listener load,
+      // as AbortSignal.timeout raises it.
+      if (registryDown) throw new DOMException("The operation timed out.", "TimeoutError");
       if (registering) registrations += 1;
       // An accepted registration answers a consumer, as every accepted one does: a session
       // receives only what its own consumer holds, so an answer naming none would fail the
@@ -20641,9 +21613,12 @@ console.log(JSON.stringify(args));
     expect(delayMs).toBeGreaterThanOrEqual(20_000);
     expect(delayMs).toBeLessThanOrEqual(40_000);
     // Two notices, in this order: the outage is told once (the session receives nothing while
-    // no registration is accepted), and the heartbeat says when it asks again.
+    // no registration is accepted), and the heartbeat says when it asks again. The call is named
+    // with the failure's class, never the runtime's message, which can repeat the host it dialed.
     expect(notifications).toEqual([
-      expect.stringContaining("inbound messages are unavailable (The operation timed out.)"),
+      expect.stringContaining(
+        "inbound messages are unavailable (POST http://envoy.test/v1/interests/subscribe got no answer: TimeoutError (message withheld))"
+      ),
       expect.stringContaining(`retrying once in ${Math.round(delayMs / 1000)} s`),
     ]);
 
@@ -21254,7 +22229,7 @@ describe("consumer delivery", () => {
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     let refusing = options.refuse;
     const registrations: Registration[] = [];
     const dispatchReplies: string[] = [];
@@ -22177,6 +23152,31 @@ describe("consumer delivery", () => {
       expect(live).not.toContain(movedIso);
       // Returning to it reads the same bytes, so the provider's prompt cache reads them again.
       expect(liveAgain).toBe(live);
+    });
+
+    // The delivery a session first gives a card goes into its file once, at the card's
+    // `message_end` (`envoy-card-delivered`, a literal so the case loads against a source without
+    // the export), and the requests after it record nothing (`../src/card-age`).
+    test("a card's write records its delivery in the session once", async () => {
+      const session = await bootConsumer("card-age-recorded", { turn: "streaming" });
+      session.relay(1, peer("card-age-recorded"));
+      await until(() => session.cards("evt-card-age-recorded").length > 0, "the relayed card");
+      await session.take();
+      const [card] = session.cards("evt-card-age-recorded");
+      if (card === undefined) throw new Error("the card was not handed");
+      const { customType, content, details } = card;
+      const written = { role: "custom", customType, content, display: true, details, timestamp: 1 };
+      const contextHandler = session.fixture.handlers.get("context");
+      if (contextHandler === undefined) throw new Error("no context handler was registered");
+      await contextHandler({ messages: [written] }, sessionContext(SESSION));
+      await contextHandler({ messages: [written] }, sessionContext(SESSION));
+
+      const recorded = session.fixture.entries.filter(
+        (entry) => entry.customType === "envoy-card-delivered"
+      );
+      expect(recorded.map((entry) => entry.data)).toEqual([
+        { event_id: "evt-card-age-recorded", at: expect.any(Number) },
+      ]);
     });
   });
 

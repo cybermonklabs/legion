@@ -92,6 +92,10 @@ type listenerDeps struct {
 	// share of its traffic is going to sessions that have stopped answering, before any of them
 	// reaches the gone horizon.
 	sendsToUnresponsive *metrics.Counter
+	// senderLimit is the operator's limit on the messages each agent session sends through this
+	// listener (sender_limit.go). nil is no limit, which is what every test that builds
+	// listenerDeps itself runs with.
+	senderLimit *senderLimit
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1135,6 +1139,14 @@ func main() {
 	}
 	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
 	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
+	// The operator's limit on the messages each agent session sends, read beside the API auth
+	// settings so a value it refuses stops the start before the listener connects to NATS, and
+	// stated in one line either way (sender_limit.go).
+	senderMessageLimit, err := parseSenderLimit(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	logger.Info(describeSenderLimit(senderMessageLimit))
 
 	// Load webhook config (fast — env var reads only).
 	webhookCfg, err := webhook.LoadWebhookConfig()
@@ -1265,10 +1277,22 @@ func main() {
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
+	// starting is the context the bucket opens below run under, and it is context.Background() on
+	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
+	// it answers them (a bucket's create, a raise's copies, a member applying a create, a stream's
+	// leader: bus.EnsureKeyValue), and what bounds each of them is the start's hang guard, 36 s per
+	// bus.EnsureKeyValue call (bus's startHangGuard, three times the slowest wait measured under
+	// load from a raise's answer until its stream had a leader and every copy was current), after
+	// which the start fails naming the wait. A signal needs no context here: this
+	// process installs no handler for SIGTERM or SIGINT until signal.NotifyContext makes stopping
+	// below, so until then the signal's default action ends the process at once, wherever the
+	// start is. Making stopping here instead would change that for the whole start, the NATS
+	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
+	starting := context.Background()
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
-	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
+	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
 		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
@@ -1276,8 +1300,9 @@ func main() {
 	// one ends the start within the NATS connect. No retry can bind it, and while this listener
 	// starts, /healthz answers 200 "starting", so a rolling deploy waiting on it would take the task
 	// for healthy and stop the one it replaces. Nothing serves yet, so the start ends at once. A
-	// lookup that fails is left to the bind, which retries it.
-	if _, err := listenerDurable(client, consumer); errors.Is(err, errListenerDurableRefused) {
+	// read the grant refuses ends it the same way (durableRefused); a lookup that fails otherwise
+	// is left to the bind, which retries it.
+	if _, err := listenerDurable(client, consumer); durableRefused(err) {
 		logger.Error(durableRefusedLine, slog.String("error", err.Error()))
 		client.Conn.Close()
 		os.Exit(1)
@@ -1296,7 +1321,7 @@ func main() {
 	// cannot open it ends (log.Fatalf below), so ciStore is set exactly when this names it.
 	copied := listenerCopiedBuckets(webhookCfg.GitHub != nil)
 	awaitBuckets := func() error {
-		return awaitCopiedBuckets(context.Background(), logger, client.Connection(), client.JS(), copied, missing)
+		return awaitCopiedBuckets(starting, logger, client.Connection(), client.JS(), copied, missing)
 	}
 	if err := awaitBuckets(); err != nil {
 		log.Fatalf("await the copied KV buckets: %v", err)
@@ -1315,7 +1340,7 @@ func main() {
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore, err = openExisting(awaitBuckets, func() (*cistore.Store, error) {
-			return cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge))
+			return cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(bus.CIStateBucketMaxAge))
 		})
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
@@ -1336,7 +1361,7 @@ func main() {
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
 	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
 	registry, err := openExisting(awaitBuckets, func() (*store.Registry, error) {
-		return store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
+		return store.Open(starting, client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects))
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -1411,6 +1436,7 @@ func main() {
 	}
 	sessions, err := openExisting(awaitBuckets, func() (*session.SessionRegistry, error) {
 		return session.OpenSessionRegistry(
+			starting,
 			client.Conn,
 			session.WithSessionReplicas(cfg.NATSReplicas),
 			session.WithSessionLogger(logger.Slog()),
@@ -1466,6 +1492,7 @@ func main() {
 	// restart. This line is the one failure that leaves no store at all, a connection that gives
 	// no JetStream context, which answers as an empty store does.
 	known, knownErr := session.OpenKnownSessions(
+		starting,
 		client.Conn,
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),
@@ -1697,6 +1724,7 @@ func main() {
 		confirmed:    dedupe.New(10 * time.Minute),
 
 		sendsToUnresponsive: sendsToUnresponsive,
+		senderLimit:         senderMessageLimit,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 
@@ -1712,7 +1740,7 @@ func main() {
 	// background loop has started yet. shutdownListener exits, so nothing below runs on an error.
 	if err != nil {
 		switch {
-		case errors.Is(err, errListenerDurableRefused):
+		case durableRefused(err):
 			logger.Error(durableRefusedLine, slog.String("error", err.Error()))
 		case errors.Is(err, errListenerDurableBindExhausted):
 			logger.Error("subscribe failed after max attempts, shutting down",

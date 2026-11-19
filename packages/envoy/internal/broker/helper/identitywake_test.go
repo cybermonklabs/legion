@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -83,14 +84,14 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 	// machine, not identity: identity is the type one reading of a session's broker identity
 	// has (Session.identity), which this test's enrol below names.
 	machine, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: f.srv.URL, Key: key, HTTP: f.srv.Client(),
+		BrokerURL: brokeraddr.New(f.srv.URL), Key: key, HTTP: f.srv.Client(),
 		Subject: brokerclient.NewProjectedToken(tokenFile),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := &Broker{
-		URL: f.srv.URL, Identity: machine, HTTP: f.srv.Client(),
+		URL: brokeraddr.New(f.srv.URL), Identity: machine, HTTP: f.srv.Client(),
 		OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 	}
 	t.Cleanup(b.Close)

@@ -383,7 +383,9 @@ func create(stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext,
 			fmt.Fprintf(stderr, "envoy-infra buckets: read %s: %v\n", bucket, err)
 			return 1
 		}
-		if _, err := bus.CreateCopiedBucket(conn, js, bucket, replicas); err != nil {
+		// An operator's command, run by hand until it ends: the create's waits end at the start's
+		// hang guard (bus.EnsureKeyValue), under no context of its own.
+		if _, err := bus.CreateCopiedBucket(context.Background(), conn, js, bucket, replicas); err != nil {
 			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
 			return 1
 		}
@@ -487,7 +489,7 @@ func breakGlassCreate(stdout, stderr io.Writer, natsURL, operator string, bucket
 	hub := bus.NATSURLWithoutUserinfo(natsURL)
 	for _, bucket := range buckets {
 		fmt.Fprintf(stderr, "envoy-infra buckets: break-glass: operator %s creates %s on %s, as the environment's NATS user and with no writer proof\n", operator, bucket, hub)
-		if _, err := bus.CreateMissingCopiedBucket(nc.Conn, js, bucket, replicas); errors.Is(err, bus.ErrBucketExists) {
+		if _, err := bus.CreateMissingCopiedBucket(context.Background(), nc.Conn, js, bucket, replicas); errors.Is(err, bus.ErrBucketExists) {
 			fmt.Fprintf(stderr, "envoy-infra buckets create --break-glass: refused: KV_%s was made by another client after the read, and is left as it is: %v\n", bucket, err)
 			return 1
 		} else if err != nil {

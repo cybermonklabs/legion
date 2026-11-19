@@ -79,7 +79,7 @@ func TestTheKnownSessionHookLogsNothingForARunThatIsOver(t *testing.T) {
 			if buffer, reconnects := client.Conn.Opts.ReconnectBufSize, client.Conn.Opts.MaxReconnect; buffer != -1 || reconnects != -1 {
 				t.Fatalf("the connection has ReconnectBufSize %d and MaxReconnect %d, want -1 and -1 as the bus sets them", buffer, reconnects)
 			}
-			known, err := session.OpenKnownSessions(client.Conn, session.WithKnownSessionReplicas(1))
+			known, err := session.OpenKnownSessions(t.Context(), client.Conn, session.WithKnownSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the known-session store: %v", err)
 			}

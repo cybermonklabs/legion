@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -148,6 +149,7 @@ func samples(t *testing.T) map[string][]Event {
 		"IssueTurnEnded":       {IssueTurnEnded{}},
 		"StreamPromptResult":   {StreamPromptResult{}},
 		"StreamToolStep":       {StreamToolStep{}},
+		"StreamAnswered":       {StreamAnswered{}},
 		"StreamClosed":         {StreamClosed{}},
 		"StreamLateRefusal":    {StreamLateRefusal{}},
 		"PromptAcked":          {PromptAcked{}},
@@ -241,6 +243,19 @@ func TestNoTwoEventTypesShareAKind(t *testing.T) {
 	}
 }
 
+// States is the one list of every state that a test outside this package walks, such as record's
+// test of the states the role-holder publication counts live. Those tests cannot read this
+// package's source, so this test holds the list to the ClaimState constants the compiler sees here
+// (sealed): a state added to the const block and left out of the list fails here, rather than
+// passing every walk of the list. Each state is in the list once.
+func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
+	_, declared, _ := sealed(t)
+	listed := States()
+	if got, want := slices.Sorted(slices.Values(listed)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("States() = %v, want each declared ClaimState once: %v", listed, want)
+	}
+}
+
 // fixture is a claim restored in state with everything an event needs to pass its fences: the
 // generation, a recorded session, a locator for the states that have a process, and a pending
 // delivery (confirmed while working, as a delivered turn leaves it).
@@ -297,6 +312,9 @@ func fenced(ev Event, c Claim) Event {
 	case StreamToolStep:
 		return StreamToolStep{Claim: c.Token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: len(toolArgs), ArgsHash: toolArgsHash(toolArgs)}
+	case StreamAnswered:
+		// The stream stamps an answer with the generation of the launch whose connection read it.
+		return StreamAnswered{Claim: c.Token, Model: "anthropic/claude-sonnet-4-5", Generation: c.Generation}
 	case StreamLateRefusal:
 		return StreamLateRefusal{Claim: c.Token, DeliveryID: c.Pending.ID, Error: "busy"}
 	case PromptAcked:
@@ -398,6 +416,15 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 					after := h.claim()
 					if after.State != before.State || after.Budgets != before.Budgets || after.Generation != before.Generation {
 						t.Errorf("claim moved: %+v -> %+v", before, after)
+					}
+					// An answer reaches its ignore, not the generation fence in front of it
+					// (Machine.fence): a stop at the fence changes nothing too, and would pass. A
+					// claim with no process stops an observation at its fence by design (fenced), so
+					// this holds of the answer alone.
+					if _, answer := ev.(StreamAnswered); answer {
+						if lines := h.logs.lines("dropped a stale event", "event=StreamAnswered"); len(lines) > 0 {
+							t.Errorf("the answer stopped at a fence, not at its ignore: %q", lines)
+						}
 					}
 					if calls := h.rt.Methods(); len(calls) > 0 {
 						t.Errorf("asked the runtime %v", calls)

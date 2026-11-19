@@ -22,7 +22,7 @@ func TestAStoreWhoseBucketWasMissingOpensWhenToldItIsThere(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)
 	conn := testnats.Connect(t, uri)
-	known, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
+	known, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestAnOpenStoreFollowsItsBucketCreatedAgainWithNoWord(t *testing.T) {
 	_, uri := testnats.Start(t)
 	bustest.ProvisionURL(t, uri, 1)
 	conn := testnats.Connect(t, uri)
-	known, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
+	known, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}

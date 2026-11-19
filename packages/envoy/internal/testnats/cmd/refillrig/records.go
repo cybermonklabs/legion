@@ -71,11 +71,17 @@ func sessionTitle(set string, index, variant int) string {
 	return fmt.Sprintf("refill %s %d v%d", set, index, variant)
 }
 
-// variantTopic is a set's variant topic. It is a team topic, the namespace the listener's stream
-// captures (notifications.team.>): a registration drops any notifications. topic no stream subject
-// captures, so a topic outside it would never reach a listed row.
+// variantTopicPrefix begins every variant topic of set. The topics sit under notifications.team.,
+// which the listener's stream captures (internal/bus streamSubjects): a registration through the
+// listener stores only topics a stream subject captures, and leaves any other out of the interest
+// it writes (cmd/listener splitUncapturedTopics), so a variant topic anywhere else would vanish
+// from every registered session's row.
+func variantTopicPrefix(set string) string {
+	return "notifications.team.refill." + set + ".v"
+}
+
 func variantTopic(set string, variant int) string {
-	return fmt.Sprintf("notifications.team.refill.%s.v%d", set, variant)
+	return fmt.Sprintf("%s%d", variantTopicPrefix(set), variant)
 }
 
 // topics are the topics a seeded session subscribes to: its set's variant topic, and the role topic

@@ -1,7 +1,7 @@
 // packages/envoy/internal/broker/requests/airlock.go
 // airlock.go is the placeholder side of the airlock: the strings a release hands a session in
 // place of a secret the rules file names, the table those strings live in
-// (airlock_placeholders, migration 0029), the shape each kind of secret is released in once its
+// (airlock_placeholders, migration 0029), the shape each type of secret is released in once its
 // values are taken out of it, and the two reads the broker's proxy port makes — one per
 // connection (AirlockConnection) and one per grant per pod (AirlockValues). The proxy itself,
 // which decides and rewrites each request, is internal/broker/airlock.
@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // ErrAirlockNoNames is AirlockConnection's refusal of a placeholder whose grant is live and holds
@@ -34,12 +35,13 @@ import (
 // is no connection.
 var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session may still have")
 
-// ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its kind
-// releases: no JSON object, a missing or non-string token, two installations of one owner. The
-// release of that name is refused rather than made, since the one other answer would be to hand
-// over the real value the rules hold back, and no retry changes a value's shape, so the proxy
-// answers it 403 in these words.
-var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its kind releases")
+// ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its type
+// releases: no JSON object, a missing or non-string token, two installations of one owner, an
+// azure-login identity that names no tenant or no application. The release of that name is
+// refused rather than made, since the one other answer would be to hand over the real value the
+// rules hold back, and no retry changes a value's shape, so the proxy answers it 403 in these
+// words.
+var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its type releases")
 
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
 // one secret can release several values at once and each needs a placeholder of its own:
@@ -51,10 +53,10 @@ var ErrAirlockValueShape = errors.New("a name of this grant does not hold what i
 //   - SlotAzureFederated: an azure-login secret's federated token.
 //
 // The set is open, not closed: the proxy adds one slot per exchange it makes of an azure-login
-// secret's federated token, opening with SlotAzureAccessPrefix and carrying the token endpoint
-// and the scope of that exchange (internal/broker/airlockproxy's azure.go, which writes and
-// reads that text and is the only code that does). Nothing may assume a slot it does not know
-// is a mistake.
+// secret's federated token, opening with SlotAzureAccessPrefix and carrying the token endpoint,
+// the scope and the client_id of that exchange (internal/broker/airlockproxy's azure.go, which
+// writes and reads that text and is the only code that does). Nothing may assume a slot it does
+// not know is a mistake.
 const (
 	SlotValue              = "value"
 	SlotAWSAccessKeyID     = "aws-access-key-id"
@@ -69,11 +71,13 @@ const (
 // recognizable for what it is: a string that stands for a secret rather than a secret.
 const PlaceholderPrefix = "agent-secrets-placeholder-"
 
-// placeholderAlphabet and placeholderLength are what follows the prefix: 32 characters of 62, so
-// about 190 bits, which nobody guesses and no birthday collision reaches.
+// PlaceholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
+// about 190 bits, which nobody guesses and no birthday collision reaches. The broker's log mask
+// reads a placeholder as the prefix and at most PlaceholderLength characters of PlaceholderAlphabet
+// after it.
 const (
-	placeholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	placeholderLength   = 32
+	PlaceholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	PlaceholderLength   = 32
 )
 
 // mintPlaceholder draws one placeholder from crypto/rand.
@@ -85,14 +89,14 @@ const (
 // always costs one read of the random source, where redrawing a byte until it falls below 248
 // loops an unbounded number of times.
 func mintPlaceholder() (string, error) {
-	draws := make([]byte, 8*placeholderLength)
+	draws := make([]byte, 8*PlaceholderLength)
 	if _, err := rand.Read(draws); err != nil {
 		return "", fmt.Errorf("mint an airlock placeholder: %w", err)
 	}
-	out := make([]byte, 0, len(PlaceholderPrefix)+placeholderLength)
+	out := make([]byte, 0, len(PlaceholderPrefix)+PlaceholderLength)
 	out = append(out, PlaceholderPrefix...)
-	for i := range placeholderLength {
-		out = append(out, placeholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(placeholderAlphabet))])
+	for i := range PlaceholderLength {
+		out = append(out, PlaceholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(PlaceholderAlphabet))])
 	}
 	return string(out), nil
 }
@@ -238,6 +242,11 @@ type airlockSplit struct {
 	// fill answers what the session holds for this name, taking each slot's placeholder from
 	// bySlot.
 	fill func(bySlot map[string]string) (string, error)
+	// azure is the application and tenant an azure-login document names, zero for every other
+	// kind (azureLoginSplit). The proxy answers it beside values, as AirlockSecret.Azure, and
+	// the session's release reads nothing of it: the session's document carries both ids as
+	// they were minted.
+	azure secrets.AzureLoginValue
 }
 
 // slots are the name's slots, sorted, so they are in one order whatever the map iteration gave,
@@ -256,20 +265,20 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //   - a github-app's minted installations and an azure-login's minted identity are re-emitted
 //     with the token fields replaced and every other field as the minter wrote it.
 //
-// The policy kind decides first and the entry's kind only for a stored secret, because the kind
+// The policy type decides first and the entry's kind only for a stored secret, because the type
 // is what says how the broker built the value, where the entry says where that value may go. A
-// value that does not hold what its kind releases — no object, a missing or non-string token — is
+// value that does not hold what its type releases — no object, a missing or non-string token — is
 // an ErrAirlockValueShape rather than a release, since the one other answer would be to release
 // the real value the rules hold back.
-func airlockSplitOf(entryKind, kind, value string) (airlockSplit, error) {
+func airlockSplitOf(entryKind, secretType, value string) (airlockSplit, error) {
 	var split airlockSplit
 	var err error
 	switch {
-	case kind == policy.KindGitHubApp:
+	case secretType == policy.TypeGitHubApp:
 		split, err = githubAppSplit(value)
-	case kind == policy.KindAzureLogin:
-		split, err = objectSplit(value, map[string]string{"federated_token": SlotAzureFederated}, nil)
-	case kind == "" && entryKind == airlock.KindAWS:
+	case secretType == policy.TypeAzureLogin:
+		split, err = azureLoginSplit(value)
+	case secretType == "" && entryKind == airlock.KindAWS:
 		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
 	default:
@@ -300,6 +309,12 @@ func objectSplit(value string, required, optional map[string]string) (airlockSpl
 	if err != nil {
 		return airlockSplit{}, err
 	}
+	return fieldsSplit(doc, required, optional)
+}
+
+// fieldsSplit is objectSplit of a document already read, for a kind that reads more of the same
+// document than its secret fields (azureLoginSplit) and so must not read it twice.
+func fieldsSplit(doc map[string]json.RawMessage, required, optional map[string]string) (airlockSplit, error) {
 	holes := map[string]string{}  // field -> slot
 	values := map[string]string{} // slot -> the field's own string
 	for field, slot := range required {
@@ -321,6 +336,41 @@ func objectSplit(value string, required, optional map[string]string) (airlockSpl
 		}
 		return marshalObject(filled)
 	}}, nil
+}
+
+// azureLoginSplit is the split of an azure-login's minted identity: the federated token's slot,
+// taken as objectSplit takes it, and beside it the tenant and the application the document
+// names, read in the same walk so the ids the proxy holds are the ones of the document whose
+// token it holds. A document that names either one as no string, or as an empty one, releases
+// nothing: the proxy holds every exchange of the token to the two (AirlockSecret.Azure), and
+// could hold an exchange to nothing. The minter refuses such a document before it ever mints
+// (secrets.AzureLogin), so this refuses what no release made by it can hold.
+func azureLoginSplit(value string) (airlockSplit, error) {
+	doc, err := jsonObject(value)
+	if err != nil {
+		return airlockSplit{}, err
+	}
+	split, err := fieldsSplit(doc, map[string]string{"federated_token": SlotAzureFederated}, nil)
+	if err != nil {
+		return airlockSplit{}, err
+	}
+	if split.azure.TenantID, err = azureIDOf(doc, "tenant_id"); err != nil {
+		return airlockSplit{}, err
+	}
+	if split.azure.ClientID, err = azureIDOf(doc, "client_id"); err != nil {
+		return airlockSplit{}, err
+	}
+	return split, nil
+}
+
+// azureIDOf is one id field of an azure-login document. The refusal names the field and never
+// what the document holds there.
+func azureIDOf(doc map[string]json.RawMessage, field string) (string, error) {
+	id, ok := jsonString(doc[field])
+	if !ok || id == "" {
+		return "", fmt.Errorf("its minted identity holds no %s string, which the airlock holds every exchange of its federated token to", field)
+	}
+	return id, nil
 }
 
 // githubAppSplit is the split of a github-app secret's minted installations: one slot per
@@ -426,7 +476,7 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 		if err != nil {
 			return nil, fmt.Errorf("release %s behind the airlock: %w", name, err)
 		}
-		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Lookup(name).Hosts}
+		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Bound(name).Hosts}
 	}
 	released.ProxyPassword = proxyPassword(released.Names)
 	// Which names went out as a placeholder rather than as their value, recorded where the
@@ -461,16 +511,22 @@ func proxyPassword(names map[string]AirlockName) string {
 // the full release checks run once per grant per pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
-	Issue                            string // the first Dispatch issue key in the request's own signed reason, "" when it names none
-	Expires                          *time.Time
-	Names                            map[string]AirlockGrantName
+	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
+	// an enrollment that names none, and the runtime it runs as, the enrollment's runtime id (a
+	// pod's uid for a pod enrollment). They are read for the lines the proxy writes about where
+	// it dialled (airlockproxy's tunnel and failed-dial lines), which must name the caller, and
+	// they cost nothing: the read below already joins the enrollment row.
+	SessionID, RuntimeID string
+	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
+	Expires              *time.Time
+	Names                map[string]AirlockGrantName
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
-// the kind that says what those slots are.
+// the type that says what those slots are.
 type AirlockGrantName struct {
 	Slots map[string]string // slot -> placeholder
-	Kind  string            // the policy kind: "", "github-app", "google-login", "azure-login"
+	Type  string            // the policy type: "", "github-app", "google-login", "azure-login"
 }
 
 // AirlockConnection answers what the placeholder a proxy connection authenticated with proves. It
@@ -481,7 +537,7 @@ type AirlockGrantName struct {
 //
 // This runs on every connection, so it is indexed reads alone and nothing else: the row by its
 // primary key with its grant and enrollment joined in, the grant's other placeholders by
-// grant_id, and the enrollment's withheld names by enrollment_id. Each name's kind comes from the
+// grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
 // policy snapshot already in memory, which costs no query. The checks a release makes besides —
 // the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
 // AirlockValues's, once per grant per pod.
@@ -490,13 +546,15 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	var reason string
 	var live bool
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
+		e.runtime_id, coalesce(e.session_id, ''),
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
-		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &live)
+		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
+			&conn.RuntimeID, &conn.SessionID, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -525,7 +583,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		if slices.Contains(withheld, name) {
 			continue
 		}
-		conn.Names[name] = AirlockGrantName{Slots: slots, Kind: set.Secrets[name].Kind()}
+		conn.Names[name] = AirlockGrantName{Slots: slots, Type: set.Secrets[name].Type()}
 	}
 	if len(conn.Names) == 0 {
 		return AirlockConnection{}, ErrAirlockNoNames
@@ -534,12 +592,22 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 }
 
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
-// slots, when the broker must read or mint it again, and the policy kind that says what the
-// slots are.
+// slots, when the broker must read or mint it again, the policy type that says what the slots
+// are, and for an azure-login name the application and tenant its document names.
 type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
-	Kind    string
+	Type    string
+	// Azure is the tenant and the application an azure-login name's own document names, which
+	// the proxy holds every exchange of its federated token to, and zero for every other type.
+	// The two travel as fields of their own rather than as slots or as the document whole. Not
+	// slots, because a slot is a value a placeholder stands for: the release would mint
+	// placeholders for them and put those in the session's document, where az needs the ids
+	// themselves. Not the document, because the proxy would then hold every field a minter ever
+	// writes there; these are the two it bounds an exchange by, read in the one walk that takes
+	// the federated token out (azureLoginSplit). Neither is a secret: the session is handed both
+	// in the clear.
+	Azure secrets.AzureLoginValue
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy
@@ -559,9 +627,11 @@ type AirlockSecret struct {
 //
 // It takes no enrollment: the connection's placeholder is what proves the grant, and
 // AirlockConnection has already checked that the grant and its enrollment are live. A grant the
-// checks refuse is ended exactly as Values ends it, since they are the same checks.
+// checks refuse is ended exactly as Values ends it, since they are the same checks, and a grant
+// whose chain fails is logged as Values logs it, under at=airlock (GrantChainInvalidMessage),
+// since the proxy refuses it GRANT_CHAIN_INVALID as the session's release does.
 func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string]AirlockSecret, string, error) {
-	checked, err := m.checkRelease(ctx, grantID, "")
+	checked, err := m.checkRelease(ctx, grantID, "", "airlock")
 	if err != nil {
 		return nil, "", err
 	}
@@ -571,11 +641,12 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	}
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
-		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Kind: released.kind}
+		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Type: released.secretType, Azure: released.split.azure}
 	}
 	// The same grant.used row and line a session's own release writes, marked as the proxy's: the
 	// values did leave the broker, and an operator reading the trail must see that they did.
 	if err := m.auditGrantUsed(ctx, grantID, checked, grantUse{names: releasedNames(read), airlock: true}); err != nil {
+		m.giveBack(ctx, read)
 		return nil, "", err
 	}
 	return values, checked.set.Version, nil
@@ -586,8 +657,8 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 // fingerprint. The proxy holds the version AirlockValues answered beside the values it answered,
 // and reads this to tell whether that snapshot is still the live one.
 //
-// The shape tag is in it so that a retag of it - which changes what the broker hands over for
-// the same stored value, not who may have it - reaches a pod holding values the proxy read
+// The type tag is in it so that a retag of the type - which changes what the broker hands over
+// for the same stored value, not who may have it - reaches a pod holding values the proxy read
 // before the retag, since the proxy rereads them on no event but a name's own reread or this
 // version moving.
 func (m *Machine) PolicyVersion() string { return m.Policy.Get().Version }

@@ -1,6 +1,7 @@
 package bustest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -50,7 +51,7 @@ func Provision(conn *natsgo.Conn, replicas int) error {
 		return fmt.Errorf("read %s: %w", MarkerStream, err)
 	}
 	for _, bucket := range bus.CopiedBuckets() {
-		if _, err := bus.CreateCopiedBucket(conn, js, bucket, replicas); err != nil {
+		if _, err := bus.CreateCopiedBucket(context.Background(), conn, js, bucket, replicas); err != nil {
 			return fmt.Errorf("create %s: %w", bucket, err)
 		}
 	}

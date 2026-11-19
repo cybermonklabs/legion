@@ -323,7 +323,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 	}
 	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
-	known, err := session.OpenKnownSessions(client.Conn, session.WithKnownSessionReplicas(1))
+	known, err := session.OpenKnownSessions(t.Context(), client.Conn, session.WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the known-session store over a bucket the grant does not carry: %v", err)
 	}

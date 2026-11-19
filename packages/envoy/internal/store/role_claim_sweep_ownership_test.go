@@ -51,7 +51,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -88,18 +88,17 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 	reg.roleWatcher.Start()
 	waitFor(t, 30*time.Second, func() bool { return servableView(reg) })
 
-	// claimAndDropTheTopic has session claim role through the registry, so the claim reaches the
-	// view through the write rather than the watcher, and then takes the role's topic back off
-	// session's record, leaving a record that carries one topic that is not a role's. What names
-	// the claim to the deregistration after that can only be the view.
+	// claimAndDropTheTopic has session claim role through the registry, naming the process the
+	// deregistrations below state (releasedByItsProcess), so the claim reaches the view through
+	// the write rather than the watcher, and then takes the role's topic back off session's
+	// record, leaving a record that carries one topic that is not a role's. What names the claim
+	// to the deregistration after that can only be the view.
 	claimAndDropTheTopic := func(t *testing.T, session, role string) {
 		t.Helper()
 		if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, []string{recordsTopic}); err != nil {
 			t.Fatalf("store %s's interest record: %v", session, err)
 		}
-		if _, err := reg.SetRole(session, "m1", role, false); err != nil {
-			t.Fatalf("claim %s for %s: %v", role, session, err)
-		}
+		claimRoleAs(t, reg, session, "m1", role, roleClaimInstance)
 		if holder := holderOf(reg, role); holder != session {
 			t.Fatalf("the view names %q the holder of %s after %s's own claim write, want %s", holder, role, session, session)
 		}
@@ -309,10 +308,10 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 // the lane's own clean stop frees its roles at once, which is what the deregistration sweep is
 // for.
 //
-// The third claim is the carve-out: one an earlier build wrote names no process at all, so it
-// keeps the rule it was written under and the session's own deregistration frees it, whichever
-// process asks. Without it every claim standing at the deploy would wait out the role claim
-// reaper.
+// The third claim names no process at all - one an earlier build wrote, or a session pod's claim
+// of its launch role - and an absent process matches nothing in a release, so neither
+// deregistration frees it: it names no process the lane's own clean stop could be told from a
+// second process's by. The role claim reaper frees it once its session is gone.
 //
 // Neither session's record carries a role topic, so the record names no role to release and
 // every claim is in the deregistration's set from the view alone (releaseAllRoleClaims).
@@ -330,7 +329,7 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -349,7 +348,7 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 		deadline = 30 * time.Second
 	)
 	// The lane's own claim, written by the process the claim names, and a claim of the same
-	// session an earlier build wrote, which names none.
+	// session whose claimant stated no process, which names none.
 	putRenewedRoleClaim(t, rawRoles, held, session, roleClaimInstance, time.Now())
 	putRoleClaim(t, rawRoles, unnamed, session)
 	if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, []string{recorded}); err != nil {
@@ -363,20 +362,22 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 		t.Fatalf("a second process's deregistration of %s: %v", session, err)
 	}
 	assertRoleHolder(t, reg, held, session)
-	assertRoleHolder(t, reg, unnamed, "")
+	assertRoleHolder(t, reg, unnamed, session)
 	assertInterestMissing(t, reg, session)
 
 	// The holder's own process, through the same route the second one used: its claim is freed
-	// at the deregistration rather than left to the reaper.
+	// at the deregistration rather than left to the reaper, and the claim that names no process
+	// is freed by this deregistration no more than by the second process's.
 	if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, []string{recorded}); err != nil {
 		t.Fatalf("register %s's interests again: %v", session, err)
 	}
-	waitForHeld(t, reg, session, held)
+	waitForHeld(t, reg, session, held, unnamed)
 	own, cancelOwn := context.WithTimeout(context.Background(), deadline)
 	defer cancelOwn()
 	if _, err := reg.Remove(own, session, nil, releasedByItsProcess); err != nil {
 		t.Fatalf("the holder's own deregistration of %s: %v", session, err)
 	}
 	assertRoleHolder(t, reg, held, "")
+	assertRoleHolder(t, reg, unnamed, session)
 	assertInterestMissing(t, reg, session)
 }

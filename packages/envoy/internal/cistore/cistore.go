@@ -125,6 +125,22 @@ type Suite struct {
 	ObservedAt string `json:"observed_at"`
 }
 
+// Status is the newest terminal commit status of one context on a commit (recordStatus). A status
+// is an entry of its own kind: a check run of its name is another entry, it never stands for a
+// check run nor for the tester or architect check run that carries a verdict, and it takes no
+// part in whether the head is ready to settle (settlementReady). Dispatch's CI reconcile records
+// it from GitHub's read of the head; no webhook does, since a status event names no pull request.
+type Status struct {
+	Context string `json:"context"`
+	State   string `json:"state"` // success|failure|error
+	// CreatedAt is GitHub's created_at, which orders two statuses of one context.
+	CreatedAt   string `json:"created_at"`
+	URL         string `json:"url"`
+	Description string `json:"description"`
+	// ObservedAt is when the record took this status, in Unix milliseconds (as LastEventAt).
+	ObservedAt int64 `json:"observed_at"`
+}
+
 // SettlementClaim is the durable right to publish one settlement snapshot.
 // Claims prevent replicas from publishing the same episode concurrently.
 type SettlementClaim struct {
@@ -133,29 +149,37 @@ type SettlementClaim struct {
 	ClaimedAt  int64  `json:"claimed_at"`
 }
 
-// State is the aggregated set of checks and suites for one (owner, repo, PR
+// State is the aggregated set of checks, suites and commit statuses for one (owner, repo, PR
 // number, head SHA).
 type State struct {
-	Owner          string           `json:"owner"`
-	Repo           string           `json:"repo"`
-	Number         string           `json:"number"`
-	SHA            string           `json:"sha"`
-	Checks         map[string]Check `json:"checks"`
-	Suites         map[string]Suite `json:"suites"`
-	LastEventAt    int64            `json:"last_event_at"`
-	Generation     uint64           `json:"generation"`
-	EmittedCount   uint64           `json:"emitted_count"`
-	SettledEmitted bool             `json:"settled_emitted"`
-	Claim          *SettlementClaim `json:"claim,omitempty"`
+	Owner  string           `json:"owner"`
+	Repo   string           `json:"repo"`
+	Number string           `json:"number"`
+	SHA    string           `json:"sha"`
+	Checks map[string]Check `json:"checks"`
+	Suites map[string]Suite `json:"suites"`
+	// Statuses holds the newest terminal commit status of each context, keyed by context
+	// (recordStatus), and is left out of a record that holds none.
+	Statuses       map[string]Status `json:"statuses,omitempty"`
+	LastEventAt    int64             `json:"last_event_at"`
+	Generation     uint64            `json:"generation"`
+	EmittedCount   uint64            `json:"emitted_count"`
+	SettledEmitted bool              `json:"settled_emitted"`
+	Claim          *SettlementClaim  `json:"claim,omitempty"`
 	// Overflowed says the listener never settles this head again, because the head is past what it
-	// can publish: a check was refused because it would take the record past maxRecordBytes or the
-	// record's settlement past maxSettlementBytes (write), or NATS refused the settlement itself
-	// (markOverflowed, from the summary loop). A head that settled before it overflowed keeps its
-	// last settlement; nothing supersedes it.
+	// can publish: a check run or check suite was refused because it would take the record past
+	// maxRecordBytes or the record's settlement past maxSettlementBytes even with no commit status
+	// in the record (write), or NATS refused the settlement itself (markOverflowed, from the
+	// summary loop). A commit status never marks a record overflowed: at a bound it gives way to
+	// the check runs (write). A head that settled before it overflowed keeps its last settlement;
+	// nothing supersedes it.
 	Overflowed bool `json:"overflowed,omitempty"`
 	// Schema is recordSchema on every record this listener writes (encodeRecord). A record last
 	// written by a listener that settled only a pull request's head has none (legacyBacklog). An
-	// older listener ignores the field, and its own writes drop it.
+	// older listener ignores the field, and its own writes drop it. A listener of a release before
+	// commit statuses drops Statuses the same way, at its next write of the record, and the
+	// reconcile writes them back only once GitHub's answer for the head changes, since a pass
+	// writes nothing while the head's fingerprint holds.
 	Schema int `json:"schema,omitempty"`
 }
 
@@ -246,7 +270,11 @@ func Key(owner, repo, number, sha string) string {
 
 // Hash is a stable, order-independent fingerprint of the CI state. It includes
 // check-run attempts and check-suite state so a re-run becomes a distinct
-// delivery even when it resolves to the same conclusion.
+// delivery even when it resolves to the same conclusion. It includes each
+// commit status's context and state alone, as a status's own entry beside the
+// checks', so a new context or a changed state moves the snapshot, a new time,
+// link or description does not, and a record with no status hashes as it did
+// before the record held statuses.
 func (s State) Hash() string {
 	h := sha256.New()
 	checkNames := make([]string, 0, len(s.Checks))
@@ -267,7 +295,23 @@ func (s State) Hash() string {
 		suite := s.Suites[id]
 		h.Write([]byte("suite\x00" + id + "\x00" + suite.AppID + "\x00" + suite.Status + "\x00" + suite.Conclusion + "\x01"))
 	}
+	for _, name := range statusContexts(s.Statuses) {
+		h.Write([]byte("status\x00" + name + "\x00" + s.Statuses[name].State + "\x01"))
+	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// statusContexts returns the contexts of statuses in order, nil when it holds none.
+func statusContexts(statuses map[string]Status) []string {
+	if len(statuses) == 0 {
+		return nil
+	}
+	contexts := make([]string, 0, len(statuses))
+	for name := range statuses {
+		contexts = append(contexts, name)
+	}
+	sort.Strings(contexts)
+	return contexts
 }
 
 type Store struct {
@@ -350,8 +394,8 @@ func WithTTL(d time.Duration) Option {
 // listener copies, which bus.EnsureKeyValue creates only through a test fixture's connection
 // (bus.CreateCopiedBucketsOn), and otherwise answers bus.ErrBucketMissing. Mirrors store.Open:
 // the cache is populated asynchronously by watch() so Open never blocks on per-key Gets. The store
-// and its cache watcher log through logger.
-func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
+// and its cache watcher log through logger. ctx bounds the bucket's open (bus.EnsureKeyValue).
+func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error) {
 	o := openOpts{replicas: 1, ttl: bus.CIStateBucketMaxAge}
 	for _, f := range opts {
 		f(&o)
@@ -360,7 +404,7 @@ func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error)
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(nc, js, &nats.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(ctx, nc, js, &nats.KeyValueConfig{
 		Bucket:   bus.CIStateBucket,
 		Replicas: o.replicas,
 		Storage:  nats.FileStorage,
@@ -387,11 +431,11 @@ func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error)
 }
 
 // Writer is the CI record bucket as a process that only writes it holds it: exactly Record,
-// RecordSuite and HasRecord, and no way to reach the store behind it. Everything else on Store
-// belongs to the listener's store and would panic here: the cache, the summary loop, Ping,
-// Rewatch, StopWatch, EndWatch, WaitForCacheReady and the settlement transitions all go through
-// the watcher a writer has not got, so the type a caller is given offers none of them rather than
-// a comment telling it which to leave alone.
+// RecordSuite, RecordStatus and HasRecord, and no way to reach the store behind it. Everything
+// else on Store belongs to the listener's store and would panic here: the cache, the summary loop,
+// Ping, Rewatch, StopWatch, EndWatch, WaitForCacheReady and the settlement transitions all go
+// through the watcher a writer has not got, so the type a caller is given offers none of them
+// rather than a comment telling it which to leave alone.
 type Writer struct {
 	store *Store
 }
@@ -443,6 +487,16 @@ func (w *Writer) Record(ctx context.Context, observation contracts.CIObservation
 // changed it, as Record does.
 func (w *Writer) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return w.store.recordSuite(ctx, observation)
+}
+
+// RecordStatus folds one commit status into the head's record and reports whether that changed
+// it, as Record does (recordStatus). A status the record already holds, an older one than the
+// record keeps for its context, and one the record's bounds refuse (write) change nothing. It
+// refuses, with an error, a status with no context or in a state other than success, failure and
+// error (contracts.TerminalStatusState): contracts.GithubStatusObservation maps no other, so a
+// caller that sends one has skipped that mapping.
+func (w *Writer) RecordStatus(ctx context.Context, observation contracts.StatusObservation) (bool, error) {
+	return w.store.recordStatus(ctx, observation)
 }
 
 // HasRecord answers whether the bucket holds the record of one head.
@@ -711,7 +765,7 @@ func (s *Store) Record(ctx context.Context, observation contracts.CIObservation)
 // record is the one body both forms of Record share, and reports whether the observation changed
 // the head's record.
 func (s *Store) record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, func(st *State) bool {
+	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		if st.Checks == nil {
 			st.Checks = map[string]Check{}
 		}
@@ -750,7 +804,7 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 // recordSuite is the one body both forms of RecordSuite share, and reports whether the
 // observation changed the head's record.
 func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, func(st *State) bool {
+	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		if st.Suites == nil {
 			st.Suites = map[string]Suite{}
 		}
@@ -771,6 +825,61 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 		st.LastEventAt = time.Now().UnixMilli()
 		return true
 	})
+}
+
+// recordStatus folds one commit status into the head's record and reports whether that changed
+// it. The record keeps the newest status of each context by GitHub's created_at (statusMayReplace),
+// so an older status than the kept one changes nothing. A new context, or a newer status in
+// another state, re-arms a settled head and restarts its quiet period, as a late check run does,
+// so the head settles again and that settlement names it. A newer status in the same state is
+// recorded, its time, link and description replacing the kept ones, and moves neither the
+// snapshot (Hash) nor the quiet period, so no settlement follows it. At the record's bounds a
+// status gives way and is not recorded (write). A status with no context, or in a state the record
+// does not keep (contracts.TerminalStatusState), is refused before anything is read.
+func (s *Store) recordStatus(ctx context.Context, observation contracts.StatusObservation) (bool, error) {
+	if observation.Context == "" || !contracts.TerminalStatusState(observation.State) {
+		return false, fmt.Errorf("cistore: commit status %q in state %q not recorded: the record keeps a status in success, failure or error alone",
+			observation.Context, observation.State)
+	}
+	name := observation.Context
+	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, name, func(st *State) bool {
+		next := Status{
+			Context:     name,
+			State:       observation.State,
+			CreatedAt:   observation.CreatedAt,
+			URL:         observation.URL,
+			Description: observation.Description,
+		}
+		current, held := st.Statuses[name]
+		if held {
+			if !statusMayReplace(observation.CreatedAt, current.CreatedAt) {
+				return false
+			}
+			next.ObservedAt = current.ObservedAt
+			if current == next {
+				return false
+			}
+		}
+		now := time.Now().UnixMilli()
+		next.ObservedAt = now
+		if st.Statuses == nil {
+			st.Statuses = map[string]Status{}
+		}
+		st.Statuses[name] = next
+		if !held || current.State != next.State {
+			rearm(st)
+			st.LastEventAt = now
+		}
+		return true
+	})
+}
+
+// statusMayReplace reports whether a commit status created at incomingAt may replace the kept
+// status of its context, created at storedAt: an older one may not. Every status the record keeps
+// is terminal, so at an equal time, or with neither time readable, the later one read wins, as
+// observationMayReplace orders two observations of one rank.
+func statusMayReplace(incomingAt, storedAt string) bool {
+	return observationMayReplace(incomingAt, storedAt, "completed", "completed")
 }
 
 func rearm(st *State) {

@@ -51,7 +51,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	logged := logs.String
 
 	started := time.Now()
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		// The production schedule's first wait is a second and its cap five minutes, which a
@@ -152,7 +152,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	// whole question, and a handful of records would be filled whether it waits or not.
 	const records = 2000
 	const topic = "notifications.team.late-open"
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 
 	// The grant goes away, as it is away on every listener started before it is applied.
 	grant.Grant(t, "nothing.this.store.uses")
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {

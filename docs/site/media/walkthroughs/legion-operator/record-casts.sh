@@ -136,7 +136,12 @@ provision_fixture_buckets "$work/fixturebuckets" "$nats_url"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
 ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \
   start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$work/envoy-listener"
-until_true 60 "the Envoy listener" curl -fsS -H "Authorization: Bearer $(cat "$operator/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+# The bearer reaches curl on standard input from printf, a shell builtin, so it is in no command line.
+envoy_up() {
+  printf 'Authorization: Bearer %s' "$(cat "$operator/envoy-token")" |
+    curl -fsS -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
+}
+until_true 60 "the Envoy listener" envoy_up
 # The agents' model: accepts every request and never answers.
 start_process model bun -e \
   "const s = Bun.serve({ hostname: '127.0.0.1', port: 0, idleTimeout: 0, fetch: () => new Promise(() => {}) }); console.log('model listening port=' + s.port)"

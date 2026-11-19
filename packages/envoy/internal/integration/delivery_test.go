@@ -51,12 +51,12 @@ func setupTestEnv(t *testing.T, options ...testEnvOption) *testEnv {
 	t.Cleanup(client.Close)
 
 	// Set up interest registry (NATS KV)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("failed to create registry: %v", err)
 	}
 
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionTTL(opts.sessionTTL))
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}

@@ -37,7 +37,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -52,6 +54,8 @@ const (
 	testGrantID  = "grant-00000000"
 	testEnrollID = "enrollment-00000000"
 	testRequest  = "request-00000000"
+	testSession  = "session-00000000"
+	testRuntime  = "runtime-00000000"
 	testIssue    = "INFRA-1352"
 )
 
@@ -104,6 +108,7 @@ func testRules() airlock.Rules {
 func testConnection() requests.AirlockConnection {
 	return requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
+		SessionID: testSession, RuntimeID: testRuntime,
 		Names: map[string]requests.AirlockGrantName{
 			workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},
 		},
@@ -132,11 +137,11 @@ const (
 func (r *rig) useGitHubAppGrant() {
 	conn := testConnection()
 	conn.Names = map[string]requests.AirlockGrantName{
-		workerName: {Kind: "github-app", Slots: map[string]string{githubAcmeSlot: workerPlaceholder, githubZedSlot: githubZedHolder}},
+		workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: workerPlaceholder, githubZedSlot: githubZedHolder}},
 	}
 	r.grants.setConnection(workerPlaceholder, conn)
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Kind: "github-app", Slots: map[string]string{githubAcmeSlot: githubAcmeToken, githubZedSlot: githubZedToken}},
+		workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: githubAcmeToken, githubZedSlot: githubZedToken}},
 	})
 }
 
@@ -145,7 +150,7 @@ func (r *rig) useGitHubAppGrant() {
 // grant still holds acme's placeholder, as a release made before the installation went does.
 func (r *rig) removeAcmeInstallation() {
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Kind: "github-app", Slots: map[string]string{githubZedSlot: githubZedToken}},
+		workerName: {Type: "github-app", Slots: map[string]string{githubZedSlot: githubZedToken}},
 	})
 	r.proxy.DropName(workerName)
 }
@@ -303,7 +308,7 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 		slots := maps.Clone(held.Slots)
 		slots[slot] = placeholder
 		names := maps.Clone(conn.Names)
-		names[name] = requests.AirlockGrantName{Slots: slots, Kind: held.Kind}
+		names[name] = requests.AirlockGrantName{Slots: slots, Type: held.Type}
 		conn.Names = names
 		f.connections[password] = conn
 	}
@@ -330,9 +335,40 @@ type logLine struct {
 
 // logCapture is the slog handler the rows install: logtest.Recorder keeps every record with the
 // attributes the proxy wrote it with, and the methods here are this package's own reading of
-// those records.
+// those records. Each record is also written as the broker writes it - the broker's JSON handler
+// (logging.NewCloudHandler) through its placeholder mask (logmask.Writer) - into written, the
+// bytes a row that asks what reaches the broker's log reads (writtenLines).
 type logCapture struct {
 	logtest.Recorder
+	written *logtest.Buffer
+	broker  slog.Handler
+}
+
+// newLogCapture is a logCapture with nothing written yet.
+func newLogCapture() *logCapture {
+	written := &logtest.Buffer{}
+	return &logCapture{written: written, broker: logging.NewCloudHandler(logmask.Writer(written))}
+}
+
+// Handle writes the line the broker writes before it keeps the record: a row waits on the records
+// (linesAtLeast) and then reads written, and a record kept first could be seen by that wait while
+// the proxy's goroutine, held off the CPU on a loaded runner, had not yet written its line.
+func (c *logCapture) Handle(ctx context.Context, record slog.Record) error {
+	if err := c.broker.Handle(ctx, record); err != nil {
+		return err
+	}
+	return c.Recorder.Handle(ctx, record)
+}
+
+// The proxy logs with no attribute or group of a logger's own, and Recorder keeps none.
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+// writtenLines is every line written so far as the broker writes it, each decoded as the JSON
+// object it is.
+func (c *logCapture) writtenLines(t *testing.T) []map[string]any {
+	t.Helper()
+	return logtest.JSONLines(t, c.written.String())
 }
 
 // calls is every line one call to a bound host logged that the airlock carried or failed. Records
@@ -351,6 +387,45 @@ func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }
 // cuts is every line the end of a carried call its grant stopped carrying logged, read the same
 // way.
 func (c *logCapture) cuts() []logLine { return c.lines(cutMessage) }
+
+// tunnels is every line one socket the proxy opened for a tunnel or a forwarded plain-HTTP
+// request logged, and dialFailures every line one dial it could not make logged, read the same
+// way.
+func (c *logCapture) tunnels() []logLine { return c.lines(tunnelMessage) }
+
+func (c *logCapture) dialFailures() []logLine { return c.lines(dialFailedMessage) }
+
+// tunnelsAtLeast and dialFailuresAtLeast are those lines once there are n of them, as
+// callsAtLeast is for a call's. The proxy writes either line before the command is answered, so
+// a row that has its answer could read them at once; a row whose command went away has no answer
+// to read, and a row that drives several requests reads all their lines at the end, so these
+// wait.
+func (c *logCapture) tunnelsAtLeast(t *testing.T, n int) []logLine {
+	t.Helper()
+	return c.linesAtLeast(t, tunnelMessage, n)
+}
+
+func (c *logCapture) dialFailuresAtLeast(t *testing.T, n int) []logLine {
+	t.Helper()
+	return c.linesAtLeast(t, dialFailedMessage, n)
+}
+
+// linesAtLeast waits for n lines of one message, and fails t rather than hanging when they never
+// come.
+func (c *logCapture) linesAtLeast(t *testing.T, message string, n int) []logLine {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		lines := c.lines(message)
+		if len(lines) >= n {
+			return lines
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the proxy wrote %d %q lines; want at least %d", len(lines), message, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 // lines is every line the proxy wrote under one message, with the attributes it wrote them with.
 func (c *logCapture) lines(message string) []logLine {
@@ -376,17 +451,7 @@ func (c *logCapture) lines(message string) []logLine {
 // to be written. It fails the row rather than hanging when the line never comes.
 func (c *logCapture) callsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		calls := c.calls()
-		if len(calls) >= n {
-			return calls
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the proxy wrote %d lines for a call to a bound host; want at least %d", len(calls), n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return c.linesAtLeast(t, callMessage, n)
 }
 
 // rig is one row's whole world: the proxy, what it dials, what it may resolve, the stand-in
@@ -418,6 +483,23 @@ type rig struct {
 	// where a dial went.
 	dialedMu sync.Mutex
 	dialed   []string
+	// holdResolve and holdDial, where a row sets one, run at the start of each lookup and each
+	// dial with its own context: how a row holds a lookup or a dial until the command behind it
+	// has gone. A lookup a hold ended fails with its context's error, and a dial is made under
+	// the context holdDial answers, so a row has it fail as a dial its command abandoned does or
+	// open as one that won that race does.
+	holdResolve func(ctx context.Context)
+	holdDial    func(ctx context.Context) context.Context
+	// dialTimeout is the dialer's own Timeout for each address a row names it for, as the
+	// production dialer has one (New): how a row has a dial time out on its own, with the error
+	// net.Dialer itself answers, rather than end because its command went away.
+	dialTimeout map[string]time.Duration
+	// dialledFor is the grant each socket the proxy opened was dialled for, as the lines of that
+	// dial name it (callerOfContext), by the socket's own local address, which is the remote
+	// address the service it reached reads each request on it as: how a row reads which caller a
+	// socket was opened for beside the request it carried.
+	dialledForMu sync.Mutex
+	dialledFor   map[string]string
 
 	service *airlocktest.Service
 
@@ -453,7 +535,7 @@ func (l *wrapListener) Accept() (net.Conn, error) {
 // listener accepts.
 func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
-	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool(), protocol: suiteProtocol}
+	r := &rig{t: t, grants: newFakeGrants(), logs: newLogCapture(), trust: x509.NewCertPool(), protocol: suiteProtocol}
 
 	// The stand-in service behind the bound host, with a certificate of its own naming that
 	// host and an authority of the rig's own behind it, which is the only thing the proxy
@@ -534,6 +616,9 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	r.dialedMu.Lock()
 	r.dialed = append(r.dialed, addr)
 	r.dialedMu.Unlock()
+	if r.holdDial != nil {
+		ctx = r.holdDial(ctx)
+	}
 	to, ok := r.dialTo[addr]
 	if !ok {
 		to, ok = r.dialTo[r.nameOf(addr)]
@@ -541,8 +626,26 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	if !ok {
 		return nil, fmt.Errorf("this test dials no %s", addr)
 	}
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, to)
+	dialer := net.Dialer{Timeout: r.dialTimeout[addr]}
+	conn, err := dialer.DialContext(ctx, network, to)
+	if err != nil {
+		return nil, err
+	}
+	r.dialledForMu.Lock()
+	defer r.dialledForMu.Unlock()
+	if r.dialledFor == nil {
+		r.dialledFor = map[string]string{}
+	}
+	r.dialledFor[conn.LocalAddr().String()] = callerOfContext(ctx).GrantID
+	return conn, nil
+}
+
+// socketCaller is the grant the socket whose local address is local was dialled for, and "" for
+// an address no socket of the proxy's had.
+func (r *rig) socketCaller(local string) string {
+	r.dialledForMu.Lock()
+	defer r.dialledForMu.Unlock()
+	return r.dialledFor[local]
 }
 
 // nameOf is the authority a row wrote dialTo under for an address and port: the name whose
@@ -573,7 +676,13 @@ func (r *rig) dialedAddresses() []string {
 // resolve is Server.resolve: an address literal is itself, a name a row queued answers for has
 // them one per call, a name the row named has the addresses it was given, and any other name
 // resolves to nothing.
-func (r *rig) resolve(_ context.Context, host string) ([]netip.Addr, error) {
+func (r *rig) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	if r.holdResolve != nil {
+		r.holdResolve(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{addr.Unmap()}, nil
 	}
@@ -699,6 +808,40 @@ func (r *rig) connectRaw(target string, headers ...string) (*http.Response, net.
 	}
 	r.t.Cleanup(func() { conn.Close() })
 	return answer, conn, reader
+}
+
+// plainRaw writes one absolute-URL GET of http://<authority><path> on a connection of its own,
+// with authority as its Host header too, and answers what came back with its body read. A row
+// about a zoned literal needs it: net/http's client drops the zone from the URL it writes to a
+// proxy, so through that client the zone never reaches the proxy, while any client that writes
+// its own bytes can send it. Each header must end in CRLF.
+func (r *rig) plainRaw(authority, path string, headers ...string) (*http.Response, string) {
+	r.t.Helper()
+	return r.requestRaw(http.MethodGet, "http://"+authority+path, authority, headers...)
+}
+
+// requestRaw writes one request of the row's own bytes on a connection of its own - its method,
+// its request target and a Host header that need not agree with it, as no HTTP client writes
+// them but any command that writes its own bytes can - and answers what came back with its body
+// read. A row sends a CONNECT through it only when the CONNECT is refused, since the body of a
+// tunnel that opened never ends. Each header must end in CRLF.
+func (r *rig) requestRaw(method, target, host string, headers ...string) (*http.Response, string) {
+	r.t.Helper()
+	conn, err := net.Dial("tcp", r.addr)
+	if err != nil {
+		r.t.Fatalf("dial the proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	request := method + " " + target + " HTTP/1.1\r\nHost: " + host + "\r\n" + strings.Join(headers, "") + "Connection: close\r\n\r\n"
+	if _, err := conn.Write([]byte(request)); err != nil {
+		r.t.Fatalf("write the %s: %v", method, err)
+	}
+	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: method})
+	if err != nil {
+		r.t.Fatalf("read the answer to %s %s: %v", method, target, err)
+	}
+	return answer, bodyOf(r.t, answer)
 }
 
 // basic is one Proxy-Authorization header line, as a command's client writes it.

@@ -55,12 +55,12 @@ func newRoleClaimRetryRig(t *testing.T, sessionIDs ...string) *roleClaimRetryRig
 	}
 	bustest.Fixture(client.Conn)
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -70,7 +70,7 @@ func newRoleClaimRetryRig(t *testing.T, sessionIDs ...string) *roleClaimRetryRig
 			t.Fatalf("register %s: %v", sessionID, err)
 		}
 	}
-	outside, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
+	outside, err := store.Open(t.Context(), setupPublishTestClient(t).Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry the interloping claim is made through: %v", err)
 	}

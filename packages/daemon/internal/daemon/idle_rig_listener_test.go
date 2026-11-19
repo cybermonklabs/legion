@@ -63,9 +63,13 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Dir = home
+	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
+	// agent subject of a session with no record is held for that window before the listener gives
+	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
+	// way comes back inside the rig's pod wait with room to spare.
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL)
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()

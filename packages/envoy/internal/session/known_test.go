@@ -27,7 +27,7 @@ import (
 func openKnown(t *testing.T, now func() time.Time) *KnownSessions {
 	t.Helper()
 	client := setupNATS(t)
-	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
+	known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 	client := setupNATS(t)
 	const topic = "notifications.team.timed-out-scan"
 	ids := []string{"ses_timeout_1", "ses_timeout_2", "ses_timeout_3"}
-	filling, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -305,7 +305,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(first, longest),
 	}, extra...)
-	known, err := OpenKnownSessions(conn, options...)
+	known, err := OpenKnownSessions(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The records the late open is to answer once the store is repaired.
 	const topic = "notifications.team.late-open-repair"
 	held := []string{"ses_late_repair_1", "ses_late_repair_2", "ses_late_repair_3"}
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	grant.Grant(t, "nothing.this.store.uses")
 	logs := &lockedWriter{}
 	logged := logs.String
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
@@ -662,7 +662,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 	}
 	bustest.Fixture(conn)
 	t.Cleanup(conn.Close)
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {

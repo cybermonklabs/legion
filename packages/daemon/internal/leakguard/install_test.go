@@ -4,16 +4,23 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -125,7 +132,7 @@ func leftovers(t *testing.T, dir string) []string {
 func install(t *testing.T, dir, tag string, body []byte) ([]string, error) {
 	t.Helper()
 	var logged []string
-	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Log: func(format string, args ...any) {
+	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper, Log: func(format string, args ...any) {
 		logged = append(logged, format)
 	}})
 	return logged, err
@@ -423,6 +430,64 @@ func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
 	}
 }
 
+// A --help run that ends with no exit of its own has answered no shape, but the install's refusal
+// names why it ended rather than a check that answered nothing. One that something else killed
+// (another drain's signal, the kernel's out-of-memory kill) is refused naming the kill, with what
+// it printed before it beneath (procgroup.Said), so the person reading the claim's cause looks for
+// what killed it and sees what the check said first. One the install's own context ended is
+// refused naming the context, since that end is what killed the run (verifyServed reads it before
+// the run's error). The stand-in prints a line, writes its pid and waits; each row ends it its own
+// way.
+func TestAHelpRunThatEndsWithNoExitIsRefusedNamingWhy(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		end  func(t *testing.T, pid int, cancel context.CancelFunc)
+		want string
+	}{
+		{
+			name: "killed by another process",
+			end: func(t *testing.T, pid int, _ context.CancelFunc) {
+				if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+					t.Fatalf("kill the --help run %d: %v", pid, err)
+				}
+			},
+			want: "the served check could not be run: signal: terminated\nLEAK CHECK: reading the rules",
+		},
+		{
+			name: "the install's context ended",
+			end:  func(_ *testing.T, _ int, cancel context.CancelFunc) { cancel() },
+			want: "the served check could not be run: context canceled",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			parent := t.TempDir()
+			pidFile := filepath.Join(parent, "help-pid")
+			body := served(t, wholeCheck(t, "#!/bin/sh\necho 'LEAK CHECK: reading the rules' >&2\necho $$ >'"+pidFile+"'\nexec sleep 30\n"))
+			dir := filepath.Join(parent, "leak-check")
+			ctx, cancel := context.WithCancel(bound(t))
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- InstallServed(ctx, ServedInstall{Dir: dir, Tag: theTag, Body: body, Start: procgroup.NoReaper, Log: func(string, ...any) {}})
+			}()
+			var pid int
+			testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "the --help run to write its pid", func() bool {
+				written, err := os.ReadFile(pidFile)
+				n, convErr := strconv.Atoi(strings.TrimSpace(string(written)))
+				pid = n
+				return err == nil && convErr == nil && pid > 0
+			})
+			row.end(t, pid, cancel)
+			if err := <-done; err == nil || err.Error() != row.want {
+				t.Fatalf("install with its --help run ended = %v, want %q", err, row.want)
+			}
+			if _, statErr := os.Lstat(dir); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("the refused install left %s (%v), want nothing there", dir, statErr)
+			}
+		})
+	}
+}
+
 // A role's shim reads the install and starts no agent unless it is the pin's: an absent check, an
 // install that records no tag and one of another tag are each refused naming the pin and what is
 // there. With no pin, which is every tmux pane, nothing is read and nothing refused.
@@ -492,9 +557,217 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 	}
 }
 
+// The tag file is under the issue's scratch, which every role writes, and the pod's launcher,
+// its container's PID 1, reads it as it replaces an install. So what a role leaves there is read
+// without following a link and without waiting on a fifo, and bounded: a symlink to /dev/zero, a
+// symlink to a file that holds the pin, a fifo nobody writes and a file past the bound each answer
+// at once as no install, the shim's read (Installed) refuses naming why, and a new install
+// replaces it. A read that followed the link to /dev/zero would read it to the end, one that
+// followed the link to the pin would take it for an install, and one that opened the fifo plainly
+// would wait for ever.
+func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testing.T) {
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}
+	// Each plant makes path one hostile file and answers what releases a read it holds, which the
+	// test calls when the read did not return in time, so its goroutine ends.
+	nothingHeld := func() {}
+	for _, tc := range []struct {
+		name    string
+		plant   func(t *testing.T, path string) (release func())
+		refusal string
+	}{
+		{"a symlink to /dev/zero", func(t *testing.T, path string) func() {
+			if err := os.Symlink("/dev/zero", path); err != nil {
+				t.Fatal(err)
+			}
+			return nothingHeld
+		}, "is a symlink"},
+		{"a symlink to a file that holds the pin", func(t *testing.T, path string) func() {
+			pin := filepath.Join(t.TempDir(), "pin")
+			if err := os.WriteFile(pin, []byte(theTag+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(pin, path); err != nil {
+				t.Fatal(err)
+			}
+			return nothingHeld
+		}, "is a symlink"},
+		{"a fifo", func(t *testing.T, path string) func() {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Opening the fifo for writing lets a plain open of it for reading return.
+			return func() {
+				if writer, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
+					_ = writer.Close()
+				}
+			}
+		}, "is a fifo"},
+		{"a file past the bound", func(t *testing.T, path string) func() {
+			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), tagLimit+1), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return nothingHeld
+		}, "is larger than 256 bytes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "leak-check")
+			if _, err := install(t, dir, theTag, served(t, wholeCheck(t, answersItsHelp))); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			tag := filepath.Join(dir, tagFile)
+			remove(t, tag)
+			release := tc.plant(t, tag)
+			type read struct {
+				tag     string
+				there   bool
+				refused error
+			}
+			done := make(chan read, 1)
+			go func() {
+				got, there, refused := installedTag(dir)
+				done <- read{got, there, refused}
+			}()
+			select {
+			case got := <-done:
+				if got.there || got.tag != "" || got.refused == nil || got.refused.Error() != tag+" "+tc.refusal {
+					t.Fatalf("installedTag = %q, %v, %v; want no install, refused as %q", got.tag, got.there, got.refused, tag+" "+tc.refusal)
+				}
+			case <-time.After(5 * time.Second):
+				release()
+				t.Fatalf("installedTag was still reading %s after 5s", tag)
+			}
+			failed := setupFailure(t, func() error { _, err := Installed(pinned, dir); return err }())
+			if !strings.Contains(failed.Error(), "its tag file is refused ("+tag+" "+tc.refusal+")") {
+				t.Errorf("Installed = %q, want it to name the refusal", failed)
+			}
+			if _, err := install(t, dir, theTag, served(t, wholeCheck(t, answersItsHelp))); err != nil {
+				t.Fatalf("the install over %s: %v", tc.name, err)
+			}
+			if got := recordedTag(t, dir); got != theTag+"\n" {
+				t.Errorf("the install over %s records %q, want %q", tc.name, got, theTag+"\n")
+			}
+		})
+	}
+}
+
+// The install writes its tag into a staging directory under the scratch every role writes, while
+// the body unpacks, so a role can plant a file at the tag's path first. The tag is written as
+// every member is (writeMember): a fifo there fails the write at once rather than holding it until
+// a reader comes, and a symlink there fails it rather than sending the write to the link's target.
+// Through the install, a file already at the staged tag's path refuses the install rather than
+// being opened and written over: a served body that carries the tag file stands in for the file a
+// role planted, since it puts one there every time.
+func TestAMemberIsNeverWrittenThroughWhatARoleLeftAtItsPath(t *testing.T) {
+	t.Run("the staged tag, through the install", func(t *testing.T) {
+		members := theCheck(answersItsHelp)
+		members[tagFile] = leakguardtest.Member{Body: "leak-check-v1\n", Mode: 0o644}
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		_, err := install(t, dir, theTag, served(t, leakguardtest.GitHubTarball(t, members)))
+		if !errors.Is(err, fs.ErrExist) || !strings.HasPrefix(err.Error(), "the installed tag could not be recorded: ") {
+			t.Fatalf("install with a file already at the staged tag's path = %v, want it refused as existing", err)
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		plant func(t *testing.T, path string)
+	}{
+		{"a fifo", func(t *testing.T, path string) {
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a symlink", func(t *testing.T, path string) {
+			if err := os.Symlink(filepath.Join(filepath.Dir(path), "target"), path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tagFile)
+			tc.plant(t, path)
+			done := make(chan error, 1)
+			go func() { done <- writeMember(path, strings.NewReader(theTag+"\n"), 0o644) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, fs.ErrExist) {
+					t.Fatalf("writeMember over %s = %v, want it refused as existing", tc.name, err)
+				}
+			case <-time.After(5 * time.Second):
+				if reader, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_ = reader.Close()
+				}
+				t.Fatalf("writeMember was still opening %s after 5s", path)
+			}
+			if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "target")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("writeMember wrote through the symlink to its target (%v)", err)
+			}
+		})
+	}
+}
+
 func remove(t *testing.T, path string) {
 	t.Helper()
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The install's one run of the check starts through the caller's starter (ServedInstall.Start),
+// which is how the pod's launcher, its container's PID 1, holds the run out of its own reaper:
+// the starter is given the staged check's --help, and its done is called only once the run's own
+// wait has read the exit. A start the starter refuses refuses the install, and an install named no
+// starter at all is refused before it writes anything, rather than run the check under a start
+// nobody chose; either leaves nothing behind.
+func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
+	t.Run("a starter", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		var started []*exec.Cmd
+		var exitAtDone *os.ProcessState
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+			Start: func(cmd *exec.Cmd) (func(), error) {
+				started = append(started, cmd)
+				return func() { exitAtDone = cmd.ProcessState }, cmd.Start()
+			}})
+		if err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		if len(started) != 1 || filepath.Base(started[0].Path) != checkName || !slices.Equal(started[0].Args[1:], []string{"--help"}) {
+			t.Fatalf("the starter was given %d commands (%v), want the one run of the check's --help", len(started), started)
+		}
+		if exitAtDone == nil || exitAtDone.ExitCode() != 1 {
+			t.Errorf("done ran with the exit %v, want it called once the run's wait had read its exit 1", exitAtDone)
+		}
+		if got := recordedTag(t, dir); got != theTag+"\n" {
+			t.Errorf("the install records %q, want %q", got, theTag+"\n")
+		}
+	})
+	t.Run("a start the starter refuses", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		refused := errors.New("the guard refused the start")
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+			Start: func(*exec.Cmd) (func(), error) { return nil, refused }})
+		if want := "the served check could not be run: " + refused.Error(); err == nil || err.Error() != want || !errors.Is(err, refused) {
+			t.Fatalf("install = %v, want %q", err, want)
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+		}
+		if left := leftovers(t, dir); len(left) != 0 {
+			t.Errorf("the refused install left %v beside %s, want nothing", left, dir)
+		}
+	})
+	t.Run("no starter", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "leak-check")
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp))})
+		if want := "the pod's launcher named no starter for the check's run"; err == nil || err.Error() != want {
+			t.Fatalf("install = %v, want %q", err, want)
+		}
+		if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+			t.Errorf("the refused install left %v (%v) in %s, want nothing", entries, err, parent)
+		}
+	})
 }

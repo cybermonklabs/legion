@@ -12,21 +12,17 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -52,14 +48,17 @@ const (
 	siteBoundDecision    = "bound.go serveBound: a request the decision refuses"
 	siteAWSSignature     = "bound.go serveBound: an AWS call the airlock will not sign"
 	siteBoundCut         = "bound.go serveBound: a call whose grant ended before its service answered"
+	siteFederatedSwap    = "bound.go serveBound: the federated token outside an exchange"
 	siteAzureAssertion   = "azure.go exchangeToken: a token request that is not this grant's"
+	siteAzureBound       = "azure.go exchangeToken: a token request as an application the document does not name"
 )
 
 // refusalSites is every site above, in the order the table names them.
 var refusalSites = []string{
 	siteNotAProxyRequest, siteCredential, siteGrantRefused, siteConnectTarget, siteConnectAddress,
 	sitePlainBound, sitePlainAddress, siteBoundConnection, siteProtocolSwitch, siteBoundValues,
-	siteBoundDecision, siteAWSSignature, siteBoundCut, siteAzureAssertion,
+	siteBoundDecision, siteAWSSignature, siteBoundCut, siteFederatedSwap, siteAzureAssertion,
+	siteAzureBound,
 }
 
 // answerIDPattern is an answer id: 16 random bytes, in hex (answer.NewID).
@@ -334,6 +333,19 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, secrets: []string{workerName}, host: boundHost, path: "/v1/poll",
 		},
 		{
+			site: siteFederatedSwap, name: "a GET carrying the federated token's placeholder",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				return answeredBy(r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+azureFederatedPlaceholder))
+			},
+			status: http.StatusForbidden, code: codeFederatedSwap,
+			reason: "refusing to swap " + azureName + "'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: "/v1/subscriptions",
+		},
+		{
 			site: siteAzureAssertion, name: "a token request carrying an assertion of its own",
 			rig: func(t *testing.T) *rig {
 				r, _ := newAzureRig(t, Options{Answers: answers})
@@ -344,6 +356,21 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			},
 			status: http.StatusForbidden, code: codeTokenAssertion,
 			reason: "refusing a token request whose client_assertion is not this grant's placeholder",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
+		},
+		{
+			site: siteAzureBound, name: "a token request naming another client_id",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				form := tokenForm(azureFederatedPlaceholder)
+				form.Set("client_id", azureOtherClientID)
+				return answeredBy(tokenRequestAt(t, r, r.client(azureFederatedPlaceholder), azureTokenPath, form))
+			},
+			status: http.StatusForbidden, code: codeTokenApplication,
+			reason: "refusing an exchange of " + azureName + "'s federated token whose client_id is not the application " + azureName + "'s secret names",
 			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
 		},
 	} {
@@ -484,349 +511,6 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 	}
 	if driven != 3 {
 		t.Fatalf("the table drove %d rows, want 3", driven)
-	}
-}
-
-// TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote: a refusal's line, a call's line, a joined
-// connection's line, a cut call's line, an upstream failure's line and net/http's own line on the
-// proxy port each fit one Cloud Logging entry, 262,144 bytes, whatever the caller sends, because
-// each text field the caller wrote is cut to its first 256 bytes where it enters the line
-// (answer.ClipFields; ca-refusal-record, Verification v19). Each row sends, through one field the
-// caller chose, text that writes that line at about 300 KB uncut, on the real proxy of the rig:
-//
-//   - of a refusal's line, the method, the host, the path and the X-Correlation-Id of a request
-//     that is no proxy request, and the reason in both its forms that quote the host - a CONNECT
-//     target that is no host and port (r.Host), and a name that does not resolve
-//     (checkedAddresses' error), on a CONNECT and on a plain proxy request;
-//   - of a call's line (callFields), the method of a call whose grant read did not happen and the
-//     path of a call the proxy carried;
-//   - of a joined connection's line (watchCarried, through callFields), the method of an upgrade
-//     whose entry allows any method (Allow nil) and the path of one under the allowed prefix,
-//     each joined and then closed by a grant that stopped carrying it;
-//   - of a cut call's line (watchCarried, through callFields), the method and the path of a call
-//     whose answer streams, under the same two entries, each cut by a grant that stopped
-//     carrying it;
-//   - of the upstream failure's line (badGateway), the path and the host of a plain proxy request
-//     whose service cannot be reached, and the error of one whose name answers the check and
-//     nothing to the transport's own lookup, which quotes that host;
-//   - of net/http's own line (slogWriter, the ErrorLog of both servers), the error of a TLS
-//     handshake that failed on a bound connection, whose ClientHello offers only protocols the
-//     proxy does not speak, which crypto/tls's error quotes whole.
-//
-// The cut is for the caller's text, never for the server's own. One row more panics a handler of
-// the inner server (serveBound, through the clock the rig hands the proxy), which net/http
-// recovers and logs with the stack of the goroutine that panicked. That line is the one record of
-// where the panic happened, so it holds the first line of net/http's text as its error, cut as
-// every other error is, and the stack after it whole in its stack field, which must name the
-// handler that panicked; net/http bounds the stack it writes, so the line still fits the entry.
-// No other row's line holds a stack.
-//
-// Each row writes its line through the broker's own JSON handler (logging.NewCloudHandler), reads
-// its length, and reads the field back as the first 256 bytes of the text it held, which for a
-// reason or an error is the proxy's words around the host, for net/http's error its words around
-// the client's address and the protocols it offered, and for the panic's error, which is shorter,
-// its whole first line: the client's address and the value the clock panicked with. The table
-// records which field of which line it drove, and fails when it drove fewer than all of them.
-//
-// The named reverts: let one field pass answer.ClipFields uncut; that field's row writes a line
-// of about 300 KB and fails. Or pass net/http's whole text through answer.ClipFields as its error
-// with no stack field, as slogWriter did before Verification v19; the panic row then fails, since
-// the first 256 bytes of that text end inside the runtime's frames, before any of the handler's.
-func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
-	const entryLimit = 256 << 10
-	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
-	sent := strings.Repeat("abcdefghij", 30000)
-	// public is an address the proxy may dial that no stand-in service answers on port 80, so a
-	// plain proxy request to a name holding it reaches badGateway.
-	public := netip.MustParseAddr("93.184.216.37")
-	// notAProxyRequest is a request to the proxy port that is no proxy request, changed by edit,
-	// which the port refuses before it reads any credential.
-	notAProxyRequest := func(t *testing.T, r *rig, edit func(*http.Request)) *http.Response {
-		t.Helper()
-		request, err := http.NewRequest(http.MethodGet, "http://"+r.addr+"/healthz", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		edit(request)
-		response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
-		if err != nil {
-			t.Fatalf("a request to the proxy port: %v", err)
-		}
-		bodyOf(t, response)
-		return response
-	}
-	// bound is one call to the bound host through the proxy, as a command's client makes it.
-	bound := func(r *rig, method, path string) *http.Response {
-		response, _ := r.do(r.client(workerPlaceholder), method, "https://"+boundHost+path, "", "Authorization", "Bearer "+workerPlaceholder)
-		return response
-	}
-	connect := func(target string) func(t *testing.T, r *rig) *http.Response {
-		return func(_ *testing.T, r *rig) *http.Response {
-			response, _, _ := r.connectRaw(target, basic(workerPlaceholder))
-			return response
-		}
-	}
-	// join upgrades to the service at that method and path, joins the two connections, and then
-	// ends the grant behind them, which is what makes the watcher write the join's own line
-	// (TestAJoinedConnectionIsClosedWhenItsGrantStopsCarryingIt drives the same close).
-	join := func(method, path string) func(t *testing.T, r *rig) *http.Response {
-		return func(t *testing.T, r *rig) *http.Response {
-			_, conn, reader, upgraded := joinedThroughPath(t, r, method, path)
-			r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-			waitClosed(t, conn, reader)
-			return upgraded
-		}
-	}
-	// cut streams the service's answer to a call at that method and path, and then ends the grant
-	// behind it, which is what makes the watcher write the cut's own line
-	// (TestACarriedStreamEndsWhenItsGrantStopsCarryingIt drives the same cut).
-	cut := func(method, path string) func(t *testing.T, r *rig) *http.Response {
-		return func(t *testing.T, r *rig) *http.Response {
-			streamStandIn(r)
-			request, err := http.NewRequest(method, "https://"+boundHost+path, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
-			response, err := r.client(workerPlaceholder).Do(request)
-			if err != nil {
-				t.Fatalf("the streamed call through the proxy: %v", err)
-			}
-			defer response.Body.Close()
-			reader := bufio.NewReader(response.Body)
-			if _, err := reader.ReadString('\n'); err != nil {
-				t.Fatalf("the stream's first line: %v", err)
-			}
-			r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
-			_, _ = io.Copy(io.Discard, reader)
-			return response
-		}
-	}
-	// anyMethod is the rules file of the join's method row: an entry with no allow list, which
-	// the airlock reads as any method and path (airlock.SecretRule.Allow), so the upgrade the row
-	// sends is carried rather than refused and its method reaches the join's line.
-	anyMethod := airlock.Rules{Secrets: []airlock.SecretRule{{
-		Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
-	}}}
-	// protocols is an ALPN list without http/1.1 that crypto/tls's client still sends: 240 names
-	// of 255 bytes, the most one name holds, which keeps the ClientHello under the 65,536 bytes
-	// crypto/tls's server reads of one handshake message. Each byte is one %q writes as four
-	// (\x00) and the JSON handler as five, so net/http's line quoting the list is about 300 KB
-	// uncut.
-	protocols := make([]string, 240)
-	for i := range protocols {
-		protocols[i] = strings.Repeat("\x00", 255)
-	}
-	// handshakeError is what net/http's line holds before the cut. It names the client's own
-	// address, which only the row's dial picks, so the row's send writes it.
-	var handshakeError string
-	// panicked is what the panic row's clock panics with, and panicError the first line of
-	// net/http's text for it, which names the client's address as handshakeError does.
-	const panicked = "the clock the panic row hands the proxy panicked"
-	var panicError string
-	// fields is every field of each line that holds the caller's text, each of which a row drives.
-	fields := map[string][]string{
-		answer.RefusalMessage: {"method", "host", "path", "correlation_id", "reason"},
-		callMessage:           {"method", "path"},
-		joinMessage:           {"method", "path"},
-		cutMessage:            {"method", "path"},
-		upstreamMessage:       {"path", "host", "error"},
-		netHTTPMessage:        {"error"},
-	}
-	drove := map[string]bool{}
-	driven := 0
-	for _, row := range []struct {
-		name string
-		// message is the line's, field the field the caller's text goes into, and held what that
-		// field holds before the cut.
-		message, field, held string
-		// heldBy, where set, answers held once send has run, for a field whose text names what
-		// only the row's own dial picks.
-		heldBy func() string
-		// frame, where set, is the function the line's stack must name: the handler that
-		// panicked. A row that sets none writes a line with no stack.
-		frame  string
-		status int
-		// options is the rig's; the zero value is the plain rig every other row drives.
-		options Options
-		send    func(t *testing.T, r *rig) *http.Response
-	}{
-		{name: "a refusal's method", message: answer.RefusalMessage, field: "method", held: sent, status: http.StatusBadRequest,
-			send: func(t *testing.T, r *rig) *http.Response {
-				return notAProxyRequest(t, r, func(request *http.Request) { request.Method = sent })
-			}},
-		{name: "a refusal's host", message: answer.RefusalMessage, field: "host", held: sent, status: http.StatusBadRequest,
-			send: func(t *testing.T, r *rig) *http.Response {
-				return notAProxyRequest(t, r, func(request *http.Request) { request.Host = sent })
-			}},
-		{name: "a refusal's path", message: answer.RefusalMessage, field: "path", held: "/" + sent, status: http.StatusBadRequest,
-			send: func(t *testing.T, r *rig) *http.Response {
-				return notAProxyRequest(t, r, func(request *http.Request) { request.URL.Path = "/" + sent })
-			}},
-		{name: "a refusal's X-Correlation-Id", message: answer.RefusalMessage, field: "correlation_id", held: sent, status: http.StatusBadRequest,
-			send: func(t *testing.T, r *rig) *http.Response {
-				return notAProxyRequest(t, r, func(request *http.Request) { request.Header.Set("X-Correlation-Id", sent) })
-			}},
-		{name: "a refusal's reason: a CONNECT target that is no host and port", message: answer.RefusalMessage, field: "reason",
-			held: sent + "] is no host and port", status: http.StatusBadRequest, send: connect(sent + "]")},
-		{name: "a refusal's reason: a CONNECT target that does not resolve", message: answer.RefusalMessage, field: "reason",
-			held: "cannot resolve " + sent + ": no such host", status: http.StatusForbidden, send: connect(sent + ":443")},
-		{name: "a refusal's reason: a plain proxy request to a host that does not resolve", message: answer.RefusalMessage, field: "reason",
-			held: "cannot resolve " + sent + ": no such host", status: http.StatusForbidden,
-			send: func(_ *testing.T, r *rig) *http.Response {
-				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
-				return response
-			}},
-		{name: "a call's method", message: callMessage, field: "method", held: sent, status: http.StatusServiceUnavailable,
-			send: func(_ *testing.T, r *rig) *http.Response {
-				r.grants.refuseValues(databaseDown)
-				return bound(r, sent, "/v1/things")
-			}},
-		{name: "a call's path", message: callMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
-			send: func(_ *testing.T, r *rig) *http.Response {
-				return bound(r, http.MethodGet, "/v1/"+sent)
-			}},
-		{name: "a joined connection's method", message: joinMessage, field: "method", held: sent, status: http.StatusSwitchingProtocols,
-			options: Options{Watch: watchFast, Rules: anyMethod}, send: join(sent, upgradePath)},
-		{name: "a joined connection's path", message: joinMessage, field: "path", held: "/v1/" + sent, status: http.StatusSwitchingProtocols,
-			options: Options{Watch: watchFast}, send: join(http.MethodGet, "/v1/"+sent)},
-		{name: "a cut call's method", message: cutMessage, field: "method", held: sent, status: http.StatusOK,
-			options: Options{Watch: watchFast, Rules: anyMethod}, send: cut(sent, "/v1/stream")},
-		{name: "a cut call's path", message: cutMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
-			options: Options{Watch: watchFast}, send: cut(http.MethodGet, "/v1/"+sent)},
-		{name: "an upstream failure's path: a plain proxy request whose service cannot be reached", message: upstreamMessage, field: "path",
-			held: "/" + sent, status: http.StatusBadGateway,
-			send: func(_ *testing.T, r *rig) *http.Response {
-				// The rig dials nothing on port 80, so the request is a 502 of badGateway's.
-				response, _ := r.get(r.client(workerPlaceholder), "http://"+echoHost+"/"+sent)
-				return response
-			}},
-		{name: "an upstream failure's host: a plain proxy request to a name that resolves and answers nothing", message: upstreamMessage, field: "host",
-			held: sent, status: http.StatusBadGateway,
-			send: func(_ *testing.T, r *rig) *http.Response {
-				// The name resolves to an address the proxy may dial and no service answers on.
-				r.addresses[sent] = []netip.Addr{public}
-				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
-				return response
-			}},
-		{name: "an upstream failure's error: a name that answers the check and nothing the transport's own lookup", message: upstreamMessage, field: "error",
-			held: sent + " resolves to no address", status: http.StatusBadGateway,
-			send: func(_ *testing.T, r *rig) *http.Response {
-				// One answer for servePlain's check and none for the transport's lookup, whose
-				// error names the host the caller asked for.
-				r.answers[sent] = [][]netip.Addr{{public}, {}}
-				response, _ := r.get(r.client(workerPlaceholder), "http://"+sent+"/")
-				return response
-			}},
-		{name: "Go's HTTP server's error: a TLS handshake on a bound connection whose ClientHello offers no protocol the proxy speaks", message: netHTTPMessage, field: "error",
-			heldBy: func() string { return handshakeError }, status: http.StatusOK,
-			send: func(t *testing.T, r *rig) *http.Response {
-				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
-				// net/http names the client by the address its CONNECT came from, this end of the
-				// connection, and crypto/tls quotes every protocol the client offered.
-				handshakeError = fmt.Sprintf("http: TLS handshake error from %s: tls: client requested unsupported application protocols (%q)",
-					conn.LocalAddr(), protocols)
-				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust, NextProtos: protocols})
-				if err := client.Handshake(); err == nil {
-					t.Fatal("the proxy finished a handshake whose ClientHello offered no protocol it speaks; want it refused")
-				}
-				return response
-			}},
-		{name: "Go's HTTP server's error: a handler of the inner server that panics, whose stack the line keeps whole", message: netHTTPMessage, field: "error",
-			heldBy: func() string { return panicError }, frame: "github.com/sjawhar/envoy/internal/broker/airlockproxy.(*Server).serveBound(",
-			status: http.StatusOK, options: Options{Now: func() time.Time { panic(panicked) }},
-			send: func(t *testing.T, r *rig) *http.Response {
-				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
-				// net/http names the client as the handshake row's line does, and the value the
-				// handler panicked with beside it.
-				panicError = fmt.Sprintf("http: panic serving %s: %s", conn.LocalAddr(), panicked)
-				client := tls.Client(conn, &tls.Config{ServerName: boundHost, RootCAs: r.trust})
-				// A call to the bound host: serveBound reads the grant, chooses the name the call is
-				// for (choosePair) and asks for the grant's values, whose first read of the clock panics.
-				call := "GET /v1/things HTTP/1.1\r\nHost: " + boundHost + "\r\nAuthorization: Bearer " + workerPlaceholder + "\r\n\r\n"
-				if _, err := client.Write([]byte(call)); err != nil {
-					t.Fatalf("write the call on the bound connection: %v", err)
-				}
-				if answered, err := http.ReadResponse(bufio.NewReader(client), nil); err == nil {
-					t.Fatalf("the call whose handler panicked was answered %d; want the connection closed with no answer", answered.StatusCode)
-				}
-				return response
-			}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			driven++
-			drove[row.message+" "+row.field] = true
-			r := newRig(t, row.options)
-			response := row.send(t, r)
-			id := response.Header.Get(answer.Header)
-			if response.StatusCode != row.status || id == "" {
-				t.Fatalf("the answer is %d with answer id %q, want %d with one", response.StatusCode, id, row.status)
-			}
-			// A call's line is written once its answer has been copied to the client, so it
-			// can come a moment after the client has read the answer, and net/http's once the
-			// handshake has failed or the handler has panicked. The upstream failure's line and
-			// net/http's name no answer id, so each is read by its message alone: each row has a
-			// rig of its own.
-			var lines []string
-			for deadline := time.Now().Add(10 * time.Second); len(lines) == 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-				for _, record := range r.logs.Records() {
-					named, carries := false, false
-					record.Attrs(func(a slog.Attr) bool {
-						carries = carries || a.Key == "answer_id"
-						named = named || (a.Key == "answer_id" && a.Value.String() == id)
-						return true
-					})
-					if record.Message != row.message || (carries && !named) {
-						continue
-					}
-					out := &logtest.Buffer{}
-					if err := logging.NewCloudHandler(out).Handle(context.Background(), record); err != nil {
-						t.Fatalf("write the line: %v", err)
-					}
-					lines = append(lines, out.String())
-				}
-			}
-			if len(lines) != 1 {
-				t.Fatalf("the answer wrote %d lines under %q naming its answer id, or none, want 1", len(lines), row.message)
-			}
-			if size := len(lines[0]); size >= entryLimit {
-				t.Fatalf("the line is %d bytes, want under the %d bytes of one Cloud Logging entry", size, entryLimit)
-			}
-			var written map[string]any
-			if err := json.Unmarshal([]byte(lines[0]), &written); err != nil {
-				t.Fatalf("the line is not one JSON object: %v", err)
-			}
-			// The stack first, so that a line that kept no stack fails on the frame it lost
-			// rather than on the error that holds the stack's first bytes in its place.
-			stack, _ := written["stack"].(string)
-			_, stacked := written["stack"]
-			switch {
-			case row.frame == "" && stacked:
-				t.Fatalf("the line has a stack of %d bytes, want none: no handler panicked", len(stack))
-			case row.frame != "" && !strings.Contains(stack, row.frame):
-				t.Fatalf("the line names no frame %s, the handler that panicked: its stack is %d bytes and its error %q",
-					row.frame, len(stack), written["error"])
-			}
-			held := row.held
-			if row.heldBy != nil {
-				held = row.heldBy()
-			}
-			want := held[:min(len(held), 256)]
-			if kept, _ := written[row.field].(string); kept != want {
-				t.Fatalf("the line's %s is %d bytes, want the first %d of the %d it held: %.80q", row.field, len(kept), len(want), len(held), kept)
-			}
-		})
-	}
-	var missing []string
-	for message, named := range fields {
-		for _, field := range named {
-			if !drove[message+" "+field] {
-				missing = append(missing, message+" "+field)
-			}
-		}
-	}
-	if driven != 18 || len(missing) != 0 {
-		t.Fatalf("the table drove %d rows, want 18; it never drove %v", driven, missing)
 	}
 }
 

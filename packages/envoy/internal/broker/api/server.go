@@ -58,6 +58,19 @@ type Deps struct {
 	Machine             *requests.Machine
 	MachineLogin        *machine.Service
 	Proof               *proof.Verifier
+	// PodRegistrars is BROKER_POD_REGISTRARS, the registrar and pod account pairs POST
+	// /v1/oauth/exchange/pod-sessions admits: a registration whose caller's login account no
+	// entry pairs with the account of the pod it registers is 403 POD_REGISTRAR_NOT_LISTED,
+	// whatever BROKER_SERVICE_LOGINS lists. Nil, the setting unset, lists no pair, so the route
+	// admits no registration at all.
+	PodRegistrars PodRegistrars
+	// PodRegistrationTokens verifies a registration's pod token at
+	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
+	// the broker's own audience with (cmd/broker builds both on one oidc.Keys). Only POST
+	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
+	// token of that audience. Nil is a broker with no such audience, whose registration route
+	// accepts the broker's own audience alone.
+	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
 	Policy *policy.Current
@@ -80,6 +93,11 @@ type Deps struct {
 	// (BROKER_SECRETS_KMS_KEY_ARN), with its region and account, or the GCP store's Cloud KMS key
 	// name (BROKER_SECRETS_KMS_KEY_NAME).
 	SecretsKMSKey string
+	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE where BROKER_VM_SERVICES lists a
+	// machine that may trade a Google identity token at the token exchange, and empty otherwise.
+	// GET /v1/settings answers it, so a machine's `agent-secrets` mints a token for the right
+	// audience with no setting of its own.
+	GoogleExchangeAudience string
 	// LauncherLimits bounds POST /v1/oauth/device_authorization and POST
 	// /v1/launcher-credentials/token; nil means DefaultLauncherLimits.
 	LauncherLimits *LauncherLimits
@@ -115,9 +133,9 @@ type Deps struct {
 	TrustedProxyHeader string
 	// OAuth is the machine login's OAuth provider and the token exchange. POST
 	// /v1/oauth/device_authorization, POST /v1/oauth/token, POST /v1/oauth/introspect, POST
-	// /v1/oauth/revoke and POST /v1/oauth/exchange/pod-sessions are
-	// mounted only when it is set, with DeviceLogin and both TokenHooks, which it then requires
-	// (Register panics without them).
+	// /v1/oauth/revoke, POST /v1/oauth/exchange/pod-sessions and POST
+	// /v1/oauth/exchange/pod-sessions/release are mounted only when it is set, with DeviceLogin
+	// and both TokenHooks, which it then requires (Register panics without them).
 	OAuth *oauth.Provider
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
@@ -633,13 +651,14 @@ func (s *server) approveURL(recordID string) string {
 	return s.deps.PublicURL + "/approve/" + recordID
 }
 
-// pendingApproveURL is approveURL for a request's record while the request waits on it, and ""
-// for a request granted or denied at once (no record), and once it is no longer pending.
-func (s *server) pendingApproveURL(state string, recordID *string) string {
-	if state != "pending" || recordID == nil {
+// pendingApproveURL is approveURL for a request's record while the request waits on a person, and
+// "" for a request granted or denied at once (no record), once it is no longer pending, and while
+// the model judge holds it (requests.Request.JudgeDeciding), since no person decides it then.
+func (s *server) pendingApproveURL(req requests.Request) string {
+	if req.State != "pending" || req.RecordID == nil || req.JudgeDeciding {
 		return ""
 	}
-	return s.approveURL(*recordID)
+	return s.approveURL(*req.RecordID)
 }
 
 // writeInternal logs a failed operation with its error and answers 500 INTERNAL naming the

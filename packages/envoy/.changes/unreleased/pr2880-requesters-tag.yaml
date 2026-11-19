@@ -3,7 +3,7 @@ body: |
   A secret's `requesters` annotation names the people and the registered services that may ask
   for it at all: people by their lowercase sign-in email, services by their registered name,
   separated by spaces. The broker denies every session and pod the list does not name, with no
-  approval request and whatever the secret's owner, tier or kind would have given them, and the
+  approval request and whatever the secret's owner, tier or type would have given them, and the
   refusal names the secret and `requester-not-listed` to the session that asked, on
   `POST /v1/requests`, on `GET /v1/requests/{id}` and in `agent-secrets`' own output. A list that
   drops a session ends its live grant for good at that grant's next release, and an approval of a

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+)
+
+// registrarA and registrarB are two daemons' login accounts, the registrars the writes below
+// name. Every test but the three of the session name's binding writes as registrarA alone, so each
+// row it writes is its own registrar's and keeps the generation rule.
+const (
+	registrarA = "system:serviceaccount:legion-system:legion-daemon-a"
+	registrarB = "system:serviceaccount:legion-system:legion-daemon-b"
 )
 
 // TestAWriteWithoutAThumbprintKeepsTheBinding: a registration bound to a role's key stays bound
@@ -23,10 +33,10 @@ func TestAWriteWithoutAThumbprintKeepsTheBinding(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
 	const pod, session, kA, kB = "pod-uid-issue", "reviewer-g1", "thumbprint-of-role-a", "thumbprint-of-role-b"
-	if stored, err := s.RegisterPodSession(ctx, pod, session, kB, 0); err != nil || stored.JKT != kB {
+	if stored, err := s.RegisterPodSession(ctx, registrarA, pod, session, kB, 0); err != nil || stored.JKT != kB {
 		t.Fatalf("RegisterPodSession with %s = %+v, %v; want the registration bound to %s", kB, stored, err, kB)
 	}
-	if stored, err := s.RegisterPodSession(ctx, pod, session, "", 0); err != nil || stored.JKT != kB {
+	if stored, err := s.RegisterPodSession(ctx, registrarA, pod, session, "", 0); err != nil || stored.JKT != kB {
 		t.Fatalf("RegisterPodSession with no thumbprint = %+v, %v; want the binding to %s kept", stored, err, kB)
 	}
 	if registered, err := s.PodSessionRegistered(ctx, pod, session, kA); registered || !errors.Is(err, oauthstore.ErrPodSessionBoundToAnotherKey) {
@@ -48,11 +58,11 @@ func TestALateOlderGenerationLeavesTheNewerKey(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newStore(t)
 	const pod, session, kA, kB = "pod-uid-issue", "implementer-g1", "thumbprint-of-the-old-incarnation", "thumbprint-of-the-new-incarnation"
-	newer, err := s.RegisterPodSession(ctx, pod, session, kB, 2)
+	newer, err := s.RegisterPodSession(ctx, registrarA, pod, session, kB, 2)
 	if err != nil || newer.JKT != kB || newer.Generation != 2 {
 		t.Fatalf("RegisterPodSession with %s at generation 2 = %+v, %v; want the registration bound to %s at generation 2", kB, newer, err, kB)
 	}
-	late, err := s.RegisterPodSession(ctx, pod, session, kA, 1)
+	late, err := s.RegisterPodSession(ctx, registrarA, pod, session, kA, 1)
 	if err != nil || late.JKT != kB || late.Generation != 2 || !late.ExpiresAt.Equal(newer.ExpiresAt) {
 		t.Fatalf("a late write with %s at generation 1 after %s at generation 2 = %+v, %v; want it answered the unchanged row %+v: the old incarnation's write put its key back", kA, kB, late, err, newer)
 	}
@@ -73,11 +83,11 @@ func TestAWriteOfTheSameGenerationIsApplied(t *testing.T) {
 	const pod, kA, kB = "pod-uid-issue", "thumbprint-of-role-a", "thumbprint-of-role-b"
 	for _, generation := range []int64{0, 3} {
 		session := fmt.Sprintf("session-at-generation-%d", generation)
-		first, err := s.RegisterPodSession(ctx, pod, session, kA, generation)
+		first, err := s.RegisterPodSession(ctx, registrarA, pod, session, kA, generation)
 		if err != nil {
 			t.Fatalf("RegisterPodSession at generation %d: %v", generation, err)
 		}
-		again, err := s.RegisterPodSession(ctx, pod, session, kB, generation)
+		again, err := s.RegisterPodSession(ctx, registrarA, pod, session, kB, generation)
 		if err != nil || again.JKT != kB || again.Generation != generation || again.ExpiresAt.Before(first.ExpiresAt) {
 			t.Fatalf("a second write at generation %d with %s after %+v = %+v, %v; want it applied: bound to %s at generation %d", generation, kB, first, again, err, kB, generation)
 		}
@@ -107,7 +117,7 @@ func TestAWriteSaysWhetherItWasAppliedAndWhatItReplaced(t *testing.T) {
 		{"a first write naming no key", "watched-session", "", 0, true, ""},
 		{"a write binding the pod's row to kA", "watched-session", kA, 0, true, ""},
 	} {
-		stored, err := s.RegisterPodSession(ctx, pod, w.session, w.jkt, w.generation)
+		stored, err := s.RegisterPodSession(ctx, registrarA, pod, w.session, w.jkt, w.generation)
 		if err != nil || stored.Applied != w.applied || stored.Replaced != w.replaced {
 			t.Fatalf("%s of %s at generation %d = %+v, %v; want applied %t, replacing %q", w.what, w.session, w.generation, stored, err, w.applied, w.replaced)
 		}
@@ -147,9 +157,11 @@ func whileHeld(t *testing.T, pool *pgxpool.Pool, other string, args []any, write
 }
 
 // insertedBy is the statement another write's first insert of a registration is: the pod $1,
-// the session $2, the key $3 and the generation $4.
-const insertedBy = `insert into oauth_pod_sessions (pod_uid, session, expires_at, jkt, generation)
-	values ($1, $2, now() + interval '1 day', $3, $4)`
+// the session $2, the key $3, the generation $4 and the registrar $5. Each caller names the
+// registrar of the write it races, since a row of another registrar or of none is taken whole by
+// that write and the cases here hold the generation rule of the writer's own row.
+const insertedBy = `insert into oauth_pod_sessions (pod_uid, session, expires_at, jkt, generation, registrar)
+	values ($1, $2, now() + interval '1 day', $3, $4, $5)`
 
 // TestAWriteNamesTheKeyTheRowHeldWhenItWrote: the key a write says it replaced is the one the row
 // held when this write changed it, not one an earlier read of the row saw. A write that waits on
@@ -162,11 +174,11 @@ func TestAWriteNamesTheKeyTheRowHeldWhenItWrote(t *testing.T) {
 	const pod, kA, kB, kC = "pod-uid-issue", "thumbprint-a", "thumbprint-b", "thumbprint-c"
 	writeC := func(session string) func() (oauthstore.PodSessionRegistration, error) {
 		return func() (oauthstore.PodSessionRegistration, error) {
-			return s.RegisterPodSession(ctx, pod, session, kC, 1)
+			return s.RegisterPodSession(ctx, registrarA, pod, session, kC, 1)
 		}
 	}
 
-	if _, err := s.RegisterPodSession(ctx, pod, "changed", kA, 1); err != nil {
+	if _, err := s.RegisterPodSession(ctx, registrarA, pod, "changed", kA, 1); err != nil {
 		t.Fatalf("register %s with %s: %v", "changed", kA, err)
 	}
 	changed := whileHeld(t, pool, `update oauth_pod_sessions set jkt = $3 where pod_uid = $1 and session = $2`,
@@ -176,7 +188,7 @@ func TestAWriteNamesTheKeyTheRowHeldWhenItWrote(t *testing.T) {
 			kC, kA, kB, changed.stored, changed.err, kC, kB)
 	}
 
-	inserted := whileHeld(t, pool, insertedBy, []any{pod, "inserted", kB, 1}, writeC("inserted"))
+	inserted := whileHeld(t, pool, insertedBy, []any{pod, "inserted", kB, 1, registrarA}, writeC("inserted"))
 	if inserted.err != nil || !inserted.stored.Applied || inserted.stored.JKT != kC || inserted.stored.Replaced != kB {
 		t.Errorf("a write with %s waiting on another writer's insert of the row with %s = %+v, %v; want it applied, bound to %s, replacing %s, the key the other writer inserted",
 			kC, kB, inserted.stored, inserted.err, kC, kB)
@@ -321,7 +333,7 @@ func TestConcurrentFirstRegistrationsKeepTheHigherGeneration(t *testing.T) {
 			s, pool := newStoreDefaulting(t, isolation)
 			write := func(session, jkt string, generation int64) func() (oauthstore.PodSessionRegistration, error) {
 				return func() (oauthstore.PodSessionRegistration, error) {
-					return s.RegisterPodSession(ctx, pod, session, jkt, generation)
+					return s.RegisterPodSession(ctx, registrarA, pod, session, jkt, generation)
 				}
 			}
 			keptGeneration2 := func(t *testing.T, what, session string) {
@@ -332,13 +344,13 @@ func TestConcurrentFirstRegistrationsKeepTheHigherGeneration(t *testing.T) {
 			}
 
 			t.Run("the other write held open", func(t *testing.T) {
-				second := whileHeld(t, pool, insertedBy, []any{pod, "first-1", k1, 1}, write("first-1", k2, 2))
+				second := whileHeld(t, pool, insertedBy, []any{pod, "first-1", k1, 1, registrarA}, write("first-1", k2, 2))
 				if got := second.stored; second.err != nil || !got.Applied || got.JKT != k2 || got.Generation != 2 || got.Replaced != k1 {
 					t.Fatalf("the write of generation 2 waiting on generation 1's insert = %+v, %v; want it applied, bound to %s at generation 2, replacing %s", got, second.err, k2, k1)
 				}
 				keptGeneration2(t, "generation 2 after generation 1", "first-1")
 
-				second = whileHeld(t, pool, insertedBy, []any{pod, "first-2", k2, 2}, write("first-2", k1, 1))
+				second = whileHeld(t, pool, insertedBy, []any{pod, "first-2", k2, 2, registrarA}, write("first-2", k1, 1))
 				if got := second.stored; second.err != nil || got.Applied || got.JKT != k2 || got.Generation != 2 || got.Replaced != "" {
 					t.Fatalf("the write of generation 1 waiting on generation 2's insert = %+v, %v; want it not applied, answered %s at generation 2", got, second.err, k2)
 				}
@@ -386,7 +398,7 @@ func TestConcurrentFirstRegistrationsKeepTheHigherGeneration(t *testing.T) {
 				var result tally
 				for round := 1; round <= rounds; round++ {
 					session := fmt.Sprintf("change-round-%d", round)
-					if _, err := s.RegisterPodSession(ctx, pod, session, k0, 1); err != nil {
+					if _, err := s.RegisterPodSession(ctx, registrarA, pod, session, k0, 1); err != nil {
 						t.Fatalf("round %d: register %s with %s: %v", round, session, k0, err)
 					}
 					a, b := together(write(session, k1, 1), write(session, k2, 1))
@@ -430,7 +442,7 @@ func TestARegistrationInsideAnotherTransactionIsRefused(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	_, err = s.RegisterPodSession(oauthstore.WithTx(ctx, tx), "pod-uid-issue", "implementer-g1", "thumbprint-a", 1)
+	_, err = s.RegisterPodSession(oauthstore.WithTx(ctx, tx), registrarA, "pod-uid-issue", "implementer-g1", "thumbprint-a", 1)
 	var rows int
 	if scanErr := tx.QueryRow(ctx, `select count(*) from oauth_pod_sessions`).Scan(&rows); scanErr != nil {
 		t.Fatalf("count the registrations in the transaction: %v", scanErr)
@@ -438,4 +450,263 @@ func TestARegistrationInsideAnotherTransactionIsRefused(t *testing.T) {
 	if err == nil || rows != 0 {
 		t.Fatalf("RegisterPodSession inside another transaction = %v, and that transaction holds %d registrations; want it refused, writing none", err, rows)
 	}
+}
+
+// registrationsOf is every registration of session, each as its pod and the registrar that wrote
+// it, in pod order.
+func registrationsOf(t *testing.T, pool *pgxpool.Pool, session string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select pod_uid || ' of ' || coalesce(registrar, 'no registrar') from oauth_pod_sessions
+		where session = $1 order by pod_uid`, session)
+	if err != nil {
+		t.Fatalf("read the registrations of %s: %v", session, err)
+	}
+	registrations, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the registrations of %s: %v", session, err)
+	}
+	return registrations
+}
+
+// TestTwoDaemonsFirstWritesOfOneNameAdmitOne: two registrars' first writes of one session name,
+// each for a pod of its own, touch no row of oauth_pod_sessions in common, so nothing but the
+// primary key of the name's binding (pod_session_registrars.session_name) keeps both from being
+// admitted. registrarA's write is held open once it has bound the name and inserted its row,
+// before it commits (the store's write hook), and registrarB's starts then, on another replica of
+// the broker; A's is let go once B's has returned or is seen waiting on a lock behind A's backend.
+// B's insert of the binding conflicts on that key with A's uncommitted one, so it waits, then
+// does nothing once A's commits, and B's write reads the name bound to A and is refused
+// ErrPodSessionHeld naming A, and A's row alone stands.
+//
+// Control: make the binding insert's on conflict (session_name) do nothing a do update set
+// registrar = excluded.registrar, the last writer winning, and B's write, which still waits on
+// A's, then takes the binding, is applied, and both rows stand.
+func TestTwoDaemonsFirstWritesOfOneNameAdmitOne(t *testing.T) {
+	ctx := context.Background()
+	_, pool := newStore(t)
+	first, second := oauthstore.New(pool), oauthstore.New(pool)
+	const session, podA, podB, kA, kB = "implementer-g1", "pod-uid-of-a", "pod-uid-of-b", "thumbprint-of-a", "thumbprint-of-b"
+	heldBy := make(chan uint32, 1)
+	resume := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(resume) })
+	defer letGo()
+	oauthstore.SetPodSessionWriteHook(first, func(ctx context.Context) {
+		tx, _ := oauthstore.TxFrom(ctx)
+		heldBy <- tx.Conn().PgConn().PID()
+		<-resume
+	})
+
+	firstDone, secondDone := make(chan writeAnswer, 1), make(chan writeAnswer, 1)
+	go func() {
+		stored, err := first.RegisterPodSession(ctx, registrarA, podA, session, kA, 1)
+		firstDone <- writeAnswer{stored, err}
+	}()
+	var pid uint32
+	select {
+	case pid = <-heldBy:
+	case a := <-firstDone:
+		t.Fatalf("%s's first write of %s = %+v, %v before it was held open, want it held after its insert", registrarA, session, a.stored, a.err)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s's first write of %s was not held open after its insert within ten seconds", registrarA, session)
+	}
+
+	go func() {
+		stored, err := second.RegisterPodSession(ctx, registrarB, podB, session, kB, 1)
+		secondDone <- writeAnswer{stored, err}
+	}()
+	var answer writeAnswer
+	returnedWhileHeld := false
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		select {
+		case answer = <-secondDone:
+			returnedWhileHeld = true
+		default:
+		}
+		if returnedWhileHeld {
+			break
+		}
+		waiting := storetest.LockWaitersBehind(t, pool, pid)
+		if len(waiting) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's write of %s had neither returned nor waited on a lock behind %s's held write (backend %d) after ten seconds; the last poll saw the backends %v waiting behind it",
+				registrarB, session, registrarA, pid, waiting)
+		}
+	}
+	letGo()
+	held := <-firstDone
+	if !returnedWhileHeld {
+		answer = <-secondDone
+	}
+
+	if held.err != nil || !held.stored.Applied || held.stored.JKT != kA {
+		t.Errorf("%s's first write of %s for %s = %+v, %v; want it applied, bound to %s", registrarA, session, podA, held.stored, held.err, kA)
+	}
+	var refused *oauthstore.PodSessionHeldError
+	if !errors.As(answer.err, &refused) || !errors.Is(answer.err, oauthstore.ErrPodSessionHeld) || refused.Session != session || refused.Holder != registrarA {
+		t.Errorf("%s's first write of %s for %s, racing %s's = %+v, %v; want it refused ErrPodSessionHeld naming %s as the holder of %s",
+			registrarB, session, podB, registrarA, answer.stored, answer.err, registrarA, session)
+	}
+	if returnedWhileHeld {
+		t.Errorf("%s's write of %s returned while %s's write of it was held open, uncommitted; want it waiting on the name's binding until that write committed", registrarB, session, registrarA)
+	}
+	if got, want := registrationsOf(t, pool, session), []string{podA + " of " + registrarA}; !slices.Equal(got, want) {
+		t.Errorf("oauth_pod_sessions holds %v for %s, want %v alone: both registrars' first writes of the name were applied", got, session, want)
+	}
+}
+
+// TestAWriteTakesARowNoLiveRegistrationOfItsOwnHolds: a row of a pod and name that is no live,
+// unreleased registration of the writing registrar's own is taken whole by that registrar's next
+// write. Each row is written by hand with no binding of its name, to reach states the route does
+// not produce: a released row of registrarA's, a lapsed row of registrarB's and a live row no
+// registrar wrote (as a broker of the build before registrars writes one), each bound to an old
+// key at a high generation. Before A's write the exchange honours none of them, in the order
+// PodSessionRegistered answers: the released row is refused as released, naming A, before the
+// name's missing binding is read, and the other two are answered as no registration is, the
+// lapsed one being no live row and the unnamed one naming no registrar, so neither reaches the
+// binding either. A's write binds each name to A, which none was bound to, and sets each row to
+// A, the key A's write names (none, for a write naming none), A's lower generation and a fresh
+// expiry, with no release mark, so nothing of the registration that ended carries over and the
+// exchange honours the pod again. A lapsed row of A's own, which A did not release, keeps the
+// generation rule: A's write of a lower generation binds the name and is not applied, and the row
+// is left as it was.
+func TestAWriteTakesARowNoLiveRegistrationOfItsOwnHolds(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	const kOld, kNew, high = "thumbprint-of-the-ended-registration", "thumbprint-of-the-next-one", 9
+	for _, c := range []struct {
+		what, pod, session string
+		// The registrar of the row before A's write ("" for none), whether it is released, and
+		// whether it has lapsed.
+		registrar        string
+		released, lapsed bool
+		// The key A's write names, and whether that write takes the row whole.
+		jkt   string
+		taken bool
+	}{
+		{"a released row of A's", "pod-uid-released", "released-session", registrarA, true, false, kNew, true},
+		{"a released row of A's, written again naming no key", "pod-uid-released-unbound", "released-unbound-session", registrarA, true, false, "", true},
+		{"a lapsed row of B's", "pod-uid-lapsed-of-b", "lapsed-of-b-session", registrarB, false, true, kNew, true},
+		{"a live row no registrar wrote", "pod-uid-unnamed", "unnamed-session", "", false, false, kNew, true},
+		{"a lapsed row of A's own", "pod-uid-lapsed-of-a", "lapsed-of-a-session", registrarA, false, true, kNew, false},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			if _, err := pool.Exec(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at, jkt, generation, registrar, released_at)
+				values ($1, $2, case when $3 then now() - interval '1 minute' else now() + interval '1 day' end, $4, $5, nullif($6, ''), case when $7 then now() end)`,
+				c.pod, c.session, c.lapsed, kOld, high, c.registrar, c.released); err != nil {
+				t.Fatalf("insert %s: %v", c.what, err)
+			}
+			registered, err := s.PodSessionRegistered(ctx, c.pod, c.session, kOld)
+			var released *oauthstore.PodSessionReleasedError
+			switch {
+			case c.released && (registered || !errors.As(err, &released) || !errors.Is(err, oauthstore.ErrPodSessionReleased) || released.Registrar != registrarA):
+				t.Fatalf("PodSessionRegistered of %s with its own key = %t, %v; want false, ErrPodSessionReleased naming %s", c.what, registered, err, registrarA)
+			case !c.released && (registered || err != nil):
+				t.Fatalf("PodSessionRegistered of %s with its own key = %t, %v; want false and no error, as for no registration", c.what, registered, err)
+			}
+
+			stored, err := s.RegisterPodSession(ctx, registrarA, c.pod, c.session, c.jkt, 1)
+			row := registrationRow(t, pool, c.pod, c.session)
+			if holder, _ := bindingOf(t, pool, c.session); holder != registrarA {
+				t.Fatalf("%s's write to %s = %+v, %v, leaving %s bound to %q; want it bound to %s: a write of a name bound to none binds it", registrarA, c.what, stored, err, c.session, holder, registrarA)
+			}
+			if !c.taken {
+				want := fmt.Sprintf("registrar %s, key %q, generation %d, released false, live false", registrarA, kOld, high)
+				if err != nil || stored.Applied || stored.JKT != kOld || stored.Generation != high || row != want {
+					t.Fatalf("%s's write of generation 1 with %s to %s = %+v, %v, leaving the row %s; want it not applied, answered %s at generation %d, and the row %s: a lapsed row of the registrar's own keeps the generation rule",
+						registrarA, c.jkt, c.what, stored, err, row, kOld, high, want)
+				}
+				return
+			}
+			want := fmt.Sprintf("registrar %s, key %q, generation 1, released false, live true", registrarA, c.jkt)
+			fresh := time.Now().Add(oauthstore.PodSessionRetention - time.Hour)
+			if err != nil || !stored.Applied || stored.JKT != c.jkt || stored.Generation != 1 || stored.ExpiresAt.Before(fresh) || stored.Replaced != kOld || row != want {
+				t.Fatalf("%s's write of generation 1 with %q to %s = %+v, %v, leaving the row %s; want it applied, bound to %q at generation 1, expiring a retention from now, replacing %s, and the row %s: the row is taken whole",
+					registrarA, c.jkt, c.what, stored, err, row, c.jkt, kOld, want)
+			}
+			if registered, err := s.PodSessionRegistered(ctx, c.pod, c.session, kNew); !registered || err != nil {
+				t.Fatalf("PodSessionRegistered of %s with %s after %s's write took it = %t, %v; want true", c.what, kNew, registrarA, registered, err)
+			}
+		})
+	}
+}
+
+// TestARegistrationNamesTheBindingOnce: a session name's first registration binds it to its
+// registrar, and nothing after moves that binding. registrarA's write of pod P for S binds S to A
+// at the moment of that write. A's write of a second pod P2 for S, as a relaunch writes, is
+// applied and leaves the binding as it was, its moment included. Once every row of S has lapsed
+// and the sweep has deleted them all, registrarB's write of S is refused ErrPodSessionHeld naming
+// A and writes nothing, and the binding is still A's from that first moment. That last case is one
+// no other test holds: the registration route's tests lapse a name's rows and leave them in the
+// table, and here no row of the name is left at all, so a check that read the name's rows, lapsed
+// or live, would admit B.
+func TestARegistrationNamesTheBindingOnce(t *testing.T) {
+	ctx := context.Background()
+	s, pool := newStore(t)
+	const session, pod, relaunched, podB = "implementer-g1", "pod-uid-first", "pod-uid-relaunched", "pod-uid-of-b"
+
+	if _, err := s.RegisterPodSession(ctx, registrarA, pod, session, "", 0); err != nil {
+		t.Fatalf("%s's first write of %s for %s: %v", registrarA, session, pod, err)
+	}
+	holder, since := bindingOf(t, pool, session)
+	if holder != registrarA || since.IsZero() {
+		t.Fatalf("after %s's first write of %s, pod_session_registrars binds it to %q since %v; want %s", registrarA, session, holder, since, registrarA)
+	}
+	if stored, err := s.RegisterPodSession(ctx, registrarA, relaunched, session, "", 0); err != nil || !stored.Applied {
+		t.Fatalf("%s's write of %s for a second pod, %s = %+v, %v; want it applied", registrarA, session, relaunched, stored, err)
+	}
+	if got, at := bindingOf(t, pool, session); got != registrarA || !at.Equal(since) {
+		t.Fatalf("after %s's write of %s for a second pod, %s is bound to %q since %v; want %s since %v, as its first write bound it", registrarA, session, session, got, at, registrarA, since)
+	}
+
+	if _, err := pool.Exec(ctx, `update oauth_pod_sessions set expires_at = now() - interval '1 minute' where session = $1`, session); err != nil {
+		t.Fatalf("lapse the registrations of %s: %v", session, err)
+	}
+	if err := s.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := registrationsOf(t, pool, session); len(got) != 0 {
+		t.Fatalf("the sweep left the registrations %v of %s, want none", got, session)
+	}
+
+	_, err := s.RegisterPodSession(ctx, registrarB, podB, session, "", 0)
+	var refused *oauthstore.PodSessionHeldError
+	if !errors.As(err, &refused) || !errors.Is(err, oauthstore.ErrPodSessionHeld) || refused.Session != session || refused.Holder != registrarA {
+		t.Errorf("%s's write of %s once the sweep deleted every row of it = %v; want it refused ErrPodSessionHeld naming %s as the holder of %s", registrarB, session, err, registrarA, session)
+	}
+	if got := registrationsOf(t, pool, session); len(got) != 0 {
+		t.Errorf("oauth_pod_sessions holds %v for %s after %s's refused write, want none", got, session, registrarB)
+	}
+	if got, at := bindingOf(t, pool, session); got != registrarA || !at.Equal(since) {
+		t.Errorf("after %s's refused write of %s, %s is bound to %q since %v; want %s since %v", registrarB, session, session, got, at, registrarA, since)
+	}
+}
+
+// bindingOf is the registrar session is bound to and the moment it was bound, or "" and the zero
+// time for a name bound to none.
+func bindingOf(t *testing.T, pool *pgxpool.Pool, session string) (registrar string, since time.Time) {
+	t.Helper()
+	err := pool.QueryRow(context.Background(), `select registrar, registered_at from pod_session_registrars where session_name = $1`, session).Scan(&registrar, &since)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", time.Time{}
+	case err != nil:
+		t.Fatalf("read the binding of %s: %v", session, err)
+	}
+	return registrar, since
+}
+
+// registrationRow is the pod's registration for session as the table holds it: its registrar,
+// its key, its generation, whether it is released and whether it is live.
+func registrationRow(t *testing.T, pool *pgxpool.Pool, pod, session string) string {
+	t.Helper()
+	var registrar, jkt string
+	var generation int64
+	var released, live bool
+	if err := pool.QueryRow(context.Background(), `select coalesce(registrar, ''), coalesce(jkt, ''), generation, released_at is not null, expires_at > now()
+		from oauth_pod_sessions where pod_uid = $1 and session = $2`, pod, session).Scan(&registrar, &jkt, &generation, &released, &live); err != nil {
+		t.Fatalf("read the registration of %s for %s: %v", pod, session, err)
+	}
+	return fmt.Sprintf("registrar %s, key %q, generation %d, released %t, live %t", registrar, jkt, generation, released, live)
 }

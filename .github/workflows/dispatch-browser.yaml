@@ -145,8 +145,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # One `go build -o <directory>/` writes one binary per package, each named after it:
       # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
       # rather than left to the runner's default, so each binary is static by construction: the
@@ -313,10 +313,27 @@ jobs:
     # step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
     # runner with the Playwright install this change removes still in the job.
     #
-    # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 219 s:
-    # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
-    # above the sum of the step budgets, as this file's head says a job budget is.
+    # The browser step was the one step of this job that carried a budget, so the job's budget was
+    # that budget plus the maxima above of every step without one, which summed to 219 s:
+    # 540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes.
+    #
+    # THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 5 s and the
+    # image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
+    # each job stalled on one of them while its siblings did not: in run 44228250420 shard (4)'s
+    # download of dispatch-e2e-binaries (106 MB, 101 MiB) took 428 s where the run's six other
+    # legs took 2 to 6 s, and the job budget cancelled the leg at about 13 minutes; in run
+    # 44213916667 alone (chromium-alone) spent 355 s pulling this image (1,161 MB) where the two
+    # other alone legs took 38 and 39 s, and its budget cancelled it 3 s into its checkout. The
+    # pull's time was one layer: the other nine arrived in 6 s and the 122 MB Firefox layer in
+    # 346 s, and shard (4) of that run, pulling in the same minute, took 200 s on two layers. A
+    # merge group drops its entry for a cancelled leg as for a failed one, and every group behind
+    # it is built again. So the download now carries a budget of its own and a second attempt
+    # (the step's comment), and the pull is counted at that 355 s: no step holds it, so no step
+    # budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
+    # seconds" in that log) answers a failed read, not a slow one. The job's budget is the
+    # browser step's 540 s, the two download attempts' 120 s each, and the steps without a
+    # budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
+    # below. The browser step's own budget is unchanged, and it still fires before the job's.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
     # again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -327,7 +344,7 @@ jobs:
     # pull-request lane names hold 1,252, of which that lane's `@pr` grep selects 282. The two
     # `visual` projects hold 20, which the visual job runs one row at a time, and the 54
     # wall-clock rows are the alone job's.
-    timeout-minutes: 13
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -345,10 +362,47 @@ jobs:
       # The directory is the one run-broker.sh built the broker's three binaries in, which is
       # where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
       # binary rides along in it and is named by path below.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      #
+      # A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
+      # leg but one, which took 428 s (the budget note above), so a slow read is answered by
+      # reading again rather than by waiting. Each attempt carries this file's floor of 2
+      # minutes, twenty times the longest of the other reads. That is not this file's rule of
+      # the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
+      # 9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
+      # every other leg. The second attempt runs only when the first did not end in success, and
+      # a second failure fails the job there, by name.
+      #
+      # EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
+      # `container:` job ends the `docker exec` that started it, and the action's process inside
+      # the container can outlive it (moby/moby#9098) and go on writing the files it was
+      # extracting. Into a directory of its own, those writes reach nothing a later step reads:
+      # the step after the two copies the attempt that succeeded into the directory
+      # run-broker.sh serves from.
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
         with:
           name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-broker
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      # The step budget note above does not count this step, which is new here. It copies one
+      # 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
+      # that rounding up to 22 minutes leaves hold it.
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
       # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
@@ -787,11 +841,20 @@ jobs:
     # nine legs, webkit-alone's again, under the 141 s that budget was derived from, so the
     # pooled maximum the rule reads is still that 141 s.
     #
-    # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 137 s:
-    # 180 + 137 = 317 s, 5 min 17 s, rounded up to the 6 minutes below. It is a backstop above
-    # the sum of the step budgets, as this file's head says a job budget is.
-    timeout-minutes: 6
+    # The browser step was the one step of this job that carried a budget, so the job's budget was
+    # that budget plus the maxima above of every step without one, which summed to 137 s:
+    # 180 + 137 = 317 s, 5 min 17 s, rounded up to 6 minutes.
+    #
+    # The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and one of its
+    # two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
+    # image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
+    # same budget and second attempt as there, and the pull is counted at that 355 s. The job's
+    # budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
+    # without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
+    # minutes below, whose 38 s left over hold the new step that places the binaries (the shard
+    # job's comment above that step). The browser step's own budget is unchanged, and it still
+    # fires first.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -803,10 +866,30 @@ jobs:
       # What the binaries job above built, in place of this job's own actions/setup-go
       # and go-envoy cache restore, which are gone: the shard job's step of this name says why,
       # and this job runs the same two scripts from the same directory.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      # The shard job's steps of these names say why each attempt carries its own budget and
+      # directory and why there is a second; the four steps are the same here.
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
         with:
           name: dispatch-e2e-binaries
-          path: packages/envoy/out/dispatch-e2e-broker
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
       # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
       # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
       # refusal would otherwise surface in a stack's own log, far from this cause.
@@ -1017,11 +1100,26 @@ jobs:
   # second build of the dashboard, which is what a rolling release puts in front of a browser. It
   # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
   # suite's job does not wait on a second Vite build and two more servers.
+  #
+  # That Postgres is the harness's own, a `docker run` of the image below per Playwright run
+  # (e2e/harness-postgres.ts), as the visual job's is, and not a `services:` container. The
+  # harness starts its servers with crash safety off, so no commit waits for the runner's disk.
+  # With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
+  # answering for about 5 s, the read mark a closed page left in flight could neither commit nor
+  # be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
+  # service can be given those three settings too, with `alter system` and a reload, as
+  # docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
+  # settings, and that server loads the stall library below as it starts, which a service,
+  # started before any step has built the library, could do only after a restart. The suite's
+  # row e2e/read-marker-disk-stall.multiprocess.e2e.ts stalls the disk on purpose, through the
+  # library the harness preloads where DISPATCH_E2E_PG_STALL_DIR names a directory
+  # (e2e/disk-stall.ts), and holds this job to the same reset.
   multiprocess:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The budgets below, this one and the three on steps, are measured: GitHub's jobs API over
-    # the 397 of the newest 400 ci.yaml runs that could be read, created between
+    # The budgets of the install, dashboard and sign-in steps below, and the job's from them, are
+    # measured (the connections step's is the floor, as the end of this comment says): GitHub's
+    # jobs API over the 397 of the newest 400 ci.yaml runs that could be read, created between
     # 2026-11-05T04:52:45Z and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12
     # push), over the 335 jobs of this name that concluded success. That window is before
     # cybermonklabs/legion#2771 took ci.yaml's push trigger away, which is why it holds push runs
@@ -1039,27 +1137,26 @@ jobs:
     # 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
     # for the sign-in step, and 4 min for the install step, for the reason its own comment gives.
     # The job budget is the sum of its step budgets plus the measured maximum of every step
-    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
+    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min, until the job's Postgres moved
+    # from a `services:` container to the harness's own (this job's head says why). That added
+    # two steps: the image's pull, which has no budget and counts at the 120 s the visual job
+    # counts its pull of the same digest at (the time a browser step spent before its stack's
+    # first output on the run that found the need; the pull took 13 s in run 44480885813), and the
+    # connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
+    # 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
+    # the stack's container and builds the stall library, and its four runs since took 118 s,
+    # 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
+    # the 202 s its 4 min derives from. With budgets on the steps, the
     # `if: failure()` upload below still runs, which a cancelled job skips.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
-    # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
-    timeout-minutes: 13
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole. The first
+    # full-lane run after this job's Go cache restore moved from go-envoy to go-envoy-test,
+    # 42614920253 (job 129152410448), is inside them too - 9 s install, 106 s dashboard, 8 s
+    # sign-in, 96 s in the steps without a budget, 219 s whole - and that restore reads
+    # go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
+    timeout-minutes: 17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1078,8 +1175,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The shard job's step of this name, for the reason it gives: Playwright's Node runner
@@ -1106,8 +1203,9 @@ jobs:
         # `apt-get update`.
         #
         # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-        # coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
-        # matches them by that suffix, so a new one joins without an edit here) -- and they run
+        # coedit, cross-build, read-marker-disk-stall, signin and two-builds today
+        # (`multiprocessSpecs` in e2e/playwright.config.ts matches them by that suffix, so a new
+        # one joins without an edit here) -- and they run
         # headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
         # `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
         # already. A row that later needs CJK or Thai glyphs would fail visibly.
@@ -1130,18 +1228,51 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
+      # The image the harness starts each Playwright run's Postgres from, pulled here so the
+      # browser steps below do not pay for it inside their own budgets, as the visual job pulls
+      # it. The digest is the browser steps', written three times, and the three must stay the
+      # same: a pull of another digest leaves the browser step to pull its own. Each new step's
+      # name carries the lane, as the embedder job's build step's does, for the reason that
+      # step gives.
+      - name: Pull the multiprocess stack's Postgres image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      # The stack's connection limit, read outside the browser steps' budgets, where
+      # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as the
+      # visual job reads it. Two processes fit in it: it is testlimits.ServerConnections, sized
+      # for four.
+      - name: Read the connections the multiprocess stack's Postgres must allow
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against two server processes
         # Builds the dashboard twice (A's and B's, with distinct build ids) and runs the
-        # multiprocess specs through the round-robin proxy.
+        # multiprocess specs through the round-robin proxy, against one Postgres the harness
+        # starts from the image pulled above. DISPATCH_E2E_PG_STALL_DIR is the directory the
+        # harness builds e2e/fsync-stall.c into and preloads into that server, which
+        # e2e/read-marker-disk-stall.multiprocess.e2e.ts needs: on GitHub Actions
+        # (GITHUB_ACTIONS=true) the row fails without it, and elsewhere, an agent's shell
+        # included, it is skipped. The runner's own cc builds it.
         timeout-minutes: 4
-        run: bun run e2e:multiprocess
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          export DISPATCH_E2E_PG_STALL_DIR="$RUNNER_TEMP/pg-stall"
+          bun run e2e:multiprocess
         working-directory: packages/dispatch
       - name: Browser-test a sign-in across two server processes
         # Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=oidc,
         # e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
         # step before built the dashboard; B serves A's build, which this spec does not tell apart.
+        # Its Postgres is a second one the harness starts from the same image.
         timeout-minutes: 2
-        run: DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
       # `if: failure()`, which this job can afford where the shard job cannot: its project sets
       # `retries: 0` (e2e/playwright.config.ts), so a row that fails fails this job and this
@@ -1176,24 +1307,14 @@ jobs:
   # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
   # budget is those two plus that job's measured 135 s maximum for every step without one,
   # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
-  # their own, as this file's head requires.
+  # their own, as this file's head requires. Its Postgres then moved from a `services:`
+  # container to the harness's own, for the reason the multiprocess job's head gives, which
+  # added that job's two steps for it at that job's figures: the pull at 120 s and the
+  # connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
+  # -> 15 min.
   embedder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 11
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1211,8 +1332,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -1235,9 +1356,23 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
+      # The multiprocess job's two steps of these names, for the reasons they give.
+      - name: Pull the embedder stack's Postgres image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      - name: Read the connections the embedder stack's Postgres must allow
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
       - name: Browser-test the bar's two tiers against a counting embedder
         timeout-minutes: 4
-        run: bun run e2e:embedder
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun run e2e:embedder
         working-directory: packages/dispatch
       # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
       # failed row, but a row that fails after its retries fails this job and this upload runs.
@@ -1282,28 +1417,34 @@ jobs:
   # make this list stale: it names what the numbers were derived from, and a run that outran a
   # budget fails the step by name, which is the signal to derive them again.
   #
-  #   step                              job 128655164325  128661965627  128664453706  128713801668  128720753224
-  #   checkout                                         8             7             -             7             7
-  #   setup-go                                         7             9             -             6             9
-  #   the go cache restore                             1             2             -             2             2
-  #   setup-bun                                        2             1             -           218           131
-  #   bun install                                      5             7             -             3             -
-  #   the contracts build                              0             0             -             0             -
-  #   the dashboard build                             33            37             -            23             -
-  #   the image pull                                  33            26            32            32             -
-  #   the browser step                                90           106            78             -             -
-  #   the upload                                       1             1             -             2             1
-  #   the whole job                                  180           201           163           318           272
+  #   step                              job 128655164325  128661965627  128664453706  128713801668  128720753224  129152410516
+  #   checkout                                         8             7             -             7             7             8
+  #   setup-go                                         7             9             -             6             9             9
+  #   the go cache restore                             1             2             -             2             2            17
+  #   setup-bun                                        2             1             -           218           131             2
+  #   bun install                                      5             7             -             3             -             7
+  #   the contracts build                              0             0             -             0             -             0
+  #   the dashboard build                             33            37             -            23             -            30
+  #   the image pull                                  33            26            32            32             -            35
+  #   the browser step                                90           106            78             -             -            62
+  #   the upload                                       1             1             -             2             1             1
+  #   the whole job                                  180           201           163           318           272           172
   #
   # The rule is in this file's head. The browser step's maximum was 106 s, so 106 x 1.15 = 122 s
   # -> 3 min, and the job budget was that step's 180 s plus the measured maximum of every step
-  # without one, which is 314 s of the five columns together: 494 s -> 9 min.
+  # without one, which is 333 s of the six columns together: 513 s -> 9 min.
+  #
+  # The sixth column is the first full-lane run after this job's Go cache restore moved from
+  # go-envoy to go-envoy-test, run 42614920253 (job 129152410516). That restore reads
+  # go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, where the five columns before it read
+  # go-envoy: 17 s rather than the 1 to 2 s above, which is why that row's maximum moved and the
+  # job budget still held.
   #
   # The browser step then outran its budget, which is this rule's signal to derive it again. Over
   # the 17 merge-group runs of this job from 2026-11-14T08:40Z to 2026-11-15T06:25Z that passed,
   # it read 111-179 s, and two runs that day timed out on it at 183 s and 182 s (run 43687635217,
   # a merge group, and run 43691184536, a pull request). So 183 x 1.15 = 211 s -> 4 min, and the
-  # job budget is that step's 240 s plus the same 314 s: 554 s -> 10 min.
+  # job budget is that step's 240 s plus the same 333 s: 573 s -> 10 min.
   #
   # The first of those runs was the only one this job had when these budgets were first written,
   # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
@@ -1318,10 +1459,15 @@ jobs:
   # before any step budget could fire. That inverts this file's rule, which says the job budget
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
+  #
+  # The step "Pull the stack's Postgres image" was added later, for the reason its comment gives,
+  # and its pull is counted at the 120 s the browser step spent before the stack's first output
+  # on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
+  # below.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1340,8 +1486,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -1366,6 +1512,18 @@ jobs:
         # pay for it inside the browser step's own budget. A failed pull is a fault of this
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      # THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
+      # startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
+      # digest the browser step below exports, and a pull the runner had not made yet counts
+      # inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
+      # 120 s before the stack's first output, where five green visual jobs (134499880849,
+      # 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
+      # past its budget at 250 s. Its log does not time the pull apart from the rest of that
+      # start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
+      # digest is the browser step's, written twice, and the two must stay the same: a pull of
+      # another digest here leaves that step to pull its own inside its budget again.
+      - name: Pull the stack's Postgres image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       # The stack's connection limit, read outside the browser step's budget, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
       - name: Read the connections the visual stack's Postgres must allow
@@ -1445,7 +1603,14 @@ jobs:
     # handed them anything. The verdict step below names it as it names the rest.
     needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    # arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
+    # runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq, with
+    # the runner image's own node, python3, gh and jq. The one toolchain it installs is Bun, from
+    # the aarch64 row of .github/actions/setup-bun that ci.yaml's tool-fallback-arm job proves.
+    # Playwright's report merge starts no browser. At busy
+    # hours the x64 pool held this 35-second job for about 35 minutes (run 44126172228 on
+    # 2026-11-17), and it holds every browser run's verdict, after the legs and before ci-ok.
+    runs-on: ubuntu-24.04-arm
     # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
     # 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
     # 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment

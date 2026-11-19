@@ -303,6 +303,34 @@ html:has([data-issue-page]) {
   font-family: var(--font-sans);
 }
 
+/* What a scroll brings into view on the new issue page stands below everything that stays at the
+   top of the screen above its rows (decision 113 of the parts). The page scrolls the document,
+   so the padding is on `html`. `--issue-identity-height` is the band the header publishes
+   (`identity-block.ts`): its identity block from 761 px up, and at 760 px and below the view row,
+   where the header scrolls away. `--issue-view-row-height` is the view row's own height while it
+   stays, at 760 px and below, and 0 px above (`slots/view-row.tsx`), so the row is counted on a
+   page that draws no header too. At 760 px and below, on a page with a header, both name the
+   same row, so the padding is the larger of the two rather than their sum: at every width, it is
+   the height of what stays. */
+html:has([data-issue-page]) {
+  scroll-padding-top: max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px));
+}
+
+/* A control inside the view row takes a top scroll margin of minus the row's height while the row
+   stays, so a focus that enters the row never scrolls the page (decision 113). The row stands
+   in the band the padding above keeps clear, so without it a focus there - Escape or a choice in
+   the view menu, the Outline sheet giving the focus back, Tab - scrolls the page up to bring
+   the control below the band, and the row, which stays, does not move. `[data-filter-row]` is
+   the row's own box (`identity-block.ts`'s `FILTER_ROW_ATTRIBUTE`), which only the new page
+   draws, so the rule needs no `:has()` scope; the Outline sheet is drawn in the body, outside
+   it. Its subject names the controls rather than every element: a universal subject under an
+   `html:has()` ancestor made each change of the page recalculate the style of the whole
+   document (decision 176). Where the row scrolls away, above 760 px, the height is 0 px and so
+   is the margin. */
+[data-filter-row] :is(a[href], button, input, select, textarea, [tabindex]) {
+  scroll-margin-top: calc(-1 * var(--issue-view-row-height, 0px));
+}
+
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. */
 @media (max-width: 1279px) {
@@ -317,6 +345,13 @@ html:has([data-issue-page]) {
   html {
     scroll-padding-bottom: 5rem;
   }
+  /* The padding keeps what a scroll brings into view clear of the review sheet at the foot of
+     the screen. The new issue page has no such sheet: its panel is Details, which opens over the
+     page (R14), so nothing covers the foot there, and a landing centred on
+     a passage is centred on the screen rather than 80 px above it. */
+  html:has([data-issue-page]) {
+    scroll-padding-bottom: 0;
+  }
   button,
   a:not(.prose a):not(.dispatch-inline-link),
   input:not([type="checkbox"]):not([type="radio"]),
@@ -324,6 +359,17 @@ html:has([data-issue-page]) {
   textarea {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
+     (the architect's ruling 5), so its controls take WCAG
+     2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
+     keeps the floor. Only the new page draws the row (`identity-block.ts`'s
+     `FILTER_ROW_ATTRIBUTE`), so the rule takes no `html:has()` scope: under one, each row the
+     page added recalculated the style of every button and link of the page (decision 176). */
+  [data-filter-row] :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: 24px;
+    min-height: 24px;
   }
 
   button,

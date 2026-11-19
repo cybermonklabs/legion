@@ -9,11 +9,16 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // runRegister registers every session of the sets through the listener's own route, as an agent's
 // plugin does: one POST /v1/interests/subscribe each, which writes the interest and, for a
-// self-subscribed session, the session record.
+// self-subscribed session, the session record. Each registration asks for the session consumer
+// the listener requires of every registration it takes (consumerFor in cmd/listener), with the
+// delivery the listener's own tests register with (cmd/listener/api_test.go): a registration with
+// none is refused 409 and writes neither record.
 func runRegister(args []string) error {
 	flags := flag.NewFlagSet("register", flag.ContinueOnError)
 	url := flags.String("url", "", "listener URL")
@@ -38,15 +43,13 @@ func runRegister(args []string) error {
 	for range *workers {
 		wg.Go(func() {
 			for j := range jobs {
-				body, _ := json.Marshal(map[string]any{
-					"session_id":      sessionID(j.set.name, j.index),
-					"dir":             "/refill/" + j.set.name,
-					"title":           sessionTitle(j.set.name, j.index, j.set.variant),
-					"topics":          topics(j.set, j.index, *role),
-					"self_subscribed": true,
-					// The listener refuses a registration that asks for no session consumer
-					// (409 not_requested, #2603): every session receives through its own.
-					"delivery": map[string]any{"consumer": true, "epoch": "e2e-refill"},
+				body, _ := json.Marshal(listenerwire.SubscribeRequest{
+					SessionID:      sessionID(j.set.name, j.index),
+					Dir:            "/refill/" + j.set.name,
+					Title:          sessionTitle(j.set.name, j.index, j.set.variant),
+					Topics:         topics(j.set, j.index, *role),
+					SelfSubscribed: true,
+					Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"},
 				})
 				resp, err := client.Post(*url+"/v1/interests/subscribe", "application/json", bytes.NewReader(body))
 				if err == nil {
