@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -632,7 +633,8 @@ type Observation struct {
 	//
 	// It is bounded at PodEndRunes, which is a kubelet message with room to spare: the eviction
 	// message above is 120 runes, and the longest the kubelet writes names each resource it
-	// reclaimed. A longer one is cut at that bound with an ellipsis.
+	// reclaimed. A longer one is cut at that bound with an ellipsis, once the URL rule has read it
+	// whole (PodEnd).
 	PodEnd string
 }
 
@@ -648,7 +650,11 @@ const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
 // reason alone when there is no message, "" when there is no reason, and a value cut at the
-// bound with an ellipsis when the two together pass it. Both the runtime that observes a pod and
+// bound with an ellipsis when the two together pass it. The URL rule (redact.URLCredentials)
+// reads the joined text before the cut, so a URL the cut falls inside has lost its userinfo and
+// its query already: a cut made first could end inside a URL's userinfo, before its "@", and
+// leave the start of a user name or a password where the rule the claim keeps the value under
+// (storetext.FarSideText) reads it as the URL's host. Both the runtime that observes a pod and
 // any test that asserts on the field build the value here, so one rule decides what a claim and
 // a notice carry.
 func PodEnd(reason, message string) string {
@@ -659,6 +665,7 @@ func PodEnd(reason, message string) string {
 	if message != "" {
 		end += ": " + message
 	}
+	end = redact.URLCredentials(end)
 	runes := []rune(end)
 	if len(runes) <= PodEndRunes {
 		return end
