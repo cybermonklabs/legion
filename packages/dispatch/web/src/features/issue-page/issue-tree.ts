@@ -265,8 +265,10 @@ export interface TreeNode {
    *  block's on the batched reference read (`ReferenceTarget.text_tree`). The row draws the node's
    *  words from it, so stored markdown is drawn as what it says and the browser parses none of it
    *  (R20). A result's is the reading of its observed text (`observed_tree`), which a server of
-   *  the build before sends none of. Neither the issue nor a child issue carries one: such a
-   *  node, and a result whose read sent none, draws `text` as stored. */
+   *  the build before sends none of; a result whose read sent none draws its stored `text` read
+   *  as markdown (`storedReading`). Neither the issue nor a child issue carries one: its `text`
+   *  names it by its title, which is no markdown, so such a node draws `text` as written, and its
+   *  one line is that text with each run of white space one space (`lineWords`). */
   readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
@@ -453,6 +455,15 @@ export function nodeWords(node: TreeNode): string {
  * it. The first block is written short text run by text run (`firstBlockWords`), from a reading
  * and from a stored text's reading alike.
  *
+ * A title is the one text read as written. The `text` of the issue, its key and title, and of a
+ * child issue, its title, is no markdown and carries no reading, and every other place draws a
+ * title as written: the header (`slots/header.tsx`) and the list of an issue's children
+ * (`ChildrenTab.tsx`). Its line is that text with each run of white space one space and the ends
+ * trimmed, nothing in it parsed and no address in it written short, so `1. Migrate the table`
+ * keeps its label, ``Add `x` flag`` its backticks and `Fix <script> handling` its tag, where a
+ * parse would read the first as a list item with no label and leave out the marks of the other
+ * two.
+ *
  * Every place that draws one line for a node cuts it from these words: a parent's line under a
  * filter (`presets.ts`) and a chip naming a block (`buildIssueTree`) here, and a row's first
  * line, a folded branch, a Contents entry and a breadcrumb once they draw (R2). `nodeWords`
@@ -467,19 +478,28 @@ export function lineWords(node: TreeNode): string {
  *  written short: the first block of a reading, or of a stored text's reading, read by
  *  `firstBlockWordsRaw`, so a bare address stays as written. A caller that names each reference
  *  itself reads these, since a short form leaves it no address to name. A `TreeNode` passes as
- *  it is, and a decision as `{ text, tree: text_tree }`. */
-export function lineWordsRaw(node: { readonly text: string; readonly tree?: DisplayTree }): string {
+ *  it is, and a decision as `{ text, tree: text_tree }`; a title node's line is its text as
+ *  written here too, as in `lineWords`. */
+export function lineWordsRaw(node: {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+  readonly type?: NodeType;
+}): string {
   return lineWordsBy(node, firstBlockWordsRaw);
 }
 
-/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: the first block of
- *  the node's reading read to words by `firstBlock`, and where the node has none the first block
- *  of its stored text's reading (`storedReading`) read the same way, its white space collapsed.
- *  The node holds that reading, so it is remembered while the node lives. */
+/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: a title node's text
+ *  as written (`lineWords`' doc says why), else the first block of the node's reading read to
+ *  words by `firstBlock`, and where the node has none the first block of its stored text's
+ *  reading (`storedReading`) read the same way, its white space collapsed either way. The node
+ *  holds that reading, so it is remembered while the node lives. */
 function lineWordsBy(
-  node: { readonly text: string; readonly tree?: DisplayTree },
+  node: { readonly text: string; readonly tree?: DisplayTree; readonly type?: NodeType },
   firstBlock: (reading: DisplayTree) => string
 ): string {
+  if (node.type === "issue" || node.type === "child_issue") {
+    return node.text.replace(/\s+/gu, " ").trim();
+  }
   if (node.tree !== undefined) return firstBlock(node.tree);
   return firstBlock(storedReading(node.text, node)).replace(/\s+/gu, " ").trim();
 }

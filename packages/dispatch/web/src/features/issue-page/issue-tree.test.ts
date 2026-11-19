@@ -1436,6 +1436,46 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
   }
 });
 
+// A title is no markdown: the header draws the issue's as written, and the list of an issue's
+// children each child's (`slots/header.tsx`, `ChildrenTab.tsx`). The line of the issue and of a
+// child issue is so its text as written, each run of white space one space. Read as markdown,
+// `1. Migrate the table` would be a list item with no label, ``Add `x` flag`` would lose its
+// backticks and `Fix <script> handling` its tag, a title with a line feed or a blank line would
+// lose what follows it, and an address in a title would be written short.
+test("the line of the issue and of a child issue is its title as written", () => {
+  for (const [title, words] of [
+    ["1. Migrate the table", "1. Migrate the table"],
+    ["Add `x` flag", "Add `x` flag"],
+    ["Fix <script> handling", "Fix <script> handling"],
+    ["Follow dispatch://CORE-3 up", "Follow dispatch://CORE-3 up"],
+    ["Migrate the table\n- then drop it", "Migrate the table - then drop it"],
+    ["  Migrate   the\n\ntable  ", "Migrate the table"],
+  ] as const) {
+    const root = buildIssueTree({
+      issue: {
+        ...issueDetails([]),
+        children: [
+          {
+            active_at: "2026-11-05T00:00:00Z",
+            external_links: [],
+            key: "CORE-2",
+            status: "todo",
+            subtree_done: 0,
+            subtree_total: 0,
+            title,
+          },
+        ],
+        title,
+      },
+    });
+    expect(lineWords(root), title).toBe(`${KEY} ${words}`);
+    const child = nodeOf(root, "CORE-2");
+    expect(child?.type, title).toBe("child_issue");
+    expect(child === undefined ? "" : lineWords(child), title).toBe(words);
+    expect(child === undefined ? "" : lineWordsRaw(child), title).toBe(words);
+  }
+});
+
 // R1, R3, R4, R12: a document is a node of the issue and not of its conversation, so the tree
 // draws none; every typed block of an issue the conversion has not reached sits under the
 // issue, the spec's blocks first and each document's in its own order, and a block the model
