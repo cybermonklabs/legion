@@ -426,7 +426,7 @@ its entry stood until the registration lapses or its registrar releases it. So r
 and redeploying the broker stops that registrar's new registrations at once and its old ones
 within 24 hours.
 
-A registration that a broker of a build before migration 0037 wrote names no registrar. It holds
+A registration that a broker of a build before migration 0038 wrote names no registrar. It holds
 no name, and no exchange honours it: the exchange answers it as it answers no registration at all,
 with the `pod_session_not_registered:` refusal. The next admitted write of its pod and name takes
 it whole. Such a registration comes from before the migration, from a replica of an older build
@@ -438,7 +438,7 @@ with any key of that pod, and its route refuses a body naming `thumbprint` or `g
 `400`, so the daemon's registrations fail. Unset `exchange_audience` in every Legion daemon before
 you roll the broker back past this release.
 
-Rolling the broker back past the release that brought migration 0037 drops the session-name
+Rolling the broker back past the release that brought migration 0038 drops the session-name
 binding and the release without a word: an older broker reads neither the registrar nor the
 release mark, so its exchange honours a released registration and a registration of any registrar,
 and its route takes a registration from every account `BROKER_SERVICE_LOGINS` lists. Unset

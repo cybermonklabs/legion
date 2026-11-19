@@ -9,5 +9,5 @@ body: |-
   A session name now belongs to the registrar that registered it: another registrar's
   registration of a name that a live registration holds is `409 SESSION_HELD_BY_ANOTHER_REGISTRAR`,
   and the exchange admits a pod under a name only when the registrar that holds the name
-  registered that pod. Migration 0037 records the registrar. Before you roll the broker back past
+  registered that pod. Migration 0038 records the registrar. Before you roll the broker back past
   it, unset `exchange_audience` in every daemon.
