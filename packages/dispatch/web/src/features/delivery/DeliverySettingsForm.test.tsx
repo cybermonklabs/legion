@@ -101,6 +101,38 @@ test("with no record the fields are empty and their placeholders say what each h
   }
 });
 
+// The settings are the deployment's (read class `deployment`), which Dispatch refuses a
+// restricted member. No page shows such a member the form, so a 403 DEPLOYMENT_READ_REFUSED
+// reaches a viewer whose credential changed while the page was open: the form draws nothing in
+// place of its load error, as a section the viewer may not read. Any other failure still says the
+// settings could not be loaded, with Retry.
+test("a refused settings read draws nothing, where any other failure says it could not load", async () => {
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockRejectedValue(
+    new ApiError(403, {
+      code: "DEPLOYMENT_READ_REFUSED",
+      error: "this read is the deployment's, which a restricted member may not make",
+    })
+  );
+
+  try {
+    renderForm();
+    await waitFor(() => expect(getDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText("Loading delivery settings…")).toBeNull());
+    expect(screen.queryByText("Couldn't load the delivery settings.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save delivery settings" })).toBeNull();
+    cleanup();
+
+    getDeliverySettings.mockRejectedValue(new ApiError(500, { code: "INTERNAL", error: "down" }));
+    renderForm();
+    expect(await screen.findByText("Couldn't load the delivery settings.")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+  } finally {
+    cleanup();
+    getDeliverySettings.mockRestore();
+  }
+});
+
 test("Save sends the fields trimmed and each list split into its entries", async () => {
   const user = userEvent.setup();
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);

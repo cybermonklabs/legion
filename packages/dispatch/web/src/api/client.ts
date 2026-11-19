@@ -334,6 +334,16 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
   );
 }
 
+// Dispatch refuses a restricted member every read of the deployment's own rows with this 403
+// (`readclass.Deployment` in `api/read_classes.go`). The dashboard asks such a member for none of
+// them (`useRestrictedMember`), so a page meets it only where the viewer's credential changed
+// while it was open: the section that read it leaves itself out rather than drawing a failure.
+export function isDeploymentReadRefused(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
+  );
+}
+
 // A stored document outside the Proof schema is a repairable state, not a transient failure:
 // retrying the read cannot repair it, while opening its live editor could let the browser rewrite it.
 export function isDocumentSchemaError(error: unknown): boolean {

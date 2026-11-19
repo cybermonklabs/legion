@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isDeploymentReadRefused } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
@@ -112,7 +112,10 @@ interface DeliverySettingsFormProps {
  * name left empty saves `null`. Save replaces the whole record; the server first checks that the
  * GitHub App can read the deploy repository, and a refusal shows under the form as the server wrote
  * it. A save refreshes the record and every delivery read, so the Delivery page, which renders this
- * form in place of a timeline it cannot read yet, shows the timeline once the save succeeds.
+ * form in place of a timeline it cannot read yet, shows the timeline once the save succeeds. The
+ * record is the deployment's, which Dispatch refuses a restricted member, and no page shows such a
+ * member this form: a read refused with 403 `DEPLOYMENT_READ_REFUSED` (a credential that changed
+ * while the page was open) draws nothing, rather than a load error.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
   const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
@@ -121,6 +124,7 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
     if (settings.isPending) {
       return <p className={`mt-6 ${textMutedOnCanvas}`}>Loading delivery settings…</p>;
     }
+    if (isDeploymentReadRefused(settings.error)) return null;
     if (settings.isError) {
       return (
         <div className="mt-6">

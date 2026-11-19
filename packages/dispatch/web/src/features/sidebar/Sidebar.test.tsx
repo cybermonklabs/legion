@@ -314,9 +314,10 @@ test("a full member's rail keeps Priorities, Delivery, Pipeline and Peek", async
 });
 
 // A restricted member reads only the projects that name them (R4 of the private-projects spec).
-// Their rail is Inbox, Agents, those projects and Settings: it draws no Priorities, Delivery,
-// Pipeline or Peek, and never reads the priorities, whose summary counts every project's work.
-test("a restricted member's rail is Inbox, Agents, their projects and Settings", async () => {
+// Their rail is Inbox, Agents, Delivery, those projects and Settings: Delivery's timeline answers
+// them the pull requests whose issue they see, and the rail draws no Priorities, Pipeline or
+// Peek, and never reads the priorities, whose summary counts every project's work.
+test("a restricted member's rail is Inbox, Agents, Delivery, their projects and Settings", async () => {
   const { listPriorities } = renderRail({
     entries: ["/settings"],
     peek: true,
@@ -325,7 +326,7 @@ test("a restricted member's rail is Inbox, Agents, their projects and Settings",
   });
 
   await screen.findByRole("link", { name: /^PRIV/ });
-  expect(railTargets()).toEqual(["/", "/agents", "/projects/PRIV", "/settings"]);
+  expect(railTargets()).toEqual(["/", "/agents", "/delivery", "/projects/PRIV", "/settings"]);
   expect(screen.queryByRole("button", { name: PEEK })).toBeNull();
   expect(listPriorities).not.toHaveBeenCalled();
 });

@@ -350,8 +350,9 @@ What each credential sees:
   the secrets broker issued for a project, sees those of them its person sees and nothing else.
   Of what belongs to no project it reads only the people and sessions of those projects, its own,
   and its person's direct conversations. A read of the whole deployment, such as the priorities,
-  Delivery, the broadcasts or the groups, is refused `403 DEPLOYMENT_READ_REFUSED`, and a write of
-  it, such as a new project, a repository mapping or a broadcast, `403 PROJECT_SCOPE_DEPLOYMENT`.
+  the Pipeline page, the broadcasts or the groups, is refused `403 DEPLOYMENT_READ_REFUSED`, and a
+  write of it, such as a new project, a repository mapping or a broadcast,
+  `403 PROJECT_SCOPE_DEPLOYMENT`.
 - An agent's token that lists no project sees the public projects its person sees, and never a
   private one.
 - A credential that acts for no person, the shared `DISPATCH_AGENT_TOKEN` or a Kubernetes
@@ -361,11 +362,12 @@ With no private project in the deployment, a token that lists no project sees ev
 person sees.
 
 A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
-their projects and Settings, with no Priorities, Delivery or Pipeline and no Peek. The Priorities,
-Delivery, Pipeline, broadcasts and machine-login pages answer **Page not found**, and Settings
-shows no Groups and no Delivery timeline. The API refuses them, and every token they make, every
-read of the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it,
-`403 RESTRICTED_MEMBER`.
+Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
+them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
+no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
+machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
+timeline. The API refuses them, and every token they make, every read of the whole deployment,
+`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project

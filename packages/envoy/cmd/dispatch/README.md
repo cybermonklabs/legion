@@ -262,7 +262,7 @@ A caller is an open viewer when its person is not a restricted member and its cr
 An open viewer reads every person and every row of the whole deployment, and every session but one that has acted in a project it does not see (`access.SessionClause`);
 while a project is private and `session_projects_filled` holds no row, it reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people and sessions of the projects it sees, its own, and the direct conversations its person or session is a party to (`access.PersonClause`, `access.SessionClause`, `access.PartyClause`);
-every read of the whole deployment (`readclass.Deployment`: the priorities, Delivery and Pipeline, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`).
+every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
 With no private project in the deployment, a credential that lists nothing sees every project its person sees.
 A private project's Legion daemon therefore presents, in its `dispatch_token_file`, a `dsp_` token that lists the project and every other project the daemon runs, minted by a person who sees them:

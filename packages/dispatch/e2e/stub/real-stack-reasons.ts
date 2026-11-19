@@ -259,7 +259,7 @@ export const realStackReasons: Record<string, string> = {
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
   "refresh-freshness.e2e.ts": "writes after load must reach the open page within 2 s",
   "restricted-member.e2e.ts":
-    "the member kind whoami answers and the projects the server lists are its read rule over the people row and the access list the row writes: bob, whom PRIV's list names, is listed PRIV and not the public CORE",
+    "the member kind whoami answers and the projects the server lists are its read rule over the people row and the access list the row writes: bob, whom PRIV's list names, is listed PRIV and not the public CORE; the delivery timeline answers him the pull requests of PRIV's issues alone, and the server's refusals of a deployment read are the instrument that shows his pages ask for none",
   "result-commit.e2e.ts": "the result line is read in the document margin's Pinned tab",
   "search-tiers.e2e.ts":
     "its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls",

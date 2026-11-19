@@ -220,7 +220,7 @@ function IssuePageFallback(): ReactNode {
   );
 }
 
-/** The pages that show only the deployment's own rows - Priorities, Delivery and Pipeline, the
+/** The pages that show only the deployment's own rows - Priorities and Pipeline, the
  *  broadcasts, and the machine-login page - which Dispatch refuses a restricted member (403
  *  DEPLOYMENT_READ_REFUSED, `readclass.Deployment` in `api/read_classes.go`). Such a person reads
  *  only the projects that name them (R4 of the private-projects spec), so these are no page of
@@ -927,10 +927,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
+                {/* Delivery is a restricted member's page too: its timeline and measures answer
+                    them the pull requests whose issue they see, and the page leaves out what it
+                    would read of the deployment's own (`DeliveryPage`). */}
+                <Route element={<DeliveryPage />} path="/delivery" />
                 <Route element={<DeploymentPages restricted={restricted} />}>
                   <Route element={<PrioritiesPage />} path="/priorities" />
                   <Route element={<PriorityPage />} path="/priorities/:id" />
-                  <Route element={<DeliveryPage />} path="/delivery" />
                   <Route element={<PipelinePage />} path="/pipeline" />
                   <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
                   <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />

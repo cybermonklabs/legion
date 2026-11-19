@@ -1,11 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import type { Agent, DeliveryPR } from "../../api/types";
+import { ApiError, api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
+import type { Agent, DeliveryPR, DeliveryRun } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { DrillDown } from "./DrillDown";
+import type { TimelineSelection } from "./Timeline";
 
 const pr: DeliveryPR = {
   additions: 1,
@@ -111,5 +114,142 @@ test("a pull request with no sessions shows a dash", () => {
     expect(detail("Sessions").textContent).toBe("\u2014");
   } finally {
     cleanup();
+  }
+});
+
+/** Run 500, a deploy that shipped #1, and run 501, a pipeline failure: each drill-down reads the
+ *  run's every job (`GET /api/v1/delivery/runs/{id}`) under its Jobs or All jobs section. */
+const deploy: DeliveryRun = {
+  completed_at: "2024-06-01T01:40:00Z",
+  conclusion: "success",
+  failed_jobs: [],
+  head_at: "2024-06-01T01:00:00Z",
+  head_sha: "deadbeef",
+  id: 500,
+  production: { completed_at: "2024-06-01T01:40:00Z", conclusion: "success" },
+  prs: [{ id: pr.id, title: pr.title }],
+  root_failing_job: null,
+  started_at: "2024-06-01T01:30:00Z",
+  url: "https://github.com/acme/widgets/actions/runs/500",
+};
+const failure: DeliveryRun = {
+  ...deploy,
+  conclusion: "failure",
+  failed_jobs: [{ completed_at: "2024-06-01T12:20:00Z", name: "integration tests" }],
+  id: 501,
+  production: null,
+  prs: [],
+  url: "https://github.com/acme/widgets/actions/runs/501",
+};
+
+/** The drill-down of `selection` over runs 500 and 501, signed in as a restricted member
+ *  (`member_kind: "restricted"`) when `restricted` is set and as a full member otherwise. */
+function renderRun(selection: TimelineSelection, restricted: boolean) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["agents"], []);
+  if (restricted) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+  }
+  render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <DrillDown
+            components={{}}
+            onClose={() => {}}
+            prs={[pr]}
+            runs={[deploy, failure]}
+            selection={selection}
+            sessionGroups={[]}
+            sessionTitles={{}}
+          />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// A run's jobs are the deployment's (`GET /api/v1/delivery/runs/{id}`, read class
+// `deployment`), which Dispatch refuses a restricted member. Their drill-down of a run shows the
+// run, its link and the pull requests it shipped that they see, and leaves its jobs out without
+// asking for them. A full member's drill-down reads and lists them, as it always did.
+test("a restricted member's run drill-down shows the run and what it shipped, and reads no jobs", async () => {
+  const getDeliveryRun = spyOn(api, "getDeliveryRun").mockResolvedValue({
+    id: 500,
+    jobs: [
+      {
+        completed_at: "2024-06-01T01:40:00Z",
+        conclusion: "success",
+        name: "widgets-release / widgets-release",
+        started_at: "2024-06-01T01:32:00Z",
+      },
+    ],
+    url: deploy.url,
+  });
+  try {
+    for (const selection of [
+      { id: 500, kind: "deploy" },
+      { id: 501, kind: "failure" },
+    ] as const) {
+      renderRun(selection, true);
+      const details = within(screen.getByRole("dialog", { name: "Details" }));
+      expect(details.getByRole("link", { name: "Open run" }).getAttribute("href")).toBe(
+        selection.kind === "deploy" ? deploy.url : failure.url
+      );
+      expect(details.queryByText("Jobs")).toBeNull();
+      expect(details.queryByText("All jobs")).toBeNull();
+      expect(details.queryByText("Loading…")).toBeNull();
+      cleanup();
+    }
+    renderRun({ id: 500, kind: "deploy" }, true);
+    const shipped = within(screen.getByRole("dialog", { name: "Details" }));
+    expect(shipped.getByRole("heading", { name: "Deploy: run #500" })).toBeDefined();
+    expect(shipped.getByText("PRs shipped (1)")).toBeDefined();
+    expect(shipped.getByText(`${pr.id} \u2014 ${pr.title}`)).toBeDefined();
+    expect(getDeliveryRun).not.toHaveBeenCalled();
+    cleanup();
+
+    renderRun({ id: 500, kind: "deploy" }, false);
+    const full = within(screen.getByRole("dialog", { name: "Details" }));
+    expect(await full.findByText("widgets-release / widgets-release")).toBeDefined();
+    expect(full.getByText("Jobs")).toBeDefined();
+    expect(getDeliveryRun).toHaveBeenCalledWith(500);
+  } finally {
+    cleanup();
+    getDeliveryRun.mockRestore();
+  }
+});
+
+// A refusal of the jobs read (403 DEPLOYMENT_READ_REFUSED) reaches any viewer whose credential
+// changed while the page was open: the drill-down leaves the jobs out, as it does for a member
+// who is never asked, rather than saying they could not be read. Any other failure still says so.
+test("a run whose jobs read is refused draws no jobs section and no could-not-be-read line", async () => {
+  const getDeliveryRun = spyOn(api, "getDeliveryRun").mockRejectedValue(
+    new ApiError(403, {
+      code: "DEPLOYMENT_READ_REFUSED",
+      error: "this read is the deployment's, which a restricted member may not make",
+    })
+  );
+  try {
+    renderRun({ id: 500, kind: "deploy" }, false);
+    const details = within(screen.getByRole("dialog", { name: "Details" }));
+    await waitFor(() => expect(getDeliveryRun).toHaveBeenCalledWith(500));
+    await waitFor(() => expect(details.queryByText("Loading…")).toBeNull());
+    expect(details.queryByText("The run's jobs could not be read.")).toBeNull();
+    expect(details.queryByText("Jobs")).toBeNull();
+    expect(details.getByText("PRs shipped (1)")).toBeDefined();
+    cleanup();
+
+    getDeliveryRun.mockRejectedValue(new ApiError(500, { code: "INTERNAL", error: "down" }));
+    renderRun({ id: 500, kind: "deploy" }, false);
+    expect(await screen.findByText("The run's jobs could not be read.")).toBeDefined();
+  } finally {
+    cleanup();
+    getDeliveryRun.mockRestore();
   }
 });

@@ -35,7 +35,7 @@ const test = stubbed(async () => {
   return { project: "PRIV" };
 }, BOB);
 
-test("a restricted member's rail draws Inbox, Agents, their projects and Settings, and the views over every project answer Page not found @pr", async ({
+test("a restricted member's rail draws Inbox, Agents, Delivery, their projects and Settings, and Priorities and Pipeline answer Page not found @pr", async ({
   page,
   scene,
 }) => {
@@ -48,12 +48,12 @@ test("a restricted member's rail draws Inbox, Agents, their projects and Setting
   await page.goto(`/projects/${scene.project}`);
   await expect
     .poll(() => railTargets(page))
-    .toEqual(["/", "/agents", `/projects/${scene.project}`, "/settings"]);
+    .toEqual(["/", "/agents", "/delivery", `/projects/${scene.project}`, "/settings"]);
   await expect(
     page.getByRole("button", { name: "Peek at the inbox without leaving this page" })
   ).toHaveCount(0);
 
-  for (const path of ["/priorities", "/priorities/launch", "/delivery", "/pipeline"]) {
+  for (const path of ["/priorities", "/priorities/launch", "/pipeline"]) {
     await page.goto(path);
     await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
     await expect(page).toHaveTitle("Not found · Dispatch");

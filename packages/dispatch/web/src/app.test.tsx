@@ -1156,11 +1156,13 @@ function renderShellAt(
 }
 
 // A restricted member reads only the projects that name them (R4 of the private-projects spec),
-// so the views over every project are no page of theirs: an address of Priorities, of one
-// priority, of Delivery or of Pipeline answers Page not found, and nothing reads the priorities.
-// A full member's address opens the page, as it always did.
-test("a restricted member's Priorities, Delivery and Pipeline addresses answer Page not found", async () => {
-  for (const path of ["/priorities", "/priorities/launch", "/delivery", "/pipeline"]) {
+// so Priorities and Pipeline, the views over every project, are no page of theirs: an address of
+// Priorities, of one priority or of Pipeline answers Page not found, and nothing reads the
+// priorities. Delivery is theirs: its timeline and measures answer them the pull requests whose
+// issue they see, so its address opens the page. A full member's address opens the page, as it
+// always did.
+test("a restricted member's Priorities and Pipeline addresses answer Page not found, and their Delivery address opens the page", async () => {
+  for (const path of ["/priorities", "/priorities/launch", "/pipeline"]) {
     const { listPriorities, teardown } = renderShellAt(BOB_RESTRICTED, path);
     try {
       expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
@@ -1168,6 +1170,15 @@ test("a restricted member's Priorities, Delivery and Pipeline addresses answer P
     } finally {
       teardown();
     }
+  }
+
+  const delivery = renderShellAt(BOB_RESTRICTED, "/delivery");
+  try {
+    expect(await screen.findByRole("heading", { name: "Delivery timeline" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+    expect(delivery.listPriorities).not.toHaveBeenCalled();
+  } finally {
+    delivery.teardown();
   }
 
   const { teardown } = renderShellAt(

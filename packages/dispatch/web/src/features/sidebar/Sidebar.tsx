@@ -155,9 +155,9 @@ export function Sidebar({
 }): ReactNode {
   const location = useLocation();
   // A restricted member reads only the projects that name them (R4 of the private-projects spec),
-  // so their rail draws none of the views over every project - Priorities, Delivery and
-  // Pipeline - and no Peek, and never reads the priorities. `app.tsx` answers those pages
-  // NotFound for them.
+  // so their rail draws neither view over every project - Priorities and Pipeline - and no Peek,
+  // and never reads the priorities. `app.tsx` answers those pages NotFound for them. Delivery
+  // stays: its timeline answers them the pull requests whose issue they see.
   const restricted = isRestrictedMember(user);
   const inbox = useQuery(inboxQuery());
   const pinned = useQuery({
@@ -312,9 +312,9 @@ export function Sidebar({
             )
           ) : null}
         </section>
-        {restricted ? null : (
-          <section>
-            <ul className="mt-1 space-y-0.5">
+        <section>
+          <ul className="mt-1 space-y-0.5">
+            {restricted ? null : (
               <RailRow
                 badge={priorityFaults}
                 detail="Every project's priorities, and the work on none"
@@ -328,14 +328,16 @@ export function Sidebar({
                 }
                 to={PRIORITIES_PATH}
               />
-              <RailRow
-                badge={undefined}
-                detail="Deploys, merges, and pipeline failures"
-                label="Delivery"
-                onNavigate={onNavigate}
-                selected={location.pathname === "/delivery"}
-                to="/delivery"
-              />
+            )}
+            <RailRow
+              badge={undefined}
+              detail="Deploys, merges, and pipeline failures"
+              label="Delivery"
+              onNavigate={onNavigate}
+              selected={location.pathname === "/delivery"}
+              to="/delivery"
+            />
+            {restricted ? null : (
               <RailRow
                 badge={undefined}
                 detail="CI and deploy step timings"
@@ -344,9 +346,9 @@ export function Sidebar({
                 selected={location.pathname === "/pipeline"}
                 to="/pipeline"
               />
-            </ul>
-          </section>
-        )}
+            )}
+          </ul>
+        </section>
         {pinned.data.length === 0 ? null : (
           <section>
             <h2 className={`px-2 text-xs font-semibold tracking-wide uppercase ${railMutedText}`}>
