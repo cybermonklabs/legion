@@ -9,7 +9,7 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
+import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { navigateInApp } from "./sends";
 import { expect, type Page, type Request, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
@@ -23,17 +23,6 @@ const agent: FakeSession = {
   title: "Live Socket Agent",
 };
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
-
-/** Lets the routed socket use Dispatch's own messages and preserves its close code. */
-function connect(route: WebSocketRoute): void {
-  const server = route.connectToServer();
-  server.onClose((code, reason) =>
-    route.close({
-      ...(code === undefined ? {} : { code }),
-      ...(reason === undefined ? {} : { reason }),
-    })
-  );
-}
 
 /** Waits until the page holds one open live socket and its event feed has started on it. */
 async function untilFeedStarts(sockets: LiveSockets): Promise<void> {

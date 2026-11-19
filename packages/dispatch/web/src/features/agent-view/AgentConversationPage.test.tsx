@@ -44,6 +44,8 @@ import {
 } from "../writes/keyed-write";
 import {
   AgentConversationPage,
+  LEFT_LIST_TEXT,
+  MISSED_HEARTBEATS_TEXT,
   NOT_ANSWERING_EMPTY_TEXT,
   NOT_ANSWERING_NOTICE,
   NOTHING_YET_TEXT,
@@ -335,17 +337,20 @@ function agentsLink(): HTMLElement {
   return screen.getByRole("link", { name: /^Agents/ });
 }
 
-/** Every way the live view's header names its connection to the session's conversation: the
- *  stream's own state, or `Not answering` from the relay or the registry. */
+/** Every way the live view's header presence reads: the stream's own state, `Not answering` from
+ *  the relay, or `Not in the session list` from the registry. */
 const CONNECTION_LABELS = [
   "Connecting to the session",
   "Live",
   "Not answering",
+  "Not in the session list",
   "Reconnecting",
   "This session's conversation is unavailable",
 ];
 
-/** The labels `view`'s header shows; exactly one in any coherent state. */
+/** The labels `view`'s header presence shows: exactly one in any coherent state, but none for a
+ *  session the registry holds as unresponsive over a connection that stands, where the header's
+ *  `agent-unresponsive` note is its word. */
 function connectionStatus(view: HTMLElement = screen.getByTestId("agent-conversation")): string[] {
   return CONNECTION_LABELS.filter((label) => within(view).queryByText(label) !== null);
 }
@@ -1885,6 +1890,55 @@ test("a session not answering the live view shows Dispatch's messages under a li
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
 });
 
+// R2. The relay's word that a session is silent outlives a lost socket: the header says the
+// socket is reconnecting, which is the view's own connection, and the empty transcript keeps the
+// relay's explanation rather than promising the next turn, until the relay answers again.
+test("a session the relay says is silent keeps the relay's text in its empty transcript while the socket reconnects", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: false,
+  });
+  const empty = await screen.findByTestId("agent-thread-empty");
+  expect(empty.textContent).toBe(NOT_ANSWERING_EMPTY_TEXT);
+  expect(connectionStatus()).toEqual(["Not answering"]);
+
+  const first = sockets.latest();
+  act(() => first.restart());
+  expect(connectionStatus()).toEqual(["Reconnecting"]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOT_ANSWERING_EMPTY_TEXT);
+  expect(screen.queryByText(NOTHING_YET_TEXT)).not.toBeInTheDocument();
+
+  await waitFor(() => expect(sockets.latest()).not.toBe(first));
+  act(() => sockets.latest().open());
+  expect(connectionStatus()).toEqual(["Not answering"]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOT_ANSWERING_EMPTY_TEXT);
+});
+
+// R2. The same over the messages Dispatch keeps: the line above them stays through a reconnect.
+test("a session the relay says is silent keeps the line above Dispatch's messages while the socket reconnects", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: conversation,
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: false,
+  });
+  await within(await screen.findByTestId("agent-thread")).findByText("Where is the dashboard?");
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+
+  const first = sockets.latest();
+  act(() => first.restart());
+  expect(connectionStatus()).toEqual(["Reconnecting"]);
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+  expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
+
+  await waitFor(() => expect(sockets.latest()).not.toBe(first));
+  act(() => sockets.latest().open());
+  expect(connectionStatus()).toEqual(["Not answering"]);
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+});
+
 // A session that answers shows neither line, with turns or without, and reads live.
 test("a session answering the live view shows no not-answering line and reads live", async () => {
   renderLiveView({
@@ -1902,9 +1956,10 @@ test("a session answering the live view shows no not-answering line and reads li
 });
 
 // R2. A session can stop answering its heartbeats before the relay says it is silent, so the
-// registry's poll tells the open view too: a session it next lists as unresponsive reads as not
-// answering, with the line above the turns it streamed, until a read lists it live again.
-test("a listed session the registry next holds as unresponsive reads not answering until it is live again", async () => {
+// registry's poll tells the open view too: a session it next lists as unresponsive is named so in
+// the header, with when it was last seen, in place of Live, and the line above the turns it
+// streamed says what the list says, until a read lists it live again.
+test("a listed session the registry next holds as unresponsive is named so in the header until it is live again", async () => {
   const at = Date.parse("2026-09-27T21:16:16Z");
   const view = renderLiveView({
     agentState: {},
@@ -1915,23 +1970,67 @@ test("a listed session the registry next holds as unresponsive reads not answeri
   await screen.findByTestId("agent-footer-machine");
   await within(screen.getByTestId("agent-thread")).findByText("Planning the change.");
   expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.queryByTestId("agent-unresponsive")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
 
   await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
-  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
-  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+  await screen.findByTestId("agent-unresponsive");
+  expect(connectionStatus()).toEqual([]);
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+  expect(screen.queryByText(NOT_ANSWERING_NOTICE)).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
   expect(screen.getByText("Planning the change.")).toBeTruthy();
 
   await nextRegistryRead(view, [agent]);
   await waitFor(() => expect(connectionStatus()).toEqual(["Live"]));
+  expect(screen.queryByTestId("agent-unresponsive")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
 });
 
+// R2. No frame ends the registry's word: a session the list holds as unresponsive has not ended
+// and may still stream, and a turn it streams shows under the same header and the same line,
+// which says only what the list says. A lost socket is the view's own connection, said beside
+// the note, and the line stays through it.
+test("a session the registry holds as unresponsive shows the turns it still streams under the list's word, through a reconnect", async () => {
+  const at = Date.parse("2026-09-27T21:16:16Z");
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [assistantFrame(1, at, "Planning the change.")],
+  });
+  await screen.findByTestId("agent-footer-machine");
+  const thread = screen.getByTestId("agent-thread");
+  await within(thread).findByText("Planning the change.");
+  await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
+  await screen.findByTestId("agent-unresponsive");
+  expect(connectionStatus()).toEqual([]);
+
+  view.frame(assistantFrame(2, at + 60_000, "Still planning the change."));
+  await within(thread).findByText("Still planning the change.");
+  expect(within(thread).getByText("Planning the change.")).toBeTruthy();
+  expect(connectionStatus()).toEqual([]);
+  expect(screen.getByTestId("agent-unresponsive")).toBeTruthy();
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+  expect(screen.queryByText(NOT_ANSWERING_NOTICE)).not.toBeInTheDocument();
+
+  const first = sockets.latest();
+  act(() => first.restart());
+  expect(connectionStatus()).toEqual(["Reconnecting"]);
+  expect(screen.getByTestId("agent-unresponsive")).toBeTruthy();
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+
+  await waitFor(() => expect(sockets.latest()).not.toBe(first));
+  act(() => sockets.latest().open());
+  expect(connectionStatus()).toEqual([]);
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(MISSED_HEARTBEATS_TEXT);
+});
+
 // R2. A session the view has seen listed and the registry's next read no longer holds has left
-// it: the view reads not answering, the empty transcript says why, and a read that lists it again
-// takes both back.
-test("a listed session the registry next leaves out reads not answering until it is listed again", async () => {
+// it: the header says so in place of Live, the transcript says what the list says - in its empty
+// slot, then above a turn the session still streams, which ends nothing - and a read that lists
+// it again takes both back.
+test("a listed session the registry next leaves out reads not in the session list until it is listed again", async () => {
   const view = renderLiveView({
     agentState: {},
     messages: [],
@@ -1943,13 +2042,22 @@ test("a listed session the registry next leaves out reads not answering until it
   expect(connectionStatus()).toEqual(["Live"]);
 
   await nextRegistryRead(view, []);
-  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
-  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOT_ANSWERING_EMPTY_TEXT);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not in the session list"]));
+  expect(screen.getByTitle("The live session list no longer holds this session")).toBeTruthy();
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(LEFT_LIST_TEXT);
+  expect(screen.queryByText(NOT_ANSWERING_EMPTY_TEXT)).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+
+  view.frame(assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Still here."));
+  await within(screen.getByTestId("agent-thread")).findByText("Still here.");
+  expect(connectionStatus()).toEqual(["Not in the session list"]);
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(LEFT_LIST_TEXT);
+  expect(screen.queryByText(NOT_ANSWERING_NOTICE)).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
 
   await nextRegistryRead(view, [agent]);
   await waitFor(() => expect(connectionStatus()).toEqual(["Live"]));
-  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
 });
 
 // R2. Only a session the view has seen listed can leave the list: one the registry never held
@@ -1979,7 +2087,8 @@ test("a registry list that is not current judges nothing of a session it held", 
   });
   await screen.findByTestId("agent-footer-machine");
   await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
-  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
+  await screen.findByTestId("agent-unresponsive");
+  expect(connectionStatus()).toEqual([]);
 
   await nextRegistryRead(
     view,
@@ -1990,7 +2099,7 @@ test("a registry list that is not current judges nothing of a session it held", 
   expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
 
   await nextRegistryRead(view, []);
-  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not in the session list"]));
   await nextRegistryRead(
     view,
     new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "Envoy listener unreachable" })

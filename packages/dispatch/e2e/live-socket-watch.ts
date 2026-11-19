@@ -1,10 +1,22 @@
-import type { WebSocket as BrowserWebSocket, Page } from "@playwright/test";
+import type { WebSocket as BrowserWebSocket, Page, WebSocketRoute } from "@playwright/test";
 
 import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 
 /** Whether a socket the page opened is its one live socket, the one every live view rides. */
 export function isLiveSocket(socket: BrowserWebSocket): boolean {
   return new URL(socket.url()).pathname === "/ws/live";
+}
+
+/** Lets a routed live socket use Dispatch's own messages and preserves its close code, so a row
+ *  that routes the live socket to hold one of its opens still talks to the real server. */
+export function connect(route: WebSocketRoute): void {
+  const server = route.connectToServer();
+  server.onClose((code, reason) =>
+    route.close({
+      ...(code === undefined ? {} : { code }),
+      ...(reason === undefined ? {} : { reason }),
+    })
+  );
 }
 
 /** What a page's live sockets did: those open now, every one it opened, every frame it sent, and
