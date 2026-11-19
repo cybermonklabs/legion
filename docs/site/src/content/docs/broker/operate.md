@@ -289,7 +289,8 @@ itself, for a daemon that registers the sibling pods of its own account.
 
 The broker refuses to start, naming the setting and the entry, on an entry without exactly one
 `=`, an account of any other form (a `google:` one included), a namespace's `default` account, and
-a pair given twice. It also refuses the list set without `BROKER_K8S_OIDC_ISSUER`. It does not
+a pair given twice. It also refuses the list set without `BROKER_K8S_OIDC_ISSUER`, and a registrar
+that `BROKER_POD_OPERATORS` maps to a person (below), since a person's pod registers no pod. It does not
 refuse a registrar that `BROKER_SERVICE_LOGINS` does not list, since the list may come from another
 source than the logins: such a registrar cannot call the route, so it registers nothing, and the
 boot logs `pod-session registrar cannot log in` at WARN, naming it. The boot also logs one
@@ -563,6 +564,9 @@ broker refuses to start, naming the entry or the account, on:
 - a mapped account whose login service a `BROKER_VM_SERVICES` entry names, since the broker
   registers those services as owners a secret may name too;
 - a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person;
+- a mapped account that a `BROKER_POD_REGISTRARS` entry names as its registrar, since the person's
+  pod would then choose the session names other pods exchange under (a mapped account on the pod
+  side of an entry is not refused);
 - a mapped account that a `BROKER_EXCHANGE_READ_ACCOUNTS` entry names, since the exchange would
   then mint the person's pod a read-only token that names a service and no person;
 - a mapped account that a `BROKER_API_ACCOUNTS` entry names, since that caller's routes relay

@@ -16,7 +16,8 @@ body: |-
     requests alone. The broker refuses to
     start on a mapped account that `BROKER_SERVICE_LOGINS` does not name, that `BROKER_SERVICES`
     binds, whose login service `BROKER_SERVICES` or `BROKER_VM_SERVICES` names, that
-    `BROKER_EXCHANGE_ACCOUNTS` maps to another person, that a `BROKER_EXCHANGE_READ_ACCOUNTS`,
+    `BROKER_EXCHANGE_ACCOUNTS` maps to another person, that a `BROKER_POD_REGISTRARS` entry names
+    as its registrar, that a `BROKER_EXCHANGE_READ_ACCOUNTS`,
     `BROKER_API_ACCOUNTS` or `BROKER_NATS_SERVICES` entry names, or that a
     `BROKER_SESSION_ACCOUNT_PAIRS` pair names.
     `GET /v1/launcher-credentials` names such a

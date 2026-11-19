@@ -313,7 +313,8 @@ type podSessionReleaseResponse struct {
 // BROKER_SERVICE_LOGINS lists, presenting its own projected ServiceAccount token for the broker's
 // audience, and nothing else. The class answers before the handler, as it does for the
 // registration: 401 for the token, 403 ACCOUNT_NOT_LISTED for an account the logins do not name,
-// and 429 with Retry-After from the account class's per-address bucket. BROKER_POD_REGISTRARS
+// 403 PERSON_ACCOUNT for an account BROKER_POD_OPERATORS maps to a person (serviceCaller), and 429
+// with Retry-After from the account class's per-address bucket. BROKER_POD_REGISTRARS
 // does not gate it, so a registrar whose entry was taken out still releases what it registered
 // while it was listed. A release is the registrar account's (registrar.Subject), not a pod's: it
 // releases every live registration of each named session that the account wrote, whichever pod of
