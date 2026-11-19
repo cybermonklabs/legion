@@ -202,8 +202,11 @@ inside the same 3.5 s budget, and one the budget runs out on is that 503 too, na
 did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged. Its role 404s
 (`unclaimed`, `holder_lapsed`) keep their bodies, and a role send gives one only when the listener
 kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
-no claim can ever name; or the keep itself failed. A role send whose message the listener kept
-answers `202` instead, both for a role nobody claims and for a claim whose holder is not live. A
+no claim can ever name; or the keep itself failed. A keep whose publish went out and was never
+acknowledged may have stored the copy, so it is no 404 but the bus-unavailable 503 with `code`
+`maybe_stored`, as every 503 that may have stored a message is. A role send whose message the
+listener kept answers `202` instead, both for a role nobody claims and for a claim whose holder
+is not live. A
 role topic's send then runs on
 within its own 4 s and answers its 200, 202, 403 `capability` or 504 as "Role delivery and
 exceptions" says.
@@ -418,7 +421,8 @@ gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publ
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, or the keep was refused or failed. A `holder_lapsed` 404 names the same
+that with `keep: false`, or the keep was refused or failed with nothing sent (a keep that went
+unacknowledged is the 503 `maybe_stored`). A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`

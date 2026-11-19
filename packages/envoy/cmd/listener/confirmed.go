@@ -202,7 +202,11 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
 // daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
 // exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails.
+// holder failed when its own keep fails. A keep whose publish went out and was never acknowledged
+// (bus.ErrUnacknowledged) may have stored the copy, so it is not answered as one that kept
+// nothing: it is the bus-unavailable 503 with listenerwire.CodeMaybeStored (writeBusUnavailable),
+// which costs its sender as a stored one and publishes no refusal exception, as the send route's
+// kept role send answers it (keepRoleSend).
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -217,8 +221,15 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
+		kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
+		if err == nil {
 			s.kept(result, kept)
+			return
+		}
+		if errors.Is(err, bus.ErrUnacknowledged) {
+			s.record.charge.published(bus.StoredAck{}, err)
+			s.record.refuseBusUnavailable(s.w, fmt.Errorf("the kept lane of role %s did not confirm the message: %w", s.role, err))
+			s.settle(sendFailed)
 			return
 		}
 	}

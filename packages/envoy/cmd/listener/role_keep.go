@@ -484,7 +484,11 @@ type keptRolePublish func(ctx context.Context, subject string, item contracts.En
 func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
 	defer cancel()
-	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.client.PublishStoredAck)
+	publish := cfg.keepPublish
+	if publish == nil {
+		publish = cfg.client.PublishStoredAck
+	}
+	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, publish)
 	if err != nil {
 		cfg.logger.Error(roleKeepFailedLine,
 			slog.String("role", role),

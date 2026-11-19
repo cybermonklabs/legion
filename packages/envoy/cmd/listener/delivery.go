@@ -103,6 +103,10 @@ type listenerDeliveryHandlerConfig struct {
 	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
 	// fault.
 	takeoverFaults *takeoverFaultHooks
+	// keepPublish, when it is not nil, is the stored publish a keep makes (keepRoleMessage) in
+	// place of client.PublishStoredAck: a test's stand-in for an answer of the stream's. main.go
+	// leaves it nil.
+	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
 	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).
