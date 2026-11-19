@@ -46,7 +46,10 @@ var (
 	ErrNotLive         = errors.New("enrollment is not live")
 	ErrInvalidSlot     = errors.New("a slot is only for a pod enrollment and must match ^[a-z][a-z0-9-]{0,62}$")
 	ErrNoCredential    = errors.New("no such machine login")
-	ErrNotApprover     = errors.New("only the person who approved a person's machine login may revoke it")
+	// ErrNotApprover refuses a revoke of a machine login by anyone the rule does not admit: a
+	// person's machine login is the person's who approved it, and a person's pod login is the
+	// person's that BROKER_POD_OPERATORS maps the pod's account to, although it carries a service.
+	ErrNotApprover = errors.New("only the person who approved a person's machine login may revoke it, and only the person BROKER_POD_OPERATORS maps a pod's account to may revoke that pod's login")
 	// ErrInvalidClaim refuses a claim stated on an enrollment that is not a pod's, a claim that
 	// does not match ^[a-z][a-z0-9-]{0,127}$, and a claim from a pod enrolling itself, which may
 	// state no more of whose it is than it may state a session name (ErrPodSelfEnrollNoSession

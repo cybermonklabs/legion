@@ -93,9 +93,10 @@ func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request
 
 // revokeLauncherCredential ends a machine login as the person the caller names
 // (enroll.Service.RevokeCredential, through revokeCredentialAs): a service's as anyone signed in, a
-// person's machine's as the person who approved it. The caller that relayed it is logged beside
-// that person, whose name the broker still takes on the caller's word: a revoke only takes power
-// away.
+// person's machine's as the person who approved it, and a person's pod login as the person
+// BROKER_POD_OPERATORS maps the pod's account to, and as nobody else, although such a login
+// carries a service and a subject. The caller that relayed it is logged beside that person, whose
+// name the broker still takes on the caller's word: a revoke only takes power away.
 func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request, callerName string) {
 	id, ok := pathUUID(w, r, "id", "CREDENTIAL_ID_INPUT", "launcher credential")
 	if !ok {
@@ -116,10 +117,11 @@ func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request
 
 // revokeCredentialAs ends machine login id, expired or not, with revoke on the word of person
 // (enroll.Service.RevokeCredential: a service's for anyone, a person's machine's for the person who
-// approved it; RevokeOwnCredential: a person's machine's alone), recording actor on every row it
-// writes: no launcher proof signed with it authenticates again, and every session it enrolled ends
-// — a service's login's pods among them — with their grants and pending requests. Revoking one
-// already revoked answers the same.
+// approved it, a person's pod login for the person BROKER_POD_OPERATORS maps the pod's account to;
+// RevokeOwnCredential: a person's machine's and that person's pod logins alone), recording actor on
+// every row it writes: no launcher proof signed with it authenticates again, and every session it
+// enrolled ends — a service's login's pods and a person's pod among them — with their grants and
+// pending requests. Revoking one already revoked answers the same.
 func (s *server) revokeCredentialAs(w http.ResponseWriter, r *http.Request, revoke func(ctx context.Context, id, person, actor string) error, id, person, actor string) {
 	err := revoke(r.Context(), id, person, actor)
 	switch {

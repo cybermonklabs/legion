@@ -358,15 +358,21 @@ func routes() []apiRoute {
 		// Find a pending machine login by the confirmation code its machine shows.
 		{http.MethodPost, "/v1/machine-logins/lookup", accountAuth(relaysDecisions, (*server).lookupMachineLogin)},
 		// List the machine logins the named person may revoke, every service's, such as the Legion
-		// daemon's, whoever approved it, and the person's own machines', that are not revoked and
-		// are unexpired or expired with a session still running, each naming who approved it. The
+		// daemon's, whoever approved it, the person's own machines', and the logins of the person's
+		// own pods, that are not revoked and are unexpired or expired with a session still running,
+		// each naming who approved it. A person's pod login is the token login of a pod whose
+		// Kubernetes account BROKER_POD_OPERATORS maps to a person. It carries a service and a
+		// subject, but only that person's list holds it, and its person field names that person. The
 		// person is the one the caller names.
 		{http.MethodGet, "/v1/launcher-credentials", accountAuth(relaysDecisions, (*server).listLauncherCredentials)},
 		// End a machine login, expired or not: a service's (its token login, or one a person approved
 		// before token logins) as anyone signed in, a person's machine's as the person who approved
-		// it. Its launcher proofs stop authenticating and every session it enrolled, pods included,
-		// ends with its grants and pending requests. The revoking person is the login the request
-		// names, which the broker still takes on the caller's word: a revoke only takes power away.
+		// it, and a person's pod login as the person BROKER_POD_OPERATORS maps the pod's account to,
+		// and as nobody else. Its launcher proofs stop authenticating and every session it enrolled,
+		// pods included, ends with its grants and pending requests. A pod whose login is revoked logs
+		// in again with its token under a new login while the setting maps its account. The revoking
+		// person is the login the request names, which the broker still takes on the caller's word: a
+		// revoke only takes power away.
 		{http.MethodPost, "/v1/launcher-credentials/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeLauncherCredential)},
 		// List the live grants of the named person's sessions, automatic or approved, and those the
 		// person approved. The person is the one the caller names.

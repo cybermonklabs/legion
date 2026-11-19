@@ -144,8 +144,9 @@ type LauncherCredentialResp struct {
 // answer.
 type LauncherCredentialsResponse struct {
 	// The machine logins that are not revoked and are either unexpired or expired with a session
-	// still running, newest first: every service's and the named person's own machines' on
-	// Dispatch's page, the calling operator's own machines' alone on the operator route.
+	// still running, newest first: every service's, the named person's own machines' and that
+	// person's pod logins on Dispatch's page; the calling operator's own machines' and pod logins
+	// alone on the operator route. A person's pod login is on its person's list alone.
 	Credentials []LauncherCredentialResp `json:"credentials"`
 }
 
