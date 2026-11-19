@@ -34,10 +34,6 @@ case "$#" in
     ;;
 esac
 
-# The .env reader the checks of deploy() share with up-dispatch.sh.
-# shellcheck source=SCRIPTDIR/dotenv.sh
-. "$(dirname "${BASH_SOURCE[0]}")/dotenv.sh"
-
 mkdir -p "$BACKUPS"
 
 log() {
@@ -71,6 +67,45 @@ set_env_value() {
   else
     printf '%s=%s\n' "$1" "$2" >>"$COMPOSE_ENV"
   fi
+}
+
+# resolved_settings SHA reads the four settings deploy() checks, as Compose resolves them for the
+# candidate SHA (`docker compose config --format json`, the dispatch service's environment), into
+# the associative array `resolved`. The JSON, which holds DATABASE_URL with its password, goes from
+# Compose to python3 through a pipe and back on standard output, never into a process argument or
+# the log. It refuses, logging why, when `docker compose` cannot run, and when Compose refuses the
+# configuration (a required variable missing a value): then Compose's own first line, with any
+# `user:password@` in it cut to `user:***@`, is the reason.
+declare -A resolved=()
+resolved_settings() {
+  local sha=$1 err values name i=0
+  local -a names=(DISPATCH_SERVER_URL ENVOY_ACCOUNT_GOOGLE_AUDIENCE ENVOY_ACCOUNT_TOKEN_FILE DATABASE_URL)
+  if ! err=$(docker compose version 2>&1 >/dev/null); then
+    log "docker compose cannot run (docker compose version: ${err:-no output}); the deployer reads Dispatch's settings through Compose's own configuration; not deploying $sha"
+    return 1
+  fi
+  err=$(mktemp)
+  # One value a line, in the order of names; a value holding a line break is no value of these.
+  if ! values=$(compose_with_tag "$sha" 60 config --format json 2>"$err" | python3 -c '
+import json, sys
+environment = json.load(sys.stdin)["services"]["dispatch"].get("environment") or {}
+for name in sys.argv[1:]:
+    value = environment.get(name) or ""
+    if "\n" in value:
+        sys.exit("a line break in " + name)
+    print(value)
+' "${names[@]}" 2>/dev/null); then
+    log "Compose refused $COMPOSE_FILE with $COMPOSE_ENV: $(head -n 1 "$err" | sed -E -e 's#://([^:/@ ]+):.*@#://\1:***@#' -e 's#([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]=)[^ ]*#\1***#g'); not deploying $sha"
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+  resolved=()
+  while IFS= read -r name; do
+    resolved[${names[i]}]=$name
+    i=$((i + 1))
+  done <<<"$values"
+  return 0
 }
 
 # database_url_split reads DATABASE_URL into db_url, the URL without its password, and db_password,
@@ -388,25 +423,27 @@ deploy() {
   local expected
 
   previous=$(deployed_tag)
-  # The four settings below are read as Compose reads them (dotenv_value), so a value Compose reads
-  # as empty (`NAME=""`, `NAME=''`) is refused here, and one it reads as set (`export NAME=v`,
-  # `NAME=v # note`) is not.
-  origin=$(dotenv_value DISPATCH_SERVER_URL "$COMPOSE_ENV")
+  # The four settings below are read from Compose's own resolution of the candidate's compose file
+  # and .env (resolved_settings), never from the .env's text: Compose expands `${...}`, unquotes,
+  # takes an `export` prefix and the shell's value over the file's, and only its reading is what the
+  # container gets.
+  resolved_settings "$sha" || return 1
+  origin=${resolved[DISPATCH_SERVER_URL]}
   if [[ -z "$origin" ]]; then
-    log "DISPATCH_SERVER_URL is missing from $COMPOSE_ENV; not deploying $sha"
+    log "Compose resolves DISPATCH_SERVER_URL empty from $COMPOSE_ENV; not deploying $sha"
     return 1
   fi
   # Dispatch starts only with its identity at the Envoy listener (dispatch.compose.yml's entrypoint),
   # and a container that refuses restart-loops under `restart: unless-stopped`, as the previous
-  # image's rollback under the same file would: a .env with neither setting is refused here, before
-  # the backup, and the image that serves keeps serving.
-  if [[ -z "$(dotenv_value ENVOY_ACCOUNT_GOOGLE_AUDIENCE "$COMPOSE_ENV")$(dotenv_value ENVOY_ACCOUNT_TOKEN_FILE "$COMPOSE_ENV")" ]]; then
-    log "neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE is set in $COMPOSE_ENV, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
+  # image's rollback under the same file would: a .env Compose reads neither setting from is refused
+  # here, before the backup, and the image that serves keeps serving.
+  if [[ -z "${resolved[ENVOY_ACCOUNT_GOOGLE_AUDIENCE]}${resolved[ENVOY_ACCOUNT_TOKEN_FILE]}" ]]; then
+    log "Compose resolves neither ENVOY_ACCOUNT_GOOGLE_AUDIENCE nor ENVOY_ACCOUNT_TOKEN_FILE from $COMPOSE_ENV, and Dispatch refuses to start without its identity at the Envoy listener (see packages/envoy/deploy/README.md, \"Dispatch's identity at the Envoy listener\"); not deploying $sha"
     return 1
   fi
-  databaseUrl=$(dotenv_value DATABASE_URL "$COMPOSE_ENV")
+  databaseUrl=${resolved[DATABASE_URL]}
   if [[ -z "$databaseUrl" ]]; then
-    log "DATABASE_URL is missing from $COMPOSE_ENV; not deploying $sha"
+    log "Compose resolves DATABASE_URL empty from $COMPOSE_ENV; not deploying $sha"
     return 1
   fi
   if ! database_url_split "$databaseUrl"; then

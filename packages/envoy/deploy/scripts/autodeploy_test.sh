@@ -12,6 +12,16 @@ log="$root/compose.log"
 argv="$root/argv.log"
 schema="$root/schema"
 mkdir -p "$compose" "$backups" "$bin" "$tools"
+# The deployer reads Dispatch's settings from Compose's own resolution (`docker compose config`), so
+# the fake docker below hands `compose version` and `compose ... config` to the real binary, run on
+# the real compose file. A run without it fails here, by name: it never skips.
+real_docker=$(command -v docker || true)
+[[ -n "$real_docker" ]] || { printf 'autodeploy_test: docker is not on PATH; this test reads the resolution of docker compose config\n' >&2; exit 1; }
+"$real_docker" compose version >&2 || { printf 'autodeploy_test: docker compose version failed with %s; this test needs Docker Compose\n' "$real_docker" >&2; exit 1; }
+cp "$(dirname "$0")/../compose/dispatch.compose.yml" "$compose/dispatch.compose.yml"
+# Compose takes the shell's value of a setting over the .env's: only a row that means to set one does.
+unset ENVOY_ACCOUNT_GOOGLE_AUDIENCE ENVOY_ACCOUNT_TOKEN_FILE DISPATCH_SERVER_URL DATABASE_URL \
+  DISPATCH_AGENT_TOKEN NATS_URLS ENVOY_IMAGE_TAG AUTODEPLOY_TEST_UNSET
 # The database password, percent-encoded in DATABASE_URL as s%40cret-canary. Neither spelling may
 # appear in the deployer's output or in any process's arguments.
 password='s@cret-canary'
@@ -30,6 +40,8 @@ ENVOY_IMAGE_TAG=old-image
 DATABASE_URL=${1:-postgres://dispatch:s%40cret-canary@db.test:5432/dispatch?sslmode=require}
 DISPATCH_SERVER_URL=http://browser.test:8766
 ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener
+DISPATCH_AGENT_TOKEN=agent-token
+NATS_URLS=nats://nats.test:4222
 EOF
   # The versions schema_migrations holds, one per line, as the deployer reads them: a set, not a
   # level. A migration applied below the highest one changes the set and leaves max(version) where
@@ -90,6 +102,10 @@ case "$1" in
     exec env -i "${container_env[@]}" "$@"
     ;;
   compose)
+    # Compose's own reading of the file: the real binary, and no line of the compose log.
+    case "$*" in
+      "compose version"* | *" config "*) exec "$AUTODEPLOY_TEST_REAL_DOCKER" "$@" ;;
+    esac
     printf '%s\n' "$*" >>"$AUTODEPLOY_TEST_LOG"
     case "$*" in
       *" pull "*)
@@ -334,6 +350,7 @@ chmod +x "$bin/jj" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools
 deploy_once() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
+    AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$real_docker}" \
     BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
     "$(dirname "$0")/autodeploy.sh" --once 2>&1
 }
@@ -375,12 +392,13 @@ if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
   fail 'deployer backed up or ran compose with no identity for Dispatch in .env'
 fi
 
-# The four settings the deployer checks before its backup are read as Docker Compose reads them
-# (dotenv.sh, measured against `docker compose config` with Compose v5.0.1 and v5.7.0). Each spelling
-# Compose reads as empty, `NAME=""` and `NAME=''`, is refused before anything of the deploy runs,
-# naming the setting; each spelling Compose reads as the value, `export NAME=v` and `NAME=v # a
-# note`, goes on to the backup. Each identity setting is tested as the identity's only one: the
-# other is taken out of the .env first (`drop`).
+# The four settings the deployer checks before its backup are read from Compose's own resolution
+# (`docker compose config`, the real binary on the real compose file). For each, as the setting the
+# check depends on alone (the other identity setting taken out first, `drop`): the spellings Compose
+# resolves empty, `NAME=""` and `NAME="${AUTODEPLOY_TEST_UNSET:-}"`, are refused before anything of
+# the deploy runs, naming the setting; the spellings Compose resolves to the value, `export NAME=v`,
+# `NAME=v # a note` and `NAME=${AUTODEPLOY_TEST_VALUE}` with that variable in the deployer's
+# environment, go on to the backup.
 with_line() {
   grep -v "^$1=" "$compose/.env" >"$compose/.env.new"
   printf '%s\n' "$2" >>"$compose/.env.new"
@@ -394,35 +412,69 @@ database_url=$(sed -n 's/^DATABASE_URL=//p' "$compose/.env")
 for setting in \
   "ENVOY_ACCOUNT_GOOGLE_AUDIENCE|envoy-listener|$identity_refusal|-" \
   "ENVOY_ACCOUNT_TOKEN_FILE|/srv/dispatch/token|$identity_refusal|ENVOY_ACCOUNT_GOOGLE_AUDIENCE" \
-  "DISPATCH_SERVER_URL|http://browser.test:8766|DISPATCH_SERVER_URL is missing|-" \
-  "DATABASE_URL|$database_url|DATABASE_URL is missing|-"; do
+  "DISPATCH_SERVER_URL|http://browser.test:8766|DISPATCH_SERVER_URL|-" \
+  "DATABASE_URL|$database_url|DATABASE_URL|-"; do
   IFS='|' read -r name value refusal drop <<<"$setting"
-  for spelling in "$name=\"\"" "$name=''" "export $name=$value" "$name=$value # a note"; do
+  for spelling in "$name=\"\"" "$name=\"\${AUTODEPLOY_TEST_UNSET:-}\"" "export $name=$value" \
+    "$name=$value # a note" "$name=\${AUTODEPLOY_TEST_VALUE}"; do
     fresh_env
     [[ "$drop" == - ]] || sed -i "/^$drop=/d" "$compose/.env"
     with_line "$name" "$spelling"
     case "$spelling" in
-      *=\"\" | *=\'\')
+      *=\"\" | *UNSET*)
         if output=$(deploy_once); then
-          fail "deployer deployed with $spelling, which Compose reads as empty"
+          fail "deployer deployed with $spelling, which Compose resolves empty"
         fi
-        no_secret "the refusal of $name read as empty"
+        no_secret "the refusal of $name resolved empty"
         if [[ "$output" != *"$refusal"*"not deploying new-image"* ]]; then
-          fail "deployer did not refuse $spelling, which Compose reads as empty, naming $name"
+          fail "deployer did not refuse $spelling, which Compose resolves empty, naming $name"
         fi
         if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
-          fail "deployer backed up or ran compose with $spelling, which Compose reads as empty"
+          fail "deployer backed up or ran compose with $spelling, which Compose resolves empty"
         fi
         ;;
       *)
-        output=$(deploy_once) || true
-        if [[ "$output" == *"$refusal"* ]] || ! grep -q '^pg_dump ' "$argv"; then
-          fail "deployer did not go on to its backup with $spelling, which Compose reads as $value"
+        output=$(AUTODEPLOY_TEST_VALUE="$value" deploy_once) || true
+        if [[ "$output" == *"$refusal"*"not deploying"* ]] || ! grep -q '^pg_dump ' "$argv"; then
+          fail "deployer did not go on to its backup with $spelling, which Compose resolves to $value"
         fi
         ;;
     esac
   done
 done
+
+# A required variable missing a value (here NATS_URLS, `${NATS_URLS:?...}` in the compose file) is
+# Compose's own refusal: the deployer refuses before its backup with Compose's first line. And a
+# DATABASE_URL Compose quotes back in an error (Compose's message about a value with the password in
+# it) keeps the password out of the log: an unclosed quote in the .env makes Compose name the line.
+fresh_env
+sed -i '/^NATS_URLS=/d' "$compose/.env"
+if output=$(deploy_once); then
+  fail 'deployer deployed with NATS_URLS missing, which Compose refuses'
+fi
+if [[ "$output" != *"Compose refused"*"NATS_URLS"*"not deploying new-image"* ]] ||
+  [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
+  fail 'deployer did not refuse a configuration Compose refuses, by Compose'"'"'s own line, before its backup'
+fi
+fresh_env
+with_line DATABASE_URL "DATABASE_URL=\"postgres://dispatch:$password@db.test:5432/dispatch"
+if output=$(deploy_once); then
+  fail 'deployer deployed with a DATABASE_URL Compose cannot read'
+fi
+no_secret 'Compose'"'"'s refusal of a DATABASE_URL it cannot read'
+[[ "$output" == *"not deploying new-image"* ]] || fail 'deployer did not refuse a DATABASE_URL Compose cannot read'
+
+# Without `docker compose`, the deployer refuses by name, before its backup.
+fresh_env
+test_real_docker=/bin/false
+if output=$(deploy_once); then
+  fail 'deployer deployed when docker compose cannot run'
+fi
+unset test_real_docker
+if [[ "$output" != *"docker compose cannot run"*"not deploying new-image"* ]] ||
+  [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv"; then
+  fail 'deployer did not refuse, by name and before its backup, when docker compose cannot run'
+fi
 
 # A deploy that fails its origin check with the schema where it was stops the candidate, confirms
 # it stopped, reads the schema, and rolls back. Every database client gets the URL without its

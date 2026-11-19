@@ -308,7 +308,9 @@ With the compose files, the Dispatch container's start is refused (exit 78), nam
 Dispatch's two settings, until one is set in `compose/.env`; under `restart: unless-stopped` the
 container then restart-loops rather than stays down, while `docker compose up -d` itself exits 0.
 So `scripts/up-dispatch.sh` refuses to run, and the auto-deployer refuses a deploy before its
-backup and leaves the image that serves in place, when neither setting is set; started by hand,
+backup and leaves the image that serves in place, when Compose resolves neither setting (both read
+the settings from `docker compose config`, so `NAME=""` and `NAME="${UNSET:-}"` count as unset, as
+the container would get them); started by hand,
 the refusal shows only in `docker compose ps` and `logs`. `listener.compose.yml` (or
 `single-node.compose.yml`) passes the listener's verifier, principal and shared token from the
 same file. On a Google Cloud VM, whose service account is Dispatch's identity:
