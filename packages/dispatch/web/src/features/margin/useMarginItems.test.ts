@@ -842,7 +842,9 @@ test("a read of the comments asked while a resolve is out waits for its answer, 
     await act(async () => {
       reads[0]?.resolve([resolved]);
     });
-    await waitFor(() => expect(queryClient.getQueryData<Comment[]>(commentsKey)).toEqual([resolved]));
+    await waitFor(() =>
+      expect(queryClient.getQueryData<Comment[]>(commentsKey)).toEqual([resolved])
+    );
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     expect(threadLists()).toEqual({ open: [], resolved: ["A"] });
   } finally {
