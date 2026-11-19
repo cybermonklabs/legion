@@ -38,7 +38,10 @@ export function tabButtonId(idPrefix: string, id: string): string {
  *
  *  The scroll is set, not moved by a delta, so where the tablist stops does not depend on the
  *  layouts it passed through: a narrower moment that scrolled the tab clear of the fade leaves
- *  nothing behind once the tablist widens again. */
+ *  nothing behind once the tablist widens again. For the same reason a sideways scroll the reader
+ *  made is put back to that scroll whenever this runs: when the selected tab changes, when the
+ *  tablist or a tab changes size (a live count), when a tab is added or removed, and on a
+ *  keystroke. A scroll alone does not run it, so the reader's scroll stays until one of those. */
 function settleTab(node: HTMLElement | null | undefined): void {
   const list = node?.parentElement;
   if (node === null || node === undefined || list === null || list === undefined) {
