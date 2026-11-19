@@ -115,7 +115,7 @@ phoneTest(
 // The search filter holds up to 1,000 characters, and its chip stays inside its row: that text
 // on one line makes the page 7,535 px wide at 1280, and a phone zooms out until it is 1,560 px.
 filterTest(
-  "a 1,000-character table search stays inside the page @phone @pr",
+  "a table search of 1,000 ASCII characters stays inside the page @phone @pr",
   async ({ page, scene }, testInfo) => {
     // The desktop case this row ran in `chromium` on the real stack, at the width that makes
     // the claim: that text on one line makes the page 7,535 px wide at 1280.

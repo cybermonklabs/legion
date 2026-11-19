@@ -379,7 +379,7 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
-  test("issue tools accept a title at 1,000 characters and refuse one over", () => {
+  test("issue tools accept a title at 1,000 UTF-16 code units and refuse one over", () => {
     for (const [tool, args] of [
       ["dispatch_issue", { project: "DSP" }],
       ["dispatch_issue_update", { issue: "DSP-1" }],

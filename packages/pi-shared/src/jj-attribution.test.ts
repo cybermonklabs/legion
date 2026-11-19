@@ -430,7 +430,7 @@ describe("exportJjSessionAttribution", () => {
     ["a session id holding a single quote", "s'1"],
     ["a session id holding a slash", "../s-1"],
     ["a session id holding a backslash", "s\\1"],
-    ["a session id over 128 characters", "s".repeat(129)],
+    ["a session id over 128 ASCII characters", "s".repeat(129)],
   ])("leaves the environment untouched and writes nothing for %s", async (_name, sessionId) => {
     const dir = await stateDir();
     const env: NodeJS.ProcessEnv = {};

@@ -1055,7 +1055,7 @@ describe("DispatchClient", () => {
       "echo=[redacted] end",
     ],
     [
-      "cut short by its last 10 characters",
+      "cut short by its last 10 ASCII characters",
       `<p>echo=${pieceBearer.slice(0, -10)} end</p>`,
       "echo=[redacted] end",
     ],

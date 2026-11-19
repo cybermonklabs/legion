@@ -2020,7 +2020,7 @@ test("an agent row is one line at 1440, and at 390 puts the age and the whole pa
           client: element.clientWidth,
           scroll: element.scrollWidth,
         }));
-      expect(clipped.scroll, "the 64-character name is shortened on screen").toBeGreaterThan(
+      expect(clipped.scroll, "the name of 64 UTF-16 code units is shortened on screen").toBeGreaterThan(
         clipped.client
       );
     }
@@ -2082,7 +2082,7 @@ test("an agent row's directory is still shown beside the longest name in use, so
     const box = await directory.boundingBox();
     expect(
       Math.round(box?.width ?? 0),
-      `the directory beside the 64-character name is ${Math.round(box?.width ?? 0)}px wide, ` +
+      `the directory beside the name of 64 UTF-16 code units is ${Math.round(box?.width ?? 0)}px wide, ` +
         `against ${Math.round(control?.width ?? 0)}px in the same row with a short name`
     ).toBeGreaterThan(0);
     await expect(directory).toBeVisible();

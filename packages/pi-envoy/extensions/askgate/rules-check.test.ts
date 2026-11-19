@@ -140,7 +140,7 @@ describe("describeAsks (E6)", () => {
       }
     }
   });
-  test("a 32,000-character id leaves every other ask's recommendation in the list (E6)", () => {
+  test("an id of 32,000 ASCII characters leaves every other ask's recommendation in the list (E6)", () => {
     // The id entered its tag whole and the tags were paid before any text, so it spent the list
     // and the other asks were clipped to nothing.
     const recommendation = "Recommendation: keep it as it is";
@@ -168,7 +168,7 @@ describe("describeAsks (E6)", () => {
     expect(id).toMatch(/^i+…$/);
     expect(bytes(id)).toBeLessThanOrEqual(128);
   });
-  test("a 64,000-character id keeps the list inside 32 KiB, cut on an entity's edge (E6)", () => {
+  test("an id of 64,000 ASCII characters keeps the list inside 32 KiB, cut on an entity's edge (E6)", () => {
     const described = describeAsks([
       { kind: "block", id: `"&<>`.repeat(16_000), text: "Which deployment window?", opening: "" },
       {

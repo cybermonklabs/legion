@@ -15,7 +15,7 @@ const agent = {
  *  table holds them to the bytes Go writes through the API (`heavy-bodies.ts:7-14`). */
 const inputs = [
   {
-    name: "2,000 nested unclosed openers then a 21,000-character line",
+    name: "2,000 nested unclosed openers then a line of 21,000 ASCII characters",
     body: directiveOpenersThenLongLine,
   },
   {

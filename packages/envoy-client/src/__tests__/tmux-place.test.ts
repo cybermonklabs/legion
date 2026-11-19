@@ -224,7 +224,7 @@ describe("readTmuxPlace", () => {
     }
   });
 
-  it("drops a layout past 2000 characters and keeps the other nine members", async () => {
+  it("drops a layout past 2000 UTF-16 code units and keeps the other nine members", async () => {
     const layout = "b2f1,".repeat(401);
     expect(layout.length).toBeGreaterThan(2_000);
     const { exec, calls } = fakeExec({ [CALL]: answer({ layout }) });

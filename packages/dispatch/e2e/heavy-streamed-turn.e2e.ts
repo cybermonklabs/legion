@@ -112,7 +112,7 @@ interface StreamSample {
   /** When the paint this sample belongs to put its first batch in, so the row can say which
    *  frames were published while it was part-way through. */
   readonly paintedFrom: number;
-  /** The characters in the text nodes directly under it, which is where a frame's own text
+  /** The UTF-16 code units of the text nodes directly under it, which is where a frame's own text
    *  would stand. */
   readonly raw: number;
   /** Whether the turn was still streaming when this was taken. */
@@ -394,7 +394,7 @@ test("a reader who opens the live view while a long turn streams is never shown 
       inFront.length,
       `the reader saw the frame's raw text in front of a body already holding blocks: ` +
         `${inFront.length} of ${samples.length} recorded samples held both, the widest ` +
-        `${worst.raw} characters in front of ${worst.blocks} blocks`
+        `${worst.raw} UTF-16 code units in front of ${worst.blocks} blocks`
     ).toBe(0);
     // The window the row is about was driven at all, which is two things and not one: a paint
     // ran across tasks, and a frame arrived while one was between its batches. A green run means

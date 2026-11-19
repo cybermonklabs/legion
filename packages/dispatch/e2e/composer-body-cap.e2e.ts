@@ -16,8 +16,8 @@ import { asUser } from "./users";
 // runs on the result, exactly as for a reader pasting a long body. Typing 40,000 characters key
 // by key would take minutes and would exercise no part of the component that this does not.
 
-// @pr: A write the server refuses: a 40,000-character body goes whole, and one long paragraph comes back with the server's own refusal beside the draft.
-test("the comment composer takes a 40,000-character body, and shows the server's refusal of one long paragraph @pr", async ({
+// @pr: A write the server refuses: a body of 40,000 UTF-16 code units goes whole, and one long paragraph comes back with the server's own refusal beside the draft.
+test("the comment composer takes a body of 40,000 UTF-16 code units, and shows the server's refusal of one long paragraph @pr", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
