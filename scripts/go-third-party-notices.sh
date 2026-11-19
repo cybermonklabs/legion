@@ -30,13 +30,17 @@ fi
 goroot="$(go env GOROOT)"
 export GOROOT="$goroot"
 go_cmd="$goroot/bin/go"
-# The toolchain's version and its host, from one `go env`: the script runs once per release target,
-# and each go process it starts is time on every one of them. The assignment, not the read, runs
-# go, so `set -e` stops the script when it fails.
+# The toolchain's version and its host, from one `go env`: the script runs once per release archive
+# (18 times in lint's notices step), and each go process it starts is time on every one of them.
+# The assignment, not the read, runs go, so `set -e` stops the script when it fails; a `go env` that
+# printed fewer than the three values is refused by name.
 go_env="$("$go_cmd" env GOVERSION GOHOSTOS GOHOSTARCH)"
-{ read -r go_version; read -r go_hostos; read -r go_hostarch; } <<EOF
+{ read -r go_version; read -r go_hostos; read -r go_hostarch; } <<EOF || {
 $go_env
 EOF
+  echo "go-third-party-notices: go env printed fewer than three lines (GOVERSION, GOHOSTOS, GOHOSTARCH)" >&2
+  exit 1
+}
 
 # go-licenses runs on this machine whatever GOOS the packages target, so it is built for the host
 # (empty GOOS and GOARCH), outside any module, once per version, toolchain and host. The host is the
