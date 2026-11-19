@@ -22,10 +22,28 @@ import (
 // it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
 // phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
 // (dispatch://INFRA-714/spec R1).
+//
+// It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
+// does not apply is named by one INFO line once the fact commits, since a pull request whose head
+// got no CI message otherwise leaves nothing to say whether the daemon dropped its settlement or
+// never heard it (dispatch://INFRA-4135 R6): one that no recorded pull request matches
+// (intake.NoRecordedPullRequestLine, which the consumer writes for nearly every such settlement
+// before any transaction, so here it names a record gone by the time the fact applies); one that
+// stands for no head the record holds (classify.SettlementFor), with the record's head, the head
+// its checks stand at and whether a head run is open; and one of the head that the fence takes as
+// stale or conflicting (classify.ClassifySettlement), with the generation and snapshot the record
+// holds. A redelivery of a settlement already applied is no drop and logs nothing. Each line
+// begins with the settlement's identity (intake.SettlementIdentity), by which it is matched to
+// the listener's line that published the settlement, and is written once for each identity
+// (logDroppedSettlement).
 func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
-	if err != nil || pr == nil {
+	if err != nil {
 		return intake.Result{}, err
+	}
+	if pr == nil {
+		e.logDroppedSettlement(ctx, fact, intake.NoRecordedPullRequestLine)
+		return intake.Result{}, nil
 	}
 	// The listener settles every commit of the pull request, its head or not, and a settlement
 	// stands only for the commit it names: it is for the head only when it names the head. While a
@@ -40,6 +58,7 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
+		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
 		if pr.Run != nil {
 			*pr = settled
 			if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
@@ -79,6 +98,39 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
+}
+
+// logUnappliedSettlement names a settlement checks does not apply to pr, the record as it stood
+// before the settlement: one that stands for no head the record holds, and one of its head the
+// fence takes as stale or conflicting. Every other settlement not applied, the redelivery of one
+// applied (classify.SettlementDuplicate) among them, logs nothing.
+func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullRequestChecks, pr record.PullRequest, candidate classify.SettlementCandidate) {
+	stood, stands := classify.SettlementFor(pr, candidate)
+	if !stands {
+		e.logDroppedSettlement(ctx, fact, "workflow: a checks settlement stands for no head the record holds",
+			"recorded_head", pr.HeadSHA, "checked_head", pr.CheckedHead, "head_run_open", pr.Run != nil, "issue", pr.Issue)
+		return
+	}
+	switch classified := classify.ClassifySettlement(stood, candidate); classified {
+	case classify.SettlementStale, classify.SettlementConflict:
+		e.logDroppedSettlement(ctx, fact, "workflow: a checks settlement of the head was not applied",
+			"classification", string(classified), "recorded_generation", stood.Generation, "recorded_snapshot", stood.Snapshot, "issue", pr.Issue)
+	}
+}
+
+// logDroppedSettlement writes msg at INFO once the fact's transaction commits, after the
+// settlement's identity and then args, unless the engine has logged a drop of the same settlement
+// already: one settlement delivered many times writes one line, and the identity is marked in the
+// commit's own hook, so a fact rolled back neither writes the line nor keeps its retry from
+// writing it (Engine.droppedSettlements).
+func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
+	identity := fact.Identity()
+	args = append(identity.Attributes(), args...)
+	intake.OnCommit(ctx, func() {
+		if e.droppedSettlements.Add(identity) {
+			e.log.Info(msg, args...)
+		}
+	})
 }
 
 // conflictConfirmWait is how long after a first CONFLICTING read of a head the read that can

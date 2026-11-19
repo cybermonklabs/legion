@@ -34,6 +34,63 @@ type decodedMessage struct {
 	// (subjectforms.IssueEventKey), of any project: the consumer counts and logs those while the
 	// old form is still published (consumeMessage).
 	LegacyName bool
+	// Refused names why the decoder dropped a checks settlement of a repository this daemon hears:
+	// the field it could not read, and how (decodeChecks). It is "" when the decoder refused
+	// nothing, and Fact is nil when it is set. A refused settlement is not poison, since no
+	// redelivery reads it otherwise, so the consumer acknowledges it and logs it, with
+	// RefusedSettlement, once per event id (consumeMessage).
+	Refused string
+	// RefusedSettlement is what a refused settlement's payload gives of its identity.
+	RefusedSettlement settlementRead
+}
+
+// settlementRead is what a checks settlement's payload gives of the three fields a settlement is
+// matched by across the listener's line that published it and the daemon's lines that dropped it
+// (SettlementIdentity): its head (sha), its generation and its snapshot. Each is nil where its
+// field is absent or does not read as its type: a string, a whole number and a string.
+type settlementRead struct {
+	SHA        *string
+	Generation *int64
+	Snapshot   *string
+}
+
+// readSettlement is what raw gives of its settlement's identity, each field read on its own, so a
+// settlement refused for one of them is still named by the others.
+func readSettlement(raw map[string]json.RawMessage) settlementRead {
+	var read settlementRead
+	if sha, ok := rawString(raw, "sha"); ok {
+		read.SHA = &sha
+	}
+	if generation, ok := rawInt64(raw, "generation"); ok {
+		read.Generation = &generation
+	}
+	if snapshot, ok := rawString(raw, "snapshot"); ok {
+		read.Snapshot = &snapshot
+	}
+	return read
+}
+
+// attributes is what was read as log attributes, each field under its own name and every field
+// that did not read left out.
+func (s settlementRead) attributes() []any {
+	var attributes []any
+	if s.SHA != nil {
+		attributes = append(attributes, "sha", *s.SHA)
+	}
+	if s.Generation != nil {
+		attributes = append(attributes, "generation", *s.Generation)
+	}
+	if s.Snapshot != nil {
+		attributes = append(attributes, "snapshot", *s.Snapshot)
+	}
+	return attributes
+}
+
+// checksRefusal is a checks settlement decodeChecks dropped: why, and what its payload gives of
+// its identity, which decodeMessage carries to decodedMessage.Refused and RefusedSettlement.
+type checksRefusal struct {
+	reason     string
+	settlement settlementRead
 }
 
 // errIssueNameInNeitherForm is an issue event's name that carries its issue's key in neither form
@@ -71,6 +128,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var unread []string
 	var err error
 	var legacy bool
+	var refused *checksRefusal
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
@@ -91,14 +149,18 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "github" {
 			return decodedMessage{}, fmt.Errorf("GitHub subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, err = decodeGitHubFact(subject, repositories, envelope.Payload)
+		fact, unread, refused, err = decodeGitHubFact(subject, repositories, envelope.Payload)
 	default:
 		return decodedMessage{}, fmt.Errorf("unsupported durable subject %q", subject)
 	}
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy}, nil
+	decoded := decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy}
+	if refused != nil {
+		decoded.Refused, decoded.RefusedSettlement = refused.reason, refused.settlement
+	}
+	return decoded, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -628,10 +690,14 @@ func isJSONObject(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &item) == nil && item != nil
 }
 
-func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (Fact, []string, error) {
+// decodeGitHubFact decodes one GitHub event's payload into its fact, with each optional field it
+// could not read (unread). refused is set only for a checks settlement of a heard repository that
+// decodeChecks dropped: a payload that is no object, names a repository this daemon does not hear,
+// or is of another kind is no checks settlement of this daemon, and is no fact in silence.
+func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload string) (fact Fact, unread []string, refused *checksRefusal, err error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil || raw == nil {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	// The payload names the event's repository; the subject's segments cannot, since a name may hold
 	// a dot. Only the event of a repository GitHub intake hears (ConsumerSpec.Repositories, as
@@ -642,28 +708,29 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	repo, _ := rawString(raw, "repo")
 	at := slices.IndexFunc(repositories, func(heard ghrepo.Repository) bool { return strings.EqualFold(heard.String(), repo) })
 	if at < 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	repository := repositories[at]
 	kind, ok := rawString(raw, "kind")
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
-	var fact Fact
-	var err error
 	switch kind {
 	case "pr":
 		fact, err = decodePullRequest(repository, raw)
 	case "review":
-		return decodeReview(repository, raw)
+		fact, unread, err = decodeReview(repository, raw)
 	case "push":
 		fact, err = decodePush(repository, raw)
 	case "checks":
-		return decodeChecks(subject, repository, raw)
+		var reason string
+		if fact, unread, reason = decodeChecks(subject, repository, raw); reason != "" {
+			refused = &checksRefusal{reason: reason, settlement: readSettlement(raw)}
+		}
 	}
 	// Comments, and every other kind, route to the current role but do not change the durable
 	// workflow record.
-	return fact, nil, err
+	return fact, unread, refused, err
 }
 
 // decodePullRequest decodes a pull request's lifecycle event on an issue's branch
@@ -805,13 +872,16 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 
 // decodeChecks decodes a checks settlement of the pull request its subject names. A settlement
 // that lacks any field the daemon orders or judges it by - its head, check runs, generation,
-// snapshot, failed or cancelled - is no fact. What it says beyond those costs the rest nothing:
-// each part the decoder cannot read is taken as absent and named in the unread list the consumer
-// logs, every such part rather than the first. A run's word that is no word (rawCheckRuns) is
-// dropped from that run alone, which is then named by its conclusion. A skipped group that cannot
-// be read names no run skipped. Its commit statuses are read last (rawStatuses): a list that
-// cannot be read marks the fact so (PullRequestChecks.StatusesUnread), rather than the
-// settlement's check runs being lost with it.
+// snapshot, failed or cancelled - is no fact, and refused names that field and what was wrong
+// with it, the first such field in that order, which the consumer logs (decodedMessage.Refused):
+// a settlement dropped in silence leaves its pull request waiting with nothing to say why
+// (dispatch://INFRA-4135 R6). refused is "" for a settlement that decodes. What it says beyond
+// those costs the rest nothing: each part the decoder cannot read is taken as absent and named in
+// the unread list the consumer logs, every such part rather than the first. A run's word that is
+// no word (rawCheckRuns) is dropped from that run alone, which is then named by its conclusion. A
+// skipped group that cannot be read names no run skipped. Its commit statuses are read last
+// (rawStatuses): a list that cannot be read marks the fact so (PullRequestChecks.StatusesUnread),
+// rather than the settlement's check runs being lost with it.
 //
 // Each run the skipped group names is skipped (record.RunSkipped), the one conclusion the decoder
 // puts on a run: the failed and cancelled groups are read into the lists, from which classify
@@ -819,34 +889,46 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 // listener put in both (which it never does) is still failed or cancelled. A name the group gives
 // with no run in check_runs changes nothing, and a settlement without the group names no run
 // skipped.
-func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, []string, error) {
+func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]json.RawMessage) (fact Fact, unread []string, refused string) {
 	number, ok := rawNumber(raw, "number")
-	if !ok || subject != githubRepositoryPrefix(repository)+".pr."+strconv.Itoa(number)+".checks" {
-		return nil, nil, nil
+	if !ok {
+		return nil, nil, "number is absent or not a pull request number"
+	}
+	if subject != githubRepositoryPrefix(repository)+".pr."+strconv.Itoa(number)+".checks" {
+		return nil, nil, fmt.Sprintf("number %d is not the pull request its subject names", number)
 	}
 	headSHA, ok := rawString(raw, "sha")
-	if !ok || headSHA == "" {
-		return nil, nil, nil
-	}
-	runs, unread, ok := rawCheckRuns(raw["check_runs"])
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, "sha is absent or not a string"
+	}
+	if headSHA == "" {
+		return nil, nil, "sha is empty"
+	}
+	runs, unread, defect := rawCheckRuns(raw["check_runs"])
+	if defect != "" {
+		return nil, nil, "check_runs " + defect
 	}
 	generation, ok := rawInt64(raw, "generation")
-	if !ok || generation < 0 {
-		return nil, nil, nil
+	if !ok {
+		return nil, nil, "generation is absent or not a whole number"
+	}
+	if generation < 0 {
+		return nil, nil, fmt.Sprintf("generation is %d, below 0", generation)
 	}
 	snapshot, ok := rawString(raw, "snapshot")
-	if !ok || snapshot == "" {
-		return nil, nil, nil
+	if !ok {
+		return nil, nil, "snapshot is absent or not a string"
+	}
+	if snapshot == "" {
+		return nil, nil, "snapshot is empty"
 	}
 	failed, defect := rawStatusGroup(raw["failed"])
 	if defect != "" {
-		return nil, nil, nil
+		return nil, nil, "failed " + defect
 	}
 	cancelled, defect := rawStatusGroup(raw["cancelled"])
 	if defect != "" {
-		return nil, nil, nil
+		return nil, nil, "cancelled " + defect
 	}
 	if value, present := raw["skipped"]; present {
 		skipped, unreadable := rawStatusGroup(value)
@@ -865,10 +947,10 @@ func decodeChecks(subject string, repository ghrepo.Repository, raw map[string]j
 	statuses, defect := rawStatuses(raw["statuses"])
 	if defect != "" {
 		checks.StatusesUnread = true
-		return checks, append(unread, "statuses "+defect+": the pull request keeps the statuses it holds for "+headSHA), nil
+		return checks, append(unread, "statuses "+defect+": the pull request keeps the statuses it holds for "+headSHA), ""
 	}
 	checks.Statuses = statuses
-	return checks, unread, nil
+	return checks, unread, ""
 }
 
 func githubIdentity(raw map[string]json.RawMessage) (int, string, bool) {
@@ -878,37 +960,45 @@ func githubIdentity(raw map[string]json.RawMessage) (int, string, bool) {
 }
 
 // rawCheckRuns reads a settlement's check runs, sorted by name: each entry's name and id, which
-// every run must carry, unique by name, or the list is not read at all, and the word GitHub gave
-// the run (rawConclusionWord), which is optional and read apart from them, so a word that is not
-// one costs its run nothing but the word. unread names each word dropped.
-func rawCheckRuns(value json.RawMessage) ([]record.AttemptRun, []string, bool) {
+// every run must carry, unique by name, or the list is not read at all and defect says why, and
+// the word GitHub gave the run (rawConclusionWord), which is optional and read apart from them, so
+// a word that is not one costs its run nothing but the word. unread names each word dropped.
+func rawCheckRuns(value json.RawMessage) (runs []record.AttemptRun, unread []string, defect string) {
+	if value == nil {
+		return nil, nil, "is absent"
+	}
 	var incoming []struct {
 		Name       string          `json:"name"`
 		ID         int64           `json:"id"`
 		Conclusion json.RawMessage `json:"conclusion"`
 	}
-	if err := json.Unmarshal(value, &incoming); err != nil || len(incoming) == 0 {
-		return nil, nil, false
+	if err := json.Unmarshal(value, &incoming); err != nil {
+		return nil, nil, "does not parse as a list of check runs, each a name and an id"
+	}
+	if len(incoming) == 0 {
+		return nil, nil, "is an empty list"
 	}
 	seen := make(map[string]struct{}, len(incoming))
-	runs := make([]record.AttemptRun, 0, len(incoming))
-	var unread []string
+	runs = make([]record.AttemptRun, 0, len(incoming))
 	for _, item := range incoming {
-		if item.Name == "" || item.ID <= 0 {
-			return nil, nil, false
+		if item.Name == "" {
+			return nil, nil, "names a run with no name"
+		}
+		if item.ID <= 0 {
+			return nil, nil, fmt.Sprintf("names %q with the id %d, not above 0", item.Name, item.ID)
 		}
 		if _, duplicate := seen[item.Name]; duplicate {
-			return nil, nil, false
+			return nil, nil, fmt.Sprintf("names %q twice", item.Name)
 		}
 		seen[item.Name] = struct{}{}
-		word, defect := rawConclusionWord(item.Conclusion)
-		if defect != "" {
-			unread = append(unread, "check_runs["+item.Name+"].conclusion "+defect+": the run is named by its conclusion")
+		word, unreadable := rawConclusionWord(item.Conclusion)
+		if unreadable != "" {
+			unread = append(unread, "check_runs["+item.Name+"].conclusion "+unreadable+": the run is named by its conclusion")
 		}
 		runs = append(runs, record.AttemptRun{Name: item.Name, ID: item.ID, GitHubConclusion: word})
 	}
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Name < runs[j].Name })
-	return runs, unread, true
+	return runs, unread, ""
 }
 
 // conclusionWord is the form of a word the daemon keeps as the one GitHub gave a check run:
@@ -943,8 +1033,11 @@ func rawConclusionWord(value json.RawMessage) (string, string) {
 
 // rawStatusGroup reads one of a settlement's groups of check names, {count, checks}: the names,
 // none of them empty, as many as the count says. defect says why the group could not be read, ""
-// when it was. A null group is an empty one.
+// when it was. A null group is an empty one, and an absent one is not read.
 func rawStatusGroup(value json.RawMessage) ([]string, string) {
+	if value == nil {
+		return nil, "is absent"
+	}
 	var group struct {
 		Count  int      `json:"count"`
 		Checks []string `json:"checks"`
