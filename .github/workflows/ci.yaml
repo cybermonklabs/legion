@@ -4790,6 +4790,7 @@ jobs:
               - 'packages/envoy/natsversion/**'
               - 'packages/envoy/steprecord/**'
               - 'packages/envoy/testnatsimages/**'
+              - 'packages/envoy/urlsetting/**'
               - '.omp-pin'
               - '.bun-version'
               - '.dockerignore'
