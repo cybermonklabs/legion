@@ -96,6 +96,7 @@ import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
 import { ErrorCode, NatsError, nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
+import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json" with { type: "json" };
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
@@ -23569,33 +23570,11 @@ describe("an envelope that carries the role field", () => {
   const AGENT = `notifications.agent.${SESSION}`;
   const ROLE = "legion-legion-legion-1-architect";
   const ROLE_TOPIC = `notifications.role.${ROLE}`;
-  /** Every field `EnvelopeSchema` names except `role`, each one set. */
+  /** Every field `EnvelopeSchema` names except `role`, each one set, on `SESSION`'s own subject. */
   const withoutRole = {
-    event_id: "evt-role-field",
-    source: "agent",
-    source_event_id: "agent.ses_sender.evt-role-field",
-    source_session: "ses_sender",
+    ...(envelopeWithoutRole as Omit<Envelope, "role">),
     topic: AGENT,
-    dedupe_key: "agent.ses_role_field.0123456789abcdef0123456789abcdef",
-    issued_at: Date.parse("2026-11-18T09:00:00Z"),
-    expires_at: Date.parse("2026-11-18T10:00:00Z"),
-    kept_at: Date.parse("2026-11-18T09:05:00Z"),
-    mention_dedupe_keys: { ses_other: "mention.ses_other.evt-role-field" },
-    payload_summary: "Review the plan",
-    payload: "Review the plan before noon.",
-    payload_ref: "ref-role-field",
-    trace_id: "trace-role-field",
-    sender: {
-      session_id: "ses_sender",
-      machine: "host-a",
-      cwd: "/work",
-      title: "Planner",
-      roles: ["legion-reviewer"],
-    },
-    in_reply_to: "evt-before",
-    supersedes: "evt-obsolete",
-    urgency: "high",
-    expects_reply: "required",
+    dedupe_key: `agent.${SESSION}.0123456789abcdef0123456789abcdef`,
   } satisfies Omit<Envelope, "role">;
   const withRole = { ...withoutRole, role: ROLE };
 

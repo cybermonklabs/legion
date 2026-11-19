@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -171,40 +170,22 @@ func (rig *crashRig) gone(sessionID string) {
 }
 
 // claimThrough is sessionID's outright claim of role through mux, naming instance as its process
-// when it is not empty. It touches no testing.T, so a row may make it on a goroutine of its own.
+// when it is not empty (postRoleClaim). It touches no testing.T, so a row may make it on a
+// goroutine of its own.
 func (rig *crashRig) claimThrough(mux *http.ServeMux, sessionID, role, instance string) *httptest.ResponseRecorder {
-	fields := map[string]string{"session_id": sessionID, "role": role}
-	if instance != "" {
-		fields["client_instance_id"] = instance
-	}
-	body, err := json.Marshal(fields)
-	if err != nil {
-		panic(err)
-	}
-	return rig.send(mux, http.MethodPost, "/v1/roles/set", string(body))
+	return postRoleClaim(mux, sessionID, role, instance, false)
 }
 
 func (rig *crashRig) claim(mux *http.ServeMux, sessionID, role string) {
 	rig.t.Helper()
-	if recorder := rig.claimThrough(mux, sessionID, role, ""); recorder.Code != http.StatusOK {
-		rig.t.Fatalf("%s claims %s: status %d %s; want 200", sessionID, role, recorder.Code, recorder.Body.String())
-	}
+	grantRoleClaim(rig.t, mux, sessionID, role, "", false)
 }
 
-// release hands role back for sessionID's process instance through the unsubscribe route, which
-// frees a claim naming that process, and fails the row unless the role then has no claim.
+// release hands role back for sessionID's process instance through the unsubscribe route, and
+// fails the row unless the role then has no claim (releaseRoleThrough).
 func (rig *crashRig) release(sessionID, role, instance string) {
 	rig.t.Helper()
-	body, err := json.Marshal(map[string]any{"session_id": sessionID, "topics": []string{contracts.RoleTopicPrefix + role}, "client_instance_id": instance})
-	if err != nil {
-		rig.t.Fatal(err)
-	}
-	if recorder := rig.send(rig.mux, http.MethodPost, "/v1/interests/unsubscribe", string(body)); recorder.Code != http.StatusOK {
-		rig.t.Fatalf("%s releases %s: status %d %s", sessionID, role, recorder.Code, recorder.Body.String())
-	}
-	if holder := rig.holder(role); holder != "" {
-		rig.t.Fatalf("after %s released %s its claim names %q; want none", sessionID, role, holder)
-	}
+	releaseRoleThrough(rig.t, rig.mux, rig.harness.registry, sessionID, role, instance)
 }
 
 // holder is the session role's claim record names, as the role bucket holds it.
@@ -309,33 +290,10 @@ func (rig *crashRig) storeToSession(sessionID string, n int) {
 	}
 }
 
-// crashStored is one envelope the stream holds on a subject, with its stream sequence.
-type crashStored struct {
-	seq  uint64
-	item contracts.Envelope
-}
-
-// stored is every envelope the stream holds on subject, in stream order.
-func (rig *crashRig) stored(subject string) []crashStored {
+// stored is every envelope the stream holds on subject, in stream order (storedEnvelopes).
+func (rig *crashRig) stored(subject string) []storedEnvelope {
 	rig.t.Helper()
-	var held []crashStored
-	for seq := uint64(1); ; {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		stored, err := rig.harness.client.NextStoredMessage(ctx, subject, seq)
-		cancel()
-		if errors.Is(err, natsgo.ErrMsgNotFound) {
-			return held
-		}
-		if err != nil {
-			rig.t.Fatalf("read %s from %d: %v", subject, seq, err)
-		}
-		var item contracts.Envelope
-		if err := json.Unmarshal(stored.Data, &item); err != nil {
-			rig.t.Fatalf("decode the message at %d on %s: %v", stored.Sequence, subject, err)
-		}
-		held = append(held, crashStored{seq: stored.Sequence, item: item})
-		seq = stored.Sequence + 1
-	}
+	return storedEnvelopes(rig.t, rig.harness.client, subject)
 }
 
 // events is the event id of each envelope the stream holds on subject, in stream order.
@@ -368,12 +326,12 @@ func (rig *crashRig) seqOn(subject, eventID string) uint64 {
 }
 
 // awaitStored waits up to 10 s for an envelope of eventID on subject and returns it.
-func (rig *crashRig) awaitStored(subject, eventID, what string) crashStored {
+func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 	rig.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		held := rig.stored(subject)
-		if i := slices.IndexFunc(held, func(stored crashStored) bool { return stored.item.EventID == eventID }); i >= 0 {
+		if i := slices.IndexFunc(held, func(stored storedEnvelope) bool { return stored.item.EventID == eventID }); i >= 0 {
 			return held[i]
 		}
 		if time.Now().After(deadline) {

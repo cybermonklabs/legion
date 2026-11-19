@@ -1,3 +1,8 @@
+# Role routes need Dispatch's identity at the Envoy listener. Dispatch sends a message or mention
+# for a role: route only on that identity: on Google Cloud set ENVOY_ACCOUNT_GOOGLE_AUDIENCE (the
+# listener's ENVOY_OIDC_GOOGLE_AUDIENCE); elsewhere set ENVOY_ACCOUNT_TOKEN_FILE to a service-account
+# token for the listener's audience, mounted into this container. With neither, every such send is
+# refused and its attempt says why (../README.md, "Dispatch's identity at the Envoy listener").
 services:
   dispatch:
     image: ghcr.io/cybermonklabs/legion/envoy:${ENVOY_IMAGE_TAG:?set ENVOY_IMAGE_TAG (see deploy/README.md)}

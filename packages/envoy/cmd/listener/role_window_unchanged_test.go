@@ -3,14 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
-
-	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -120,43 +117,23 @@ func (rig *windowRig) publishToRole(t *testing.T, role, message string) windowRo
 }
 
 // claimRole has sessionID claim role outright through POST /v1/roles/set, which starts the
-// handover of the role's kept lane a granted claim starts (runKeptRoleDrain).
+// handover of the role's kept lane and the takeover passes a granted claim starts
+// (runTakenRoleDrain).
 func (rig *windowRig) claimRole(t *testing.T, sessionID, role string) {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"session_id": sessionID, "role": role})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorder := httptest.NewRecorder()
-	rig.mux.ServeHTTP(recorder, postJSON("/v1/roles/set", string(body)))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("%s claims %s: status %d, body %s; want 200", sessionID, role, recorder.Code, recorder.Body.String())
-	}
+	grantRoleClaim(t, rig.mux, sessionID, role, "", false)
 }
 
 // heldForSession is every message the stream holds on sessionID's own subject
 // (notifications.agent.<session id>), in stream order: what the session's consumer hands it.
 func (rig *windowRig) heldForSession(t *testing.T, sessionID string) []contracts.Envelope {
 	t.Helper()
-	subject := contracts.LegacyAgentSubject(sessionID)
-	var held []contracts.Envelope
-	for seq := uint64(1); ; {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		stored, err := rig.harness.client.NextStoredMessage(ctx, subject, seq)
-		cancel()
-		if errors.Is(err, natsgo.ErrMsgNotFound) {
-			return held
-		}
-		if err != nil {
-			t.Fatalf("read what the stream holds on %s from sequence %d: %v", subject, seq, err)
-		}
-		var item contracts.Envelope
-		if err := json.Unmarshal(stored.Data, &item); err != nil {
-			t.Fatalf("decode the message at sequence %d on %s: %v", stored.Sequence, subject, err)
-		}
-		held = append(held, item)
-		seq = stored.Sequence + 1
+	stored := storedEnvelopes(t, rig.harness.client, contracts.LegacyAgentSubject(sessionID))
+	held := make([]contracts.Envelope, len(stored))
+	for i, message := range stored {
+		held[i] = message.item
 	}
+	return held
 }
 
 // heldEventIDs is the event id of each message in held.

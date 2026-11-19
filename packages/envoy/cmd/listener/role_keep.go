@@ -413,7 +413,8 @@ func (g *roleKeepGuards) tryHold(role string) (func(), bool) {
 // (roles.Lapsed: unresponsive, or gone), on the publish route and the role lane alike. No
 // resolution releases a lapsed claim (dispatch://INFRA-392), and the copy kept for it still
 // reaches a live holder: a released Legion session claims its role again when it comes back, and
-// the role route starts a handover of the lane for a claim it grants (runKeptRoleDrain); a holder
+// the role route starts a handover of the lane for a claim it grants, after the role's takeover
+// passes (runTakenRoleDrain); a holder
 // that answers again with its claim still standing registers and claims nothing, and the
 // registration that makes it live again starts a handover of each role whose claim record its
 // renewal read for the session, renewed or not, so a session a new process resumed is handed its
@@ -705,13 +706,15 @@ func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item co
 }
 
 // runKeptRoleDrain hands role's kept lane over to whoever holds the role, under a context of its
-// own (roleKeepHandoverWindow), and logs a handover that failed. It is what the three starts of a
-// handover run in a goroutine of their own - the claim route's (roleSetHandler: the claimed role's
-// when the claim lands, and each role of a claimant its refresh makes live again), the
-// registration's that makes a holder live again (subscribeHandler) and the keep's
-// (keepForNextHolder) - since neither route's answer nor the keep's caller waits for a stream read
-// or a forward. The sweep starts its handovers itself, under the guard it already took
-// (sweepKeptRoleLanes). A copy's age is measured by the listener's clock (cfg.now).
+// own (roleKeepHandoverWindow), and logs a handover that failed. It is what the starts of a
+// handover run in a goroutine of their own - the claim route's for each role of a claimant its
+// refresh makes live again (roleSetHandler; the claimed role's own, when the claim lands, runs
+// runTakenRoleDrain, which runs the role's takeover passes first), the registration's that makes a
+// holder live again (subscribeHandler), the keep's (keepForNextHolder) and the session relay's
+// once it copied a frame of a role another session holds (sessionRelays.takeOverFrame) - since no
+// route's answer, keep's caller or relay waits for a stream read or a forward. The sweep starts
+// its handovers itself, under the guard it already took (sweepKeptRoleLanes). A copy's age is
+// measured by the listener's clock (cfg.now).
 func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
 	defer cancel()
@@ -787,10 +790,10 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 }
 
 // drainKeptRole hands role's kept lane to the session that holds the role. It is the whole of a
-// handover under role's own guard: runKeptRoleDrain is the goroutine the claim route, the
-// registration route and the keep run it in, and tests call it directly for one role's lane. How
-// the handover ended is the sweep's to read (keptRoleHandover), and no caller of this one reads
-// it.
+// handover under role's own guard: runKeptRoleDrain and runTakenRoleDrain are the goroutines its
+// starts run it in (the claim route, the registration route, the keep and the session relay), and
+// tests call it directly for one role's lane. How the handover ended is the sweep's to read
+// (keptRoleHandover), and no caller of this one reads it.
 //
 // The guard is held for the handover rather than for each of its walks, so two handovers of one
 // role inside this listener run one after the other and the sweep can tell that a role's lane is

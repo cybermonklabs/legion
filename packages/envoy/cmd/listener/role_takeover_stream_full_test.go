@@ -37,11 +37,7 @@ func TestATakeoverClaimWhoseRecordDidNotStoreWritesNoClaim(t *testing.T) {
 	rig.subscribe(t, consumerRegistration(previous, "epoch-1"))
 	rig.subscribe(t, consumerRegistration(claimant, "epoch-1"))
 	claim := func(sessionID, role string) *httptest.ResponseRecorder {
-		t.Helper()
-		recorder := httptest.NewRecorder()
-		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
-			strings.NewReader(`{"session_id":"`+sessionID+`","role":"`+role+`"}`)))
-		return recorder
+		return postRoleClaim(rig.mux, sessionID, role, "", false)
 	}
 	holder := func(role string) string {
 		t.Helper()

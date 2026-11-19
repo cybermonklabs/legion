@@ -199,19 +199,7 @@ func (rig *copiesRig) crash(t *testing.T, sessionID string, standIn *sessionStan
 // unless it is granted.
 func (rig *copiesRig) claim(t *testing.T, sessionID, role string, soft bool) {
 	t.Helper()
-	fields := map[string]any{"session_id": sessionID, "role": role}
-	if soft {
-		fields["soft"] = true
-	}
-	body, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorder := httptest.NewRecorder()
-	rig.mux.ServeHTTP(recorder, postJSON("/v1/roles/set", string(body)))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("%s claims %s (soft %v): status %d, body %s; want 200", sessionID, role, soft, recorder.Code, recorder.Body.String())
-	}
+	grantRoleClaim(t, rig.mux, sessionID, role, "", soft)
 }
 
 // publish publishes message to role's topic through the publish route, from sender (none when it
@@ -247,54 +235,26 @@ func (rig *copiesRig) sendToSession(t *testing.T, sessionID string) string {
 	return item.EventID
 }
 
-// copiesStored is one message the stream holds on a subject: its stream sequence, when the
-// stream stored it, and its envelope.
-type copiesStored struct {
-	seq  uint64
-	at   time.Time
-	item contracts.Envelope
-}
-
-// stored is every message the stream holds on subject, in stream order.
-func (rig *copiesRig) stored(t *testing.T, subject string) []copiesStored {
+// stored is every message the stream holds on subject, in stream order (storedEnvelopes).
+func (rig *copiesRig) stored(t *testing.T, subject string) []storedEnvelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	messages, err := readStored(ctx, rig.harness.client, subject)
-	if err != nil {
-		t.Fatalf("read what the stream holds on %s: %v", subject, err)
-	}
-	held := make([]copiesStored, 0, len(messages))
-	for _, message := range messages {
-		var item contracts.Envelope
-		if err := json.Unmarshal(message.Data, &item); err != nil {
-			t.Fatalf("decode the message at %d on %s: %v", message.Sequence, subject, err)
-		}
-		held = append(held, copiesStored{seq: message.Sequence, at: message.Time, item: item})
-	}
-	return held
+	return storedEnvelopes(t, rig.harness.client, subject)
 }
 
 // copiesStoredEvent is the message of eventID among held, and whether held has one.
-func copiesStoredEvent(held []copiesStored, eventID string) (copiesStored, bool) {
+func copiesStoredEvent(held []storedEnvelope, eventID string) (storedEnvelope, bool) {
 	for _, message := range held {
 		if message.item.EventID == eventID {
 			return message, true
 		}
 	}
-	return copiesStored{}, false
+	return storedEnvelope{}, false
 }
 
 // keptCopiesOf is how many copies of eventID role's kept lane holds.
 func (rig *copiesRig) keptCopiesOf(t *testing.T, role, eventID string) int {
 	t.Helper()
-	copies := 0
-	for _, message := range rig.stored(t, bus.KeptRoleSubject(role)) {
-		if message.item.EventID == eventID {
-			copies++
-		}
-	}
-	return copies
+	return copiesOf(rig.stored(t, bus.KeptRoleSubject(role)), eventID)
 }
 
 // resumeRecord is the floor the listener recorded for sessionID's consumer when it deleted it

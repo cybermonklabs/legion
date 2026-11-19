@@ -1754,7 +1754,9 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // claim again, decides the whole thing again on what it then finds, and tries once; a second
 // mismatch is the same 409 a stated revision gets. A claim that states its own if_claim_revision
 // is never retried - that revision is the caller's own precondition - and a hard claim that
-// states none is written with no precondition at all, last-claim-wins.
+// states none is written with the revision of the record it read, read again and written again on
+// a conflict until its request's budget ends (store.Registry.SetRoleWithPrevious), then answered
+// 503 with nothing written: the last write still wins.
 //
 // A soft claim names the process making it (client_instance_id), and the claim it writes records
 // that process as the role's holder. Where the role is already held under the claimant's own
@@ -1783,15 +1785,18 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // Legion pane. Without them a listener whose renewals stopped landing would hand a live holder's
 // role to the second process once the window passed. A claim from the process the standing claim
 // names rests on no renewal and is granted through all three, since it is that holder re-claiming
-// its own role after a listener restart. A hard claim reads no holder and lands last-claim-wins
-// as it always has.
+// its own role after a listener restart. A hard claim reads no holder: it writes with the revision
+// it read and lands as the last write, or answers 503 having written nothing.
 //
-// A claim that landed also hands the role's kept lane to its new holder: whatever the listener
-// kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
-// lane first and resolves the role's holder itself, so a claim of a role with nothing kept for
-// it costs one stream read and no resolution at all, and a lane with copies on it goes to the
-// claim that superseded this one when one has). That runs in a goroutine under a context of its
-// own, so this answer's status and body are exactly what they were and wait for none of it.
+// A claim that landed also hands the role over to its new holder (runTakenRoleDrain): it runs the
+// passes of the role's takeover records, which copy what a previous holder did not read to the
+// role's kept lane, and then forwards the kept lane to the claimant (handOverTakenRole, which reads
+// the lane first and resolves the role's holder itself, so a claim of a role with nothing kept for
+// it and no record costs its stream reads and no resolution at all, and a lane with copies on it
+// goes to the claim that superseded this one when one has). That runs in a goroutine under a
+// context of its own, so this answer's status and body are exactly what they were and wait for
+// none of it. A try whose takeover record did not store writes no claim and answers 503
+// (errTakeoverUnrecorded).
 //
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
@@ -2068,8 +2073,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// answered exactly as one is today, the 409 naming the role, the holder and the revision
 		// the bucket holds. A body that states its own if_claim_revision is never retried,
 		// because that revision is the caller's own precondition and deciding again would answer
-		// a question it did not ask, and a hard claim that states none is written with no
-		// precondition at all, last-claim-wins.
+		// a question it did not ask, and a hard claim that states none is written with the
+		// revision of the record it read and read again on a conflict, the last write winning.
 		//
 		// The claimant's registration is refreshed above, once, whichever attempt then claims.
 		// The two decisions this route logs - the refusal of a second process of one session id,

@@ -124,31 +124,14 @@ func (rig *delivererRig) serveOK(t *testing.T, path string, body any) []byte {
 // names (none when it is empty).
 func (rig *delivererRig) claim(t *testing.T, sessionID, role, instance string) {
 	t.Helper()
-	body := map[string]any{"session_id": sessionID, "role": role}
-	if instance != "" {
-		body["client_instance_id"] = instance
-	}
-	rig.serveOK(t, "/v1/roles/set", body)
+	grantRoleClaim(t, rig.mux, sessionID, role, instance, false)
 }
 
-// release has sessionID's process instance hand role back through POST /v1/interests/unsubscribe,
-// naming the role's lane topic, and fails the test unless no claim of role stands after it.
+// release has sessionID's process instance hand role back, and fails the test unless no claim of
+// role stands after it (releaseRoleThrough).
 func (rig *delivererRig) release(t *testing.T, sessionID, role, instance string) {
 	t.Helper()
-	rig.serveOK(t, "/v1/interests/unsubscribe", map[string]any{
-		"session_id":         sessionID,
-		"topics":             []string{contracts.RoleTopicPrefix + role},
-		"client_instance_id": instance,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	claim, err := rig.harness.registry.RoleClaim(ctx, role)
-	if err != nil {
-		t.Fatalf("read role %s's claim after %s released it: %v", role, sessionID, err)
-	}
-	if claim.HolderSessionID != "" {
-		t.Fatalf("role %s's claim names %s after %s released it, want none", role, claim.HolderSessionID, sessionID)
-	}
+	releaseRoleThrough(t, rig.mux, rig.harness.registry, sessionID, role, instance)
 }
 
 // publishToRole publishes message to role's topic through the publish route, from no sender
@@ -188,33 +171,10 @@ func (rig *delivererRig) storeOn(t *testing.T, sessionID string, item contracts.
 	return ack.Sequence
 }
 
-// storedEvent is one message the stream holds on a subject: its stream sequence and event id.
-type storedEvent struct {
-	seq     uint64
-	eventID string
-}
-
-// storedOn is every message the stream holds on subject, in stream order.
-func (rig *delivererRig) storedOn(t *testing.T, subject string) []storedEvent {
+// storedOn is every message the stream holds on subject, in stream order (storedEnvelopes).
+func (rig *delivererRig) storedOn(t *testing.T, subject string) []storedEnvelope {
 	t.Helper()
-	var held []storedEvent
-	for seq := uint64(1); ; {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		stored, err := rig.harness.client.NextStoredMessage(ctx, subject, seq)
-		cancel()
-		if errors.Is(err, natsgo.ErrMsgNotFound) {
-			return held
-		}
-		if err != nil {
-			t.Fatalf("read what the stream holds on %s from sequence %d: %v", subject, seq, err)
-		}
-		var item contracts.Envelope
-		if err := json.Unmarshal(stored.Data, &item); err != nil {
-			t.Fatalf("decode the message at sequence %d on %s: %v", stored.Sequence, subject, err)
-		}
-		held = append(held, storedEvent{seq: stored.Sequence, eventID: item.EventID})
-		seq = stored.Sequence + 1
-	}
+	return storedEnvelopes(t, rig.harness.client, subject)
 }
 
 // lastSeqOf is the highest stream sequence among the messages of eventIDs on sessionID's own
@@ -224,7 +184,7 @@ func (rig *delivererRig) lastSeqOf(t *testing.T, sessionID string, eventIDs ...s
 	held := rig.storedOn(t, contracts.LegacyAgentSubject(sessionID))
 	var last uint64
 	for _, eventID := range eventIDs {
-		index := slices.IndexFunc(held, func(stored storedEvent) bool { return stored.eventID == eventID })
+		index := slices.IndexFunc(held, func(stored storedEnvelope) bool { return stored.item.EventID == eventID })
 		if index < 0 {
 			t.Fatalf("the stream holds no message of event %s on %s's own subject: %v", eventID, sessionID, held)
 		}
@@ -236,13 +196,7 @@ func (rig *delivererRig) lastSeqOf(t *testing.T, sessionID string, eventIDs ...s
 // keptCopies is how many copies of eventID role's kept lane holds.
 func (rig *delivererRig) keptCopies(t *testing.T, role, eventID string) int {
 	t.Helper()
-	copies := 0
-	for _, stored := range rig.storedOn(t, bus.KeptRoleSubject(role)) {
-		if stored.eventID == eventID {
-			copies++
-		}
-	}
-	return copies
+	return copiesOf(rig.storedOn(t, bus.KeptRoleSubject(role)), eventID)
 }
 
 // ackedThrough reports whether sessionID's consumer has every message through seq acknowledged.

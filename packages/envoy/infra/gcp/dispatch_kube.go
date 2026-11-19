@@ -295,47 +295,6 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 	})).(pulumi.StringOutput)
 }
 
-// dispatchListenerEnv renders the envoy-listener container's environment from the one NATS URL
-// once it resolves. core's Env names its own inputs — natsUrls by index and socks5Proxy, neither
-// an input of gcp:Dispatch — so each refusal is mapped onto natsUrl, this component's input. In
-// the SOCKS5 mode the proxy is fixed (the front door's Service, socks5Proxy), so its refusal means
-// the URL names a local server, which the pod's NATS clients can never reach through the tailnet
-// proxy. With natsInCluster there is no proxy, and core refuses a local URL only beside one, so a
-// local URL is refused here instead, before the config is built, and both call sites refuse alike:
-// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas,
-// streamMaxBytes and the sender limit reach no refusal of core's own, since newDispatchSettings
-// bounds them more tightly (1 to bus.MaxReplicas, at least 1, and core.CheckSenderLimit) before
-// anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
-// The listener serves on every address of its pod, and its API refuses to start on a non-loopback
-// listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
-// the bearer in Secret listenerSecret.
-func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1.EnvVarArray, error) {
-	if s.natsInCluster && bus.LocalNATSURL(url) {
-		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
-	}
-	env, err := (core.ListenerConfig{
-		MachineID:               s.hostname,
-		Port:                    core.DefaultListenerPort,
-		ListenHost:              "0.0.0.0",
-		SOCKS5Proxy:             s.socks5Proxy(),
-		NATSReplicas:            s.natsReplicas,
-		StreamMaxBytes:          s.streamMaxBytes,
-		SenderMessagesPerMinute: s.senderMessagesPerMinute,
-		SenderMessageBurst:      s.senderMessageBurst,
-	}).Env([]string{url})
-	if err != nil {
-		var input *core.InputError
-		if errors.As(err, &input) && input.Input == "socks5Proxy" {
-			return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; the pods reach NATS only through the front door's SOCKS5 proxy, so the URL must be remote (the hub's tailnet name)")
-		}
-		return nil, core.InputErrorf("natsUrl", "%s", strings.ReplaceAll(err.Error(), "natsUrls[0]", "natsUrl"))
-	}
-	values := envVars(env)
-	values = append(values, valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
-	values = append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN"))
-	return values, nil
-}
-
 // envVars is env, core.ListenerConfig's NAME=value rendering, as a container's environment, in
 // its order.
 func envVars(env []string) corev1.EnvVarArray {
@@ -771,11 +730,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// role: route is never made on it.
 	appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchAccountTokenFile), secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"))
 	appMounts := append(corev1.VolumeMountArray{}, seedMount...)
-	appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("envoy-listener-account-token"), MountPath: pulumi.String(dispatchAccountTokenDir), ReadOnly: pulumi.Bool(true)})
+	tokenMount, tokenVolume := dispatchAccountTokenVolume(listenerURL)
+	appMounts = append(appMounts, tokenMount)
 	appVolumes := append(corev1.VolumeArray{}, seedVolume...)
-	appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("envoy-listener-account-token"), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
-		corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(listenerURL), ExpirationSeconds: pulumi.Int(dispatchAccountTokenSeconds), Path: pulumi.String("token")}},
-	}}})
+	appVolumes = append(appVolumes, tokenVolume)
 	appGrants := []pulumi.Resource{database.seedAccessor}
 	if s.agentSecretsURL != "" {
 		// Dispatch presents its own ServiceAccount's token to the broker, which reads the caller
