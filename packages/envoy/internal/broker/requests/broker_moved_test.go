@@ -20,6 +20,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -510,6 +511,39 @@ func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
 	}
 	if len(watched.handed) != 0 {
 		t.Fatalf("the judge was handed %+v; want nothing, a live grant having answered the ask", watched.handed)
+	}
+}
+
+// TestAReuseWithNoStaleRequestWaitsOnNoWriterOfTheEnrollment: an ask a live grant answers, with no
+// request signed for another broker address beside it, opens no transaction and takes no lock, so
+// it waits on no writer of the enrollment row. Every agent-secrets run asks again for names it
+// holds, so this is the broker's hottest ask. Another transaction holds the enrollment row for
+// update, as a renewal or an enrollment's end does while it runs, and the ask must still answer
+// the live grant inside the bound: a reuse that took the enrollment's lock for share beside every
+// such ask would wait for that writer's commit and run out of time.
+func TestAReuseWithNoStaleRequestWaitsOnNoWriterOfTheEnrollment(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	if err != nil || own.State != "pending" || own.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", own, err)
+	}
+	if dec, err := m.ApplyDecision(ctx, *own.RecordID, true, approver); err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(%s) = %+v, %v; want a grant", *own.RecordID, dec, err)
+	}
+	writer, err := m.Store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback(ctx)
+	if _, err := writer.Exec(ctx, `select 1 from enrollments where id=$1 for update`, enr); err != nil {
+		t.Fatalf("hold the enrollment row as a writer of it does: %v", err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	got, err := m.Create(bounded, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), "", nil)
+	if err != nil || got.ID != own.ID || got.GrantID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) again beside a writer of the enrollment row = %+v, %v; want the live grant of request %s at once", got, err, own.ID)
 	}
 }
 
