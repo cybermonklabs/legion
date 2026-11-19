@@ -195,12 +195,15 @@ type LauncherHelloAck struct {
 	MemoryGuard *LauncherMemoryGuard `json:"memoryGuard,omitempty"`
 	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
 	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
-	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
-	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
-	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
-	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
-	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
-	// writes.
+	// role so, or the project's controller where the report is of the controller's pod. The
+	// daemon sets it on every launcher's acknowledgement, an issue pod's and the controller's pod's
+	// alike, whether or not it sends MemoryGuard, since the controller's pod runs in a microVM where
+	// the project's sandbox is one (INFRA-4567); a daemon of an earlier release sets it on the issue
+	// pods' alone. A microVM pod's launcher sends its kill reports only on a connection whose
+	// acknowledgement carries it, whatever MemoryGuard says, so a daemon built before it, which
+	// sends no member, never reads a kernel's kill with the guard's words; a gVisor pod's launcher
+	// ignores it and sends its guard's reports where MemoryGuard came. It is left out when false,
+	// so an acknowledgement without it is the bytes an older daemon writes.
 	KernelKills bool `json:"kernelKills,omitempty"`
 }
 

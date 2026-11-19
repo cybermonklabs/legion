@@ -1368,7 +1368,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 ## Kubernetes runtime: the Go daemon on Agent Sandbox
 
 Under the Go coordinator, `runtime: kubernetes` runs every issue as one Agent Sandbox:
-an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Issue pods in microVMs](#issue-pods-in-microvms)).
+an `agents.x-k8s.io` `Sandbox` (kubernetes-sigs/agent-sandbox, LEGION-206) named for the issue, `legion-<project>-<issue>`, whose one pod runs under gVisor on the Legion pool, or in a GKE Sandbox microVM where `runtime.kubernetes.sandbox` puts the issue there ([Pods in microVMs](#pods-in-microvms)).
 The pod holds two init containers and one container, `roles`, whose PID 1 is one `legion launcher`, a supervisor with no workflow policy that runs every workflow role
 — `architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`:
 it holds one connection to the daemon's worker stream per role, each authenticated with that role's own token, and starts or stops that role's `legion worker-shim` and Oh My Pi when the daemon tells it to, each role's generation in Linux namespaces of its own.
@@ -2310,7 +2310,7 @@ the volume names `role-homes` and `role-probe`;
 a mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home`, `/var/run/legion/role-probe`, `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc`;
 and a mount at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or the image's other spellings of them.
 Run this release's `legion start --check-config` on the file before the rollout.
-The release that adds microVM issue pods takes one more volume name, `workload-identity-token` ("Upgrading" in [Issue pods in microVMs](#issue-pods-in-microvms)).
+The release that adds microVM issue pods takes one more volume name, `workload-identity-token` ("Upgrading" in [Pods in microVMs](#pods-in-microvms)).
 
 To roll this release back to contract 38, every stored locator and every issue Sandbox both go back to what the earlier release reads.
 Re-pinning alone boots neither:
@@ -2879,7 +2879,7 @@ runtime:
       node_selector: {}         # merged over legion.dev/pool=legion, which it may not name
       tolerations: []
       priority_class: legion
-    sandbox:                    # optional: the sandbox of the project's issue pods (Issue pods in microVMs, below)
+    sandbox:                    # optional: the sandbox of the project's issue pods and of its controller's pod (Pods in microVMs, below)
       type: gvisor              # default gvisor; microvm needs a microvm block that names its ComputeClass
     resources:                  # optional; two keys, each a pod's reservation: cpu and memory limits, each requested
                                 # in full unless cpu_request or memory_request sets less (Issue sizing: Guaranteed
@@ -2900,9 +2900,9 @@ runtime:
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
-    memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher and in the controller pod's; a microVM issue pod runs the guest watch instead (The memory guard in an issue pod, The memory guard in the controller's pod, and Memory in a microVM pod, below)
+    memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher and in the gVisor controller pod's; a microVM pod's launcher, an issue pod's or the controller's, runs the guest watch instead (The memory guard in an issue pod, The memory guard in the controller's pod, and Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
-      controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 1, interval_milliseconds: 100 }   # the defaults; read by the controller's pod under controller: daemon
+      controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 1, interval_milliseconds: 100 }   # the defaults; read by the gVisor controller's pod under controller: daemon
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
@@ -3371,11 +3371,13 @@ the check before the pane seed is written also has each daemon consume a Dispatc
 `legion-pane` is never granted the daemon's subjects above.
 Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`, and each refused subject logs the error line above (a refused consumer or subscription never delivers).
 
-### Issue pods in microVMs
+<a id="issue-pods-in-microvms"></a>
+### Pods in microVMs
 
-A project's issue pods run under gVisor unless `runtime.kubernetes.sandbox` names the other sandbox for them.
+A project's issue pods and its controller's pod run under gVisor unless `runtime.kubernetes.sandbox` names the other sandbox for them.
 The other sandbox is a GKE Sandbox microVM: the pod runs under the `microvm` RuntimeClass, on the nodes of a ComputeClass the operator names.
 The block can put every issue pod of the project in a microVM, or only the pods of a list of its issues, for a canary.
+The controller's pod (`controller: daemon`) follows `type` alone: it runs in a microVM where `type` is `microvm`, and in gVisor otherwise, since `canary_issues` names issues and the controller has none.
 One daemon serves one project, so the block is that project's (`readSandbox`, `packages/daemon/internal/config/kubernetes.go`).
 `deploy/kubernetes/daemon/legion.yaml.example` carries it, commented out:
 
@@ -3393,25 +3395,28 @@ runtime:
           identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster
 ```
 
-- `type` is the sandbox of every issue pod of the project: `gvisor`, the default, or `microvm`.
+- `type` is the sandbox of every issue pod of the project and of its controller's pod: `gvisor`, the default, or `microvm`.
 
 - `canary_issues` lists the issues whose pods run in the sandbox `type` does not name: in a microVM on a gVisor project, and in gVisor on a microVM project.
   Each entry is one exact issue key, named once.
+  It never moves the controller's pod.
 
 - `microvm.compute_class` is the ComputeClass whose nodes run the microVM pods.
   It is required while `type` is `microvm` or `canary_issues` names an issue.
 
-- `microvm.storage_class` is the StorageClass of a microVM pod's workspace volume.
+- `microvm.storage_class` is the StorageClass of a microVM issue pod's workspace volume.
   Left out, it is `runtime.kubernetes.storage_class`.
+  The controller's disk stays on `runtime.kubernetes.storage_class` in either sandbox ("The disk", below).
 
 - `microvm.metadata` turns on the pod-local metadata endpoint ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 
 An issue's sandbox is `type`, or the other one when `canary_issues` names the issue's exact key (`SandboxConfig.Of`, `packages/daemon/internal/runtime/sandbox/types.go`).
 The daemon decides it each time a launch builds the issue's pod, from the issue the launch is for (`prepare`, `packages/daemon/internal/runtime/sandbox/manifest.go`).
+The controller's sandbox is `type` (`SandboxConfig.Controller`, `types.go`), which `prepare` reads each time a launch builds the controller's pod.
 A `microvm` block does nothing while no issue pod runs in a microVM.
 The loader still checks its keys, but it requires no `compute_class` then and refuses none of the `scheduling`, `pod.env` and `agent_secrets` keys below, so a revert that empties `canary_issues` can leave the block in place.
 `legion state --json` shows the block as the loader settled it, under `settings.runtime.kubernetes.sandbox`:
-`canary_issues` is `[]` when the file names none, `microvm` is absent when the file names no such block, and its `storage_class` is the class the microVM pods' disks use.
+`canary_issues` is `[]` when the file names none, `microvm` is absent when the file names no such block, and its `storage_class` is the class the microVM issue pods' disks use.
 
 The loader refuses each of these, naming the key, and `legion config check` shows each before anything starts:
 
@@ -3445,10 +3450,10 @@ The loader refuses each of these, naming the key, and `legion config check` show
 
 - a `pod.env` entry `GCE_METADATA_HOST` or `GCE_METADATA_IP` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.pod.env must not set GCE_METADATA_HOST while runtime.kubernetes.sandbox.microvm.metadata is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves`.
 
-- an `agent_secrets.audience` or `agent_secrets.exchange_audience` equal to `workload_pool` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.agent_secrets.audience must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both <pool>) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
+- an `agent_secrets.audience` or `agent_secrets.exchange_audience` equal to `workload_pool` while `metadata` is set and an issue pod runs in a microVM: `runtime.kubernetes.agent_secrets.audience must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both <pool>) while an issue pod runs in a microVM: the cluster projects one volume per audience, so the two tokens would be one`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
 
 **Where a microVM pod runs.**
-The daemon renders a microVM issue pod's placement from the block (`placement`, `manifest.go`):
+The daemon renders the placement of a microVM pod, an issue pod or the controller's, from the block (`placement`, `manifest.go`):
 
 - `runtimeClassName: microvm`, in place of `gvisor`.
 
@@ -3466,34 +3471,44 @@ The daemon renders a microVM issue pod's placement from the block (`placement`, 
 The daemon never changes the operator's `scheduling` itself: every gVisor pod of the project keeps the selector and tolerations as the file writes them.
 
 **The label.**
-A microVM issue pod carries the label `legion.dev/sandbox: microvm`, and no gVisor pod carries it (`labelSandbox`, `names.go`).
+A microVM pod, an issue pod or the controller's, carries the label `legion.dev/sandbox: microvm`, and no gVisor pod carries it (`labelSandbox`, `names.go`).
 It is the label a NetworkPolicy selects the microVM pods by: `podSelector: {matchLabels: {legion.dev/sandbox: microvm}}`.
-It is on the pod template alone, so on the pod, and never on the Sandbox or its Secrets, which carry the labels a gVisor issue's do.
+It is on the pod template alone, so on the pod, and never on the Sandbox or its Secrets, which carry the labels they carry in gVisor.
 A Sandbox is kept across its pods, and each of them can run in either sandbox, while the daemon builds the template again for each pod.
 
 **The disk.**
-A microVM pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`diskSpec`, `manifest.go`).
+A microVM issue pod's workspace volume, its generic ephemeral volume, is of `microvm.storage_class`, else of `storage_class`, at `issue_volume` (`diskSpec`, `manifest.go`).
 `diskSpec` is the one place an issue disk's claim takes its class from, so a source of the issue disk added later takes its class from the same place.
 The controller's disk is always of `storage_class`.
+That disk is the claim template the controller's Sandbox owns, and `spec.volumeClaimTemplates` is immutable in the CRD, so a class that followed the controller's sandbox would need a new Sandbox at each change of `type`, and the delete of the old Sandbox takes the controller's volume with it.
+So a microVM controller pod mounts a disk of `storage_class` on a node of `microvm.compute_class`, and the nodes of that ComputeClass must attach disks of `storage_class` (dispatch://INFRA-3728).
 
 **What stays in gVisor.**
-The controller's pod (`controller: daemon`), each repository cache pod and the image probe's pod run under gVisor whatever the block says, with the operator's `scheduling` as the file writes it (`probe.go`, `repocache.go`).
+Each repository cache pod and the image probe's pod run under gVisor whatever the block says, with the operator's `scheduling` as the file writes it (`probe.go`, `repocache.go`).
 So the boot's image probe runs the image under gVisor, and never in a microVM.
 
 **The stop-eviction annotations.**
-A microVM issue pod carries the annotations a gVisor issue pod carries: `karpenter.sh/do-not-disrupt: "true"`, `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `legion.dev/pod-shape`.
+A microVM pod carries the annotations its kind carries in gVisor, an issue pod's and the controller's alike: `karpenter.sh/do-not-disrupt: "true"`, `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `legion.dev/pod-shape`.
 On the nodes of a custom ComputeClass the two stop-eviction annotations hold no node upgrade off, as GKE Autopilot's extended duration does ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 The cluster's maintenance window decides when such a node is upgraded, and a pod the upgrade evicts ends as a pod whose node goes does ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 
 **Drift.**
-A microVM pod's recorded shape (`legion.dev/pod-shape`, [The disk dies with its pod](#the-disk-dies-with-its-pod)) holds a `sandbox` member: its RuntimeClass, its ComputeClass, its disk's StorageClass and its metadata endpoint (`sandboxShape`, `drift.go`).
+A microVM pod's recorded shape (`legion.dev/pod-shape`, [The disk dies with its pod](#the-disk-dies-with-its-pod)) holds a `sandbox` member: its RuntimeClass, its ComputeClass and its metadata endpoint, and an issue pod's disk's StorageClass (`sandboxShape`, `drift.go`).
+A microVM controller pod's member holds no StorageClass, since its disk stays on `storage_class` ("The disk", above).
 A gVisor pod's shape holds no `sandbox` member, so it reads byte for byte as a shape recorded before the block existed, and adding the block opens no update round on a gVisor pod.
 The sweep compares each issue pod with the shape of the sandbox the configuration now gives the pod's issue (`storedShapeKey`, `drift.go`).
 So a change of an issue's sandbox, through `canary_issues` or `type`, opens an update round on each pod it moves, and on no other pod.
 The round names the drift `sandbox null, now {…}` for a pod that moves into a microVM, and `sandbox {…}, now null` for one that moves back.
-A change of `microvm.compute_class`, `microvm.storage_class` or `microvm.metadata` opens a round on each microVM pod alone.
-With `microvm.storage_class` left out, the microVM pods take `storage_class`, so a change of `storage_class` opens a round on each microVM pod, and still on no gVisor pod.
-The controller's pod runs in gVisor in every configuration, so the block never changes its shape.
+A change of `microvm.compute_class`, `microvm.storage_class` or `microvm.metadata` opens a round on each microVM issue pod alone.
+With `microvm.storage_class` left out, the microVM issue pods take `storage_class`, so a change of `storage_class` opens a round on each microVM issue pod, and still on no gVisor pod.
+The controller's pod is in no round, and the daemon compares it with the shape of the sandbox `type` now gives it (`storedShapeKey`).
+A daemon boot re-adopts a running controller pod and replaces nothing, whatever its shape.
+A launch that installs nothing replaces a live controller pod whose shape differs, so the controller moves into a microVM, or back into gVisor, at its first such launch after a change of `type`: when its process ends, or when the operator suspends and resumes its claim (below).
+A launch that installs a stale-plugin pair replaces it only where its image differs (`podImageDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the fresh pod is built in the sandbox `type` names.
+A change of `microvm.compute_class` or `microvm.metadata` moves a microVM controller pod at its next launch, and a change of `microvm.storage_class` alone moves no controller pod.
+Neither `canary_issues` nor a `microvm` block on a gVisor project moves it.
+To move the controller at once, suspend its claim and resume it: `legion claims suspend --operator-token-file <file> --claim legion-<project>-controller`, then `legion claims resume --operator-token-file <file> --claim legion-<project>-controller`.
+The launch at the resume finds the Sandbox suspended and builds a new pod in the sandbox the configuration gives the controller, and it keeps the controller's Sandbox and its disk.
 A role launched into a pod that its round keeps starts as that pod was built:
 the launcher's `--microvm` and metadata flags and the projected token are fixed when the pod is created, and nothing the daemon sends a generation depends on the sandbox.
 So a role of a gVisor pod whose issue joins `canary_issues` starts in gVisor until the round replaces that pod.
@@ -3514,12 +3529,21 @@ An earlier daemon reads no `sandbox` member in a pod's recorded shape, so it rep
 The earlier image is such a drift, so each microVM pod's update round brings its issue back to a gVisor pod.
 Where a microVM pod's launcher connects to such a daemon before that round replaces the pod, the daemon's answer carries no `kernelKills`.
 The launcher then drops each report of a process the pod's kernel stopped, with a line, and tells no role; the `ended` line stays in the container's log ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
+The release that runs the controller's pod in the project's sandbox is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-4567`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A daemon below it builds the controller's pod in gVisor whatever `type` says, and one of contract 151 or later reads the same `sandbox` block.
+It re-adopts a running microVM controller pod at its boot, and its answer to that pod's launcher carries no `kernelKills`.
+The launcher then drops each report of a process the pod's kernel stopped, with a line, and the controller is told nothing; the `ended` line stays in the `controller` container's log.
+That daemon compares the controller's pod with its gVisor shape alone, so the controller returns to gVisor at the first launch that replaces its pod.
+That is the daemon's next launch that installs nothing.
+Under a daemon of the release that guards the controller's pod's memory, the launch that installs its plugin pair replaces the pod too where it runs another image, and a rollback that pins the earlier image has such a launch: the relaunch onto that daemon's plugins after its boot ([Contract discipline](#contract-discipline)).
+Suspending and resuming the controller's claim returns it to gVisor at once ("Drift", above).
 
 #### The pod-local metadata endpoint
 
 Under Workload Identity a pod gets its Google credential from GKE's metadata server on its node.
 Set `microvm.metadata` when a microVM pod does not reach that server.
-Each microVM issue pod's launcher then serves, inside the pod, the paths of that server a Google client reads for the pod's own account (`packages/daemon/internal/launcher/metadata.go`).
+Each microVM pod's launcher then serves, inside the pod, the paths of that server a Google client reads for the pod's own account (`packages/daemon/internal/launcher/metadata.go`): each microVM issue pod's, and the controller's pod's where `type` is `microvm`.
 It gets the access token it hands out the way GKE's server does: it exchanges a projected Kubernetes ServiceAccount token at Google's Security Token Service.
 A gVisor pod, and a microVM pod without the block, get none of it.
 
@@ -3529,16 +3553,20 @@ The block has two keys, and both are required:
 
 - `identity_provider` is the cluster's identity provider, `https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
 
-With the block the daemon adds two things to each microVM issue pod (`workloadIdentityVolumes`, `manifest.go`, and `issuePod.launcherContainer`, `podkind.go`):
+With the block the daemon adds two things to each microVM pod, an issue pod or the controller's (`workloadIdentityVolumes`, `manifest.go`, and the `launcherContainer` of `issuePod` and of `controllerPod`, `podkind.go`):
 
-- a projected ServiceAccount token volume, `workload-identity-token`, for the audience `workload_pool`, with `expirationSeconds: 3600` and mode 0440, mounted read-only at `/var/run/legion/roles/workload-identity` (`WorkloadIdentityDir`, `names.go`), where the token is the file `token`.
-  The directory is under `/var/run/legion/roles`, which every role's namespace covers, so no role's process reads the token.
+- a projected ServiceAccount token volume, `workload-identity-token`, for the audience `workload_pool`, with `expirationSeconds: 3600` and mode 0440, mounted read-only in a directory where the token is the file `token`.
+  An issue pod mounts it at `/var/run/legion/roles/workload-identity` (`WorkloadIdentityDir`, `names.go`).
+  That directory is under `/var/run/legion/roles`, which every role's namespace covers, so no role's process reads the token.
+  The controller's pod mounts it at `/var/run/legion/workload-identity` (`ControllerWorkloadIdentityDir`, `names.go`), and its launcher reads the token at `/var/run/legion/workload-identity/token`.
+  That pod has no role namespaces, so the controller's agent can read the token too.
+  That gives the agent no identity it lacks: the endpoint its launcher serves hands it access tokens of the same Workload Identity principal, the pool's own (below).
   The kubelet writes a fresh token before the old one expires, and the launcher reads the file again at each exchange.
 
 - the launcher flags `--metadata-workload-pool <workload_pool> --metadata-identity-provider <identity_provider>`, beside `--microvm`.
 
-Before it starts any role, the launcher listens at `127.0.0.1:8169`.
-That is the pod's loopback, which every role shares, since a role has no network namespace of its own.
+Before it starts any role's generation, the controller's included, the launcher listens at `127.0.0.1:8169`.
+That is the pod's loopback, which every role of an issue pod shares, since a role has no network namespace of its own.
 Once it listens, it sets `GCE_METADATA_HOST` and `GCE_METADATA_IP` to that address in its own environment, so its own Google clients read the endpoint, the session database's proxy under `cloudsql-iam` among them ([Selecting the store](#selecting-the-store)).
 It also sets both on every role generation it starts, over any value the generation's start command carried, so a role is told only the address its own launcher serves.
 Go's `cloud.google.com/go/compute/metadata` and Python's `google-auth` read `GCE_METADATA_HOST`, and Node's `gcp-metadata` reads `GCE_METADATA_IP` before it.
@@ -3595,7 +3623,7 @@ So a pod whose ServiceAccount is bound to a Google service account gets the pool
 The endpoint serves no other path.
 Among those are `project/numeric-project-id`, `instance/zone`, `instance/hostname`, `instance/id`, every `attributes/` path, and `instance/service-accounts/<account>/identity`, which GKE's server answers 404 for an account bound to no Google service account.
 It answers each of them 404 `Not Found`, as GKE's server answers a path it does not know, and answers `?recursive=true` on any directory but an account's the same way.
-The first time it answers a path so, it logs `launcher: metadata: not served path=<path>` in the `roles` container's log, with no role prefix, so the log names each path a tool asked for and did not get.
+The first time it answers a path so, it logs `launcher: metadata: not served path=<path>` in the `roles` container's log, or in the `controller` container's log in the controller's pod, with no role prefix, so the log names each path a tool asked for and did not get.
 It remembers at most 256 such paths, and logs no path past them.
 
 Every path under `/computeMetadata/v1/` refuses a request without `Metadata-Flavor: Google` with 403 `Missing required header "Metadata-Flavor": "Google"`, as GKE's server does.
@@ -3632,7 +3660,7 @@ Each library read the project `example-project` and the fake service's token, th
 #### Memory in a microVM pod
 
 A microVM's kernel is the pod's own, and its out-of-memory killer stops one process of the container rather than the whole pod.
-So a microVM issue pod's launcher runs no memory guard ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and writes one line that says so:
+So the launcher of a microVM pod, an issue pod or the controller's, runs no memory guard ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod), [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)), and writes one line that says so:
 
 ```text
 launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process
@@ -3643,8 +3671,16 @@ The guest watch ends no process itself.
 It steers the pod's kernel to stop a command before an agent, names each process the kernel stopped, tells that process's role, and logs the pod's memory each hour.
 As the guard does, it runs only where the launcher is the container's first process: a launcher started any other way writes the guard's `off reason=the launcher is pid <n>, …` line and runs neither.
 The launcher knows that its pod runs in a microVM from its own `--microvm` flag, which is fixed when the pod is built, and never from the daemon's answer.
-`runtime.kubernetes.memory_guard` configures the gVisor guard alone:
+`runtime.kubernetes.memory_guard` configures the gVisor guard alone, `issue_pods` the gVisor issue pods' and `controller_pod` the gVisor controller pod's:
 the guest watch runs whatever that block says, `enabled: false` included, and a microVM pod's launcher applies no `memoryGuard` settings from any answer.
+
+**In the controller's pod.**
+Where `type` is `microvm`, the controller's launcher runs the guest watch by the rules of this section over the controller pod's classifier (`controllerClassifier`, "What it spares, and what it may end" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and every direct child of the shim.
+Every process of the container is the controller's, so each process the watch names is reported to the controller, and its `ended` line names `role=controller`.
+That pod has no `role-init`: once the shim has exited, the launcher, PID 1, drains the exited generation itself, sending SIGTERM over the container's processes, waiting up to its stop grace for them to go, and sending SIGKILL to each one left (`cleanExitedGeneration`, `packages/daemon/internal/launcher/process.go`).
+That drain's SIGKILL takes the place of `role-init`'s in "The kills" and "What the sign does not show" below, so the watch's `SessionDrain` there is the stop grace and a second more, where an issue pod's is 3 s (`controllerSessionDrain`, `packages/daemon/internal/launcher/memoryguard.go`).
+The watch's lines are in the `controller` container's log, with no role prefix, and the daemon tells the controller of each kill as "Whom it tells" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod) says.
 
 **The score.**
 The watch lists the container's processes every 100 ms, the guard's default interval, which `interval_milliseconds` does not change.
@@ -3681,6 +3717,7 @@ That holds unless the file sets `cpu_request` or `memory_request` below its limi
 A request that the file leaves out takes the file's limit where the file sets one.
 Else it takes the default's request, which equals the default's limit ([Configuration](#configuration)).
 Keep each request equal to its limit where issue pods run in microVMs, so that the score protects Oh My Pi.
+The controller's pod is `Guaranteed` by the same rule over `runtime.kubernetes.resources.controller`, so keep those requests equal to their limits where the controller runs in a microVM.
 
 The watch can only raise a score.
 The `roles` container drops every capability, and without `CAP_SYS_RESOURCE` no process can set a score below a process's starting value, so no agent can be set below the starting score.
@@ -3868,7 +3905,8 @@ For a process of a role, the watch also gives a report to that role's part of th
   The daemon applies the report once, under the event id `memory-guard-kill:<guard>:<sequence>`.
 
 - The launcher sends the report only on a connection whose answer carries `kernelKills: true`.
-  A daemon of daemon API contract 151 or later sets it on its answer to every issue pod's launcher, whatever `memory_guard` says, and never on its answer to the controller pod's.
+  A daemon of daemon API contract 151 or later sets it on its answer to every issue pod's launcher, whatever `memory_guard` says.
+  A daemon of the release that runs the controller's pod in the project's sandbox (the `version.go` entry for `dispatch://INFRA-4567`) sets it on its answer to the controller pod's launcher too, beside that pod's guard settings, and an earlier daemon never does.
   On any other connection the launcher drops each report with this line, since an earlier daemon may close the connection on a frame it does not know, or tell the role of the kernel's stop in the guard's words:
 
   ```text
@@ -4078,7 +4116,7 @@ The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leave
 
 Each Sandbox carries `legion.dev/project`, `legion.dev/tree` and `legion.dev/issue` (`names.go`):
 one Sandbox per issue, shared by every role that works it, owning its pod and the role Secrets and no volume at all.
-A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Issue pods in microVMs](#issue-pods-in-microvms)).
+A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Pods in microVMs](#pods-in-microvms)).
 The pod template (`manifest.go`) has two init containers and one container, `roles`, which runs every workflow role (`claim.Roles`:
 architect, planner, implementer, tester, reviewer, merger):
 
@@ -4149,7 +4187,7 @@ architect, planner, implementer, tester, reviewer, merger):
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
    set>:<worker_stream_port> --sandbox <name> --roles-dir /var/run/legion/roles --role architect
    --role planner --role implementer --role tester --role reviewer --role merger --stop-grace <d>`, the pod's uid from `POD_UID` (the downward API).
-   A microVM issue pod's command adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace` ([Issue pods in microVMs](#issue-pods-in-microvms)).
+   A microVM issue pod's command adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace` ([Pods in microVMs](#pods-in-microvms)).
    It holds one authenticated worker-stream connection per role, each with that role's own launcher token, read from `/var/run/legion/roles/<role>/launcher/LAUNCHER_TOKEN`, and starts and stops each role's `legion worker-shim` (Oh My Pi) child on the daemon's command, never a worker process of its own.
    Its log has one line for each connection the daemon accepted, `launcher: connected to the
    daemon at <address> as launcher <id> (sandbox <name>, role <role>, pod <uid>)`, and one for each connection that ended, `launcher: daemon connection: <why>; reconnecting`, so a connected launcher reads apart from one still dialing.
@@ -4357,8 +4395,10 @@ for a shared agent token it answers `Session <id> runs under the shared token: n
 
 The Kubernetes service-account tokens this runtime projects for a role are the broker's, under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`): `agent-secrets-token` for its `audience`, and `agent-secrets-exchange` for its `exchange_audience` where that key is set (`exchangeTokenProjection`).
 Each reaches the secrets broker and nothing else.
-A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` carries another projected token, `workload-identity-token`, for the Workload Identity pool's audience.
-No role's namespace shows it, and the pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+A microVM pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, an issue pod or the controller's, carries another projected token, `workload-identity-token`, for the Workload Identity pool's audience.
+The pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+In an issue pod no role's namespace shows it.
+In the controller's pod the controller's agent can read it, which gives the agent no identity that the endpoint does not already serve it.
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
 The operator's own pod volumes are outside this statement: the operator controls them.
 An operator-launched controller can differ:
@@ -4532,13 +4572,13 @@ The init containers never call `codegraph`.
 
 Every pod runs:
 
-- with `runtimeClassName: gvisor`, except an issue pod whose sandbox is a microVM, which runs with `runtimeClassName: microvm` ([Issue pods in microVMs](#issue-pods-in-microvms));
+- with `runtimeClassName: gvisor`, except an issue pod whose sandbox is a microVM and the project controller's pod where `runtime.kubernetes.sandbox.type` is `microvm`, each of which runs with `runtimeClassName: microvm` ([Pods in microVMs](#pods-in-microvms));
 
 - with `serviceAccountName` set to the operator's `pod.service_account` (the namespace's default when it names none) and `automountServiceAccountToken: false`;
 
 - under Pod Security "restricted": non-root user 1000 on the pod, and on each container no privilege escalation, ALL capabilities dropped and the RuntimeDefault seccomp profile;
 
-- on the Legion pool, with its node selector and toleration (and, for a microVM issue pod, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
+- on the Legion pool, with its node selector and toleration (and, for a microVM pod, an issue pod or the controller's, the `cloud.google.com/compute-class` selector and toleration of its ComputeClass), and nothing else of its placement that Legion itself sets:
   no affinity (GKE Autopilot adds its own to an annotated pod, below);
 
 - `Guaranteed` at the default reservations:
@@ -4563,6 +4603,8 @@ Every pod runs:
 
 The project controller's Sandbox under `controller: daemon`, `legion-<project>-controller`, is the same pod with a one-role list:
 it carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, runs no init container and one launcher container, `controller`, carrying the controller's reservation, and owns a volume of its own the same way, `issue-legion-<project>-controller` ([Daemon-launched controller](#daemon-launched-controller)).
+Where `runtime.kubernetes.sandbox.type` is `microvm` it runs in a microVM, placed and labelled as a microVM issue pod is ([Pods in microVMs](#pods-in-microvms)).
+Its launcher's command then adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace`, and its container mounts the projected token volume `workload-identity-token`, read-only, at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 
 The image probe runs as a Sandbox of its own, `legion-probe-<project>-<digest12>`, with `shutdownPolicy: Delete`, its one container carrying the probe's own fixed reservation
 — 250m and 1Gi, over a 5Gi disk bound and a 1Gi disk request (`probeReservation`, `internal/daemon/kubernetes.go`), none of an issue pod's, since `legion probe-image` starts one Oh My Pi at a time and runs no lane or browser, and a probe sized as an issue pod could keep the daemon from booting on a full pool ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes), [Issue sizing](#issue-sizing-one-reservation-per-pod)).
@@ -5933,12 +5975,13 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 
 The daemon-launched controller runs in a pod of its own, whose one container, `controller`, has one memory limit ([Daemon-launched controller](#daemon-launched-controller)).
 Under gVisor a container that passes its limit is stopped whole, `OOMKilled`, and the controller's turn ends with it.
-The launcher of that container runs the same memory guard as an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the guard acts before that point.
+In a gVisor pod the launcher of that container runs the same memory guard as an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the guard acts before that point.
 When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between that share and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one new to that stay that holds memory of its own, each a kill of its own, and the daemon tells the controller why.
 The rest of the pod goes on: the guard never ends the launcher, the shim or Oh My Pi, so the controller's turn does not end for the kill, and the command that was ended fails in the turn that ran it.
 The launcher runs the guard with the controller pod's rules (`serveMemoryGuard` and `controllerClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 "What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, among them the order of ends with the processes new to the stay in the band that hold memory of their own, growth since the stay's first kill and a fork ranked by its size less its parent's in it, the kill at one reading of every process that grew over the window or is new to the stay with memory of its own at or above the urgent share, the band, and the first kill chosen at the mark, with the `smaps` and a fork's program read again and the processes started since the band's last reading looked for where none grew or at the urgent share, and the `rule`, `sizes`, `less_parent` and `new_read` of each `ended` line.
 The controller's pod has its own list of what the guard spares (below) and its own longest wait after a kill, 1 second by default ("The settings", below).
+Where `runtime.kubernetes.sandbox.type` is `microvm` the controller's pod runs in a microVM, whose own kernel stops one process of the container rather than the whole container, and its launcher runs the guest watch in this guard's place ("In the controller's pod" in [Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
 **What gVisor measured.**
 Measured on 2026-11-18 in gVisor pods of 4 GiB and of 8 GiB, each with its memory request equal to its limit and a CPU limit of 1500m (and seven runs at 1 CPU, the controller pod's default), by `TestControllerPodMemoryGuardLiveSandbox` (`packages/daemon/internal/launcher/memoryguard_live_test.go`), whose binary was the container's PID 1 and ran the launcher's single-role form at the controller pod's defaults, with the test binary in the shim's place, run as `worker-shim`, and a copy of it in Oh My Pi's place, run as Oh My Pi is run (49 Jobs at `1c9d541d`, and INFRA-3531's tester's own latepool probe 7 times, dispatch://INFRA-3531/artifact/t17o-2026-11-18-tar-gz).
@@ -5952,10 +5995,13 @@ With no guard, the last `AnonPages` reading before the sandbox was stopped `OOMK
 Across the ten waves of 2026-11-17 and 2026-11-18 at `b895ae8a` to `1c9d541d`, that last reading moved by 34.8 MiB at 4 GiB (96.75% to 97.60%) and 15.5 MiB at 8 GiB (98.42% to 98.61%).
 
 **Where it runs.**
-Only the launcher's single-role form runs this guard, and only as the first process of its container, PID 1: the `legion launcher --role controller` of the controller's pod, under `runtime: kubernetes` and `controller: daemon`.
+Only the launcher's single-role form runs this guard, and only as the first process of its container, PID 1: the `legion launcher --role controller` of the controller's pod, under `runtime: kubernetes` and `controller: daemon`, in gVisor.
 Only that process sees every process of the container.
 A launcher started any other way writes one `off` line and runs no guard.
-The controller's pod runs in gVisor in every configuration ([Issue pods in microVMs](#issue-pods-in-microvms)), so its launcher runs this guard and never the guest watch of a microVM issue pod, whatever `runtime.kubernetes.sandbox` says, and its kill reports go on a connection whose acknowledgement carried guard settings, as a gVisor issue pod's do (`runsGuest`, `packages/daemon/internal/launcher/launcher.go`).
+The controller's pod runs in the project's sandbox ([Pods in microVMs](#pods-in-microvms)).
+In gVisor its launcher runs this guard, and its kill reports go on a connection whose acknowledgement carried guard settings, as a gVisor issue pod's do.
+In a microVM, where the launcher is given `--microvm`, it runs the guest watch in the guard's place, and its reports go on a connection whose acknowledgement carried `kernelKills` (`runsGuest`, `packages/daemon/internal/launcher/launcher.go`).
+The launcher knows which from its own `--microvm` flag, fixed when the pod is built, and never from the daemon's answer, so a gVisor controller pod that a daemon re-adopts after a change of `type` keeps its guard until a launch replaces the pod.
 No guard runs where the controller runs outside a pod, since no launcher runs there:
 under `runtime: tmux` the daemon-launched controller is a pane in a window of its own, and under `controller: operator` it is the Oh My Pi that a person's `legion controller start` runs ([Operator-launched controller](#operator-launched-controller)).
 
@@ -5996,8 +6042,23 @@ The notice names the process as the lines do, by its executable's base name or i
 The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before you run it again.
 ```
 
+In a microVM controller pod the guest watch's report carries the kernel's cause, the launcher sends it only on a connection whose answer carried `kernelKills`, and the daemon chooses the note by that cause, as it does for a role (`controllerMemoryGuardKill`).
+For `cause: kernel`, a command of the controller's, the daemon logs `workflow: the controller whose program the pod's kernel stopped is told why`, and the note is:
+
+```text
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. Your session and the pod's other processes go on. Do not run the same program again unchanged: bound its output (a page, a limit, a stream), or send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before you run it again.
+```
+
+For `cause: kernel-protected`, one of the processes that run the controller's session, the daemon logs `workflow: the controller is told why the pod's kernel stopped one of the processes that run its session`, and the note is:
+
+```text
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every command it was running. The daemon then starts the same session again, as it does after any exit of your session's process. Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say. Read skill://legion-controller/references/wakes.md before your next command.
+```
+
+A report with no cause, the guard's, gets the guard's note above.
+
 `skill://legion-controller/references/wakes.md` has the controller's handling of the notice.
-An `eval` cell that answers `Kernel died during execution; completion is uncertain` beside such a notice is that kill: the guard ended the cell's kernel.
+An `eval` cell that answers `Kernel died during execution; completion is uncertain` beside such a notice is that kill: the process stopped was the cell's kernel.
 A notice can be lost in the first three cases of "The report and the note" above, and for a claim that is not the controller's.
 In each case the `ended` line stays in the `controller` container's log.
 
@@ -6015,13 +6076,15 @@ runtime:
         interval_milliseconds: 100
 ```
 
-Those are the defaults, and the guard is on in the controller's pod wherever the file says nothing.
+Those are the defaults, and the guard is on in a gVisor controller pod wherever the file says nothing.
+The block configures the guard of a gVisor controller pod alone, and does not turn off the guest watch of a microVM controller pod ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 The block has the five members of `issue_pods`, with the same ranges and the same defaults but the wait, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.controller_pod.act_percent must be between 50 and 90`).
 The wait after a kill is 1 second here, where an issue pod's is 5.
 It is the most the guard waits: it decides at each reading once every process it killed at the reading of the kill has exited, one process below the urgent share and at or above it every process that grew or is new to the stay with memory of its own, so the wait holds it back only while one of them has not exited, and the wait bounds how long it reads on with no fall and no growth since the kill before it gives the rise up.
 In the 4 GiB run of the tester's shared-page probe ("What it ends" above), the pod ended 3.4 seconds after a kill that freed nothing, and a wait of 1 second has the guard decide on the next process before such an end, also where a killed process has not exited.
 Each block is settled from its own members and its own defaults: a value under `issue_pods` never moves the controller's pod, and a value under `controller_pod` never moves an issue pod.
 The daemon hands the controller pod's launcher this block alone, on its answer to each hello (`memoryGuard` in `launcher_hello_ack`, `launcherHelloAck` in `packages/daemon/internal/runtime/sandbox/launcher_auth.go`).
+The same answer carries `kernelKills: true`, which a gVisor controller pod's launcher ignores; a microVM controller pod's launcher applies none of this block's settings and reads `kernelKills` alone.
 So a change applies at the launcher's next connection, which every daemon restart gives it, and replaces no pod.
 Before the first answer the guard runs at these defaults, its wait of 1 second included, so the pod is guarded while the daemon is away.
 Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before this guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
@@ -6107,7 +6170,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
 the image every container runs, the pod kind's one reservation, the operator's `runtime.kubernetes.pod` volumes and mounts, and the size of the pod's disk.
-A microVM issue pod's record also holds the sandbox it runs in, and a gVisor pod's holds none ([Issue pods in microVMs](#issue-pods-in-microvms)).
+A microVM pod's record, an issue pod's or the controller's, also holds the sandbox it runs in, and a gVisor pod's holds none ([Pods in microVMs](#pods-in-microvms)).
 The orphan sweep compares that record with what the runtime would build now, and adds the three facets of the live pod whose worker can still be reached
 — the operator's volume and mount holding the role's overlays, the secrets broker's enrollment, and the session store (`PodDrift`).
 Quantities are compared as amounts, so a disk written `1024Mi` and one written `1Gi` are no drift.
@@ -7383,7 +7446,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
   The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
   it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
-  Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM, since the pool's token is the pod's launcher's alone ([Issue pods in microVMs](#issue-pods-in-microvms) lists this refusal with the loader's others).
+  Nor may it equal `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM: the cluster projects one volume per audience, so the broker's token and the pool's would be one ([Pods in microVMs](#pods-in-microvms) lists this refusal with the loader's others).
   Set, the volume's name, its mount path and the two variables are Legion's: a `runtime.kubernetes.pod.env` that sets either variable, a `runtime.kubernetes.pod.volumes` entry named `agent-secrets-exchange`, or a `volume_mounts` path at, under or above `/var/run/legion/agent-secrets-exchange` is refused at boot and by `legion config check`, naming the entry, and a launch spec that sets either variable is refused as one setting any variable the runtime sets itself.
   Unset, no pod carries the token, no role is told either variable, and the name, the path and both variables stay the operator's (the variables a launch spec's too), so a deployment that never sets it runs exactly as before the key existed.
   The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
@@ -7835,10 +7898,11 @@ a token no launch resolves is refused as an invalid boot token, the operator's c
 in an architect's or phase worker's session it needs the operator's capability like any other takeover, and stops before any daemon call without one.
 
 **The pod.**
-Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool under gVisor, with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
+Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool, under gVisor or, where `runtime.kubernetes.sandbox.type` is `microvm`, in a GKE Sandbox microVM ([Pods in microVMs](#pods-in-microvms)), with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.
 Its one container, `controller`, runs `legion launcher --role controller`:
 it authenticates to the worker stream with its own launcher token and starts and stops the controller's `legion worker-shim` and Oh My Pi, on the pod baseline (`--pod-safety`:
 the two session-placing variables, [Settings order](#operator-configuration), and Oh My Pi's profile directory made under its state home, `/legion/scratch/state/controller`), on the daemon's command, as an issue pod's launcher does each role's, so a relaunch in a healthy pod is a new generation of that child rather than a new pod.
+In a microVM its launcher is also given `--microvm` and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, the metadata endpoint's two flags, and then serves that endpoint from the projected token it mounts at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Its role Secret, `legion-<project>-controller-controller-boot`, holds the launcher's token and its gh bundle (each owner's `github-hosts-<owner>` and `github-config-<owner>`, the review App's read-only `hosts.yml` and `config.yml` for every owner that App is installed on and for an owner a configured rename moved a repository away from, each token reaching every repository that owner's installation holds, `github-renames`, the bundle's configured renames, and `github-default`, the first owner), refreshed every minute as every role's are, and is the only Secret its launch writes:
 there is no provisioning `-boot` Secret.
 Its Sandbox owns a volume of its own, where an issue's owns none (`issue-legion-<project>-controller`, from its one `issue` claim template, of `runtime.kubernetes.issue_volume` and `storage_class`), mounted at `/legion`, which is the working root the controller runs in, so what one of its pods leaves there the next one finds;
@@ -7868,7 +7932,8 @@ Its one container, the launcher, carries the controller's reservation
 — `runtime.kubernetes.resources.controller` where the file sets a field, the daemon's default of 1 CPU and 4Gi otherwise
 — as request and limit alike unless the file sets a lower `cpu_request` or `memory_request`, so at the default the pod is `Guaranteed`, never the class the kubelet evicts first under node memory pressure (a lower request makes it `Burstable`, [Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable");
 the image probe pod carries its own, smaller reservation, not the controller's, so a controller reservation the pool cannot place leaves the probe, and the boot, unaffected ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
-Its launcher, as PID 1 of that container, runs the memory guard, which near the limit ends, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between the mark and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one new to that stay that holds memory of its own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+Its launcher, as PID 1 of that container, runs in a gVisor pod the memory guard, which near the limit ends, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between the mark and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one new to that stay that holds memory of its own ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+In a microVM it runs the guest watch in the guard's place ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
 
 The Sandbox is the claim's alone, where an issue's is its tree's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.

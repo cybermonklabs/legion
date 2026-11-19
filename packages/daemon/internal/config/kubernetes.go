@@ -43,10 +43,11 @@ type Kubernetes struct {
 	Kubeconfig string
 	Context    string
 	Scheduling Scheduling
-	// Sandbox is `runtime.kubernetes.sandbox`, settled: the sandbox each issue pod runs in (gVisor
-	// unless the file says otherwise), the issues whose pods run in the other one, and where a
-	// microVM pod runs. It places issue pods alone: the controller's pod, the repository cache pods
-	// and the image probe run in gVisor whatever it says.
+	// Sandbox is `runtime.kubernetes.sandbox`, settled: the sandbox each issue pod and the
+	// controller's pod run in (gVisor unless the file says otherwise), the issues whose pods run in
+	// the other one, and where a microVM pod runs. It places the issue pods and the controller's pod
+	// alone, the controller's by Type and never by CanaryIssues: the repository cache pods and the
+	// image probe run in gVisor whatever it says.
 	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
 	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
@@ -184,8 +185,9 @@ func DefaultIdleRelease() IdleReleaseConfig { return defaultIdleRelease }
 // MemoryGuardConfig is `runtime.kubernetes.memory_guard`: the memory guard's settings, by the
 // kind of pod a launcher's guard runs in. IssuePods is every issue pod's; ControllerPod is the
 // project controller's pod's, the one a daemon under `controller: daemon` launches, whose launcher
-// runs the guard as PID 1 of the controller's container (INFRA-3531). Each kind is settled from
-// its own block alone, so a value written under one never moves the other.
+// runs the guard as PID 1 of the controller's container in gVisor (INFRA-3531), and in a microVM
+// the guest watch in its place, which no kind's settings reach (INFRA-4567). Each kind is settled
+// from its own block alone, so a value written under one never moves the other.
 type MemoryGuardConfig struct {
 	IssuePods     MemoryGuardPodConfig
 	ControllerPod MemoryGuardPodConfig
@@ -256,11 +258,12 @@ type Scheduling struct {
 // Toleration is one `scheduling.tolerations` entry. Value is "" under operator Exists.
 type Toleration struct{ Key, Operator, Value, Effect string }
 
-// SandboxType is the sandbox an issue pod runs in.
+// SandboxType is the sandbox an issue pod or the project controller's pod runs in.
 type SandboxType string
 
 const (
-	// SandboxGVisor is gVisor, the sandbox of every issue pod a file names no other for.
+	// SandboxGVisor is gVisor, the sandbox of every issue pod a file names no other for, and of the
+	// controller's pod where Type is not microvm.
 	SandboxGVisor SandboxType = "gvisor"
 	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVMConfig names.
 	SandboxMicroVM SandboxType = "microvm"
@@ -269,10 +272,12 @@ const (
 // SandboxConfig is `runtime.kubernetes.sandbox`, settled. One daemon serves one project, so it is
 // that project's.
 type SandboxConfig struct {
-	// Type is the sandbox of the project's issue pods: SandboxGVisor when the file names none.
+	// Type is the sandbox of the project's issue pods and of its controller's pod: SandboxGVisor
+	// when the file names none.
 	Type SandboxType
 	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name, each once
-	// and in the file's order; nil when the file names none.
+	// and in the file's order; nil when the file names none. They name issues, so they never move
+	// the controller's pod.
 	CanaryIssues []string
 	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the file
 	// names no `microvm` block. The loader requires one, with its ComputeClass, while any issue
@@ -286,8 +291,9 @@ type MicroVMConfig struct {
 	// ComputeClass is the GKE ComputeClass whose nodes run the microVM pods. It is "" only in a
 	// block no issue pod uses.
 	ComputeClass string
-	// StorageClass is the class of a microVM pod's workspace volume: the file's
-	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in.
+	// StorageClass is the class of a microVM issue pod's workspace volume: the file's
+	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in. The
+	// controller's disk stays on Kubernetes.StorageClass in either sandbox.
 	StorageClass string
 	// Metadata is the metadata endpoint a microVM pod's launcher serves on the pod itself; nil
 	// when the file names none.
@@ -303,8 +309,9 @@ type MetadataConfig struct {
 	IdentityProvider string
 }
 
-// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
-// names an issue, whose pod then runs in a microVM on a gVisor project.
+// AnyMicroVM reports whether a pod may run in a microVM: Type is microvm, under which the
+// controller's pod runs in one and so does every issue pod CanaryIssues does not name, or
+// CanaryIssues names an issue, whose pod then runs in a microVM on a gVisor project.
 func (c SandboxConfig) AnyMicroVM() bool {
 	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
@@ -886,7 +893,7 @@ var (
 // when absent. type is one of the two words; each canary_issues entry is an issue key, named once;
 // the microvm block is read whether or not an issue pod uses it, and is required with its
 // compute_class while one does. storageClass is `runtime.kubernetes.storage_class`, a microVM
-// pod's storage class when the block names none.
+// issue pod's storage class when the block names none.
 func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
 	settled := SandboxConfig{Type: SandboxGVisor}
 	if value == nil {
@@ -997,14 +1004,16 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 	return block, nil
 }
 
-// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM, what the operator's
-// scheduling, pod and broker blocks would set that the microVM pod's own placement and endpoint
-// own: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass
-// adds both at admission; and, while the metadata endpoint is on, a pod.env variable the pod's
-// launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
-// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume per
-// audience and the pool's token is the launcher's alone. Each refusal names the operator's key.
-// With no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
+// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM (AnyMicroVM, which
+// holds wherever the controller's pod runs in one too), what the operator's scheduling, pod and
+// broker blocks would set that a microVM pod's own placement and endpoint own, an issue pod's or
+// the controller's: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's
+// RuntimeClass adds both at admission; and, while the metadata endpoint is on, a pod.env variable
+// the pod's launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
+// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume
+// per audience, so the two tokens would be one, and the broker's, which every role of an issue pod
+// reads, would be the token the endpoint exchanges. Each refusal names the operator's key. With
+// no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
 // nothing.
 func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 	sandbox := block.Sandbox
@@ -1035,7 +1044,7 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 			{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
 		} {
 			if member.audience == pool {
-				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone",
+				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, so the two tokens would be one",
 					agentSecretsKey, member.name, metadataKey, pool)
 			}
 		}

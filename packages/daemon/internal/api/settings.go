@@ -187,9 +187,10 @@ type KubernetesSettings struct {
 	// process of its own may be ended under it, so every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
-	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
-	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
-	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	// pods and of its controller's pod, which follows `type` alone, the issues whose pods run in
+	// the other one, and where a microVM pod runs. Every member is a word, an issue key, a class
+	// name, or the cluster's Workload Identity pool and identity provider, which name the cluster
+	// and grant nothing, so no member is a credential.
 	Sandbox SandboxSettings `json:"sandbox"`
 }
 
@@ -203,9 +204,10 @@ type SandboxSettings struct {
 }
 
 // MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
-// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
-// `runtime.kubernetes.storage_class` when the block names none; and the metadata endpoint's two
-// members, absent while the block names none.
+// nodes, absent in a block no issue pod uses that names none; the microVM issue pods' workspace
+// volume's class, `runtime.kubernetes.storage_class` when the block names none, which the
+// controller's disk is on in either sandbox; and the metadata endpoint's two members, absent while
+// the block names none.
 type MicroVMSettings struct {
 	ComputeClass string            `json:"compute_class,omitempty"`
 	StorageClass string            `json:"storage_class"`

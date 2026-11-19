@@ -1385,13 +1385,13 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		},
 		"a microVM project with no microvm block": {
 			func(o *Options) { o.Sandbox = SandboxConfig{Type: SandboxMicroVM} },
-			`no compute class for the issue pods that run in a microVM (sandbox type "microvm", canary issues [])`,
+			`no compute class for the pods that run in a microVM (sandbox type "microvm", canary issues [])`,
 		},
 		"a canary with no compute class": {
 			func(o *Options) {
 				o.Sandbox = SandboxConfig{CanaryIssues: []string{testTree}, MicroVM: &MicroVM{StorageClass: testMicroVMStorageClass}}
 			},
-			`no compute class for the issue pods that run in a microVM (sandbox type "", canary issues [LEGION-208])`,
+			`no compute class for the pods that run in a microVM (sandbox type "", canary issues [LEGION-208])`,
 		},
 		"a microVM block with no storage class": {
 			func(o *Options) {

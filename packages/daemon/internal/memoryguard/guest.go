@@ -98,8 +98,13 @@ import (
 // aside, and counts against no kill, so that the set-aside does not block another role's real
 // victim. The kills stay pending, to end unnamed, unless a pass names another process in the
 // victim's place within the rule's one limit (below). A process of that role that the watch counts
-// already is not set aside, and goes on counting, within the same limit. The launcher sets
-// SessionDrain to 3 s, role-init's 2 s drain and a second more for its kill to land. The launcher's
+// already is not set aside, and goes on counting, within the same limit. In an issue pod the
+// launcher sets SessionDrain to 3 s, role-init's 2 s drain and a second more for its kill to land.
+// The controller's pod has no role-init: once its shim has exited, the launcher, PID 1, drains the
+// exited generation itself, with SIGTERM over the container's processes, up to its stop grace for
+// them to go, and SIGKILL to each one left. That drain's SIGKILL is the session's end there, read
+// as role-init's is above, so there the launcher sets SessionDrain to its stop grace and a second
+// more (controllerSessionDrain, packages/daemon/internal/launcher/memoryguard.go). The launcher's
 // classifier counts every direct child of the shim as a session process, since it cannot tell the
 // agent from the shim's other children (the secrets renewer, the working copy's adoption, the
 // CodeGraph warm-up), which costs kills left unnamed, and a wrong name only within the rule's one
@@ -238,9 +243,11 @@ type GuestConfig struct {
 	// the watch's own process, and gives no process a role, so the watch raises nothing.
 	Classify Classifier
 	// Sink takes each kill, on the watch's loop, so it must not block, as the guard's Sink takes
-	// its own: a kill of a process of no role has an empty Role. The launcher's sink keeps a role's
-	// kills alone (serveMemoryGuard's byRole, packages/daemon/internal/launcher/memoryguard.go), so
-	// a process of no role has its line and no report.
+	// its own: a kill of a process of no role has an empty Role. An issue pod's launcher's sink
+	// keeps a role's kills alone (serveMemoryGuard's byRole,
+	// packages/daemon/internal/launcher/memoryguard.go), so a process of no role has its line and
+	// no report; the controller pod's classifier gives every process to the controller, whose sink
+	// reports each kill.
 	Sink func(Kill)
 	// Logf writes one line of the watch's; nil discards them.
 	Logf func(format string, args ...any)
@@ -251,8 +258,10 @@ type GuestConfig struct {
 	// role's shim has exited, role-init sends SIGTERM over the role's namespace, waits up to its
 	// drain for the role's processes to go, and then sends SIGKILL to each one left. A burst whose
 	// first rise comes no later than SessionDrain after such a departure, or that sees one during
-	// its wait, names no process of that role (Guest). The launcher sets it to role-init's drain
-	// and a margin for its kill to land; zero takes in a departure during the wait alone.
+	// its wait, names no process of that role (Guest). In an issue pod the launcher sets it to
+	// role-init's drain and a margin for its kill to land, and in the controller's pod, which has no
+	// role-init, to its own drain of the exited generation, its stop grace, and the same margin
+	// (controllerSessionDrain); zero takes in a departure during the wait alone.
 	SessionDrain time.Duration
 }
 
