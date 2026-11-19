@@ -1708,8 +1708,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   `pull-request-missing`, so an issue whose next handoff lands does not wait for the backlog to
   drain.
 - **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
-  that says where the settlement stopped. Each line names the head, the generation and the
-  snapshot, and each is written once for each record state or settlement.
+  that says where the settlement stopped. Each line names the head and the generation, and the
+  publish line and the drop lines also name the snapshot, so a drop line matches the publish line
+  of the same settlement. Each line is written once for each record state or settlement.
   - The listener writes `checks held a head` for a head's record that it has
     not settled after 10 minutes with no event. The line names what holds the record: `running`
     names each check run that has not finished, `suites` names each check suite that is not
@@ -1718,7 +1719,8 @@ notice comes once per handoff commit, from whichever read finds it first.
   - The listener writes `checks settlement published` for each settlement it publishes.
   - The daemon writes one line for each checks settlement it drops before it applies it:
     `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the
-    field in `reason`), `workflow: a checks settlement was dropped: no pull request is recorded
+    field in `reason`, and the `sha`, `generation` and `snapshot` of the payload where each
+    reads), `workflow: a checks settlement was dropped: no pull request is recorded
     for it`, `workflow: a checks settlement stands for no head the record holds` (with
     `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
     applied` (with `classification`, `stale` or `conflict`). A settlement delivered again after

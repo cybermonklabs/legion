@@ -537,6 +537,7 @@ RULES = {
         for path in files_but_tests(f"{DAEMON}/internal/stream")],
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
+    f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:142")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
@@ -784,7 +785,7 @@ RULES = {
                                                             "internal/broker/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/broker/store/storetest", ["."], "internal/broker/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
-    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:57")),
+    f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
     f"{ENVOY}/internal/contracts/golden_test.go": reads(
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/golden_test.go:50"),
