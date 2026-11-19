@@ -365,15 +365,16 @@ const issueVolume = "issue"
 //
 // annotationCacheOldUnusedAt is the annotation the sweep of a release before INFRA-4401 marked such
 // a cache with. The sweep reads it because INFRA-4401's A4 requires its first pass to take it off
-// every cache the sweep judges (sweepCache): a cache in the set loses it with the new one, and one
-// outside the set keeps the time of its first mark, the earlier of its marks that parse as a time,
-// retired at that pass when that mark is one retention old or more and otherwise marked with that
-// time under annotationCacheUnusedAt in the patch that removes it, so it retires one retention
-// after its first mark (one none of whose marks parses is marked with the time of that pass
-// instead). A cache the sweep cannot judge keeps it, and the next boot's census refuses that cache
-// by name, so once that first pass has run no cache a daemon boots beside carries it. The literal
-// goes in dispatch://INFRA-3532's pull request, once A4's first pass has run on every daemon: that
-// pass, which reads it, is why A8 keeps it until then.
+// every cache the sweep judges (sweepOldMarkedCache): a cache in the set loses it with the new one,
+// and one outside the set keeps the time of its first mark, the earlier of its marks that parse as
+// a time, retired at that pass when that mark is one retention old or more and otherwise marked
+// with that time under annotationCacheUnusedAt in the patch that removes it, so it retires one
+// retention after its first mark (one none of whose marks parses is marked with the time of that
+// pass instead). A cache the sweep cannot judge keeps it, and the next boot's census refuses that
+// cache by name, so once that first pass has run no cache a daemon boots beside carries it. The
+// literal goes in dispatch://INFRA-3532's pull request, once A4's first pass has run on every
+// daemon, with sweepOldMarkedCache, the one `if` of sweepCache that calls it, and its key in
+// markUnused's patch: that pass, which reads it, is why A8 keeps it until then.
 const (
 	labelCache                 = "legion.dev/cache"
 	cacheMarker                = "true"

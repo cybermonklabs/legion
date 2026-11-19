@@ -1988,7 +1988,7 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // (republishHeard): nothing inside the transaction can fail on it, so no JetStream trouble rolls
 // an admission back.
 func (w *workflowRuntime) hearRecorded(ctx context.Context, recorded string) {
-	if w.consumers == nil || recorded == "" || !intake.CommitScoped(ctx) {
+	if recorded == "" || !intake.CommitScoped(ctx) {
 		return
 	}
 	repo, err := ghrepo.Parse("GitHub's spelling of the repository an issue was recorded on", recorded)
@@ -2373,9 +2373,7 @@ func (w *workflowRuntime) dropLaunchedRepository(issue string) {
 // records replaces the cache set (refreshLive).
 func (w *workflowRuntime) workLaunched(ctx context.Context, repo ghrepo.Repository) {
 	w.cacheRepository(repo)
-	if w.consumers != nil || w.setRepositories != nil {
-		w.hearOrPend(ctx, repo)
-	}
+	w.hearOrPend(ctx, repo)
 }
 
 // recordOf is key's issue record, nil when the workflow does not record it.

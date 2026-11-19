@@ -10,13 +10,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -286,22 +286,50 @@ func TestABootGivesBothAppsKeyProofsOneRetryBudget(t *testing.T) {
 }
 
 // refusingMints is a real App token manager over a stand-in GitHub whose every mint, of a write
-// lease or a read lease, is refused before it reaches GitHub, each counted: everything else it
-// answers as the manager does, the App logins and the App-level read of each App's installations
-// among them.
+// lease or a read lease, is refused before it reaches GitHub and, where log is set, written to it
+// as a line of its own (leaseAskedLine), so a test whose daemon logs to the same writer reads which
+// leases were asked before the daemon served (linesBeforeServing): everything else it answers as
+// the manager does, the App logins and the App-level read of each App's installations among them.
 type refusingMints struct {
 	*appauth.Manager
-	asked atomic.Int32
+	log io.Writer
 }
 
-func (m *refusingMints) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
-	m.asked.Add(1)
+// leaseAskedLine is the message of the line refusingMints writes for each lease it is asked for.
+const leaseAskedLine = "test: the token source was asked for a lease"
+
+func (m *refusingMints) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return m.refuse(role, owner)
+}
+
+func (m *refusingMints) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	return m.refuse(role, owner)
+}
+
+// refuse writes the line of a lease asked of role's App on owner's installation where log is set,
+// and refuses it.
+func (m *refusingMints) refuse(role appauth.AppRole, owner string) (appauth.Lease, error) {
+	if m.log != nil {
+		fmt.Fprintf(m.log, "{\"msg\":%q,\"app\":%q,\"owner\":%q}\n", leaseAskedLine, role, owner)
+	}
 	return appauth.Lease{}, errors.New("this token source mints no lease")
 }
 
-func (m *refusingMints) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
-	m.asked.Add(1)
-	return appauth.Lease{}, errors.New("this token source mints no lease")
+// linesBeforeServing is each line of logged, a daemon's JSON log, whose message is msg and that
+// comes before the boot's last stage line, the API's (`legion workflow boot stage`, stage `api`),
+// which run writes just before it serves: what the boot did before the API could answer, apart
+// from what the refresher and the daemon's other loops do once it serves.
+func linesBeforeServing(logged, msg string) []string {
+	var lines []string
+	for line := range strings.SplitSeq(logged, "\n") {
+		if strings.Contains(line, `"msg":"legion workflow boot stage"`) && strings.Contains(line, `"stage":"api"`) {
+			return lines
+		}
+		if strings.Contains(line, `"msg":"`+msg+`"`) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // The boot proves each role App's key with GitHub's App-level read of its installations, GET
@@ -310,25 +338,39 @@ func (m *refusingMints) ReadToken(context.Context, appauth.AppRole, string) (app
 // to prove. A refusal of that read stops the boot, naming the App; an App with no installation
 // boots, and one WARN line names it, since an operator may install it once the daemon is up. The
 // token source here refuses every mint, of a write lease or a read lease, and the boot comes up
-// all the same, having asked it for none and GitHub for no installation token.
+// all the same.
 //
-// The control is any Token call during the boot (INFRA-4401 P4; dispatch://INFRA-4401 check a-go,
-// item 8): with the boot's mint per owner back (mintAtBoot), that mint is refused and the boot
-// stops, and GitHub is asked for a token.
+// The first case boots over a live record on acme/widgets, an owner both Apps are installed on,
+// so a mint per owner put back into the boot has an owner to mint for. The record carries its
+// repository columns and no claim, and no `repository_renames` pair is configured, so neither the
+// backfill nor the rename pass reads GitHub and no worker is relaunched. The boot asks the token
+// source for no lease before it serves, counted up to its last stage line, the API's: once the API
+// serves, the refresher's preparation of acme/widgets asks for one to read its default branch
+// (prepareAtStart), which this source refuses as it refuses every other. GitHub is asked for no
+// installation token at all, since every lease the daemon asks goes to this source.
+//
+// The control is a mint per owner put back into the key proof (INFRA-4401 P4; dispatch://INFRA-4401
+// check a-go, item 8): proveAppKeys asking the token source for each role's token on acme, as the
+// base's mintAtBoot did for its owner. That mint is refused and the boot stops.
 func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
 	t.Run("each App's key is proved and nothing is minted", func(t *testing.T) {
 		quickAppMints(t)
 		manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
-		tokens := &refusingMints{Manager: manager}
 		var logged syncBuffer
-		if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
+		tokens := &refusingMints{Manager: manager, log: &logged}
+		cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
+		seedLiveTreeOn(t, cfg, "acme/widgets")
+		if err := bootsOrExitsLogging(t, cfg, tokens, 60*time.Second, slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 			t.Fatalf("boot = %v, want the daemon up: the boot mints no token, so a source that refuses every mint stops nothing", err)
 		}
 		if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
 			t.Errorf("installation discoveries by App = %v, want one each: the key proof of the implement App (1) and the review App (2)", got)
 		}
-		if asked, exchanged := tokens.asked.Load(), standIn.Exchanges(); asked != 0 || exchanged != 0 {
-			t.Errorf("the boot asked the token source for %d leases and GitHub for %d installation tokens, want none of either", asked, exchanged)
+		if asked := linesBeforeServing(logged.String(), leaseAskedLine); len(asked) != 0 {
+			t.Errorf("the boot asked the token source for %d leases before it served, want none: %q", len(asked), asked)
+		}
+		if exchanged := standIn.Exchanges(); exchanged != 0 {
+			t.Errorf("GitHub was asked for %d installation tokens, want none", exchanged)
 		}
 		if warned := warnLinesNaming(logged.String(), "a GitHub App is installed on no account"); len(warned) != 0 {
 			t.Errorf("the boot warned %q, want nothing: both Apps are installed on acme", warned)

@@ -90,9 +90,12 @@ type workflowRuntime struct {
 	consumers *intake.Consumers
 	// setRepositories replaces the repositories GitHub intake hears, the one route the runtime
 	// reaches that stream call by (updateSubscription). The boot leaves it nil, which means
-	// w.consumers.SetRepositories; a test sets it to a stand-in, since consumers is the concrete
-	// *intake.Consumers and a test of the heard set's publication has to hold the call while it
-	// proves no transaction waits on it (INFRA-3169).
+	// w.consumers.SetRepositories: the boot opens the consumers (connect) before anything that
+	// hears a repository runs — a fact that records an issue, a launch, the refresher's backfill —
+	// so no caller asks whether they are open. A test sets it to a stand-in, since consumers is the
+	// concrete *intake.Consumers: a test of the heard set's publication, which has to hold the call
+	// while it proves no transaction waits on it (INFRA-3169), and a test whose runtime opens no
+	// consumers and whose launch or backfill hears a repository (hearsNothing).
 	setRepositories func(ctx context.Context, repositories []ghrepo.Repository) error
 	outbox          *outbox
 	// outboxWake is the outbox as the records' wake reaches it (wakeOutbox): the records are built

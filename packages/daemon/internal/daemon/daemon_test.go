@@ -1203,25 +1203,7 @@ func liveTreeBoard(t *testing.T, project string) string {
 func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, *daemon, api.LiveRepositoryView) {
 	t.Helper()
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := cfg.Project + "-1"
-	// The schema is brought forward before the tree is seeded, as boots does: the daemon's own boot
-	// migrates the store only after this, and this may be the first test of the run to touch it.
-	st, err := store.Open(context.Background(), cfg.PostgresDSN)
-	if err != nil {
-		t.Fatalf("open the store: %v", err)
-	}
-	_, err = st.Migrate(context.Background())
-	st.Close()
-	if err != nil {
-		t.Fatalf("migrate the store: %v", err)
-	}
-	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: repo, DefaultBranch: "main", GitHubRepo: repo,
-		Project: cfg.Project, Tree: root, Title: "a tree on " + repo, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-		DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
+	root := seedLiveTreeOn(t, cfg, repo)
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.workflowTokens, o.githubAPI = tokens, githubAPI
 	d := startDaemonWithin(t, cfg, o, log, 20*time.Second)
@@ -1236,6 +1218,33 @@ func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubA
 		return false
 	})
 	return root, d, entry
+}
+
+// seedLiveTreeOn records one live tree of cfg's project in the store cfg names, its root running
+// in implementing on repo with its repository columns filled and no claim (seedWorkflowTree), and
+// answers the root's key. The schema is brought forward before the tree is seeded, as boots does:
+// the daemon's own boot migrates the store only after this, and this may be the first test of the
+// run to touch it.
+func seedLiveTreeOn(t *testing.T, cfg config.Config, repo string) string {
+	t.Helper()
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := cfg.Project + "-1"
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	_, err = st.Migrate(context.Background())
+	st.Close()
+	if err != nil {
+		t.Fatalf("migrate the store: %v", err)
+	}
+	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: repo, DefaultBranch: "main", GitHubRepo: repo,
+		Project: cfg.Project, Tree: root, Title: "a tree on " + repo, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+		DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
+	return root
 }
 
 // warnLinesNaming is each WARN line of logged, a daemon's JSON log, that holds every one of words.

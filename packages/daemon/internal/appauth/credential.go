@@ -222,7 +222,7 @@ func installedLayout(ctx context.Context, installations OwnerInstallations, appR
 	if err != nil {
 		return bundleLayout{}, fmt.Errorf("read the owners the %s App is installed on for %s: %w", appRole, role, err)
 	}
-	installed.Record(appRole, owners)
+	installed.record(appRole, owners)
 	return bundleDirs(owners, served, renames, repo)
 }
 
@@ -301,7 +301,7 @@ func (l *LeftOut) left(dir string, roles []AppRole) bool {
 
 // Installed is the daemon's record of the owner accounts each App was last read installed on
 // (OwnerInstallations), kept as two reads apart: the read of that App's last bundle build
-// (Record), and the read the boot's proof of that App's key made (RecordProof). One record per
+// (record), and the read the boot's proof of that App's key made (RecordProof). One record per
 // project, made by internal/daemon beside the LeftOut record and handed to the same three, so
 // the drift check has an owner set to compare a pod against without asking GitHub for one, and
 // a launch's addressing has its App's owners from the first launch on.
@@ -326,7 +326,7 @@ func (l *LeftOut) left(dir string, roles []AppRole) bool {
 type Installed struct {
 	mu sync.Mutex
 	// owners holds, per App role, the owner accounts that App's last bundle build read,
-	// lowercased and sorted (Record).
+	// lowercased and sorted (record).
 	owners map[AppRole][]string
 	// proved holds, per App role, the owner accounts the boot's proof of that App's key read, in
 	// the same form (RecordProof).
@@ -339,11 +339,11 @@ func NewInstalled() *Installed {
 	return &Installed{owners: map[AppRole][]string{}, proved: map[AppRole][]string{}}
 }
 
-// Record holds the owners role's App was read installed on by a bundle's build
+// record holds the owners role's App was read installed on by a bundle's build
 // (installedLayout), replacing what an earlier build's read held: an account that removed the
 // App is gone from the answer at once, as it is from the bundle that read it. It is the one read
 // a pod is compared against (GitHubDirs); the boot's read is RecordProof's.
-func (i *Installed) Record(role AppRole, owners []string) {
+func (i *Installed) record(role AppRole, owners []string) {
 	if i == nil {
 		return
 	}

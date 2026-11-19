@@ -233,7 +233,8 @@ func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnce
 	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", 2*time.Second, &reset))
 	client := &repositoryDispatch{issues: map[string]dispatch.Issue{"LEGION-5": {Key: "LEGION-5", Status: "todo", ResolvedRepo: "zeta/tools"}}}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: client,
-		dispatchProject: "LEGION", installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
+		dispatchProject: "LEGION", installs: &installations{}, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		setRepositories: hearsNothing}
 	w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
 	w.defaultBranches.onHold = w.heldThroughLimit
 

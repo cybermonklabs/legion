@@ -1013,7 +1013,7 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 // dispatch://INFRA-3532's pull request deletes the literal and this test with
 // annotationCacheOldUnusedAt. The controls, each run in a copy of the tree: the old annotation
 // left in place (markUnused's patch without annotationCacheOldUnusedAt), which fails cases 1, 3, 4
-// and 5, each cache still carrying it; the old mark ignored (sweepCache never taking
+// and 5, each cache still carrying it; the old mark ignored (sweepOldMarkedCache never taking
 // annotationCacheOldUnusedAt as a first mark), which fails case 1, marked at the sweep's time,
 // case 4, its later mark kept, and case 2, kept and not retired; the later mark kept (the old mark
 // read only where the new one is absent or not a time), which fails case 4; and a cache none of

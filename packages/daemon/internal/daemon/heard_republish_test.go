@@ -31,6 +31,12 @@ func (h *eachHeldSubscription) set(ctx context.Context, repositories []ghrepo.Re
 	return h.w.consumers.SetRepositories(ctx, repositories)
 }
 
+// hearsNothing stands in for the runtime's subscription update (workflowRuntime's
+// setRepositories) in a runtime a test builds with no consumers: it takes every set and publishes
+// it nowhere, so a launch that hears its repository (workLaunched) adds it to the heard set as the
+// daemon's does, with no JetStream behind it.
+func hearsNothing(context.Context, []ghrepo.Repository) error { return nil }
+
 // The publication of the whole heard set again (republishHeard, the refresher's fourth job) holds
 // no transaction of the pool across its JetStream call. The subscription update reaches JetStream,
 // and a durable consumer that is missing has it read the pool the transaction would be on, so a

@@ -229,12 +229,10 @@ func fillOf(ctx context.Context, issue record.Issue, repo ghrepo.Repository, pul
 func (w *workflowRuntime) backfillLater(ctx context.Context) {
 	filled, left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, w.dispatchProject, w.stateDir, w.defaultBranches, w.repositories.renames, w.log)
 	if len(filled) != 0 {
-		if w.consumers != nil || w.setRepositories != nil {
-			for _, repo := range filled {
-				w.hearOrPend(ctx, repo)
-				if partner, paired := w.repositories.renames.Partner(repo.String()); paired {
-					w.hearOrPend(ctx, partner)
-				}
+		for _, repo := range filled {
+			w.hearOrPend(ctx, repo)
+			if partner, paired := w.repositories.renames.Partner(repo.String()); paired {
+				w.hearOrPend(ctx, partner)
 			}
 		}
 		w.wakeLive()

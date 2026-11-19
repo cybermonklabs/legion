@@ -1067,7 +1067,7 @@ func TestAnUnrecordedIssuesLaunchWorksItsResolvedRepository(t *testing.T) {
 	}
 	held := true
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
-		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(), setRepositories: hearsNothing,
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
 		workspaceHeld:   func(string, ghrepo.Repository) bool { return held }}
 
@@ -1111,7 +1111,7 @@ func TestALaterLaunchOfAKeptIssuePutsItsRepositoryBackInTheCacheSet(t *testing.T
 	client := &repositoryDispatch{issues: map[string]dispatch.Issue{"LEGION-9": {Key: "LEGION-9", Project: "LEGION", ResolvedRepo: "acme/widgets"}}}
 	installs := &installations{}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
-		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(), setRepositories: hearsNothing,
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now),
 		workspaceHeld:   func(string, ghrepo.Repository) bool { return true }}
 	cached := func() []string { return repositoryNames(w.cacheRepositories()) }
@@ -1146,7 +1146,7 @@ func TestAnAdoptedPanesRepositoryIsTheOneItsIssueWorks(t *testing.T) {
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@main"})
 	client := &repositoryDispatch{issues: map[string]dispatch.Issue{"LEGION-9": {Key: "LEGION-9", Project: "LEGION", ResolvedRepo: "acme/widgets"}}}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: &installations{},
-		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
+		repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(), setRepositories: hearsNothing,
 		defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		return w.records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-2", Tree: "LEGION-2", Project: "LEGION", Title: "root", Phase: phase.Implementing,

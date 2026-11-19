@@ -2494,18 +2494,26 @@ func TestPlainStateNamesEachRepositoryWithoutTheWebhookApp(t *testing.T) {
 }
 
 // An operator whose `legion` is of this contract and whose daemon is of an earlier one, as during
-// a rollout, reads that daemon's state: its `repositories` block has no `live` key, so this CLI
-// reads no repository from it. It must not then say that no repository lacks the webhook App,
-// because that daemon may name one, as contract 152's `withoutWebhookApp` does here. Found by the
-// tester of dispatch://INFRA-4401 at a8076cb487b2, against a running daemon of contract 152, whose
-// own `legion state` printed `webhook App missing on sjawhar/legion-smoke: …` where this CLI
-// printed `webhook App missing: none`.
+// a rollout, reads that daemon's state: its `repositories` block has no `live` key, but it writes
+// `withoutWebhookApp`, a key both releases write in one shape, and that list is what this CLI's
+// webhook App lines are read from (webhookAppLines). So the CLI prints the line that daemon's
+// list names, for acme/widgets here, and never says that no repository lacks the webhook App.
+// Found by the tester of dispatch://INFRA-4401 at a8076cb487b2, against a running daemon of
+// contract 152, whose own `legion state` printed `webhook App missing on sjawhar/legion-smoke: …`
+// where this CLI printed `webhook App missing: none`.
+//
+// The control is the CLI that read the gaps from the `live` block: webhookAppLines is then fed
+// nothing for this body, and the line this test reads is gone.
 func TestPlainStateDoesNotSayNoWebhookAppIsMissingFromADaemonWithNoLiveBlock(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
+	failed := "the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"
 	block := `{"owners":["acme"],"mapped":[{"repo":"acme/widgets","default":true,"apps":{"implement":true,"review":true}}],` +
-		`"refused":[],"withoutWebhookApp":[{"repo":"acme/widgets","reason":"the webhook App check failed: GITHUB_UNREADABLE: GitHub answered 500"}],"caches":[]}`
+		`"refused":[],"withoutWebhookApp":[{"repo":"acme/widgets","reason":"` + failed + `"}],"caches":[]}`
 	out := plainStateOf(t, "{"+daemon+`,"repositories":`+block+"}")
+	if want := "webhook App missing on acme/widgets: " + failed + "\n"; !strings.Contains(out, want) {
+		t.Fatalf("legion state printed %q, want the line %q: the daemon's withoutWebhookApp names acme/widgets", out, want)
+	}
 	if strings.Contains(out, "webhook App missing: none") {
 		t.Fatalf("legion state printed %q: it says no repository lacks the webhook App, while the daemon it read names acme/widgets as one", out)
 	}
