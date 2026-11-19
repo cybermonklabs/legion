@@ -63,7 +63,15 @@ Each token reaches every repository its own installation holds.
 `legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
 repository a command names, and `git` reaches the same bundle through a credential helper that
 picks a directory the same way, so a command naming an owner the App is not installed on is
-refused there, not merely discouraged.
+refused there, not merely discouraged. The one exception is a `gh` read the wrapper knows (a
+command such as `pr list` typed by its full name with each value its own word, a `gh api` GET,
+or a `gh api graphql -f query=…` in the one form
+[the deployment guide](https://github.com/cybermonklabs/legion/blob/main/docs/deployment.md#what-a-panes-gh-git-and-jj-are)
+lists, whose query holds neither the word `mutation` nor `subscription`, in any case) that names
+only such owners, names no repository a configured
+rename moves, and reads no `github.com` remote of the working directory: it runs with
+`GH_CONFIG_DIR`'s token, which GitHub lets read public data and that installation's own
+repositories alone.
 
 ## The controller
 
