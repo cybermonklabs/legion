@@ -100,10 +100,13 @@ codex_start_standins() {
       <"$work/$label.stdin" >"${client_out[$label]}" 2>"$work/logs/$label.err" &
     scenario_pids+=($!)
   done
-  # The session's first prompt: the plugin's SessionStart hook records its id for the server.
+  # The session's first prompt: the plugin's SessionStart hook records its id for the server. Its
+  # server's environment is kept first, while the server waits for that record: a server that then
+  # fails to dial exits, and its environment with it.
   for label in "${codex_labels[@]}"; do
     wait_for 120 client_ready "$label" ||
       refuse "the $label Codex client did not start: $(tail -n 10 "$work/logs/$label.err") $(tail -n 10 "$work/logs/$label-server.err" 2>/dev/null)"
+    codex_keep_server_env "$label"
     send "$label" "$(jq -cn --arg s "${codex_session[$label]}" '{op: "start", session: $s}')"
   done
 }
@@ -167,6 +170,8 @@ codex_start_real() {
     sock=$codex_tmux_dir/$label
     wait_for 120 codex_composer "$sock" ||
       refuse "Codex showed no prompt for $label: $("$tmux_bin" -S "$sock" capture-pane -p -t codex 2>&1 | tail -n 15)"
+    # Codex has started the plugin's server, which waits for the record the first prompt writes.
+    codex_keep_server_env "$label"
     # One turn of its own first: Codex runs SessionStart at a session's first prompt.
     "$tmux_bin" -S "$sock" send-keys -t codex -l 'Reply with the one word: ready.'
     sleep 0.5
@@ -242,19 +247,27 @@ codex_server_pid() {
   return 1
 }
 
+# codex_keep_server_env LABEL: that session's plugin server's environment, read from its
+# /proc/<pid>/environ while it waits for its session record, kept as $work/<label>.server-environ
+# (0600) for the probe rows: what Codex, or the stand-in, handed the server, so as the manifest's
+# env_vars filtered it. It refuses when no such server runs within 60 s.
+codex_keep_server_env() {
+  local pid=""
+  wait_for 60 codex_server_pid "$1" >/dev/null && pid=$(codex_server_pid "$1")
+  if [ -z "$pid" ] || ! (umask 077 && cat "/proc/$pid/environ" >"$work/$1.server-environ"); then
+    refuse "no plugin server process of the $1 Codex session was found to read its environment from"
+  fi
+}
+
 # codex_probe LABEL SESSION NATSPROBE-ARGS...: natsprobe in the environment that session's plugin
-# server got, as the manifest's env_vars filtered it, presenting the credential the plugin's own
+# server was started with (codex_keep_server_env), presenting the credential the plugin's own
 # settings resolve there (role-takeover/codex-probe.ts): so a session whose server is told no
 # credential, as under seedless or manifest-drops-nats-auth, probes with none.
 codex_probe() {
-  local label=$1 session=$2 pid
+  local label=$1 session=$2
   shift 2
-  pid=$(codex_server_pid "$label") && [ -n "$pid" ] || {
-    echo "no plugin server process of the $label Codex session was found"
-    return 2
-  }
-  bun "$drivers/codex-probe.ts" --server-pid "$pid" --session "$session" --cwd "$(codex_cwd "$label")" -- \
-    "$(command -v natsprobe)" "$@"
+  bun "$drivers/codex-probe.ts" --environ "$work/$label.server-environ" --session "$session" \
+    --cwd "$(codex_cwd "$label")" -- "$(command -v natsprobe)" "$@"
 }
 
 # codex_transcripts_in_evidence: with --real-hosts, each Codex session's own transcript, the file
