@@ -598,9 +598,11 @@ func brokerAudienceRefusal(member string) string {
 // `impersonate_service_account`, since the writer token signs in only by impersonating that
 // account; a value that is not a provider's full resource name, a pool id that starts with
 // Google's reserved `gcp-` among them; a blank value; the member under `postgres`, where
-// `session_database` as a whole is inert and refused; and a value that is the broker's
-// `audience` or `exchange_audience`, whose tokens every role of a pod reads. The App keys are
-// commands that fail, so a boot load that got past the session store would fail on them instead.
+// `session_database` as a whole is inert and refused; a value that is the broker's `audience` or
+// `exchange_audience`, whose tokens every role of a pod reads; and a value that an operator's
+// projected pod token carries, which every role of a pod reads too, its refusal naming the volume
+// and the source that carry it. The App keys are commands that fail, so a boot load that got past
+// the session store would fail on them instead.
 func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm(t *testing.T) {
 	const database = "{instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam"
 	const account = ", impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com"
@@ -680,6 +682,17 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
 				"      exchange_audience: \"" + testWriterAudience + "\"\n"),
 			want: brokerAudienceRefusal("exchange_audience"),
+		},
+		{
+			name: "an operator's pod token in a projected volume's second source",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-tokens\n" +
+				"          projected: {sources: [{service_account_token: {audience: model-gateway.example.com, path: gateway}}," +
+				" {service_account_token: {audience: \"" + testWriterAudience + "\", path: writer}}]}\n" +
+				"      volume_mounts:\n        - {volume: operator-tokens, mount_path: /var/run/operator}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[1].service_account_token.audience" +
+				" (both " + testWriterAudience + "): the operator's pod volumes are mounted where every role of a pod reads them, and the writer token is the launcher's alone",
 		},
 	} {
 		for _, loader := range []struct {

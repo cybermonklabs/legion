@@ -638,9 +638,10 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // skills_repository is refused whatever its value, a null one included (namesKey). The sandbox's
 // rules that read the block's scheduling, pod and agent_secrets too are checked once all four are
 // read (checkSandboxAgainstTheBlock), and so is the session database's writer audience against the
-// broker's two audiences (checkWriterAudienceAgainstTheBroker). What depends on keys outside the
-// block is checked once the whole file is read (checkKubernetesKeys), and the reservations the
-// file leaves out are filled when the block is settled (resolveKubernetes).
+// audience of every token a role of a pod reads (checkWriterAudienceAgainstRoleTokens). What
+// depends on keys outside the block is checked once the whole file is read (checkKubernetesKeys),
+// and the reservations the file leaves out are filled when the block is settled
+// (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
@@ -733,7 +734,7 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if err := checkSandboxAgainstTheBlock(block); err != nil {
 		return nil, err
 	}
-	if err := checkWriterAudienceAgainstTheBroker(block); err != nil {
+	if err := checkWriterAudienceAgainstRoleTokens(block); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -1065,25 +1066,55 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 	return nil
 }
 
-// checkWriterAudienceAgainstTheBroker refuses a session database writer audience
-// (session_database.writer_audience) that is also a broker audience (agent_secrets.audience or
-// exchange_audience). The three tokens have one subject, the pod's ServiceAccount, and a pod that
-// enrolls with the broker mounts the broker's two where every role of the pod reads them
-// (podTokenMounts in internal/runtime/sandbox). So with equal values a role's process could read
-// the broker's token, exchange it as the writer token and sign in as the session database's
-// service account, past the socket's peer check, and the writer token must be the launcher's
-// alone. Each refusal names both keys and the value.
-func checkWriterAudienceAgainstTheBroker(block *Kubernetes) error {
-	writer, secrets := block.SessionStore.Database.WriterAudience, block.AgentSecrets
-	if writer == "" || secrets == nil {
+// checkWriterAudienceAgainstRoleTokens refuses a session database writer audience
+// (session_database.writer_audience) that a token every role of a pod reads also carries: the
+// broker's two (agent_secrets.audience and exchange_audience), which a pod that enrolls with the
+// broker mounts where every role of the pod reads them (podTokenMounts in
+// internal/runtime/sandbox), and each projected service_account_token of the operator's
+// pod.volumes, which every pod carries where every role of the pod reads it. All these tokens and
+// the writer token have one subject, the pod's ServiceAccount. So with a shared audience a role's
+// process could read such a token, exchange it as the writer token and sign in as the session
+// database's service account, past the socket's peer check, and the writer token must be the
+// launcher's alone. A token of the writer audience's https: form is refused too: a provider whose
+// allowed audiences are left empty takes a token whose audience is its full resource name "with
+// or without the HTTPS prefix" (gcloud iam workload-identity-pools providers create-oidc,
+// --allowed-audiences). The broker's tokens are checked first, then the volumes in order, and each
+// refusal names both keys and the audience.
+func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
+	writer := block.SessionStore.Database.WriterAudience
+	if writer == "" {
 		return nil
 	}
-	for _, member := range []struct{ name, audience string }{
-		{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
-	} {
-		if member.audience == writer {
-			return fmt.Errorf("%s.writer_audience must differ from %s.%s (both %s): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone",
-				sessionDatabaseKey, agentSecretsKey, member.name, writer)
+	// A writer audience never starts with https: (ompsessions.ValidWriterAudience), so trimming the
+	// prefix leaves the writer audience exactly when the audience is it or its https: form.
+	carries := func(audience string) bool { return strings.TrimPrefix(audience, "https:") == writer }
+	refusal := func(key, audience, reason string) error {
+		if audience == writer {
+			return fmt.Errorf("%s.writer_audience must differ from %s (both %s): %s, and the writer token is the launcher's alone",
+				sessionDatabaseKey, key, writer, reason)
+		}
+		return fmt.Errorf("%s.writer_audience must differ from %s (%s), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix: %s, and the writer token is the launcher's alone",
+			sessionDatabaseKey, key, audience, reason)
+	}
+	if secrets := block.AgentSecrets; secrets != nil {
+		for _, member := range []struct{ key, audience string }{
+			{agentSecretsKey + ".audience", secrets.Audience}, {agentSecretsKey + ".exchange_audience", secrets.ExchangeAudience},
+		} {
+			if carries(member.audience) {
+				return refusal(member.key, member.audience, "the broker's tokens are mounted where every role of a pod reads them")
+			}
+		}
+	}
+	for i := range block.Pod.Volumes {
+		projected := block.Pod.Volumes[i].Projected
+		if projected == nil {
+			continue
+		}
+		for j := range projected.Sources {
+			if token := projected.Sources[j].ServiceAccountToken; token != nil && carries(token.Audience) {
+				return refusal(fmt.Sprintf("%s.volumes[%d].projected.sources[%d].service_account_token.audience", podKey, i, j),
+					token.Audience, "the operator's pod volumes are mounted where every role of a pod reads them")
+			}
 		}
 	}
 	return nil

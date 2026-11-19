@@ -1076,7 +1076,7 @@ The proxy's socket then admits only the launcher and the generation's Oh My Pi p
 The loader holds the value to `ompsessions.ValidWriterAudience` (`internal/ompsessions/store.go`), and the launcher and the proxy hold to the same rule.
 The project is its number in decimal digits, never its id.
 The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, and neither starts with `gcp-`, which Google keeps for itself.
-`legion config check` and the daemon's boot load refuse the same files with the same words (`readSessionDatabase` and `checkWriterAudienceAgainstTheBroker`, `internal/config/kubernetes.go`):
+`legion config check` and the daemon's boot load refuse the same files with the same words (`readSessionDatabase` and `checkWriterAudienceAgainstRoleTokens`, `internal/config/kubernetes.go`):
 
 - the member without `impersonate_service_account`:
   `runtime.kubernetes.session_database.writer_audience needs runtime.kubernetes.session_database.impersonate_service_account: the writer token signs in to Cloud SQL only by impersonating that service account`
@@ -1090,15 +1090,22 @@ The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, a
 - the member under `postgres`, where `session_database` as a whole is refused:
   `runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it`
 
-- a value that is also `agent_secrets.audience` or `agent_secrets.exchange_audience`:
+- a value that is also the audience of a token every role of a pod reads: `agent_secrets.audience`, `agent_secrets.exchange_audience`, or the `audience` of a projected `service_account_token` source of a `pod.volumes` entry:
   `runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (both <value>): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
-  All three tokens have the pod's ServiceAccount as their subject, and every role of a pod that enrolls with the broker reads the broker's two (`podTokenMounts`, `manifest.go`).
-  With equal values, a role's process could exchange the broker's token as the writer token and sign in as the account.
+  For a pod volume, the refusal names the source, such as `runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience`, and says `the operator's pod volumes are mounted where every role of a pod reads them`.
+  All these tokens have the pod's ServiceAccount as their subject.
+  Every role of a pod that enrolls with the broker reads the broker's two tokens (`podTokenMounts`, `manifest.go`), and every role reads the operator's mounted pod volumes.
+  With equal values, a role's process could exchange such a token as the writer token and sign in as the account.
+
+- a value whose `https:` form, `https://iam.googleapis.com/projects/<number>/…`, is the audience of such a token:
+  `runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (https://iam.googleapis.com/…), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix: the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone`, and likewise for the other keys above.
+  A provider whose allowed audiences list is empty takes a token whose audience is its full resource name with or without the `https:` prefix (`gcloud iam workload-identity-pools providers create-oidc`, `--allowed-audiences`), so such a token is a writer token too.
 
 A deployment that sets the member makes these four things true:
 
 - A workload identity pool has one OIDC provider that trusts the cluster's issuer.
-  The provider's allowed audience is its own full resource name, which is the member's value.
+  Its allowed audiences list names the member's value alone, so the provider takes no token of the `https:` form either.
+  Left empty, the list also admits that form, which the loader refuses on every token a role reads, but not on a token the loader does not know of.
   Its attribute condition admits the Kubernetes ServiceAccounts that the pods run as.
 
 - The account grants `roles/iam.workloadIdentityUser` to the principal of the pods' ServiceAccount in that pool:
@@ -3512,7 +3519,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;
   `postgres` without `session_dsn_secret`, or with one that is empty or not a Secret data key (`[-._a-zA-Z0-9]+`);
-  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account` or with the value of `agent_secrets.audience` or `agent_secrets.exchange_audience`, whose tokens every role of a pod reads;
+  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account`, or with a value that, as it is or with an `https:` prefix, is `agent_secrets.audience`, `agent_secrets.exchange_audience` or the audience of a projected `service_account_token` of `pod.volumes`, whose tokens every role of a pod reads;
   a `session_dsn_secret` under `cloudsql-iam`; and a `session_database` under `postgres` (an inert key is refused, never ignored).
   At boot the daemon also refuses, under `postgres`, a `session_dsn_secret` that is the providers Secret's `NATS_NKEY_SEED` and a `provider_keys` entry that reads the same key (the shim would export the URL into Oh My Pi's environment)
   — neither can arise under `cloudsql-iam`, where no pod mounts a session key

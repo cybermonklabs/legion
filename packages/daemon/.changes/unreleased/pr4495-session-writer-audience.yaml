@@ -4,7 +4,10 @@ body: |-
   socket can admit only the launcher and the role's Oh My Pi process.
   `runtime.kubernetes.session_database` takes an optional `writer_audience`: the full resource name
   of a workload identity provider. `legion config check` and the daemon's boot load refuse it without
-  `impersonate_service_account`, and refuse any other form. When the member is set, each issue pod
+  `impersonate_service_account`, refuse any other form, and refuse a value that, as it is or with an
+  `https:` prefix, is the audience of a token every role reads: the broker's two
+  (`agent_secrets.audience` and `exchange_audience`) or a projected `service_account_token` of
+  `pod.volumes`. When the member is set, each issue pod
   and the controller's pod carry one projected ServiceAccount token of that audience, mounted only
   under the launcher's roles directory, which no role sees, and each pod's `legion launcher` gets
   `--session-writer-audience <audience>`. Its proxy exchanges the token at Google's security token
