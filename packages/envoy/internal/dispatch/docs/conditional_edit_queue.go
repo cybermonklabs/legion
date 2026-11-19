@@ -43,9 +43,12 @@ const conditionalEditReleaseTimeout = 5 * time.Second
 // 20261101181502). The admission's sum counts the members' rows other than this process's own,
 // whose count it holds in memory, and deletes the rows of processes that are no members: one that
 // died, or whose room-sync connection is down, counts for nothing until it is a member again, and
-// writes its row back with its next admission.
+// writes its row back with its next admission. The lock's statement names itself
+// conditional_edit_queue_lock and spells its key's text type, so it shares no text with the copy
+// lock's (projectCopiesLock), which the copy-lock guard and the copy-lock waits a test reads off
+// pg_stat_activity tell that lock by (clientClaimsLockNamespace says the same of the claims lock).
 const (
-	conditionalEditQueueLock   = `select pg_advisory_xact_lock($1, hashtext($2))`
+	conditionalEditQueueLock   = `select pg_advisory_xact_lock($1, hashtext($2::text)) as conditional_edit_queue_lock`
 	conditionalEditQueueOthers = `
 		with gone as (
 			delete from doc_conditional_edit_queue

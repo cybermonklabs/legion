@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests hold the client id rule over time (client_ids.go): the claim window counted from the
@@ -143,12 +144,11 @@ func TestAnIDNoEditUsedIsSweptAndGivenAfreshWhileOneThatWroteIsKept(t *testing.T
 	writer := openPage(t, serverURL, artifactID, "alice")
 	awaitAnswer(t, writer, "the document")
 	sendTyped(t, writer, 0, "w")
-	deadline := time.Now().Add(30 * time.Second)
-	for landed, _ := clientIDLanded(t, service, artifactID, writer.Doc.ClientID()); !landed; landed, _ = clientIDLanded(t, service, artifactID, writer.Doc.ClientID()) {
-		if time.Now().After(deadline) {
-			t.Fatal("the writer's client id was never marked as having landed an edit")
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
+		landed, _ := clientIDLanded(t, service, artifactID, writer.Doc.ClientID())
+		return landed
+	}) {
+		t.Fatal("the writer's client id was never marked as having landed an edit")
 	}
 	reader.Close()
 	writer.Close()
@@ -187,6 +187,47 @@ func TestAnIDNoEditUsedIsSweptAndGivenAfreshWhileOneThatWroteIsKept(t *testing.T
 	awaitRendering(t, func() *crdt.Doc { return service.srv.GetDoc(artifactID) }, "# Title\n\nwxAlice's paragraph.\n", "the room")
 }
 
+// A page of this build claims at its admission an id below mintedClientFloor that no row names -
+// one its document drew while its first socket reached a process of the earlier build - and that
+// claim is held to the claims a person makes in a document in a UTC day (maxClaimsADay), counted
+// with every other claim of theirs there (keepsClient, claimClients): alice has made 63 claims in
+// the document today, her page presenting an unnamed id makes the 64th and keeps it, stored as
+// landed so no sweep takes it, and her next page presenting another is given an id afresh, which
+// leaves her 64 claims as they were.
+func TestAnAdmissionClaimCountsAgainstTheDaysClaims(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	if _, err := service.store.Pool.Exec(context.Background(), `
+		insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted, landed, claimed_from)
+		select $1, 2100000000 + g, 'user', 'alice', false, true, 0 from generate_series(1, $2::int) g
+	`, artifactID, maxClaimsADay-1); err != nil {
+		t.Fatal(err)
+	}
+	const last, over = crdt.ClientID(1_234_569_001), crdt.ClientID(1_234_569_002)
+	kept := reopenPage(t, serverURL, artifactID, "alice", crdt.New(crdt.WithClientID(last)))
+	awaitAnswer(t, kept, "the page whose claim is the day's last")
+	if landed, stored := clientIDLanded(t, service, artifactID, last); !stored || !landed {
+		t.Fatalf("the id alice's page claimed at admission is stored %t, landed %t, want a claim no sweep takes", stored, landed)
+	}
+	url := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "=" + strconv.FormatUint(uint64(over), 10)
+	refused := docstest.DialGiven(t, url, pageHeader("alice"), artifactID, func(given crdt.ClientID) *crdt.Doc {
+		return crdt.New(crdt.WithClientID(given))
+	})
+	awaitAnswer(t, refused, "the page past the day's claims")
+	if refused.Given == over {
+		t.Fatalf("alice's page kept its claim of %d past the %d claims a person makes in a document a day", over, maxClaimsADay)
+	}
+	requireGiven(t, refused.Given)
+	if stored := storedClientIDs(t, service, artifactID, over); stored != 0 {
+		t.Fatalf("the id past the day's claims is stored (%d rows)", stored)
+	}
+	if claims := claimsOf(t, service, artifactID, "alice"); claims != maxClaimsADay {
+		t.Fatalf("alice holds %d claims in the document after the refused one, want the %d she made", claims, maxClaimsADay)
+	}
+	if _, stored := clientIDLanded(t, service, artifactID, last); !stored {
+		t.Fatal("the refused admission took alice's earlier claim with it")
+	}
+}
+
 // writeUnder sends the room, on page's socket, an edit typed into a copy of page's document under
 // client at clock 0: for an id no history names, what a legacy socket claims as it writes.
 func writeUnder(t *testing.T, page *docstest.Peer, client crdt.ClientID) {
@@ -199,9 +240,9 @@ func writeUnder(t *testing.T, page *docstest.Peer, client crdt.ClientID) {
 // awaitHeld waits for room to hold a struct under every one of clients.
 func awaitHeld(t *testing.T, room func() *crdt.Doc, clients []crdt.ClientID, what string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		missing := len(clients)
+	missing := len(clients)
+	if testwait.Holds(30*time.Second, 10*time.Millisecond, func() bool {
+		missing = len(clients)
 		if live := room(); live != nil {
 			held := live.StateVector()
 			missing = 0
@@ -211,14 +252,11 @@ func awaitHeld(t *testing.T, room func() *crdt.Doc, clients []crdt.ClientID, wha
 				}
 			}
 		}
-		if missing == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: the room holds nothing under %d of the %d clients", what, missing, len(clients))
-		}
-		time.Sleep(10 * time.Millisecond)
+		return missing == 0
+	}) {
+		return
 	}
+	t.Fatalf("%s: the room holds nothing under %d of the %d clients", what, missing, len(clients))
 }
 
 // claimsOf is how many claimed rows artifactID stores for the user login.
