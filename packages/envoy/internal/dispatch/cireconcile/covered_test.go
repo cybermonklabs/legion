@@ -6,37 +6,79 @@ import (
 	"time"
 )
 
-// unrenamedRow is a mapping that was never renamed and sorts after the renamed pair, so a read
-// that answered one repository for the whole table would drop it rather than the pair.
+// unrenamedRow is a project's default repository that was never renamed and sorts after the
+// renamed pair, so a read that answered one repository for every project would drop it rather
+// than the pair.
 const unrenamedRow = "zed/other"
 
-// Every mapped repository is read, whatever any other mapping was renamed to: a pass over a
-// renamed pair and a mapping of its own reads two repositories, the pair contributing the name
-// it has today once. A rename is one mapping's fact, so a reader that let one mapping's
-// renamed_to stand for every row would leave every repository but that one out of the pass —
-// no head read, no record mended, no settlement — for as long as any rename is recorded.
-func TestEveryMappingIsReadWhenAnotherNamesARename(t *testing.T) {
+// Every project's default repository is read, whatever another project's default was renamed
+// to: a pass over two projects whose defaults are the two names of a rename pair and a third
+// project with a default of its own reads two repositories, the pair contributing the name it
+// has today once. A rename is a fact about one repository, so a reader that let one pair stand
+// for every row would leave every repository but that one out of the pass — no head read, no
+// record mended, no settlement — for as long as any rename is recorded. Each name the pass reads
+// is among the defaults, so the App missing from it is a fault a person mends (appAbsent).
+func TestEveryProjectDefaultIsReadWhenAnotherNamesARename(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
-	h.mapRenamedRepository(renamedAwayRow, rowRepository)
-	h.mapRepository(unrenamedRow)
+	h.seedProjectDefault(rowRepository)
+	h.seedRenamePair(renamedAwayRow, rowRepository)
+	// A project whose default the boot's rename pass did not reach still names the old name.
+	h.seedProjectDefault(renamedAwayRow)
+	h.seedProjectDefault(unrenamedRow)
 
-	repositories, _, err := h.reconciler.covered(h.ctx)
+	repositories, defaults, err := h.reconciler.covered(h.ctx)
 	if err != nil {
 		t.Fatalf("read the covered repositories: %v", err)
 	}
 
 	want := []string{rowRepository, unrenamedRow}
 	if !reflect.DeepEqual(repositories, want) {
-		t.Fatalf("the pass reads %v, want %v: each mapped repository under the name it has now, once", repositories, want)
+		t.Fatalf("the pass reads %v, want %v: each project's default repository under the name it has now, once", repositories, want)
+	}
+	wantDefaults := map[string]struct{}{rowRepository: {}, unrenamedRow: {}}
+	if !reflect.DeepEqual(defaults, wantDefaults) {
+		t.Fatalf("the defaults are %v, want %v: each name a project's default names, under the name it has now", defaults, wantDefaults)
 	}
 }
 
-// The three mappings the test below reads, whose names are the measured pair of the defect with
-// one more after both: `owner/legionabc` sorts before `owner/legion-x` under a collation that
-// weighs punctuation last, which is glibc's en_US, while Go, which compares the bytes, puts
-// `owner/legion-x` first. `owner/zed` sorts after both under either rule, so it is the
-// repository a seek that has run too far still finds.
+// The pass covers every repository an issue resolves to: its own, an ancestor's own, or its
+// project's default. So covered answers a repository only a project's default names, one only an
+// issue names as its own, and one both name, each once. Only the names a project's default names
+// are among the defaults, whether or not an issue names them too: the App missing from a
+// repository only an issue names is no fault to mend (appAbsent). A project with no default
+// repository, which is the project the issues are of (seedProject), adds no name.
+func TestCoveredReadsEveryProjectDefaultAndEveryIssuesOwnRepository(t *testing.T) {
+	const (
+		bothRow        = "acme/both"
+		defaultOnlyRow = "acme/default-only"
+		issueOnlyRow   = "acme/issue-only"
+	)
+	h := newHarness(t, reviewerAppID)
+	h.seedProjectDefault(defaultOnlyRow)
+	h.issueInRepository(issueOnlyRow)
+	h.seedProjectDefault(bothRow)
+	h.issueInRepository(bothRow)
+
+	repositories, defaults, err := h.reconciler.covered(h.ctx)
+	if err != nil {
+		t.Fatalf("read the covered repositories: %v", err)
+	}
+
+	want := []string{bothRow, defaultOnlyRow, issueOnlyRow}
+	if !reflect.DeepEqual(repositories, want) {
+		t.Fatalf("the pass reads %v, want %v: every project's default repository and every issue's own, once each", repositories, want)
+	}
+	wantDefaults := map[string]struct{}{bothRow: {}, defaultOnlyRow: {}}
+	if !reflect.DeepEqual(defaults, wantDefaults) {
+		t.Fatalf("the defaults are %v, want %v: the names a project's default names, and no name only an issue names", defaults, wantDefaults)
+	}
+}
+
+// The three project defaults the test below reads, whose names are the measured pair of the
+// defect with one more after both: `owner/legionabc` sorts before `owner/legion-x` under a
+// collation that weighs punctuation last, which is glibc's en_US, while Go, which compares the
+// bytes, puts `owner/legion-x` first. `owner/zed` sorts after both under either rule, so it is
+// the repository a seek that has run too far still finds.
 const (
 	punctuatedRow        = "owner/legion-x"
 	punctuatedRepository = "Owner/Legion-X"
@@ -46,19 +88,19 @@ const (
 	letteredRepository = "Owner/Legionabc"
 	letteredID         = 5102
 
-	lastMappedRow        = "owner/zed"
-	lastMappedRepository = "Owner/Zed"
-	lastMappedID         = 5103
+	lastDefaultRow        = "owner/zed"
+	lastDefaultRepository = "Owner/Zed"
+	lastDefaultID         = 5103
 )
 
-// collateMappingsAsADeploymentDoes holds the mapping's names under a collation that sorts
+// collateDefaultsAsADeploymentDoes holds the project defaults' names under a collation that sorts
 // `owner/legionabc` before `owner/legion-x`, which is what a deployment's database does: its
 // collation is the one the cluster's Postgres was created with, glibc's en_US on the measured
 // one. The default collation of the database a test runs against is whatever its server was
 // created with (ICU en-US on the pod's test server, and other servers may differ), so the test
 // cannot rely on it to tell the two rules apart; it puts the names under one known collation of
 // its own.
-func (h *harness) collateMappingsAsADeploymentDoes() {
+func (h *harness) collateDefaultsAsADeploymentDoes() {
 	h.t.Helper()
 	// A PostgreSQL built with ICU carries ICU collations of its own and one built without ICU
 	// carries none, so this count is the server's own answer to whether the collation below can
@@ -69,42 +111,41 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 		h.t.Fatalf("ask whether this Postgres was built with ICU: %v", err)
 	}
 	if !icu {
-		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the mapping under one known collation weighing punctuation last, an order the Go comparison that seeks into it does not follow")
+		h.t.Skip("a PostgreSQL built with ICU must serve these tests: ICU is what holds the project defaults under one known collation weighing punctuation last, an order the Go comparison that seeks into it does not follow")
 	}
 	// ICU's `ka-shifted` weighs punctuation only where the letters are equal, which is the rule
-	// glibc's en_US was measured to follow. Both name columns take it, as a deployment's database
-	// holds both under one collation, though the pass reads only repo: the rename pairs are read
-	// once at boot (refs.Renames), and the canonical name of a row is repo or a case over it
+	// glibc's en_US was measured to follow. The column is projects.default_repo, the one the
+	// projects half of the pass reads and the one this test names its repositories by. The rename
+	// pairs are read once at boot (refs.Renames), so no statement of the pass reads renamed_to,
+	// and the canonical name of a default is default_repo or a case over it
 	// (refs.CanonicalRepoSQL).
 	for _, statement := range []string{
 		`create collation punctuation_last (provider = icu, locale = 'en-US-u-ka-shifted')`,
-		`alter table repo_projects
-			alter column repo type text collate punctuation_last,
-			alter column renamed_to type text collate punctuation_last`,
+		`alter table projects alter column default_repo type text collate punctuation_last`,
 	} {
 		// The server has ICU, so a statement it refuses here is a permission or a schema
 		// problem rather than an absence to pass over, and the test says so rather than skips.
 		if _, err := h.pool.Exec(h.ctx, statement); err != nil {
-			h.t.Fatalf("hold the mapping under a deployment's own collation (%s): %v", statement, err)
+			h.t.Fatalf("hold the project defaults under a deployment's own collation (%s): %v", statement, err)
 		}
 	}
 }
 
-// Every covered repository is read once a cycle however the database collates the mapping's
-// names. The order the pass walks is covered()'s, and the pass taking a cursor up seeks
+// Every covered repository is read once a cycle however the database collates the project
+// defaults' names. The order the pass walks is covered()'s, and the pass taking a cursor up seeks
 // into that order with Go's own comparison of the names, so the two are one rule or the seek is
 // reading an order it does not understand.
 //
-// A pass is cut short in `owner/legionabc` and that repository is then unmapped, which is the
-// case where it tells: the seek is for a name no row carries, and under the database's own rule
-// it runs past `owner/legion-x`, which that rule puts after the cursor and Go puts before it.
-// No pass of the cycle then reads `owner/legion-x` -- the pass before the cursor had not
-// reached it, the pass after the cursor seeks past it -- and the pass that reaches the end of
-// the order records that the cycle covered it.
+// A pass is cut short in `owner/legionabc` and that repository is then no project's default any
+// longer, which is the case where it tells: the seek is for a name no row carries, and under the
+// database's own rule it runs past `owner/legion-x`, which that rule puts after the cursor and Go
+// puts before it. No pass of the cycle then reads `owner/legion-x` -- the pass before the cursor
+// had not reached it, the pass after the cursor seeks past it -- and the pass that reaches the
+// end of the order records that the cycle covered it.
 func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.collateMappingsAsADeploymentDoes()
-	mapped := []struct {
+	h.collateDefaultsAsADeploymentDoes()
+	defaults := []struct {
 		row, repository string
 		id              int64
 		heads           []fakePull
@@ -112,10 +153,10 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 		{punctuatedRow, punctuatedRepository, punctuatedID, []fakePull{head(1)}},
 		// The repository the pass is cut short in has a second head to be cut short at.
 		{letteredRow, letteredRepository, letteredID, []fakePull{head(1), head(2)}},
-		{lastMappedRow, lastMappedRepository, lastMappedID, []fakePull{head(1)}},
+		{lastDefaultRow, lastDefaultRepository, lastDefaultID, []fakePull{head(1)}},
 	}
-	for _, repository := range mapped {
-		h.mapRepository(repository.row)
+	for _, repository := range defaults {
+		h.seedProjectDefault(repository.row)
 		h.github.setRepository(repository.row, repository.repository, repository.id)
 		h.github.setPullRequests(repository.repository, repository.heads...)
 		for _, pull := range repository.heads {
@@ -140,10 +181,10 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 			first["deadline_reached"], letteredRow, first)
 	}
 
-	// The repository the cursor names leaves the mapping, as an operator unmapping it does, so
-	// the pass after it seeks for a name the order no longer holds.
-	if _, err := h.pool.Exec(h.ctx, `delete from repo_projects where repo = $1`, letteredRow); err != nil {
-		t.Fatalf("unmap %s: %v", letteredRow, err)
+	// The repository the cursor names leaves the order, as a person clearing the project's
+	// default does, so the pass after it seeks for a name the order no longer holds.
+	if _, err := h.pool.Exec(h.ctx, `update projects set default_repo = null where default_repo = $1`, letteredRow); err != nil {
+		t.Fatalf("clear the default %s: %v", letteredRow, err)
 	}
 	h.github.stall("/repos/"+letteredRepository+"/commits/"+cutAt.sha+"/check-runs", 0)
 	h.reconciler.PassTimeout = 0
@@ -155,20 +196,20 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 		t.Fatalf("the second pass reports cycle_complete = %v, want true: it read the order out to its last repository: %v", line["cycle_complete"], line)
 	}
 	if state := h.stateAt(punctuatedRepository, 1, head(1).sha); state == nil {
-		t.Errorf("the head of %s has no record: no pass of the cycle read that repository, and the pass that closed the cycle recorded that it had covered it. The mapped order and the seek into it put it on different sides of the cursor",
+		t.Errorf("the head of %s has no record: no pass of the cycle read that repository, and the pass that closed the cycle recorded that it had covered it. The order of the project defaults and the seek into it put it on different sides of the cursor",
 			punctuatedRow)
 	}
-	if state := h.stateAt(lastMappedRepository, 1, head(1).sha); state == nil {
-		t.Errorf("the head of %s has no record: the pass after the cursor read none of the repositories the cursor's own sorts before", lastMappedRow)
+	if state := h.stateAt(lastDefaultRepository, 1, head(1).sha); state == nil {
+		t.Errorf("the head of %s has no record: the pass after the cursor read none of the repositories the cursor's own sorts before", lastDefaultRow)
 	}
 }
 
-// A repository an issue names and no project maps is reconciled like any other, so a head there
-// settles. An issue's own repository is any `owner/name`, and work on such an issue opens pull
-// requests whose heads the listener records and whose settlements the Legion daemon waits for;
-// a repair that read repo_projects alone would never read those heads, so a webhook GitHub
-// never delivered there would hold the head short of a check for ever -- and silently, since
-// nothing ever asked GitHub about that repository to skip it.
+// A repository an issue names and no project's default names is reconciled like any other, so
+// a head there settles. An issue's own repository is any `owner/name`, and work on such an issue
+// opens pull requests whose heads the listener records and whose settlements the Legion daemon
+// waits for; a repair that read the project defaults alone would never read those heads, so a
+// webhook GitHub never delivered there would hold the head short of a check for ever -- and
+// silently, since nothing ever asked GitHub about that repository to skip it.
 func TestAHeadSettlesInARepositoryOnlyAnIssueNames(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.issueInRepository(rowRepository)
@@ -179,12 +220,12 @@ func TestAHeadSettlesInARepositoryOnlyAnIssueNames(t *testing.T) {
 	h.github.setCheckSuites(gitHubRepository, headSHA,
 		checkSuite(900, "completed", "success", otherApp, "2026-11-12T04:01:20Z"),
 	)
-	var mapped int
-	if err := h.pool.QueryRow(h.ctx, `select count(*) from repo_projects`).Scan(&mapped); err != nil {
-		t.Fatalf("count the repository mappings: %v", err)
+	var defaults int
+	if err := h.pool.QueryRow(h.ctx, `select count(*) from projects where default_repo is not null`).Scan(&defaults); err != nil {
+		t.Fatalf("count the project defaults: %v", err)
 	}
-	if mapped != 0 {
-		t.Fatalf("repo_projects holds %d rows, want none: this test is about a repository no project maps", mapped)
+	if defaults != 0 {
+		t.Fatalf("%d projects name a default repository, want none: this test is about a repository no project's default names", defaults)
 	}
 	settlements := h.subscribe()
 

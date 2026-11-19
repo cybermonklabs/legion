@@ -186,8 +186,9 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	r.report(&c, at, time.Since(started))
 }
 
-// reconcile is one pass over the repositories covered() answers — the ones repo_projects maps and
-// the ones an issue names as its own — from the cursor onwards, and the stop that ended it early.
+// reconcile is one pass over the repositories covered() answers — every project's default
+// repository and every repository an issue names as its own — from the cursor onwards, and the
+// stop that ended it early.
 //
 // The order is covered()'s, which is sorted, and within a repository its open pull requests by
 // number (headsQuery orders them, and the REST fallback sorts them): one order every pass
@@ -200,7 +201,7 @@ func (r *Reconciler) Pass(ctx context.Context) {
 // the end of the order closes it (closeCycle) and leaves the cursor at the start of the order,
 // so the pass after it begins the next cycle there.
 func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *stop {
-	rows, mapped, err := r.covered(ctx)
+	rows, defaults, err := r.covered(ctx)
 	if err != nil {
 		r.Logger.Warn("ci reconcile read no repositories to cover", "error", err)
 		return nil
@@ -216,10 +217,10 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	// of, which two rows naming one repository share.
 	read := make(map[int64]struct{}, len(rows))
 	for _, from := range order(rows, r.resume) {
-		// Whether a mapping names this repository decides how the pass reads the App missing
-		// from it (appAbsent).
-		_, byMapping := mapped[from.repository]
-		end := r.visitRepository(ctx, writer, from, byMapping, c, read)
+		// Whether a project's default repository names this repository decides how the pass
+		// reads the App missing from it (appAbsent).
+		_, byDefault := defaults[from.repository]
+		end := r.visitRepository(ctx, writer, from, byDefault, c, read)
 		if end == nil {
 			continue
 		}
@@ -241,9 +242,9 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 // checks every repository is read under -- the pass's own bound, the shared rate limits, and
 // what the covered name resolves to -- and then the walk of its pages. It answers the ending that
 // stopped the pass within this repository, and nil for a repository the pass read to the end
-// of, which includes one it passed over. mapped says a mapping names the repository, which
-// resolve reads the App missing from it by.
-func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cursor, mapped bool, c *counts, read map[int64]struct{}) *ending {
+// of, which includes one it passed over. byDefault says a project's default repository names the
+// repository, which resolve reads the App missing from it by.
+func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cursor, byDefault bool, c *counts, read map[int64]struct{}) *ending {
 	// The walk stands at this repository from here on, so every way out below leaves the next
 	// pass where it has reached: until a page is read, that is this repository from the top.
 	w := walk{r: r, writer: writer, c: c, here: from}
@@ -259,7 +260,7 @@ func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cu
 	if at := r.limited(ctx, githubapp.AppScope, githubapp.GraphQLScope); at != nil {
 		return w.stopped(at)
 	}
-	repository, at := r.resolve(ctx, from.repository, mapped, c, read)
+	repository, at := r.resolve(ctx, from.repository, byDefault, c, read)
 	if at != nil {
 		return w.stopped(at)
 	}
@@ -426,7 +427,7 @@ func (w *walk) restPage(ctx context.Context) (queryPage, *ending, bool) {
 			if r.cutShort(ctx, c) {
 				return queryPage{}, w.cut(), false
 			}
-			c.mappingsSkipped++
+			c.defaultsSkipped++
 			r.Logger.Warn("ci reconcile read no open pull requests of a repository",
 				"repository", repository.owner+"/"+repository.repo, "error", err)
 			return queryPage{}, nil, false

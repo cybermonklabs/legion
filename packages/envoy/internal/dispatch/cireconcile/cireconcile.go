@@ -58,13 +58,13 @@
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
 // ends before the pass after it is due and always logs its one line. The pass walks one stable
-// order -- the repositories covered() answers, the ones repo_projects maps and the ones an issue
-// names as its own, and within each its open pull requests by number -- from the
-// first repository to the last page of the last one, and keeps a cursor in it. A pass cut off by
-// its bound or by a rate limit leaves the cursor at the first page or REST head it did not
-// finish and the pass after it takes up there; a pass that reaches the end of the order ends
-// there rather than beginning again, and leaves the cursor at the start of the order for the
-// pass after it. No head starves behind the heads the order holds before it.
+// order -- the repositories covered() answers, every project's default repository and every
+// repository an issue names as its own, and within each its open pull requests by number --
+// from the first repository to the last page of the last one, and keeps a cursor in it. A pass
+// cut off by its bound or by a rate limit leaves the cursor at the first page or REST head it
+// did not finish and the pass after it takes up there; a pass that reaches the end of the order
+// ends there rather than beginning again, and leaves the cursor at the start of the order for
+// the pass after it. No head starves behind the heads the order holds before it.
 //
 // One sweep from the start of the order to the end of it is a cycle, which takes as many passes
 // as their bounds leave them, and what the Reconciler keeps of a head is forgotten only where a
@@ -118,8 +118,8 @@ const (
 // own. One Reconciler runs one pass at a time: it remembers between passes the ETags GitHub
 // answered with and the pages they belong to, and nothing guards that memory.
 type Reconciler struct {
-	// Pool reads the repositories a pass covers: the ones repo_projects maps to a project, and
-	// the ones issues name as their own (covered).
+	// Pool reads the repositories a pass covers: every project's default repository, and the
+	// ones issues name as their own (covered).
 	Pool *store.Pool
 	// Renames is the rename pairs the boot read (store.ReadRepoRenames). covered names each
 	// repository by its canonical name under them, so no pass asks GitHub about a name a
@@ -173,7 +173,7 @@ type Reconciler struct {
 	now func() time.Time
 
 	// rows is what the last pass learned of each repository the pass read, keyed by the canonical
-	// name it read it under, which two mappings renamed onto one repository share as one entry:
+	// name it read it under, which an old name and the name it was renamed to share as one entry:
 	// the ETag of GitHub's answer about it, and the name and id that answer gave.
 	rows map[string]rowState
 	// absent is the repositories GitHub said the App is not installed on, keyed as rows is,

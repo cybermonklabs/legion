@@ -155,7 +155,7 @@ func TestGitHubsQueryAndItsRESTListingsMapToOneSetOfObservations(t *testing.T) {
 // cistore applies an unchanged observation as no change. It is k5 end to end.
 func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(capturedRepository)
+	h.seedProjectDefault(capturedRepository)
 	h.github.setRepository(capturedRepository, capturedRepository, 555)
 	// The one open pull request the captured page answers, and the captured page itself as the
 	// stand-in's answer to the pass's query about it.

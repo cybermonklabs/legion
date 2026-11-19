@@ -86,8 +86,8 @@ func (h *harness) countWrites() *countingWriter {
 // completed check runs and the completed check suite they hang under.
 const writesPerHead = 3
 
-// unchangingHeads is count open pull requests of the mapped repository, each at a head commit of
-// its own with two completed check runs under one completed check suite, and nothing one query
+// unchangingHeads is count open pull requests of the harness's repository, each at a head commit
+// of its own with two completed check runs under one completed check suite, and nothing one query
 // cannot answer whole. Nothing about them changes between two passes, so a pass over them after
 // the first has nothing to write.
 func unchangingHeads(h *harness, count int64) []fakePull {
@@ -129,7 +129,7 @@ func (h *harness) dropRecord(pull fakePull) {
 // already holds about 178 seconds of GitHub's own time. It is k6.
 func TestASecondPassOverUnchangedHeadsWritesNothing(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	pulls := unchangingHeads(h, 5)
 	counted := h.countWrites()
 
@@ -185,7 +185,7 @@ func TestASecondPassOverUnchangedHeadsWritesNothing(t *testing.T) {
 // the checks it is waiting on ended, which is the very failure this pass exists to mend.
 func TestAHeadGitHubHasMoreForIsWrittenThroughTheFingerprint(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckSuites(gitHubRepository, headSHA,
 		checkSuite(900, "in_progress", "", otherApp, "2026-11-10T05:53:01Z"),
@@ -238,7 +238,7 @@ func TestAHeadGitHubHasMoreForIsWrittenThroughTheFingerprint(t *testing.T) {
 // lacks would never reach it.
 func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-10T05:53:00Z"),
@@ -286,7 +286,7 @@ func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
 // finished, is for ever.
 func TestAHeadWhoseRecordHasGoneIsWrittenAgain(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-10T05:53:00Z"),
@@ -325,7 +325,7 @@ func TestAHeadWhoseRecordHasGoneIsWrittenAgain(t *testing.T) {
 // fingerprints the Reconciler holds follow the open pull requests there are.
 func TestACycleThatNoLongerListsAHeadForgetsItsFingerprint(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	pulls := unchangingHeads(h, 2)
 	counted := h.countWrites()
 
@@ -366,7 +366,7 @@ func TestACycleThatNoLongerListsAHeadForgetsItsFingerprint(t *testing.T) {
 // them and the pass after it writes nothing for any of the heads.
 func TestACutPassKeepsTheFingerprintsOfTheHeadsItRead(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Twenty-five open pull requests are two pages of a query: twenty and five.
 	pulls := unchangingHeads(h, 25)
 	h.reconciler.PassTimeout = 2 * time.Second

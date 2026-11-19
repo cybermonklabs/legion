@@ -52,7 +52,7 @@ const (
 // of its own. That is the read a cursor is needed for, and the one this test bounds.
 func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	database := storetest.Open(t)
-	mapCIReconcileRepository(t, database)
+	seedCIReconcileDefault(t, database)
 	_, natsURL := testnats.Start(t)
 	makeCIStateBucket(t, natsURL)
 	github := startCIReconcileCursorGitHub(t)

@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// The second mapped repository of the tests below, whose second page of open pull requests
-// GitHub refuses the query for.
+// The second project's default repository of the tests below, whose second page of open pull
+// requests GitHub refuses the query for.
 const (
 	refusedRow          = "acme/tools"
 	refusedRepository   = "Acme/Tools"
@@ -69,8 +69,8 @@ type batched struct {
 func newBatched(t *testing.T) *batched {
 	t.Helper()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
-	h.mapRepository(refusedRow)
+	h.seedProjectDefault(rowRepository)
+	h.seedProjectDefault(refusedRow)
 	h.github.setRepository(refusedRow, refusedRepository, refusedRepositoryID)
 	b := &batched{h: h, manySuites: head(1), manyRuns: head(2), reRun: head(3), refused: head(4)}
 
@@ -108,7 +108,7 @@ func newBatched(t *testing.T) *batched {
 	return b
 }
 
-// A pass reads every open head of every mapped repository in batched queries, and records every
+// A pass reads every open head of every covered repository in batched queries, and records every
 // run and every suite of every one of them: from the query where the query could answer the
 // head whole, and from the paged REST reads of before this change where it could not. The pass
 // line counts the queries it asked, the points they cost and the heads it had to read over
@@ -270,7 +270,7 @@ func TestTheSecondPassReadsEveryOverflowHeadConditionally(t *testing.T) {
 // and a cycle whose heads were all read would still look short of one.
 func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), fakePull{number: 8, sha: ""})
 	// GitHub refuses the query for the repository's one page, so its heads are listed and read
 	// over REST.
@@ -302,7 +302,7 @@ func TestARefusedPullRequestWithNoHeadIsReadOverREST(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, reviewerAppID)
-			h.mapRepository(rowRepository)
+			h.seedProjectDefault(rowRepository)
 			refused, answered := head(7), head(8)
 			h.listHeads(refused, answered)
 			for _, pull := range []fakePull{refused, answered} {
