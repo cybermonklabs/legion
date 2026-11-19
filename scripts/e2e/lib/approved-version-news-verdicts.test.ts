@@ -40,6 +40,7 @@ const script = join(import.meta.dir, "..", "approved-version-news.sh");
 const assignment = scriptAssignments(script);
 const fn = scriptFunctions(script);
 const note = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("note");
+const fail = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("fail");
 const helperGuard = nameMissingHelpers(script);
 const dir = temporaryDirectory("approved-version-news-verdicts-test");
 const scratch = temporaryDirectories("approved-version-news-run-test");
@@ -237,6 +238,9 @@ const headPlan = plan(
 // One run's line as part two's driver prints it at the run's end.
 const runLine = (step: string, arm: string, n: number, outcome: string) =>
   `run ${step} ${arm} ${n}: ${outcome} in 140s, 31 model calls`;
+/** Each run line of STEP in ARM, numbered from 1, one for each outcome. */
+const runsOf = (step: string, arm: string, ...outcomes: string[]) =>
+  outcomes.map((outcome, i) => runLine(step, arm, i + 1, outcome));
 const passed = "PASS";
 const failed =
   "FAIL: the reviewer of AS1-2 was sent no Envoy message naming version 2 and the change";
@@ -273,12 +277,10 @@ printf 'said=%s\\nmissed=%s\\n' "$step_said" "$head_missed"`);
   return { said, missed, notes: run.out };
 }
 
-const headPassed = (step: string) => [1, 2, 3].map((n) => runLine(step, "head", n, passed));
-
 describe("part two's count of each arm", () => {
   test("does not count a base run that stopped at its setup, and does not bite on it", () => {
     const step = partTwoStep("off", [
-      ...headPassed(off),
+      ...runsOf(off, "head", passed, passed, passed),
       runLine(off, "base", 1, passed),
       runLine(off, "base", 2, passed),
       runLine(off, "base", 3, setupFailed),
@@ -292,7 +294,7 @@ describe("part two's count of each arm", () => {
 
   test("bites on a base run that failed at its assertion, beside one not counted", () => {
     const step = partTwoStep("off", [
-      ...headPassed(off),
+      ...runsOf(off, "head", passed, passed, passed),
       runLine(off, "base", 1, passed),
       runLine(off, "base", 2, failed),
       runLine(off, "base", 3, setupFailed),
@@ -303,7 +305,7 @@ describe("part two's count of each arm", () => {
 
   test("is no control when every base run stopped before its assertion", () => {
     const step = partTwoStep("off", [
-      ...headPassed(off),
+      ...runsOf(off, "head", passed, passed, passed),
       runLine(off, "base", 1, setupFailed),
       runLine(off, "base", 2, setupFailed),
       runLine(off, "base", 3, harnessFailed),
@@ -331,7 +333,7 @@ describe("part two's count of each arm", () => {
     // counted, so a base FAIL there would not make a control bite that the full run no longer has.
     test(`counts the head arm of ${word} alone in a full run, and names why its base arm is retired`, () => {
       const step = partTwoStep(word, [
-        ...headPassed(retiredStep),
+        ...runsOf(retiredStep, "head", passed, passed, passed),
         runLine(retiredStep, "base", 1, failed),
       ]);
       expect(step.said).toBe(`${word} head 3/3 ${headOnly}`);
@@ -358,7 +360,7 @@ describe("part two's count of each arm", () => {
       const runs = [...outcomes, failed, failed, passed, failed, failed];
       const step = partTwoStep(
         word,
-        runs.map((outcome, i) => runLine(retiredStep, "base", i + 1, outcome)),
+        runsOf(retiredStep, "base", ...runs),
         `pick_arm=base part_two_plan=${quoted(plan([[word, retiredStep, "base"]], 10))}`
       );
       expect(step.said).toBe(`${word} base 3/9 with 1 not counted (control bites)`);
@@ -374,7 +376,7 @@ describe("part two's count of each arm", () => {
     test(`is no control for ${word} too when the pick names the head arm`, () => {
       const step = partTwoStep(
         word,
-        headPassed(retiredStep),
+        runsOf(retiredStep, "head", passed, passed, passed),
         `pick_arm=head part_two_plan=${quoted(headPlan)}`
       );
       expect(step.said).toBe(`${word} head 3/3 (no control: the pick leaves the base arm out)`);
@@ -385,7 +387,7 @@ describe("part two's count of each arm", () => {
   test("is no control when the pick leaves the base arm out", () => {
     const step = partTwoStep(
       "off",
-      headPassed(off),
+      runsOf(off, "head", passed, passed, passed),
       `pick_arm=head part_two_plan=${quoted(headPlan)}`
     );
     expect(step.said).toBe("off head 3/3 (no control: the pick leaves the base arm out)");
@@ -399,7 +401,7 @@ describe("part two's count of each arm", () => {
     const step = partTwoStep(
       "answers",
       [
-        ...headPassed(answers),
+        ...runsOf(answers, "head", passed, passed, passed),
         runLine(answers, "base", 1, passed),
         runLine(answers, "base", 2, failed),
         runLine(answers, "base", 3, passed),
@@ -493,8 +495,6 @@ describe("part two's deadline", () => {
     });
   }
 });
-
-const fail = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("fail");
 
 /** A scratch directory holding a jj that prints SAID for `jj --version`. */
 function fakeJJ(said: string) {
@@ -719,9 +719,6 @@ describe.skipIf(withoutSetsid)("the script's run of part one", () => {
 });
 
 const sessionsTest = "TestRealSessionsTellAndAnswerANewVersionLive";
-/** Each run line of STEP in ARM, numbered from 1, one for each outcome. */
-const runsOf = (step: string, arm: string, ...outcomes: string[]) =>
-  outcomes.map((outcome, i) => runLine(step, arm, i + 1, outcome));
 // The model key the run's key file holds: its first 8 characters are in nothing the run prints.
 const modelKey = "Kq81mvXz-a-model-key-of-the-fixture";
 
@@ -857,9 +854,10 @@ const onePlan = plan(
   1
 );
 
-// The script's run of both parts, driven whole over stand-ins: its plan check reads the stand-in
-// driver's plan, part one's and part two's runs are lib/live-daemon-proof.sh's, and the script's
-// own finish and the real lib print the last line. A full run reads PASS. A run that sets any of
+// The script's run of both parts, driven whole over stand-ins: its plan check builds the one
+// driver both parts run and reads the stand-in driver's plan, part one's and part two's runs are
+// lib/live-daemon-proof.sh's, and the script's own finish and the real lib print the last line. A
+// full run reads PASS. A run that sets any of
 // APPROVED_VERSION_NEWS_ARM, APPROVED_VERSION_NEWS_STEP and APPROVED_VERSION_NEWS_RUNS is a
 // measurement: its last line reads MEASURED, never PASS, names the pick, each step and arm of the
 // full run's plan it left out and its count of runs where it is not three, and exits 0; a head run
@@ -878,6 +876,9 @@ describe.skipIf(withoutGit)("the script's run of both parts", () => {
     expect(run.last).toEndWith(
       `(assertions: ${expectedChecks}/${expectedChecks}; part two: a4 head 3/3 ${a4Head}; off head 3/3, base 0/3 (control bites); answers head 3/3 ${answersHead}; model calls: 12)`
     );
+    // The plan check's build is the run's one: each part's driver check takes it and builds none.
+    expect(run.out.match(/^ {3}built .+\.test from /gm)).toHaveLength(1);
+    expect(run.out.match(/^ {3}the caller built .+; this check builds nothing$/gm)).toHaveLength(2);
   }, 60_000);
 
   test("reads MEASURED, not PASS, for APPROVED_VERSION_NEWS_ARM=base, naming each head arm it left out", () => {

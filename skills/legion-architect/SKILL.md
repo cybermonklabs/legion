@@ -68,7 +68,7 @@ Your `sign_off` starts retro; never `envoy_publish` to the implementer to start 
 
 ## 6. Acceptance and the merge
 
-Each issue's own architect signs that issue off. A child's own architect accepts the child. A parent's sign-off of its own issue covers its children's merged work, because the daemon refuses it while an issue beneath is still in the workflow. While a child's architect does not hold its role, the child's acceptance is yours (section 2).
+Each issue's own architect signs that issue off. A child's own architect accepts the child. A parent's sign-off of its own issue comes after its children's, because the daemon refuses it while an issue beneath is still in the workflow: a parent is accepted only once the work beneath it is done. While a child's architect does not hold its role, the child's acceptance is yours (section 2).
 
 The reviewer's `phase-finished` with an `APPROVED` review puts the issue in `accepting`, where no worker runs. Against its goal, every check of its Verification document and every requirement its spec marks, read:
 

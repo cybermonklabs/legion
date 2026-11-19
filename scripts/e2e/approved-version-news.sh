@@ -58,10 +58,11 @@
 # a4-the-architect-tells-the-child-reviewer and
 # answers-a-stale-reviewer-moves-back-a-current-one-comments three times in the head arm alone, and
 # off-the-architect-tells-the-holders three times in each, which the driver's file describes. The
-# plan check builds the driver first and runs it with -part-two-plan, which prints that plan (each
-# step, its arms and the count of runs) and makes no run, and this script counts each step's arms
-# and the driver's deadline from it, keeping no copy of the steps, their arms or the count. It
-# prints each run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
+# plan check builds the driver first, the one build both parts then run, and runs it with
+# -part-two-plan, which prints that plan (each step, its arms and the count of runs) and makes no
+# run, and this script counts each step's arms and the driver's deadline from it, keeping no copy
+# of the steps, their arms or the count. It prints each run's evidence and
+# `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that
 # reached the step's assertion. SETUP is a run that stopped before it, such as a holder that did
 # not end its start turn in the run's bound, or an architect that did not write the version its
 # task asks for. The a4 and off steps assert the telling of that version. HARNESS is a run the
@@ -213,11 +214,12 @@ control_failure='waited [^ ]+ for a task queued for the reviewer of [^ ]+ behind
 # table's alone (sessionsSteps and pickSessions in
 # packages/daemon/internal/daemon/approved_version_news_transcript_test.go), and this script keeps
 # no copy of them: the plan check builds the driver and reads its plan (driver_plan), once with no
-# pick, a full run's plan (full_plan), and once with the run's own pick (part_two_plan). The
-# driver's own deadline is the lib's for part two, part_two_minutes for each run this run's plan
-# makes, the eight minutes the driver bounds a run at and one for its daemon to boot and stop,
-# with part_two_setup_minutes more for what the driver builds and starts before its first run:
-# eighteen runs of real sessions took 44 minutes in a measured run.
+# pick, a full run's plan (full_plan), and, for a run that picks, once more with the run's pick
+# (part_two_plan, which is full_plan for a run that picks nothing). The driver's own deadline is
+# the lib's for part two, part_two_minutes for each run this run's plan makes, the eight minutes
+# the driver bounds a run at and one for its daemon to boot and stop, with part_two_setup_minutes
+# more for what the driver builds and starts before its first run: eighteen runs of real sessions
+# took 44 minutes in a measured run.
 part_two_minutes=9
 part_two_setup_minutes=20
 # The measurement that retired a step's base arm, as `<word>:<why>`, which the last line prints in
@@ -457,7 +459,8 @@ part_two_deadline() {
 # pick_said prints what a run that picks part two's runs made of a full run, which opens its part
 # of the last line: that it is a partial run; the pick, by each variable it set; each step and arm
 # the driver's plan of a full run (full_plan) makes and this run's plan (part_two_plan) does not;
-# and this run's count of runs of each arm, where it is not a full run's.
+# and this run's count of runs of each arm, where it is not a full run's. The plan check prints it
+# once, into picked.
 pick_said() {
   local said="a partial run picked by" word name arms arm made left='' runs full
   [ -z "$pick_step" ] || said="$said APPROVED_VERSION_NEWS_STEP=$pick_step"
@@ -648,24 +651,29 @@ fi
 note "parts: $parts; evidence: $version_news_evidence"
 pass
 
-# Part two's plan is its driver's: the plan check builds the driver from this checkout, which part
-# two runs over, and reads the driver's plan of a full run and of this run's pick (driver_plan)
-# before part one runs, so that a pick the driver refuses costs no part one. It holds head_only to
-# the plan of a full run (check_plan), and counts the driver's deadline from this run's plan.
+# Part two's plan is its driver's: the plan check builds the driver from this checkout
+# (build_daemon_driver), the one build both parts run (plan_driver), and reads the driver's plan
+# of a full run and, for a run that picks, of its pick (driver_plan) before part one runs, so that
+# a pick the driver refuses costs no part one. It holds head_only to the plan of a full run
+# (check_plan), and counts the driver's deadline from this run's plan. A run of part one alone has
+# no plan check: the lib builds part one's driver from the build tree (plan_driver empty).
+plan_driver=''
+picked=''
 if [ "$parts" = both ]; then
   begin plan
   plan_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-plan.XXXXXXXX")
-  go -C "$root/packages/daemon" test -c -tags e2e -o "$plan_tree/plan.test" ./internal/daemon ||
-    fail "part two's driver did not build, so this run reads no plan of part two"
-  full_plan=$(driver_plan "$plan_tree/plan.test" '' '' '')
+  plan_driver=$plan_tree/approved-version-news.test
+  build_daemon_driver "$plan_driver" ||
+    fail "the driver did not build, so this run reads no plan of part two and runs neither part"
+  note "built $(basename "$plan_driver") from $root/packages/daemon with -tags e2e; both parts run it"
+  full_plan=$(driver_plan "$plan_driver" '' '' '')
   part_two_plan=$full_plan
-  [ -z "$pick" ] || part_two_plan=$(driver_plan "$plan_tree/plan.test" "$pick_step" "$pick_arm" "$pick_runs")
-  rm -rf "$plan_tree"
-  plan_tree=''
+  [ -z "$pick" ] || part_two_plan=$(driver_plan "$plan_driver" "$pick_step" "$pick_arm" "$pick_runs")
   note "the driver's plan of a full run:"
   while IFS= read -r line; do note "  $line"; done <<<"$full_plan"
   if [ -n "$pick" ]; then
-    note "the driver's plan of this run, $(pick_said):"
+    picked=$(pick_said)
+    note "the driver's plan of this run, $picked:"
     while IFS= read -r line; do note "  $line"; done <<<"$part_two_plan"
   fi
   check_plan
@@ -687,11 +695,13 @@ if [ -n "$control" ]; then
 fi
 
 # Part one is lib/live-daemon-proof.sh's run, in a subshell of its own so that its failure is this
-# script's to read rather than its exit: the lib, sourced from this checkout, builds the driver from
-# the build tree's packages/daemon, and the driver builds Dispatch from the tree LEGION_E2E_REPO_ROOT
-# names. Its own transcript and logs go in a fresh part-one.* directory of the evidence directory,
-# so no proof.log an earlier run left there is read as this run's. The lib names its checks in the
-# subshell alone, so this one is named part-one here for the last line of a run that ends in it.
+# script's to read rather than its exit: the lib, sourced from this checkout, runs the driver the
+# plan check built (plan_driver) in a run of both parts, whose build tree is this checkout, and
+# otherwise builds the driver from the build tree's packages/daemon; the driver builds Dispatch
+# from the tree LEGION_E2E_REPO_ROOT names. Its own transcript and logs go in a fresh part-one.*
+# directory of the evidence directory, so no proof.log an earlier run left there is read as this
+# run's. The lib names its checks in the subshell alone, so this one is named part-one here for
+# the last line of a run that ends in it.
 part_one=$(mktemp -d "$version_news_evidence/part-one.XXXXXX")
 check=part-one
 set +e
@@ -699,7 +709,7 @@ set +e
   set -e
   root=$build_tree
   export LEGION_E2E_REPO_ROOT=$build_tree
-  live_daemon_proof 'approved version news part one' approved-version-news "$driver_test" "$part_one"
+  live_daemon_proof 'approved version news part one' approved-version-news "$driver_test" "$part_one" '' "$plan_driver"
 )
 part_one_status=$?
 set -e
@@ -742,8 +752,8 @@ if [ "$parts" = one ]; then
   exit 0
 fi
 
-# Part two is the lib's run too, over this checkout, with the base commit's prompt files extracted
-# for its base arm into a scratch directory of their own.
+# Part two is the lib's run too, over this checkout and of the driver the plan check built, with
+# the base commit's prompt files extracted for its base arm into a scratch directory of their own.
 prompts_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-prompts.XXXXXXXX")
 git -C "$root" archive "$base_sha" packages/daemon/internal/prompts/roles packages/daemon/internal/prompts/go |
   tar -x -C "$prompts_tree" || fail "git archive of $base_sha's prompts into $prompts_tree failed"
@@ -754,7 +764,7 @@ set +e
   set -e
   export LEGION_E2E_REPO_ROOT=$root APPROVED_VERSION_NEWS_MODEL_KEY_FILE=$key_file \
     APPROVED_VERSION_NEWS_BASE_PROMPTS=$prompts_tree APPROVED_VERSION_NEWS_BASE_COMMIT=$base_sha
-  live_daemon_proof 'approved version news part two' approved-version-news-sessions "$sessions_test" "$part_two" "$part_two_timeout"
+  live_daemon_proof 'approved version news part two' approved-version-news-sessions "$sessions_test" "$part_two" "$part_two_timeout" "$plan_driver"
 )
 part_two_status=$?
 set -e
@@ -772,8 +782,9 @@ note "the key's first 8 characters occur $leaks times in $version_news_evidence"
 pass
 
 # A run that picks part two's runs is a measurement, a partial run, and never c-live's pass: its
-# part of the last line opens with the pick and what it left out of a full run (pick_said), and,
-# once every head run the pick makes reached its assertion and passed, its verdict is MEASURED.
+# part of the last line opens with the pick and what it left out of a full run (picked, which the
+# plan check made with pick_said), and, once every head run the pick makes reached its assertion
+# and passed, its verdict is MEASURED.
 begin part-two
 head_short=''
 for word in $(plan_words "$part_two_plan"); do
@@ -781,7 +792,7 @@ for word in $(plan_words "$part_two_plan"); do
   part_two_said="${part_two_said:+$part_two_said; }$step_said"
   head_short="$head_short$head_missed"
 done
-[ -z "$pick" ] || part_two_said="$(pick_said): $part_two_said"
+[ -z "$pick" ] || part_two_said="$picked: $part_two_said"
 calls=$(grep -m1 -E '^model calls: ' "$proof" 2>/dev/null || true)
 [ -z "$calls" ] || part_two_said="$part_two_said; ${calls%% in all*}"
 [ -z "$head_short" ] || fail "the head arm did not reach its assertion and pass in every run: ${head_short#; }"

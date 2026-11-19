@@ -134,6 +134,8 @@ const scripts = [
 ].sort();
 const shown = (path: string) => relative(e2e, path);
 const text = new Map(scripts.map((path) => [path, readFileSync(path, "utf8")]));
+// Every library each script sources (sourcedLibraries), read once.
+const sources = new Map(scripts.map((path) => [path, sourcedLibraries(path)]));
 // A line of code, not a comment.
 const code = (line: string) => line.trim() !== "" && !line.trim().startsWith("#");
 
@@ -149,7 +151,7 @@ function exitTraps(path: string) {
     if (command === "-" || command === "") continue;
     const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(command)?.[0];
     let fn: { name: string; body: string; file: string } | undefined;
-    for (const file of name === undefined ? [] : sourcedLibraries(path)) {
+    for (const file of name === undefined ? [] : (sources.get(path) ?? [])) {
       try {
         fn = { name: name as string, body: scriptFunctions(file)(name as string), file };
         break;
@@ -235,7 +237,7 @@ function afterFunction(
   const named = new RegExp(`(^|[^A-Za-z0-9_])${name}([^A-Za-z0-9_]|$)`);
   const wrong: string[] = [];
   let calls = 0;
-  for (const caller of scripts.filter((other) => sourcedLibraries(other).includes(path))) {
+  for (const caller of scripts.filter((other) => sources.get(other)?.includes(path))) {
     (texts.get(caller) ?? "").split("\n").forEach((line, index) => {
       if (!code(line) || opens.test(line) || !named.test(line)) return;
       calls++;
@@ -297,7 +299,7 @@ describe("every script under scripts/e2e", () => {
             wrong.push(`${shown(fn.file)}: ${fn.name} prints PASS itself: ${line.trim()}`);
           }
         }
-        if (fn.body.includes("run_verdict") && !sourcedLibraries(fn.file).includes(lib)) {
+        if (fn.body.includes("run_verdict") && !sources.get(fn.file)?.includes(lib)) {
           wrong.push(
             `${shown(fn.file)}: ${fn.name} calls run_verdict and sources no lib/run-verdict.sh`
           );
@@ -314,7 +316,7 @@ describe("every script under scripts/e2e", () => {
         if (fn === undefined || !fn.body.includes("run_verdict") || marks(fn.file)) continue;
         // A library's trap: each entry script that sources the library marks its own end.
         const callers = scripts.filter(
-          (other) => dirname(other) === e2e && sourcedLibraries(other).includes(fn.file)
+          (other) => dirname(other) === e2e && sources.get(other)?.includes(fn.file)
         );
         if (callers.length === 0)
           wrong.push(`${shown(fn.file)}: no script sources it or marks an end`);

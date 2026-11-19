@@ -48,7 +48,7 @@ func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 // testing, and that claim is told by a task now. Without that read the member would be the zero
 // issue, in no phase, which names no holder and reads as told at its next start. A key the record
 // holds no issue of in the tree is an error, never a member told at its next start.
-func TestAMemberMissingFromTheIssuesItsCallerReadIsNamedByItsRealPhase(t *testing.T) {
+func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T) {
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Testing)

@@ -8,12 +8,13 @@
 # approved-version-news.sh makes this run too, but not as its last command: it calls
 # live_daemon_proof in a subshell of its own, with root set there to the tree the driver is built
 # from (its checkout, or a scratch tree of a base commit), and reads the subshell's status and the
-# driver's proof.log afterwards, to count the proof's checks and judge its negative control.
+# driver's proof.log afterwards, to count the proof's checks and judge its negative control. In a
+# run of both parts it hands each part's run the driver its plan check built (DRIVER).
 # busy-relaunch-delivery.sh's negative control also calls it in a subshell of its own, whose root
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
 # goes on to read the run's proof.log.
 #
-# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT] runs four checks, each printing
+# live_daemon_proof LABEL SLUG TEST EVIDENCE [TIMEOUT [DRIVER]] runs four checks, each printing
 # `== <check>`, what it observed and `ok <check> (<s>s)`; the first that fails prints
 # `FAIL <check>: <why>` and ends the run non-zero. Exit 2 is an input of the caller's the run
 # refuses. Exit 1 is every other failure.
@@ -29,16 +30,19 @@
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
 # nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
-# `-tags e2e` test binary. proof runs the one test TEST against them and holds that it passed,
-# under the test binary's own deadline TIMEOUT (a Go duration; 20m when the caller gives none):
+# `-tags e2e` test binary (build_daemon_driver), unless the caller hands it DRIVER, a binary it
+# built that way before the run: the check then notes DRIVER and builds nothing. proof runs the
+# one test TEST against them and holds that it passed, under the test binary's own deadline
+# TIMEOUT (a Go duration; 20m when the caller gives none, or gives it empty):
 # approved-version-news.sh's part two runs real model sessions for longer than that.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
-# when it is unset), which holds the broker's store and the driver binary SLUG.test and is removed
-# on any exit, and the evidence directory legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the
-# directory the caller named, is empty. The evidence directory is kept and printed; it holds the
-# transcript (lib/transcript.sh), the nats-server's log, the daemon's own, which the driver writes
-# through LEGION_E2E_DAEMON_LOG, and the driver's output. On any exit the nats-server is stopped.
+# when it is unset), which holds the broker's store and the driver binary SLUG.test, where the
+# driver check builds one, and is removed on any exit, and the evidence directory
+# legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the directory the caller named, is empty.
+# The evidence directory is kept and printed; it holds the transcript (lib/transcript.sh), the
+# nats-server's log, the daemon's own, which the driver writes through LEGION_E2E_DAEMON_LOG, and
+# the driver's output. On any exit the nats-server is stopped.
 # The run prints `LABEL e2e: PASS in <n>s (evidence: <dir>)` only when live_daemon_proof reached
 # its own last statement and the shell exits 0. Every other exit prints `LABEL e2e: FAIL at <check>
 # after <n>s (evidence: <dir>)` on stderr. lib/run-verdict.sh holds that rule and its reason: bash
@@ -103,6 +107,13 @@ pass() { echo "ok $check ($((SECONDS - check_started))s)"; }
 refuse() { echo "FAIL $check: $*" >&2; exit 2; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 
+# build_daemon_driver OUT builds every proof's driver, the daemon package's `-tags e2e` test
+# binary, from root's packages/daemon into OUT. The driver check builds with it, and so does a
+# caller that builds the driver before the run and hands it over as DRIVER.
+build_daemon_driver() {
+  go -C "$root/packages/daemon" test -c -tags e2e -o "$1" ./internal/daemon
+}
+
 cleanup() {
   local status=$?
   if [ -n "$nats_pid" ] && kill -0 "$nats_pid" 2>/dev/null; then
@@ -116,14 +127,14 @@ cleanup() {
 }
 
 live_daemon_proof() {
-  local slug=$2 test_name=$3 timeout=${5:-20m} tool nats_bin db_host
+  local slug=$2 test_name=$3 timeout=${5:-20m} handed=${6:-} tool nats_bin db_host
   proof_label=$1
   evidence=${4:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug-evidence.XXXXXXXX")}
   mkdir -p "$evidence"
   transcript_to "$evidence/transcript.log"
 
   work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-$slug.$$.XXXXXXXX")
-  driver=$work/$slug.test
+  driver=${handed:-$work/$slug.test}
   started=$SECONDS
   check_started=$SECONDS
   trap cleanup EXIT
@@ -180,9 +191,15 @@ live_daemon_proof() {
   pass
 
   begin driver
-  go -C "$root/packages/daemon" test -c -tags e2e -o "$driver" ./internal/daemon ||
-    fail "the driver did not build"
-  note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
+  # The build is the branch a test that holds takes: a signal that ends the shell in the build
+  # leaves the EXIT trap that test's status 0, as in any other check, so the last line says the
+  # run stopped before its end (lib/run-verdict.sh).
+  if [ -z "$handed" ]; then
+    build_daemon_driver "$driver" || fail "the driver did not build"
+    note "built $(basename "$driver") from $root/packages/daemon with -tags e2e"
+  else
+    note "the caller built $driver with -tags e2e and handed it over; this check builds nothing"
+  fi
   pass
 
   begin proof

@@ -971,7 +971,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // decides for itself what the version means for the work in hand. A phase no worker holds names
 // nobody. The gate is the root's, so the root's architect is told, once. A member in accepting is
 // passed over, since that phase is an architect's own: the root's is the root's architect, told
-// once as such, and a child's own architect is not told of the root's gate, whose merge hold
+// once as such, and a child's own architect is sent no message of the root's gate (the opening
+// reaches it only by the news it is owed, settleChildArchitectOpenings); that gate's merge hold
 // reaches the child's merger once it holds merging.
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
@@ -1071,11 +1072,20 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		}
 		messages++
 	}
-	held, err := e.settleChildArchitectOpenings(ctx, tx, *root, members, owed, facts.Told, opened, step, version)
+	// A member in accepting below the root that is owed news may be held by a child's architect,
+	// whose opening that news carries (settleChildArchitectOpenings).
+	var owedByNews []record.Issue
+	for _, member := range members {
+		if member.Phase == phase.Accepting && !claim.IsTreeRoot(member.Key, member.Tree) &&
+			openingDelivery(owed, facts.Told, member.Key, record.AudienceHolder, opened, step, version).byNews {
+			owedByNews = append(owedByNews, member)
+		}
+	}
+	settled, err := e.settleChildArchitectOpenings(ctx, tx, *root, members, owedByNews)
 	if err != nil {
 		return err
 	}
-	byNews += held
+	byNews += settled
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", messages)
 	if byNews > 0 {
@@ -1086,25 +1096,19 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 }
 
 // settleChildArchitectOpenings settles the gate's opening as owed on the holder row of each member
-// of root's tree, members as tellGateMoved read them in tx, that stands in accepting below the
-// root, is owed news (openingDelivery), and is held by a child's architect: the owner walk from the
-// member itself (record.OwningIssue) ends at an architect other than the tree root's. That is the
-// walk the reviewer's approval that moved the member there was routed by, and the architect
-// sign_off accepts it from. That architect holds the member's phase as the root's architect holds
-// a member it owns, so the task that carries the member's news to it leads with the opening, as a
-// phase worker's does, and it is sent no opened message (tellGateMoved). A member the tree root's
+// of owedByNews that a child's architect holds. owedByNews is the members of root's tree (members,
+// as tellGateMoved read them in tx) that stand in accepting below the root and are owed news
+// (openingDelivery). A child's architect holds such a member where the owner walk from the member
+// itself (record.OwningIssue) ends at an architect other than the tree root's. That is the walk
+// the reviewer's approval that moved the member there was routed by, and the architect sign_off
+// accepts it from. That architect holds the member's phase as the root's architect holds a member
+// it owns, so the task that carries the member's news to it leads with the opening, as a phase
+// worker's does, and it is sent no opened message (tellGateMoved). A member the tree root's
 // architect holds is passed over, since that architect is told the opening once, on its own row.
 // It answers how many rows it settled, and reads the architect claims the store records
-// (record.ArchitectRuns) only where such a member is owed news.
-func (e *Engine) settleChildArchitectOpenings(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue,
-	owed record.TreeNews, told []record.DesignTold, opened string, step record.DesignStep, version int) (int, error) {
-	var owedByNews []record.Issue
-	for _, member := range members {
-		if member.Phase == phase.Accepting && !claim.IsTreeRoot(member.Key, member.Tree) &&
-			openingDelivery(owed, told, member.Key, record.AudienceHolder, opened, step, version).byNews {
-			owedByNews = append(owedByNews, member)
-		}
-	}
+// (record.ArchitectRuns) only where owedByNews holds a member.
+func (e *Engine) settleChildArchitectOpenings(ctx context.Context, tx pgx.Tx, root record.Issue,
+	members, owedByNews []record.Issue) (int, error) {
 	if len(owedByNews) == 0 {
 		return 0, nil
 	}

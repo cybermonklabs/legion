@@ -70,9 +70,10 @@ type sessionsStep struct {
 
 // sessionsSteps is every step of part two, in the order a run makes them. a4 and answers run in the
 // head arm alone, since the base arm of each passed every run of the measurement the driver's
-// file comment names. The table is the one copy of part two's steps, their arms and the count of
-// runs: the script reads them from the plan the driver prints (sessionsPick.plan), and keeps only
-// the measurement that retired each base arm (head_only), which the driver does not know.
+// file comment names. The table and sessionsRuns are the one copy of part two's steps, their arms
+// and the count of runs: the script reads them from the plan the driver prints (sessionsPick.plan),
+// and keeps only the measurement that retired each base arm (head_only), which the driver does not
+// know.
 var sessionsSteps = []sessionsStep{
 	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}},
 	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}},

@@ -34,11 +34,13 @@ const passingDriver = [
 ];
 
 /** Runs the real live_daemon_proof over stand-ins, stopped at KILL when given, in a process group
- * of its own. The lib's transcript sends stderr to stdout, so `out` holds every line. */
-function fixtureProof(kill?: { at: KillPoint; signal: StopSignal }) {
+ * of its own; with HANDED, it hands the run the stand-in driver as DRIVER. The lib's transcript
+ * sends stderr to stdout, so `out` holds every line. */
+function fixtureProof(kill?: { at: KillPoint; signal: StopSignal }, handed = false) {
   const dir = scratch();
   const env = liveDaemonStandIns(dir, { driverOutput: passingDriver, kill });
   const evidence = join(dir, "evidence");
+  const driver = handed ? ` '' ${JSON.stringify(join(dir, "driver"))}` : "";
   const run = inOwnGroup(
     [
       "bash",
@@ -46,7 +48,7 @@ function fixtureProof(kill?: { at: KillPoint; signal: StopSignal }) {
       `set -euo pipefail
 root=${JSON.stringify(root)}
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
-live_daemon_proof 'fixture proof' fixture-proof ${testName} ${JSON.stringify(evidence)}`,
+live_daemon_proof 'fixture proof' fixture-proof ${testName} ${JSON.stringify(evidence)}${driver}`,
     ],
     env
   );
@@ -80,5 +82,18 @@ describe.skipIf(withoutSetsid)("the run's last line", () => {
     expect(run.out).not.toContain("FAIL");
     expect(run.out).toMatch(/\nfixture proof e2e: PASS in \d+s \(evidence: .*\)\n$/);
     expect(run.out).toContain(`(evidence: ${run.evidence})`);
+  });
+});
+
+// A caller that built the driver before the run hands it over as DRIVER, and the driver check
+// builds nothing: the stand-in build that would end the run with a group SIGTERM never runs, and
+// the proof runs the binary it was handed.
+describe.skipIf(withoutSetsid)("the driver check", () => {
+  test("builds nothing for a run handed its driver", () => {
+    const run = fixtureProof({ at: "build", signal: "TERM" }, true);
+    expect(run.code).toBe(0);
+    expect(run.out).toContain("; this check builds nothing\n");
+    expect(run.out).not.toContain("FAIL");
+    expect(run.out).toMatch(/\nfixture proof e2e: PASS in \d+s \(evidence: .*\)\n$/);
   });
 });
