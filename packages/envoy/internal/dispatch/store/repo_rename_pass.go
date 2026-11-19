@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -244,13 +245,31 @@ func deletedKeys(ctx context.Context, tx pgx.Tx, sql string) ([]string, error) {
 }
 
 // countRepoRenamesLeft counts the rows that name an old name in a field of a line, in one
-// statement over every line and pair.
+// statement over every line and pair. It reads them from the line's steps for the pair: a row of a
+// step's table is left where it meets the step's where. A row counts once for its line and pair,
+// however many of that line's steps it meets.
 func countRepoRenamesLeft(ctx context.Context, pool *Pool, renames []repoRename) (int64, error) {
+	// tableRows is one table of a line, with the where of each of the line's steps on it.
+	type tableRows struct {
+		table  string
+		wheres []string
+	}
 	var terms []string
 	for _, line := range repoRenameLines {
 		for _, r := range renames {
-			for _, rows := range line.left(r) {
-				terms = append(terms, `(select count(*) from `+rows.table+` where `+rows.where+`)`)
+			var tables []tableRows
+			for _, step := range line.steps(r) {
+				i := slices.IndexFunc(tables, func(t tableRows) bool { return t.table == step.table })
+				if i < 0 {
+					i = len(tables)
+					tables = append(tables, tableRows{table: step.table})
+				}
+				if !slices.Contains(tables[i].wheres, step.where) {
+					tables[i].wheres = append(tables[i].wheres, step.where)
+				}
+			}
+			for _, t := range tables {
+				terms = append(terms, `(select count(*) from `+t.table+` where (`+strings.Join(t.wheres, `) or (`)+`))`)
 			}
 		}
 	}
@@ -304,39 +323,44 @@ type repoRenameLine struct {
 	fields string
 	// steps are the line's statements for one pair, in the order they run.
 	steps func(r repoRename) []repoRenameStep
-	// left is, for each table of the line, the condition a row of it meets while a field of it
-	// still names r's old name.
-	left func(r repoRename) []repoRenameRows
 }
 
-// repoRenameStep is one statement of a line. write names the field that the statement writes: its
-// rows are counted and logged at INFO. deletes names the table that the statement deletes the
-// colliding rows of: it returns the key of each row it deleted, as text, and each is counted and
-// logged at WARN. A step that names neither is a statement whose rows a write step of the line
-// counts already.
+// repoRenameStep is one statement of a line. table is the table that the statement writes or
+// deletes from. where is the condition, on that table's columns with no alias, that a row of it
+// meets while the statement still has that row to write or delete: a field of the row names the
+// old name. The count of the rows left (countRepoRenamesLeft) reads only table and where, and a
+// pass whose first count finds no row runs no line, so a field that no step's where reads is a
+// field the pass never comes back to.
+//
+// write names the field that the statement writes: its rows are counted and logged at INFO.
+// deletes names the table that the statement deletes the colliding rows of: it returns the key of
+// each row it deleted, as text, and each is counted and logged at WARN. A step that names neither
+// is a statement whose rows a write step of the line counts already.
 type repoRenameStep struct {
+	table, where   string
 	write, deletes string
 	sql            string
 }
 
-// repoRenameRows is the rows of table that meet where.
-type repoRenameRows struct {
-	table, where string
-}
-
 // nameWrite writes the new name in column of table wherever the column holds the old name.
 func nameWrite(r repoRename, table, column string) repoRenameStep {
+	where := r.named(column)
 	return repoRenameStep{
+		table: table,
+		where: where,
 		write: table + "." + column,
-		sql:   `update ` + table + ` set ` + column + ` = ` + r.to() + ` where ` + r.named(column),
+		sql:   `update ` + table + ` set ` + column + ` = ` + r.to() + ` where ` + where,
 	}
 }
 
 // urlWrite rewrites column of table, a URL, wherever it names the old name.
 func urlWrite(r repoRename, table, column string) repoRenameStep {
+	where := r.urlNamed(column)
 	return repoRenameStep{
+		table: table,
+		where: where,
 		write: table + "." + column,
-		sql:   `update ` + table + ` set ` + column + ` = ` + r.url.RewriteSQL(column) + ` where ` + r.urlNamed(column),
+		sql:   `update ` + table + ` set ` + column + ` = ` + r.url.RewriteSQL(column) + ` where ` + where,
 	}
 }
 
@@ -353,6 +377,8 @@ func collisions(r repoRename, table string, keys ...string) repoRenameStep {
 		key += `, '` + column + `', d.` + column
 	}
 	return repoRenameStep{
+		table:   table,
+		where:   r.named("repo"),
 		deletes: table,
 		sql: `delete from ` + table + ` d
 			where ` + r.named("d.repo") + `
@@ -368,9 +394,6 @@ func nameLine(table, column string) repoRenameLine {
 	return repoRenameLine{
 		fields: table + "." + column,
 		steps:  func(r repoRename) []repoRenameStep { return []repoRenameStep{nameWrite(r, table, column)} },
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{table, r.named(column)}}
-		},
 	}
 }
 
@@ -398,11 +421,12 @@ var repoRenameLines = []repoRenameLine{
 		// old URL.
 		fields: "issue_external_links.url",
 		steps: func(r repoRename) []repoRenameStep {
+			where := r.urlNamed("url")
 			return []repoRenameStep{
-				{deletes: "issue_external_links", sql: `
+				{table: "issue_external_links", where: where, deletes: "issue_external_links", sql: `
 					with old as materialized (
 						select url, lower(` + r.url.RewriteSQL("url") + `) as rewritten
-						from issue_external_links where ` + r.urlNamed("url") + `
+						from issue_external_links where ` + where + `
 					), twinned as (
 						select o.url from old o
 						where exists (select 1 from issue_external_links n where lower(n.url) = o.rewritten)
@@ -412,9 +436,6 @@ var repoRenameLines = []repoRenameLine{
 					returning jsonb_build_object('issue_key', l.issue_key, 'url', l.url)::text`},
 				urlWrite(r, "issue_external_links", "url"),
 			}
-		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"issue_external_links", r.urlNamed("url")}}
 		},
 	},
 	{
@@ -426,9 +447,6 @@ var repoRenameLines = []repoRenameLine{
 				urlWrite(r, "pull_request_heads", "url"),
 			}
 		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"pull_request_heads", r.named("repo") + ` or ` + r.urlNamed("url")}}
-		},
 	},
 	{
 		fields: "branch_commits.repo",
@@ -438,32 +456,26 @@ var repoRenameLines = []repoRenameLine{
 				nameWrite(r, "branch_commits", "repo"),
 			}
 		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"branch_commits", r.named("repo")}}
-		},
 	},
 	{
 		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
 		// at its first place, as delivery's citedIssues keeps each URL once.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
 		steps: func(r repoRename) []repoRenameStep {
+			where := citedNamed(r)
 			return []repoRenameStep{
 				collisions(r, "delivery_pull_requests", "number"),
 				nameWrite(r, "delivery_pull_requests", "repo"),
 				urlWrite(r, "delivery_pull_requests", "url"),
-				{write: "delivery_pull_requests.attribution_cited_issues", sql: `
+				{table: "delivery_pull_requests", where: where, write: "delivery_pull_requests.attribution_cited_issues", sql: `
 					update delivery_pull_requests set attribution_cited_issues = array(
 						select cited.url from (
 							select ` + r.url.RewriteSQL("e.url") + ` as url, min(e.n) as n
 							from unnest(attribution_cited_issues) with ordinality e(url, n)
 							group by 1
 						) cited order by cited.n)
-					where ` + citedNamed(r)},
+					where ` + where},
 			}
-		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"delivery_pull_requests",
-				r.named("repo") + ` or ` + r.urlNamed("url") + ` or ` + citedNamed(r)}}
 		},
 	},
 	{
@@ -476,23 +488,18 @@ var repoRenameLines = []repoRenameLine{
 		// included.
 		fields: "delivery_runs.repo, .url with delivery_run_jobs.repo",
 		steps: func(r repoRename) []repoRenameStep {
+			where := r.named("repo")
 			return []repoRenameStep{
 				collisions(r, "delivery_runs", "run_id"),
-				{write: "delivery_runs.repo", sql: `
+				{table: "delivery_runs", where: where, write: "delivery_runs.repo", sql: `
 					insert into delivery_runs
 					select moved.* from delivery_runs stored
 					cross join lateral jsonb_populate_record(null::delivery_runs,
 						to_jsonb(stored) || jsonb_build_object('repo', ` + r.to() + `::text)) moved
 					where ` + r.named("stored.repo")},
 				nameWrite(r, "delivery_run_jobs", "repo"),
-				{sql: `delete from delivery_runs where ` + r.named("repo")},
+				{table: "delivery_runs", where: where, sql: `delete from delivery_runs where ` + where},
 				urlWrite(r, "delivery_runs", "url"),
-			}
-		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{
-				{"delivery_runs", r.named("repo") + ` or ` + r.urlNamed("url")},
-				{"delivery_run_jobs", r.named("repo")},
 			}
 		},
 	},
@@ -504,9 +511,6 @@ var repoRenameLines = []repoRenameLine{
 				nameWrite(r, "delivery_run_warnings", "repo"),
 			}
 		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"delivery_run_warnings", r.named("repo")}}
-		},
 	},
 	nameLine("delivery_changes", "repo"),
 	{
@@ -515,17 +519,15 @@ var repoRenameLines = []repoRenameLine{
 		// writes into the stored progress.
 		fields: "delivery_settings.deploy_repo, .excluded_repos",
 		steps: func(r repoRename) []repoRenameStep {
+			where := excludedNamed(r)
 			return []repoRenameStep{
 				nameWrite(r, "delivery_settings", "deploy_repo"),
-				{write: "delivery_settings.excluded_repos", sql: `
+				{table: "delivery_settings", where: where, write: "delivery_settings.excluded_repos", sql: `
 					update delivery_settings set excluded_repos = array(
 						select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
 						from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
-					where ` + excludedNamed(r)},
+					where ` + where},
 			}
-		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"delivery_settings", r.named("deploy_repo") + ` or ` + excludedNamed(r)}}
 		},
 	},
 	{
@@ -534,13 +536,11 @@ var repoRenameLines = []repoRenameLine{
 		// the scope gets the new name wherever the settings got it, and the progress stays.
 		fields: "delivery_reconcile_progress.scope",
 		steps: func(r repoRename) []repoRenameStep {
-			return []repoRenameStep{{write: "delivery_reconcile_progress.scope", sql: `
+			where := `scope ~* ` + r.token()
+			return []repoRenameStep{{table: "delivery_reconcile_progress", where: where, write: "delivery_reconcile_progress.scope", sql: `
 				update delivery_reconcile_progress
 				set scope = regexp_replace(scope, ` + r.token() + `, ` + r.tokenReplacement() + `, 'gi')
-				where scope ~* ` + r.token()}}
-		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"delivery_reconcile_progress", `scope ~* ` + r.token()}}
+				where ` + where}}
 		},
 	},
 	{
@@ -553,9 +553,6 @@ var repoRenameLines = []repoRenameLine{
 				collisions(r, "architecture_sources", "project_key"),
 				nameWrite(r, "architecture_sources", "repo"),
 			}
-		},
-		left: func(r repoRename) []repoRenameRows {
-			return []repoRenameRows{{"architecture_sources", r.named("repo")}}
 		},
 	},
 	nameLine("ci_reconcile_passes", "cursor_repository"),

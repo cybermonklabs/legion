@@ -286,8 +286,8 @@ func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
 	tables := map[string]bool{}
 	r := repoRename{RepoRename: pairs[0], url: NewRepoURLRule(pairs[0].From, pairs[0].To)}
 	for _, line := range repoRenameLines {
-		for _, rows := range line.left(r) {
-			tables[rows.table] = true
+		for _, step := range line.steps(r) {
+			tables[step.table] = true
 		}
 	}
 	for table := range tables {
@@ -308,6 +308,27 @@ func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
 	}
 	if failed := named(logs(), failedLine); len(failed) != 0 {
 		t.Fatalf("a second pass ran a line: %v", failed)
+	}
+}
+
+// The count of the rows left, which a pass runs before its lines, reads only the table and the
+// where of each step, and where it finds no row the pass runs no line. So a step without them is
+// a field the pass never comes back to: a row that a build before this one writes there during a
+// roll keeps the old name. Every step of every line names its table and the condition of the rows
+// it has left, and a step that writes a field writes a field of its own table.
+func TestEveryStepOfTheRenamePassNamesTheRowsItHasLeft(t *testing.T) {
+	from, to := "sjawhar/legion", "cybermonklabs/legion"
+	r := repoRename{RepoRename: RepoRename{From: from, To: to}, url: NewRepoURLRule(from, to)}
+	for _, line := range repoRenameLines {
+		for _, step := range line.steps(r) {
+			if step.table == "" || step.where == "" {
+				t.Errorf("a step of %s has table %q and where %q, want both, so the count of the rows left reads it: %s",
+					line.fields, step.table, step.where, step.sql)
+			}
+			if step.write != "" && !strings.HasPrefix(step.write, step.table+".") {
+				t.Errorf("a step of %s writes %s, want a field of its own table %s", line.fields, step.write, step.table)
+			}
+		}
 	}
 }
 
