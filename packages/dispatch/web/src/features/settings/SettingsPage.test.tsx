@@ -1,6 +1,7 @@
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the in-the-step rows press and check in one synchronous step, which user-event's awaited press cannot give
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -512,6 +513,57 @@ test("a read of the mappings out when a mapping's save is answered does not put 
     });
     await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
     expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+  } finally {
+    page.restore();
+  }
+});
+
+// A mapping's save shows its row in the step of the press: whatever reads the mappings then - a
+// second press, a Default pick, an event's refresh - reads the project just picked, not the one
+// from before it.
+test("a mapping's save is in the mappings' query in the step of the press", async () => {
+  const user = userEvent.setup();
+  const server = mappingServer([mapping]);
+  const page = await renderMappings(server);
+
+  try {
+    await user.click(screen.getByLabelText("Repository"));
+    await user.paste("owner/repo");
+    await user.selectOptions(screen.getByLabelText("Project"), "OPS");
+    // The form's own submit, and the check in the same step: user-event has no form for it.
+    fireEvent.submit(screen.getByLabelText("Repository").closest("form") as HTMLFormElement);
+    expect(
+      page.queryClient
+        .getQueryData<RepoProject[]>(["repo-projects"])
+        ?.map((row) => `${row.repo} → ${row.project}`)
+    ).toEqual(["owner/repo → OPS"]);
+
+    await act(async () => {
+      server.answer();
+    });
+    await waitFor(() => expect(page.queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
+    expect(listedMappings()).toEqual(["owner/repo → OPS"]);
+  } finally {
+    page.restore();
+  }
+});
+
+// A mapping's removal takes its row out in the step of the press, as a save puts one in.
+test("a mapping's removal is out of the mappings' query in the step of the press", async () => {
+  const server = mappingServer([mapping]);
+  const page = await renderMappings(server);
+
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
+    expect(page.queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual([]);
+
+    await act(async () => {
+      server.answer();
+    });
+    await waitFor(() => expect(page.queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(page.queryClient.isFetching()).toBe(0));
+    expect(listedMappings()).toEqual([]);
   } finally {
     page.restore();
   }

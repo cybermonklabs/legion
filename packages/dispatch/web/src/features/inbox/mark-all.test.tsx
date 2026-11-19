@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { settle } from "../../__tests__/fake-clock";
 import { answerInboxReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import {
@@ -13,8 +14,8 @@ import {
   myRepliesKey,
   whoAmIQuery,
 } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
-import type { MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
+import type { DispatchEvent, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { InboxBar, type InboxFilters } from "./InboxBar";
 import type { InboxListRow } from "./list-row";
@@ -357,6 +358,103 @@ test("a read of the list or the count asked while Mark all read is out waits for
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(unread()).toBe("1");
     expect(inboxCount()).toBe("1");
+  } finally {
+    listMyReplies.mockRestore();
+  }
+});
+
+/** A `user_thread_state.updated` the live feed delivers: `payload.login`'s read of the Inbox's
+ *  threads moved, of `payload.thread_id` alone or, with none, of every thread a Mark all read
+ *  marked. */
+function threadStateEvent(payload: { login: string; thread_id?: string }): DispatchEvent {
+  return {
+    actor: { id: payload.login, kind: "user" },
+    created_at: "2026-10-12T02:01:00Z",
+    id: 1,
+    issue_key: null,
+    notify: false,
+    payload,
+    seq: 1,
+    type: "user_thread_state.updated",
+  } as DispatchEvent;
+}
+
+/** A `user_agent_state.updated` the live feed delivers: `payload.login`'s Clear, read mark or pin
+ *  of session `payload.session_id` moved. */
+function agentStateEvent(payload: { login: string; session_id: string }): DispatchEvent {
+  return {
+    actor: { id: payload.login, kind: "user" },
+    created_at: "2026-10-12T02:01:00Z",
+    id: 1,
+    issue_key: null,
+    notify: false,
+    payload,
+    seq: 1,
+    type: "user_agent_state.updated",
+  } as DispatchEvent;
+}
+
+// Dispatch publishes a Mark all read's thread-state event, which names no thread, once it has
+// marked the rows, so a read asked after it answers the press. The hold ends on that event though
+// the press's answer is still out, and a reply thread somebody else started meanwhile shows then
+// rather than wait for an answer that may be late. The viewer's read of one thread in another tab,
+// another login's Mark all read, and the viewer's pin of an agent (an agent-state event, which a
+// press publishes too, but so does that pin) are not this press's and leave the hold.
+test("a reply thread somebody else starts while Mark all read is out shows once the press's thread-state event has come", async () => {
+  const user = userEvent.setup();
+  const marked = answerInboxReads();
+  const settled = Promise.withResolvers<{ marked: number }>();
+  marked.mockReturnValue(settled.promise);
+  const before = [replyRow("c1"), replyRow("c2")];
+  let served = before;
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    repliesAnswer(page, served)
+  );
+  try {
+    const client = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
+    await waitFor(() => expect(unread()).toBe("0"));
+    expect(inboxCount()).toBe("0");
+
+    // Dispatch has marked both rows, and bob has started a reply thread to alice since.
+    const started = replyRow("c3");
+    served = [
+      replyRow("c1", { unread: false }),
+      replyRow("c2", { unread: false }),
+      { ...started, reply: { ...started.reply, author: { id: "bob", kind: "user" } } },
+    ];
+    await act(async () => {
+      hearLiveEvent(client, threadStateEvent({ login: "alice", thread_id: "c1" }), "alice");
+      hearLiveEvent(client, threadStateEvent({ login: "bob" }), "alice");
+      hearLiveEvent(client, agentStateEvent({ login: "alice", session_id: "planner" }), "alice");
+      void client.invalidateQueries({ queryKey: myRepliesKey });
+      await settle();
+    });
+    // None of those events is the press's: both reads have started, and neither has asked
+    // Dispatch.
+    expect(listMyReplies).not.toHaveBeenCalled();
+    expect(client.getQueryState(inboxThreadsQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(listed()).toBe("2");
+
+    await act(async () => {
+      hearLiveEvent(client, threadStateEvent({ login: "alice" }), "alice");
+      void client.invalidateQueries({ queryKey: myRepliesKey });
+    });
+    // The press's answer is still out, and the list and the count are what Dispatch holds: the
+    // press's two rows read, and bob's thread unread.
+    await waitFor(() => expect(listed()).toBe("3"));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(listMyReplies).toHaveBeenCalled();
+    expect(client.isMutating()).toBe(1);
+    expect(unread()).toBe("1");
+    expect(inboxCount()).toBe("1");
+
+    await act(async () => {
+      settled.resolve({ marked: 2 });
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
   } finally {
     listMyReplies.mockRestore();
   }

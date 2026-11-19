@@ -5,9 +5,16 @@ import type { ReactNode } from "react";
 
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
-import { issueQuery } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
-import type { ArchitectureTree, Issue, IssueComponents, IssueDetails } from "../../api/types";
+import { issueCoverageQuery, issueQuery } from "../../api/queries";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
+import type {
+  ArchitectureTree,
+  DispatchEvent,
+  Issue,
+  IssueComponents,
+  IssueCoverage,
+  IssueDetails,
+} from "../../api/types";
 import { issue } from "../margin/margin-fixture";
 import { useIssueComponents } from "./useIssueComponents";
 
@@ -156,6 +163,292 @@ test("a read of the issue or its tree asked while a components save is out waits
   } finally {
     hook.unmount();
     stopListening();
+    getArchitecture.mockRestore();
+    getIssue.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
+
+/** An `issue.updated` of `issue` the live feed delivers, written by `actor`, naming the fields it
+ *  moved. */
+function issueUpdated(actor: string, changed: readonly string[]): DispatchEvent {
+  return {
+    actor: { id: actor, kind: "user" },
+    created_at: "2026-09-09T00:01:00Z",
+    id: 1,
+    issue_key: issue.key,
+    notify: false,
+    payload: { changed, key: issue.key },
+    seq: 1,
+    type: "issue.updated",
+  } as DispatchEvent;
+}
+
+/** `useShownComponents` with the issue's title, as its header reads it. */
+function useShownTitle() {
+  return { ...useShownComponents(), title: useQuery(issueQuery(issue.key)).data?.title };
+}
+
+// Dispatch publishes the save's `issue.updated`, by the viewer, once it has taken the save, so a
+// read of the issue or its tree asked after it answers the save. The hold ends on that event
+// though the save's answer is still out, and a field somebody else moved meanwhile shows then
+// rather than wait for an answer that may be late. That other person's own `issue.updated` is
+// not the save's and leaves the hold.
+test("a title somebody else writes while a components save is out shows once the save's own event has come", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const detailKey = issueQuery(issue.key).queryKey;
+  const treeKey = ["architecture", issue.project];
+  // Each read of the issue and of the tree, listed as it calls its function: a read the save
+  // holds is listed before it waits, and one that is not held has asked by then.
+  const asked: string[] = [];
+  const stopListening = client.onAttempt((queryHash) => {
+    if (queryHash === hashKey(detailKey) || queryHash === hashKey(treeKey)) asked.push(queryHash);
+  });
+  // Each read's answer, given as the row says.
+  const issueAnswers: ((details: IssueDetails) => void)[] = [];
+  const getIssue = spyOn(api, "getIssue").mockImplementation(() => {
+    const read = Promise.withResolvers<IssueDetails>();
+    issueAnswers.push(read.resolve);
+    return read.promise;
+  });
+  const treeAnswers: ((tree: ArchitectureTree) => void)[] = [];
+  const getArchitecture = spyOn(api, "getArchitecture").mockImplementation(() => {
+    const read = Promise.withResolvers<ArchitectureTree>();
+    treeAnswers.push(read.resolve);
+    return read.promise;
+  });
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const hook = renderHook(useShownTitle, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  // What Dispatch holds once it took the save: the issue not architectural, and the title bob
+  // gave it meanwhile.
+  const title = "Review the spec and the plan";
+  const savedDetails: IssueDetails = {
+    ...issue,
+    components: notArchitectural,
+    title,
+    updated_at: "2026-09-09T00:01:00Z",
+  };
+  const savedTree: ArchitectureTree = {
+    ...unassignedTree,
+    not_architectural: [
+      { inherited_from: null, key: issue.key, reason: "Hiring", status: issue.status, title },
+    ],
+    totals: { ...unassignedTree.totals, not_architectural: 1, unassigned: 0 },
+    unassigned: [],
+  };
+  try {
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getArchitecture).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      issueAnswers[0]?.(issue);
+      treeAnswers[0]?.(unassignedTree);
+    });
+    await waitFor(() => expect(hook.result.current.notArchitectural).toEqual([]));
+
+    act(() => {
+      void hook.result.current.write.submit({ mode: "none", reason: "Hiring" });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.components).toEqual(notArchitectural);
+    expect(hook.result.current.notArchitectural).toEqual([issue.key]);
+
+    await act(async () => {
+      hearLiveEvent(client, issueUpdated("bob", ["title"]), "alice");
+      void client.invalidateQueries({ queryKey: detailKey });
+      void client.invalidateQueries({ queryKey: treeKey });
+    });
+    // bob's event is not the save's: both refreshes are asked, and wait.
+    await waitFor(() => expect(asked).toHaveLength(4));
+    expect(getIssue).toHaveBeenCalledTimes(1);
+    expect(getArchitecture).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.title).toBe(issue.title);
+
+    await act(async () => {
+      hearLiveEvent(client, issueUpdated("alice", ["components"]), "alice");
+      void client.invalidateQueries({ queryKey: detailKey });
+      void client.invalidateQueries({ queryKey: treeKey });
+    });
+    // The save's answer is still out, and both reads ask Dispatch and show what it holds.
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getArchitecture).toHaveBeenCalledTimes(2));
+    getIssue.mockResolvedValue(savedDetails);
+    getArchitecture.mockResolvedValue(savedTree);
+    await act(async () => {
+      issueAnswers[1]?.(savedDetails);
+      treeAnswers[1]?.(savedTree);
+    });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(hook.result.current.title).toBe(title);
+    expect(hook.result.current.components).toEqual(notArchitectural);
+    expect(hook.result.current.tree).toEqual(savedTree);
+    expect(client.isMutating()).toBe(1);
+
+    await act(async () => {
+      const { artifacts: _a, children: _c, open_asks: _o, ...answer } = savedDetails;
+      save.resolve(answer);
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+  } finally {
+    hook.unmount();
+    stopListening();
+    getArchitecture.mockRestore();
+    getIssue.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
+
+/** What the Spec tab draws beside each requirement, with `gaps` lacking. */
+function coverage(gaps: string[]): IssueCoverage {
+  return {
+    gaps,
+    has_plan: true,
+    issue: issue.key,
+    requirements: [],
+    spec_artifact_id: "artifact-1",
+  };
+}
+
+/** `useShownComponents` with the Spec tab's coverage, as the tab reads it. */
+function useShownCoverage() {
+  return { ...useShownComponents(), coverage: useQuery(issueCoverageQuery(issue.key)).data };
+}
+
+// The save holds the issue's own read and its project's tree, each by its exact key. The issue's
+// other reads hang under its key (`issueCoverageQuery`) and are none of the save's: a refresh of
+// the coverage asked while the save is out - a new version of the spec, say - asks at once.
+test("a read of the issue's coverage asked while a components save is out goes at once", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const coverageKey = issueCoverageQuery(issue.key).queryKey;
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(unassignedTree);
+  const coverageAnswers: ((read: IssueCoverage) => void)[] = [];
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockImplementation(() => {
+    const read = Promise.withResolvers<IssueCoverage>();
+    coverageAnswers.push(read.resolve);
+    return read.promise;
+  });
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const hook = renderHook(useShownCoverage, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  try {
+    await waitFor(() => expect(getIssueCoverage).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      coverageAnswers[0]?.(coverage(["R1"]));
+    });
+    await waitFor(() => expect(hook.result.current.coverage).toEqual(coverage(["R1"])));
+    await waitFor(() => expect(hook.result.current.notArchitectural).toEqual([]));
+
+    act(() => {
+      void hook.result.current.write.submit({ mode: "none", reason: "Hiring" });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.notArchitectural).toEqual([issue.key]);
+
+    await act(async () => {
+      void client.invalidateQueries({ exact: true, queryKey: coverageKey });
+    });
+    // The save is still out, and the coverage has asked Dispatch and shows its answer.
+    await waitFor(() => expect(getIssueCoverage).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      coverageAnswers[1]?.(coverage(["R1", "R2"]));
+    });
+    await waitFor(() => expect(hook.result.current.coverage).toEqual(coverage(["R1", "R2"])));
+    expect(client.isMutating()).toBe(1);
+
+    getIssueCoverage.mockResolvedValue(coverage(["R1", "R2"]));
+    await act(async () => {
+      const { artifacts: _a, children: _c, open_asks: _o, ...answer } = issue;
+      save.resolve({ ...answer, components: notArchitectural });
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+  } finally {
+    hook.unmount();
+    getIssueCoverage.mockRestore();
+    getArchitecture.mockRestore();
+    getIssue.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
+
+// The press cancels the reads of the two queries it writes, each by its exact key, as the hold
+// names them. A read of the coverage already out at the press - a refresh a new version of the
+// spec asked for, say - is none of the save's: it goes on, and its answer shows.
+test("a read of the issue's coverage already out at a components press is not cancelled, and its answer shows", async () => {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const coverageKey = issueCoverageQuery(issue.key).queryKey;
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(unassignedTree);
+  const coverageAnswers: ((read: IssueCoverage) => void)[] = [];
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockImplementation(() => {
+    const read = Promise.withResolvers<IssueCoverage>();
+    coverageAnswers.push(read.resolve);
+    return read.promise;
+  });
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const hook = renderHook(useShownCoverage, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  try {
+    await waitFor(() => expect(getIssueCoverage).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      coverageAnswers[0]?.(coverage(["R1"]));
+    });
+    await waitFor(() => expect(hook.result.current.coverage).toEqual(coverage(["R1"])));
+    await waitFor(() => expect(hook.result.current.notArchitectural).toEqual([]));
+
+    await act(async () => {
+      void client.invalidateQueries({ exact: true, queryKey: coverageKey });
+    });
+    await waitFor(() => expect(getIssueCoverage).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      void hook.result.current.write.submit({ mode: "none", reason: "Hiring" });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.notArchitectural).toEqual([issue.key]);
+    // The press is out, and the coverage read it found out is still out.
+    expect(client.getQueryState(coverageKey)?.fetchStatus).toBe("fetching");
+
+    await act(async () => {
+      coverageAnswers[1]?.(coverage(["R1", "R2"]));
+    });
+    await waitFor(() => expect(hook.result.current.coverage).toEqual(coverage(["R1", "R2"])));
+    expect(getIssueCoverage).toHaveBeenCalledTimes(2);
+    expect(client.isMutating()).toBe(1);
+
+    getIssueCoverage.mockResolvedValue(coverage(["R1", "R2"]));
+    await act(async () => {
+      const { artifacts: _a, children: _c, open_asks: _o, ...answer } = issue;
+      save.resolve({ ...answer, components: notArchitectural });
+    });
+    await waitFor(() => expect(client.isMutating()).toBe(0));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+  } finally {
+    hook.unmount();
+    getIssueCoverage.mockRestore();
     getArchitecture.mockRestore();
     getIssue.mockRestore();
     patchIssue.mockRestore();

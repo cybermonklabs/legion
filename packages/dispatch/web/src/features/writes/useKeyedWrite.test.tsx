@@ -270,3 +270,39 @@ test("a write that holds its query lets the reads it held go once its refusal is
     tab.close();
   }
 });
+
+// A held read keeps back whatever anybody else changed in its query too, so a write whose answer
+// does not come holds it no longer than its deadline: a read asked while it is out waits until
+// `SEND_DEADLINE_MS` after the press, and then asks, though the write is still out, and late.
+test("a write that holds its query lets a read asked while it is out go at its deadline, with no answer in", async () => {
+  jest.useFakeTimers();
+  const tab = keptTab();
+  const { client, hook, reads, server, stopReading } = renderHeldWrite();
+  try {
+    await tick(0);
+    expect(reads).toEqual(["before"]);
+    act(() => hook.result.current.mutate());
+    await tick(0);
+    expect(client.getQueryData<string>(["things"])).toBe("optimistic");
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: ["things"] });
+    });
+    // Another person's change, which the held read would bring.
+    server.value = "elsewhere";
+
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(reads).toEqual(["before"]);
+    expect(client.getQueryData<string>(["things"])).toBe("optimistic");
+
+    await tick(1_000);
+    expect(reads).toEqual(["before", "elsewhere"]);
+    expect(client.getQueryData<string>(["things"])).toBe("elsewhere");
+    expect(hook.result.current.isPending).toBe(true);
+    expect(writesOf(client).rows()[0]?.status).toBe("late");
+  } finally {
+    hook.unmount();
+    stopReading();
+    tab.close();
+    realClock();
+  }
+});

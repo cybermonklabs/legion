@@ -1,6 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
 
+import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
 import {
   DispatchQueryClient,
@@ -243,6 +244,78 @@ test("a hold keeps back only the reads it names, and each until the last hold on
     expect(state.requests()).toBe(2);
   } finally {
     for (const stop of unsubscribe) stop();
+  }
+});
+
+// A hold names its queries by their exact keys: a read under a held key - an issue's coverage
+// under the issue a components save writes - is none of the write's, and goes at once.
+test("a hold keeps back the queries it names exactly, and no query under their keys", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const issue = heldServer("CORE-1");
+  const coverage = heldServer("coverage");
+  const unsubscribe = [
+    new QueryObserver(queryClient, { queryFn: issue.queryFn, queryKey: ["issue", "CORE-1"] }),
+    new QueryObserver(queryClient, {
+      queryFn: coverage.queryFn,
+      queryKey: ["issue", "CORE-1", "coverage"],
+    }),
+  ].map((observer) => observer.subscribe(() => {}));
+  try {
+    await settle();
+    issue.answer();
+    coverage.answer();
+    await settle();
+
+    const release = holdBackReads(queryClient, { keys: [["issue", "CORE-1"]] });
+    void queryClient.invalidateQueries({ queryKey: ["issue", "CORE-1"] });
+    await settle();
+    expect(issue.requests()).toBe(1);
+    expect(coverage.requests()).toBe(2);
+    release();
+    await settle();
+    expect(issue.requests()).toBe(2);
+  } finally {
+    for (const stop of unsubscribe) stop();
+  }
+});
+
+// A write that goes late may not reach Dispatch for a long while, and its hold would keep back,
+// for as long, every change anybody else makes to its queries. So no hold outlasts the time after
+// which its write is late: the read it held then asks.
+test("a hold ends once its write is late, and the read it held asks", async () => {
+  jest.useFakeTimers();
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["inbox"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    const release = holdBackReads(queryClient, { keys: [["inbox"]] });
+    void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    await settle();
+    jest.advanceTimersByTime(SEND_DEADLINE_MS - 1);
+    await settle();
+    expect(server.requests()).toBe(1);
+    server.write("somebody's new ask");
+    jest.advanceTimersByTime(1);
+    await settle();
+    expect(server.requests()).toBe(2);
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["inbox"])).toBe("somebody's new ask");
+    // The write's own end, after, ends nothing more.
+    release();
+    await settle();
+    expect(server.requests()).toBe(2);
+  } finally {
+    unsubscribe();
+    jest.useRealTimers();
   }
 });
 

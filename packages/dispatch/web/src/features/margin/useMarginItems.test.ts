@@ -9,7 +9,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import { DispatchQueryClient } from "../../api/query-client";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Artifact,
   Comment,
@@ -847,6 +847,125 @@ test("a read of the comments asked while a resolve is out waits for its answer, 
     );
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
     expect(threadLists()).toEqual({ open: [], resolved: ["A"] });
+  } finally {
+    view.unmount();
+    stopListening();
+    listComments.mockRestore();
+    resolveComment.mockRestore();
+  }
+});
+
+/** A comment event of `type` on CORE-1 the live feed delivers, written by `actor`. */
+function commentEvent(
+  type: "comment.created" | "comment.resolved",
+  payload: Comment,
+  actor: string
+): DispatchEvent {
+  return {
+    actor: { id: actor, kind: "user" },
+    created_at: "2026-09-09T00:01:00Z",
+    id: 1,
+    issue_key: "CORE-1",
+    notify: false,
+    payload,
+    seq: 1,
+    type,
+  } as DispatchEvent;
+}
+
+// Dispatch publishes a resolve's `comment.resolved` once it has taken it, so a read of the
+// comments asked after it answers the resolve. The hold ends on that event though the resolve's
+// answer is still out, and a comment somebody else wrote meanwhile shows then rather than wait for
+// an answer that may be late. Another comment's resolve, and that other person's own comment
+// event, are not this resolve's and leave the hold.
+test("a comment somebody else writes while a resolve is out shows once the resolve's own event has come", async () => {
+  const user = userEvent.setup();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  const commentsKey = ["comments", "CORE-1"];
+  const open = comment("A", "m-a", "2026-09-09T00:00:00Z");
+  queryClient.setQueryData(["issue", "CORE-1"], {
+    artifacts: [artifact],
+    primary_artifact_id: artifact.id,
+  });
+  queryClient.setQueryData(["asks", "CORE-1"], []);
+  queryClient.setQueryData(commentsKey, [open]);
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["user-state"], {});
+  // Each read of the comments, listed as it calls its function: a read the resolve holds is
+  // listed before it waits, and one that is not held has asked by then.
+  const asked: string[] = [];
+  const stopListening = queryClient.onAttempt((queryHash) => {
+    if (queryHash === hashKey(commentsKey)) asked.push(queryHash);
+  });
+  // Each read's answer, given as the row says.
+  const answers: ((comments: Comment[]) => void)[] = [];
+  const listComments = spyOn(api, "listComments").mockImplementation(() => {
+    const read = Promise.withResolvers<Comment[]>();
+    answers.push(read.resolve);
+    return read.promise;
+  });
+  const save = Promise.withResolvers<CommentWithTrees>();
+  const resolveComment = spyOn(api, "resolveComment").mockReturnValue(save.promise);
+  const view = render(
+    createElement(
+      MemoryRouter,
+      { initialEntries: ["/issues/CORE-1/spec"] },
+      createElement(QueryClientProvider, { client: queryClient }, createElement(ResolvableThreads))
+    )
+  );
+  // What Dispatch holds once it took the resolve: A resolved, and bob's new thread B beside it.
+  const resolved: CommentWithTrees = {
+    ...open,
+    resolved: true,
+    resolved_at: "2026-09-09T00:01:00Z",
+    resolved_by: { id: "alice", kind: "user" },
+  };
+  const bobs: Comment = {
+    ...comment("B", "m-b", "2026-09-09T00:00:30Z"),
+    author: { id: "bob", kind: "user" },
+  };
+  const elsewhere: Comment = { ...comment("C", "m-c", "2026-09-09T00:00:10Z"), resolved: true };
+  try {
+    expect(threadLists()).toEqual({ open: ["A"], resolved: [] });
+    await user.click(screen.getByRole("button", { name: "Resolve A" }));
+    await waitFor(() => expect(resolveComment).toHaveBeenCalledWith("A", keyedAttempt));
+    await waitFor(() => expect(threadLists()).toEqual({ open: [], resolved: ["A"] }));
+
+    await act(async () => {
+      hearLiveEvent(queryClient, commentEvent("comment.created", bobs, "bob"), "alice");
+      hearLiveEvent(queryClient, commentEvent("comment.resolved", elsewhere, "bob"), "alice");
+      void queryClient.invalidateQueries({ queryKey: commentsKey });
+    });
+    // Neither event is the resolve's: the refresh is asked, and waits.
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(listComments).not.toHaveBeenCalled();
+    expect(threadLists()).toEqual({ open: [], resolved: ["A"] });
+
+    await act(async () => {
+      hearLiveEvent(queryClient, commentEvent("comment.resolved", resolved, "alice"), "alice");
+      void queryClient.invalidateQueries({ queryKey: commentsKey });
+    });
+    // The resolve's answer is still out, and the refresh reads what Dispatch holds.
+    await waitFor(() => expect(listComments).toHaveBeenCalledTimes(1));
+    listComments.mockResolvedValue([resolved, bobs]);
+    await act(async () => {
+      answers[0]?.([resolved, bobs]);
+    });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(queryClient.getQueryData<Comment[]>(commentsKey)).toEqual([resolved, bobs]);
+    expect(threadLists()).toEqual({ open: ["B"], resolved: ["A"] });
+    expect(queryClient.isMutating()).toBe(1);
+
+    await act(async () => {
+      save.resolve(resolved);
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
   } finally {
     view.unmount();
     stopListening();

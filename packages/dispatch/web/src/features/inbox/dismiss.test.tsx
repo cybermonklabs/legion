@@ -27,8 +27,14 @@ import {
   myRepliesKey,
   whoAmIQuery,
 } from "../../api/queries";
-import { DispatchQueryClient } from "../../api/query-client";
-import type { InboxRow, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
+import type {
+  DispatchEvent,
+  InboxRow,
+  IssueDetails,
+  MyRepliesResponse,
+  MyReplyRow,
+} from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { Inbox } from "./Inbox";
@@ -275,6 +281,108 @@ test("a read of either view or the count asked while a dismiss is out waits for 
       inboxThreads: ["c9", "c5"],
     })
   );
+});
+
+/** A `user_thread_state.updated` the live feed delivers: `payload.login`'s read of the Inbox's
+ *  threads moved, of `payload.thread_id` alone or, with none, of every thread a dismiss or a
+ *  Mark all read changed. */
+function threadStateEvent(payload: { login: string; thread_id?: string }): DispatchEvent {
+  return {
+    actor: { id: payload.login, kind: "user" },
+    created_at: "2026-10-12T02:01:00Z",
+    id: 1,
+    issue_key: null,
+    notify: false,
+    payload,
+    seq: 1,
+    type: "user_thread_state.updated",
+  } as DispatchEvent;
+}
+
+// Dispatch publishes a dismiss's thread-state event, which names no thread, once it has taken the
+// threads out, so a read asked after it answers the dismiss. The hold ends on that event though
+// the dismiss's answer is still out, and a thread somebody else started meanwhile shows then
+// rather than wait for an answer that may be late. The viewer's read of one thread in another tab,
+// and another login's dismiss, are not this press's and leave the hold.
+test("a thread somebody else starts while a dismiss is out shows once the dismiss's thread-state event has come", async () => {
+  // What Dispatch holds, which each read answers with as it is when it is asked.
+  const server = { dismissed: [] as MyReplyRow[], inbox: [replyRow("c1"), replyRow("c9")] };
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
+    threadsRead(page.state === "dismissed" ? server.dismissed : server.inbox)
+  );
+  restores.push(listMyReplies);
+  const dismissed = answerInboxDismisses();
+  const answer = Promise.withResolvers<{ dismissed: number }>();
+  dismissed.mockReturnValue(answer.promise);
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const { result } = renderHook(
+    () => ({
+      count: useQuery(myRepliesCountQuery()).data,
+      dismiss: useInboxDismiss(),
+      dismissedThreads: useInfiniteQuery(dismissedThreadsQuery()).data?.pages.flatMap(
+        (page) => page.rows?.map((row) => row.thread_id) ?? []
+      ),
+      inboxThreads: useQuery(inboxThreadsQuery()).data?.rows?.map((row) => row.thread_id),
+    }),
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: [],
+      inboxThreads: ["c1", "c9"],
+    })
+  );
+  act(() => result.current.dismiss.submit({ rows: [dismissThreadRow(replyRow("c1"))] }));
+  await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
+  expect(result.current).toMatchObject({ count: 1, inboxThreads: ["c9"] });
+
+  // Dispatch has taken the dismiss, and bob has started a thread with alice since (c5).
+  const started = replyRow("c5");
+  server.inbox = [
+    replyRow("c9"),
+    { ...started, reply: { ...started.reply, author: { id: "bob", kind: "user" } } },
+  ];
+  server.dismissed = [replyRow("c1")];
+  const reads = listMyReplies.mock.calls.length;
+  await act(async () => {
+    hearLiveEvent(client, threadStateEvent({ login: "alice", thread_id: "c9" }), "alice");
+    hearLiveEvent(client, threadStateEvent({ login: "bob" }), "alice");
+    void client.invalidateQueries({ queryKey: myRepliesKey });
+    await settle();
+  });
+  // Neither event is the dismiss's: no read has asked Dispatch.
+  expect(listMyReplies).toHaveBeenCalledTimes(reads);
+  expect(result.current).toMatchObject({ count: 1, dismissedThreads: [], inboxThreads: ["c9"] });
+
+  await act(async () => {
+    hearLiveEvent(client, threadStateEvent({ login: "alice" }), "alice");
+    void client.invalidateQueries({ queryKey: myRepliesKey });
+  });
+  // The dismiss's answer is still out, and both views and the count are what Dispatch holds: c1
+  // dismissed, and bob's thread in the Inbox and counted.
+  await waitFor(() =>
+    expect(result.current).toMatchObject({
+      count: 2,
+      dismissedThreads: ["c1"],
+      inboxThreads: ["c9", "c5"],
+    })
+  );
+  expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads);
+  expect(client.isMutating()).toBe(1);
+
+  await act(async () => {
+    answer.resolve({ dismissed: 1 });
+    await settle();
+  });
+  await waitFor(() => expect(client.isMutating()).toBe(0));
+  await waitFor(() => expect(client.isFetching()).toBe(0));
 });
 
 test("`e` dismisses the thread row in hand and does nothing on an ask", async () => {

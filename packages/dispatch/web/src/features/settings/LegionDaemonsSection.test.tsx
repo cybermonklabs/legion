@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the in-the-step row submits and checks in one synchronous step, which user-event has no form for
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { settle } from "../../__tests__/fake-clock";
@@ -223,11 +224,15 @@ test("a reader who is not a person is shown the daemons and offered no control",
 });
 
 /** `server` with every read it is asked recorded by project, in order, and every write held
- *  until the row answers it (`answer`): the write reaches the server's rows only then. Once
- *  `holdReads` is called, each read answers what the server held when it was asked, but only as
- *  the row lets it go - the oldest first (`releaseRead`), or all (`releaseReads`, which also ends
- *  the holding) - as a read Dispatch took before a write and answers after it does. */
-function heldWrites(server: LegionServer): {
+ *  until the row answers it (`answer`): the write reaches the server's rows only then, or, with
+ *  `savedFirst`, at once, its answer alone held. Once `holdReads` is called, each read answers
+ *  what the server held when it was asked, but only as the row lets it go - the oldest first
+ *  (`releaseRead`), or all (`releaseReads`, which also ends the holding) - as a read Dispatch took
+ *  before a write and answers after it does. */
+function heldWrites(
+  server: LegionServer,
+  { savedFirst = false }: { readonly savedFirst?: boolean } = {}
+): {
   answer: () => void;
   holdReads: () => void;
   reads: string[];
@@ -263,10 +268,20 @@ function heldWrites(server: LegionServer): {
         return row;
       },
       put: async (project, stateUrl) => {
+        if (savedFirst) {
+          const saved = await server.put(project, stateUrl);
+          await answer.promise;
+          return saved;
+        }
         await answer.promise;
         return server.put(project, stateUrl);
       },
       remove: async (project) => {
+        if (savedFirst) {
+          await server.remove(project);
+          await answer.promise;
+          return;
+        }
         await answer.promise;
         return server.remove(project);
       },
@@ -282,53 +297,64 @@ function shownUrls(): (string | null)[] {
   );
 }
 
-// A read of the project asked while its save is out - an event's refresh, another surface - can
-// reach Dispatch before the save does, and would answer the URL from before the press over the
-// one the reader just saved. It waits for the save's answer, then reads what the save left.
-test("a read of a project asked while its daemon's save is out waits for the answer", async () => {
+/** Names `url` as ACME's daemon through the section's form, without pressing Save. */
+async function fillDaemonForm(url: string) {
+  const user = userEvent.setup();
+  await user.selectOptions(screen.getByLabelText("Legion project"), "ACME");
+  await user.click(screen.getByLabelText("Legion daemon state URL"));
+  await user.paste(url);
+}
+
+// Dispatch takes this page's save at once, and another browser then names a daemon of its own for
+// the project, which this page hears (an event refreshes the project) while its save's answer is
+// still on the way. No live event names the daemon this page wrote, so a hold would keep that
+// read back until the answer, however late: the save holds nothing, and the read asked then goes
+// at once and shows the other browser's daemon. Once the late answer lands, the page reads the
+// project again rather than put its own URL back.
+test("another browser's daemon of the project shows while this page's save is out, and the save's late answer does not undo it", async () => {
   const user = userEvent.setup();
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  const held = heldWrites(legionServer([setting]));
+  const server = legionServer([setting]);
+  const held = heldWrites(server, { savedFirst: true });
   const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
   spies.push(putLegionDaemon);
   const section = await renderSection(held.server, true, queryClient);
 
   await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
-  await user.selectOptions(section.getByLabelText("Legion project"), "ACME");
-  await user.click(section.getByLabelText("Legion daemon state URL"));
-  await user.paste("https://daemon.example");
+  await fillDaemonForm("https://daemon.example");
   await user.click(section.getByRole("button", { name: "Save Legion daemon" }));
   await waitFor(() =>
     expect(putLegionDaemon).toHaveBeenCalledWith("ACME", "https://daemon.example", keyedAttempt)
   );
   expect(shownUrls()).toEqual(["https://daemon.example"]);
 
+  // The other browser's save, and the event's refresh of this page's project.
+  await server.put("ACME", "https://elsewhere.example");
   const asked = held.reads.length;
   await act(async () => {
     void queryClient.invalidateQueries({ queryKey: legionDaemonQuery("ACME").queryKey });
     await settle();
   });
-  expect(held.reads.slice(asked)).toEqual([]);
-  expect(shownUrls()).toEqual(["https://daemon.example"]);
+  expect(held.reads.slice(asked)).toContain("ACME");
+  await waitFor(() => expect(shownUrls()).toEqual(["https://elsewhere.example"]));
+  expect(queryClient.isMutating()).toBe(1);
 
   await act(async () => {
     held.answer();
   });
-  await waitFor(() => expect(held.reads.slice(asked)).toContain("ACME"));
+  await waitFor(() => expect(queryClient.isMutating()).toBe(0));
   await waitFor(() => expect(queryClient.isFetching()).toBe(0));
-  expect(shownUrls()).toEqual(["https://daemon.example"]);
-  expect(document.querySelector('[data-legion-daemon="ACME"] time')?.getAttribute("datetime")).toBe(
-    "2026-11-04T06:00:00Z"
-  );
+  expect(shownUrls()).toEqual(["https://elsewhere.example"]);
 });
 
-// A read of the project asked while its removal is out can reach Dispatch before the removal
-// does, and would answer the daemon the reader just removed, back in the list. It waits for the
-// removal's answer, then reads that the project names none.
-test("a read of a project asked while its daemon's removal is out waits for the answer", async () => {
+// Dispatch takes this page's removal at once, and another browser then names a daemon for the
+// project again, which this page hears while the removal's answer is still on the way. The read
+// asked then goes at once and shows that daemon, and the removal's late answer leaves it there.
+test("another browser's daemon of the project shows while this page's removal is out, and the removal's late answer does not undo it", async () => {
   const user = userEvent.setup();
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  const held = heldWrites(legionServer([setting]));
+  const server = legionServer([setting]);
+  const held = heldWrites(server, { savedFirst: true });
   const deleteLegionDaemon = spyOn(api, "deleteLegionDaemon").mockImplementation(
     held.server.remove
   );
@@ -341,21 +367,51 @@ test("a read of a project asked while its daemon's removal is out waits for the 
   await waitFor(() => expect(deleteLegionDaemon).toHaveBeenCalledWith("ACME", keyedAttempt));
   expect(shownUrls()).toEqual([]);
 
+  // The other browser's save, and the event's refresh of this page's project.
+  await server.put("ACME", "https://elsewhere.example");
   const asked = held.reads.length;
   await act(async () => {
     void queryClient.invalidateQueries({ queryKey: legionDaemonQuery("ACME").queryKey });
     await settle();
   });
-  expect(held.reads.slice(asked)).toEqual([]);
-  expect(shownUrls()).toEqual([]);
+  expect(held.reads.slice(asked)).toContain("ACME");
+  await waitFor(() => expect(shownUrls()).toEqual(["https://elsewhere.example"]));
+  expect(queryClient.isMutating()).toBe(1);
 
   await act(async () => {
     held.answer();
   });
-  await waitFor(() => expect(held.reads.slice(asked)).toContain("ACME"));
+  await waitFor(() => expect(queryClient.isMutating()).toBe(0));
   await waitFor(() => expect(queryClient.isFetching()).toBe(0));
-  expect(shownUrls()).toEqual([]);
-  expect(section.getByText("No project names a Legion daemon yet.")).toBeDefined();
+  expect(shownUrls()).toEqual(["https://elsewhere.example"]);
+});
+
+// The save shows its row in the step of the press: whatever reads the project then - a second
+// press, an event's refresh - reads the URL just saved, not the one from before it.
+test("a daemon's save is in the project's query in the step of the press", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held = heldWrites(legionServer([setting]));
+  const putLegionDaemon = spyOn(api, "putLegionDaemon").mockImplementation(held.server.put);
+  spies.push(putLegionDaemon);
+  const section = await renderSection(held.server, true, queryClient);
+
+  await section.findByRole("cell", { name: "http://127.0.0.1:9731" });
+  await fillDaemonForm("https://daemon.example");
+  // The form's own submit, and the check in the same step: user-event has no form for it.
+  fireEvent.submit(
+    section.getByLabelText("Legion daemon state URL").closest("form") as HTMLFormElement
+  );
+  expect(queryClient.getQueryData(legionDaemonQuery("ACME").queryKey)).toMatchObject({
+    project: "ACME",
+    state_url: "https://daemon.example",
+  });
+
+  await act(async () => {
+    held.answer();
+  });
+  await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+  await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+  expect(shownUrls()).toEqual(["https://daemon.example"]);
 });
 
 // A read of the project out when a save's answer lands, asked while the save was out, would put
