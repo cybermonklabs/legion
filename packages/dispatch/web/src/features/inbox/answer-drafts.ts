@@ -34,5 +34,9 @@ export const answerDraftsSignedIn = store.signedIn;
  *  in the tab, and none is taken until someone signs in (`DraftStore.signedOut`). */
 export const answerDraftsSignedOut = store.signedOut;
 
+/** What a reload of the page does to the answer drafts, for the draft matrix: the page forgets
+ *  them, and the tab keeps them for the next sign-in (`DraftStore.reload`). */
+export const reloadAnswerDrafts = store.reload;
+
 /** Forgets every answer draft, for the unit-test preload. */
 export const resetAnswerDrafts = store.reset;

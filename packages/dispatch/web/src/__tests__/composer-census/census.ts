@@ -1,19 +1,21 @@
 /**
- * The composer census (INFRA-1503): every `MentionComposer` mount in the Dispatch web app outside
- * tests, and every item that changes where its draft lives or ends its mount. `trees.ts` reads
- * the address props, the conditionals, the keys, the routes and the early returns from each
- * mount up to `app.tsx`'s routes; `forms.ts` reads the forms, where the layout draws a composer
- * otherwise; `lifetime.ts` adds one lifetime per mount, the tree ended and drawn again by a
- * reload. `composer-census.test.ts` holds every item to an entry of a draft matrix file's
- * coverage list (`coverage.ts`).
+ * The composer census (INFRA-1503): every mount in the Dispatch web app outside tests of a field
+ * the draft stores keep the reader's typing for (`DRAFT_FIELDS` in `trees.ts`: `MentionComposer`,
+ * the ask card's answer field and `AskReplyComposer`), and every item that changes where its
+ * draft lives or ends its mount. `trees.ts` reads the address props, the conditionals, the keys,
+ * the routes and the early returns from each mount up to `app.tsx`'s routes, or, for an ask's
+ * field, up to its card; `forms.ts` reads the forms, where the layout draws a field otherwise;
+ * `lifetime.ts` adds one lifetime per mount, the tree ended and drawn again by a reload.
+ * `composer-census.test.ts` holds every item to an entry of a draft matrix file's coverage list
+ * (`coverage.ts`).
  *
- * The census fails closed: what it meets and cannot read, a `MentionComposer` drawn in no
- * component it reads or a component element between a mount and the routes whose drawing it
- * cannot follow, is listed as unread (`Census.unread`), and the test fails on each, since a
- * mount or an item may be behind it.
+ * The census fails closed: what it meets and cannot read, a field drawn in no component it reads
+ * or a component element between a mount and the routes whose drawing it cannot follow, is
+ * listed as unread (`Census.unread`), and the test fails on each, since a mount or an item may be
+ * behind it.
  *
  * Each item is named by a key that no line number enters: the component whose code holds it,
- * the place it is about (a mount, by its host and its send name, at the mount itself and in a
+ * the place it is about (a mount, by its host and the element it is, at the mount itself and in a
  * component the mount sits in a slot of; the component drawn there at a place above mounts),
  * its kind, and the expression's own text with its whitespace run together. The same
  * expression at two places of one component, about the same mount or the same component, is
@@ -30,9 +32,10 @@ export interface CensusItem {
   readonly key: string;
   /** The component (or, for a form, the hook) whose code holds the item. */
   readonly host: string;
-  /** The place the item is about: a mount, by its host and its send name
-   *  (`ThreadCard <MentionComposer mutationKey={replyMutationKey}>`), the component drawn at a
-   *  place above mounts, or `-` for a form of a body that wraps no mount. */
+  /** The place the item is about: a mount, by its host and the element it is, with its send name
+   *  or its handle (`ThreadCard <MentionComposer mutationKey={replyMutationKey}>`,
+   *  `AskCard <textarea data-ask-answer="">`), the component drawn at a place above mounts, or
+   *  `-` for a form of a body that wraps no mount. */
   readonly mount: string;
   readonly kind: ItemKind;
   readonly expression: string;

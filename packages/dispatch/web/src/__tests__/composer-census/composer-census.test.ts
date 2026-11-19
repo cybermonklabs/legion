@@ -1,11 +1,12 @@
 /**
  * The composer census (INFRA-1503) held to the draft matrix: every item the census finds, of
- * every `MentionComposer` mount, has an entry in a draft matrix file's coverage list, a row of
- * that file or one of its numbered reasons; every entry names an item the census still finds; a
- * row names a test of its file; and a reason has words. So a host that adds a conditional above
- * its composer, a new mount, or a new form of the layout fails here until a matrix file answers
- * for it. The census fails closed: a mount it cannot place, or an element, a helper or a slot
- * between a mount and the routes it cannot read, fails here too, by where it is.
+ * every mount of a draft field (`MentionComposer`, the ask card's answer field and
+ * `AskReplyComposer`), has an entry in a draft matrix file's coverage list, a row of that file or
+ * one of its numbered reasons; every entry names an item the census still finds; a row names a
+ * test of its file; and a reason has words. So a host that adds a conditional above its field, a
+ * new mount, or a new form of the layout fails here until a matrix file answers for it. The
+ * census fails closed: a mount it cannot place, or an element, a helper or a slot between a mount
+ * and the routes it cannot read, fails here too, by where it is.
  *
  * The census reads the `web/src` this file is in, or the copy of it `COMPOSER_CENSUS_ROOT`
  * names, so that a change planted in a scratch copy is censused with this test unchanged. The
@@ -21,6 +22,7 @@ import { coverage as edit } from "../../features/conversation/draft-matrix.edit.
 import { coverage as inlineReply } from "../../features/conversation/draft-matrix.inline-reply.coverage";
 import { coverage as issuePage } from "../../features/conversation/draft-matrix.issue-page.coverage";
 import { coverage as phoneThread } from "../../features/conversation/draft-matrix.phone-thread.coverage";
+import { coverage as ask } from "../../features/inbox/draft-matrix.ask.coverage";
 import { coverage as messageBox } from "../../features/inbox/draft-matrix.message-box.coverage";
 import { coverage as threadBox } from "../../features/inbox/draft-matrix.thread-box.coverage";
 import { coverage as margin } from "../../features/margin/draft-matrix.margin.coverage";
@@ -39,6 +41,7 @@ const MATRIX: readonly { readonly file: string; readonly entries: readonly Cover
   { entries: inlineReply, file: "features/conversation/draft-matrix.inline-reply.test.tsx" },
   { entries: issuePage, file: "features/conversation/draft-matrix.issue-page.test.tsx" },
   { entries: phoneThread, file: "features/conversation/draft-matrix.phone-thread.test.tsx" },
+  { entries: ask, file: "features/inbox/draft-matrix.ask.test.tsx" },
   { entries: messageBox, file: "features/inbox/draft-matrix.message-box.test.tsx" },
   { entries: threadBox, file: "features/inbox/draft-matrix.thread-box.test.tsx" },
   { entries: margin, file: "features/margin/draft-matrix.margin.test.tsx" },

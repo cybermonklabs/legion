@@ -1,10 +1,11 @@
 /**
- * The composer census (INFRA-1503), its trees: every `MentionComposer` mount, the props that name
- * where its draft lives, and every way its address changes or the mount ends, followed up the
- * component tree to the route elements of `app.tsx`. Each mount's own lines come first: the
- * address props passed to it, and what in its host draws, hides or keys it. Then each place a
- * component above a mount is drawn, once: the props it is handed that decide where a mount below
- * lives or whether it is drawn, and what at that place draws, hides or keys it.
+ * The composer census (INFRA-1503), its trees: every mount of a field a draft store keeps the
+ * reader's typing for (`DRAFT_FIELDS`), the props that name where its draft lives, and every way
+ * its address changes or the mount ends, followed up the component tree to the route elements of
+ * `app.tsx`. Each mount's own lines come first: the address props passed to it, and what in its
+ * host draws, hides or keys it. Then each place a component above a mount is drawn, once: the
+ * props it is handed that decide where a mount below lives or whether it is drawn, and what at
+ * that place draws, hides or keys it.
  */
 import * as ts from "typescript";
 
@@ -13,6 +14,8 @@ import {
   bindingNamed,
   type Comp,
   calleeName,
+  callsOf,
+  componentFunction,
   type Dep,
   dependsOn,
   drawnIn,
@@ -34,13 +37,63 @@ import {
   where,
 } from "./program";
 
-/** The calls of `MentionComposer` that read where its draft lives. */
-const DRAFT_HOME_CALLS = new Set([
-  "useComposerSend",
-  "mountDraft",
-  "useKeptDrafts",
-  "useDraftHomes",
-]);
+/**
+ * The fields the reader types a draft into that the draft stores keep (`draft-store.ts`), and how
+ * the census finds their mounts:
+ * - `MentionComposer`, every composer's field, whose drafts the two stores of each query client
+ *   keep (`unsent-drafts.ts`), and `AskReplyComposer`, the reply form under a settled ask, whose
+ *   drafts are the asks' replies (`reply-drafts.ts`): each element drawing one is a mount of the
+ *   component it is drawn in, and its address props are the props of its own that its `homes`
+ *   calls read. A `MentionComposer` mount is named by its send name.
+ * - The answer field `AskCard` draws, a plain `<textarea>` under the handle the Inbox finds the
+ *   box by (`data-ask-answer`), whose drafts are the asks' answers (`answer-drafts.ts`), held by
+ *   the form hook its host calls (`useAskAnswerForm`): each element under the handle is a mount of
+ *   the component it is drawn in, named by the handle, and its address props are what the host
+ *   hands the hook where the hook's `homes` calls read it.
+ *
+ * A composer's mounts are followed up to the routes. The two ask fields' are followed up to the
+ * ask card (`ASK_CARD`) and not past it: every host draws an ask in one card, which holds both
+ * fields, and their drafts are the ask's, by its id, in stores that outlive every card
+ * (`answer-drafts.ts`, `reply-drafts.ts`). So a place above the card that hides, ends or keys it,
+ * or draws it for another ask, does to both fields what the card's own conditionals do to them,
+ * and the card drawn for that ask again holds the ask's drafts. A field drawn outside a card is
+ * followed up to the routes.
+ */
+interface FieldBase {
+  readonly homes: ReadonlySet<string>;
+  /** The component the census follows the field's mounts up to and not past. */
+  readonly upTo?: string;
+}
+
+type DraftField =
+  | (FieldBase & {
+      readonly component: string;
+      /** The prop a mount is named by among its host's. */
+      readonly sendName?: string;
+    })
+  | (FieldBase & { readonly handle: string; readonly hook: string });
+
+/** The ask card, which holds an ask's answer field and its reply composer. */
+const ASK_CARD = "features/inbox/AskCard.tsx#AskCard";
+
+const DRAFT_FIELDS: readonly DraftField[] = [
+  {
+    component: "features/conversation/MentionComposer.tsx#MentionComposer",
+    homes: new Set(["useComposerSend", "mountDraft", "useKeptDrafts", "useDraftHomes"]),
+    sendName: "mutationKey",
+  },
+  {
+    component: "features/inbox/AskThread.tsx#AskReplyComposer",
+    homes: new Set(["useReplyDraft"]),
+    upTo: ASK_CARD,
+  },
+  {
+    handle: "data-ask-answer",
+    homes: new Set(["useAnswerDraft"]),
+    hook: "features/inbox/useAskAnswerForm.ts#useAskAnswerForm",
+    upTo: ASK_CARD,
+  },
+];
 
 export const CONDITIONAL_OPERATORS = new Set([
   ts.SyntaxKind.AmpersandAmpersandToken,
@@ -68,12 +121,13 @@ export interface Item {
   readonly node?: ts.Node;
 }
 
-/** A `MentionComposer` mount, named by its host and its send name. A mount drawn in a helper of
- *  its module is a mount of each component that draws the helper. */
+/** A mount of a draft field (`DRAFT_FIELDS`), named by its host and the element it is. A mount
+ *  drawn in a helper of its module is a mount of each component that draws the helper. */
 export interface Mount {
   readonly element: ts.Node;
   readonly host: Comp;
-  /** The mount as its host draws it, by its send name: `<MentionComposer mutationKey={…}>`. */
+  /** The mount as its host draws it, by its send name or its handle where it has one:
+   *  `<MentionComposer mutationKey={…}>`, `<AskReplyComposer>`, `<textarea data-ask-answer="">`. */
   readonly shown: string;
   /** The host and `shown`, which name the mount among all of them. */
   readonly name: string;
@@ -106,13 +160,12 @@ export interface TreeItem {
 
 export interface Trees {
   readonly program: Program;
-  readonly composer: Comp;
   readonly mounts: readonly Mount[];
   readonly edges: readonly Edge[];
   readonly items: readonly TreeItem[];
-  /** What the census met and cannot read, each with where it is: a `MentionComposer` it places
-   *  in no component, and a component element, a helper or a slot between a mount and the routes
-   *  whose drawing it cannot follow. Each is a mount or an item the census may be missing. */
+  /** What the census met and cannot read, each with where it is: a field's mount it places in no
+   *  component, and a component element, a helper or a slot between a mount and the routes whose
+   *  drawing it cannot follow. Each is a mount or an item the census may be missing. */
   readonly unread: readonly string[];
 }
 
@@ -140,14 +193,18 @@ export function containsReturn(node: ts.Node): boolean {
   return found;
 }
 
-/** The props `MentionComposer` reads where its draft lives, through the draft-home calls. */
-function readAddressProps(composer: Comp): Set<string> {
+/** The props `unit` (a field's component, or the hook that holds a field's draft) reads where its
+ *  draft lives, through the `homes` calls. */
+function readAddressProps(
+  unit: Pick<Comp, "cls" | "fn" | "mod">,
+  homes: ReadonlySet<string>
+): Set<string> {
   const props = new Set<string>();
   /** The props an argument reads, directly or through a local computed from them; a hook's or
-   *  a callback's result is the composer's own state, not where the host put it. */
+   *  a callback's result is the field's own state, not where the host put it. */
   const walk = (node: ts.Node, seen: Set<ts.Node>) => {
     for (const ident of readIdentifiers(node, true)) {
-      const found = lookup(ident, composer);
+      const found = lookup(ident, unit);
       if (found.kind === "prop") props.add(found.prop);
       if (found.kind !== "local" || seen.has(found.decl)) continue;
       seen.add(found.decl);
@@ -164,15 +221,13 @@ function readAddressProps(composer: Comp): Set<string> {
     if (
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
-      DRAFT_HOME_CALLS.has(node.expression.text)
+      homes.has(node.expression.text)
     ) {
       for (const argument of node.arguments) walk(argument, new Set());
     }
     ts.forEachChild(node, visit);
   };
-  if (composer.fn.body !== undefined) visit(composer.fn.body);
-  // React's own: a new key is a new mount.
-  props.add("key");
+  if (unit.fn.body !== undefined) visit(unit.fn.body);
   return props;
 }
 
@@ -714,18 +769,92 @@ function isTreeKind(kind: Item["kind"]): kind is TreeKind {
   return kind !== "slot" && kind !== "helper" && kind !== "element";
 }
 
-/** A mount's name: its host and the send name it is drawn under, which no two mounts of one host
- *  share; a mount drawn under none is named by its place among its host's. */
-function mountNames(mounts: readonly Pick<Mount, "element" | "host">[]): Mount[] {
+/** A mount as the census finds it, before it is named: where it is drawn, the prop it is named by
+ *  among its host's, the lines that say where its draft lives as its host draws it, and the
+ *  component its field is followed up to (`DraftField.upTo`). */
+interface Placed {
+  readonly element: ts.Node;
+  readonly host: Comp;
+  readonly naming: string | undefined;
+  readonly address: readonly Item[];
+  readonly upTo: string | undefined;
+}
+
+/** A mount's name: its host and the element it is, with the prop it is named by (a composer's
+ *  send name, the answer field's handle), which no two mounts of one host share; a mount drawn
+ *  under none is named by its place among its host's. */
+function mountNames(mounts: readonly Placed[]): Mount[] {
   const taken = new Map<string, number>();
-  return mounts.map((mount) => {
-    const send = attribute(mount.element, "mutationKey");
-    const base = `<MentionComposer${send === undefined ? "" : ` ${text(send)}`}>`;
-    const count = (taken.get(`${mount.host.name} ${base}`) ?? 0) + 1;
-    taken.set(`${mount.host.name} ${base}`, count);
+  return mounts.map(({ element, host, naming }) => {
+    const send = naming === undefined ? undefined : attribute(element, naming);
+    const base = `<${text(tagOf(element) as ts.Node)}${send === undefined ? "" : ` ${text(send)}`}>`;
+    const count = (taken.get(`${host.name} ${base}`) ?? 0) + 1;
+    taken.set(`${host.name} ${base}`, count);
     const shown = count === 1 ? base : `${base} #${count}`;
-    return { ...mount, name: `${mount.host.name} ${shown}`, shown };
+    return { element, host, name: `${host.name} ${shown}`, shown };
   });
+}
+
+/** The lines of the props `props` a mount's element is passed, and of its spreads: where its
+ *  draft lives, as its host draws it. A value the host computes from nothing of its own never
+ *  moves the address, so it is no line. */
+function passedLines(element: ts.Node, host: Comp, props: readonly string[]): Item[] {
+  const lines: Item[] = [];
+  for (const prop of props) {
+    const passed = attribute(element, prop);
+    if (passed?.initializer === undefined) continue;
+    const deps = dependsOn(passed.initializer, host);
+    if (deps.length === 0) continue;
+    lines.push({
+      at: where(passed),
+      deps,
+      expression: text(passed),
+      inside: false,
+      kind: prop === "key" ? "key" : "address prop",
+      unit: host,
+    });
+  }
+  for (const spread of spreads(element)) {
+    lines.push({
+      at: where(spread),
+      deps: dependsOn(spread.expression, host),
+      expression: text(spread),
+      inside: false,
+      kind: "address prop",
+      unit: host,
+    });
+  }
+  return lines;
+}
+
+/** The lines of what `host` hands the hook `hook` where the hook reads where a field's draft
+ *  lives (`props`): each such property of the object `host` calls it with, each spread into that
+ *  object, or the whole argument where it is no object literal. */
+function handedLines(host: Comp, hook: string, props: ReadonlySet<string>): Item[] {
+  const line = (node: ts.Node, shown: string): Item => ({
+    at: where(node),
+    deps: dependsOn(node, host),
+    expression: `${hook}(${shown})`,
+    inside: false,
+    kind: "address prop",
+    unit: host,
+  });
+  const lines: Item[] = [];
+  for (const call of callsOf(hook, host)) {
+    const argument = call.arguments[0];
+    if (argument === undefined) continue;
+    if (!ts.isObjectLiteralExpression(argument)) {
+      lines.push(line(argument, text(argument)));
+      continue;
+    }
+    for (const property of argument.properties) {
+      const name = ts.isSpreadAssignment(property) ? undefined : property.name?.getText();
+      if (name === undefined || props.has(name)) {
+        lines.push(line(property, `{ ${text(property)} }`));
+      }
+    }
+  }
+  return lines;
 }
 
 /** Whether a node sits outside every function and class: the app's root, as `main.tsx`
@@ -737,13 +866,27 @@ function atTopLevel(node: ts.Node): boolean {
   return true;
 }
 
-/** Reads every mount of `MentionComposer` and the tree above it, and what it cannot read. */
+/** Every element of the program under `handle`, a plain element's attribute that marks a field. */
+function handled(program: Program, handle: string): ts.Node[] {
+  const found: ts.Node[] = [];
+  for (const mod of program.mods.values()) {
+    const visit = (node: ts.Node) => {
+      if (
+        (ts.isJsxSelfClosingElement(node) || ts.isJsxElement(node)) &&
+        attribute(node, handle) !== undefined
+      ) {
+        found.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(mod.sf);
+  }
+  return found;
+}
+
+/** Reads every mount of a draft field (`DRAFT_FIELDS`) and the tree above it, and what it cannot
+ *  read. */
 export function readTrees(program: Program): Trees {
-  const composer = [...program.comps.values()].find(
-    (comp) => comp.id === "features/conversation/MentionComposer.tsx#MentionComposer"
-  );
-  if (composer === undefined) throw new Error("MentionComposer not found");
-  const addressProps = [...readAddressProps(composer)].sort();
   /** The places a component is drawn, by its element and the component drawing it. */
   const edges = new Map<ts.Node, Map<string, Edge>>();
   const wanted = new Map<string, Set<string>>();
@@ -757,10 +900,17 @@ export function readTrees(program: Program): Trees {
   };
 
   /** Climbs from `startId`, whose `props` decide where a mount below it lives or whether it is
-   *  drawn, through every component that draws it, to the routes and the app's root. */
-  const climb = (startId: string, props: ReadonlySet<string>, host: string) => {
+   *  drawn, through every component that draws it, to the routes and the app's root, or to
+   *  `upTo` and not past it. */
+  const climb = (
+    startId: string,
+    props: ReadonlySet<string>,
+    host: string,
+    upTo: string | undefined
+  ) => {
     const queue: { id: string; props: Set<string> }[] = [{ id: startId, props: new Set(props) }];
     for (let step = queue.shift(); step !== undefined; step = queue.shift()) {
+      if (step.id === upTo) continue;
       const labels = hostsOf.get(step.id) ?? new Set<string>();
       const newHost = !labels.has(host);
       labels.add(host);
@@ -851,49 +1001,61 @@ export function readTrees(program: Program): Trees {
     }
   };
 
-  // Each use of `MentionComposer` is a mount of each component it is drawn in; one drawn in none
-  // the census reads, or read as a value rather than drawn, is a mount it cannot place.
-  const placedMounts: Pick<Mount, "element" | "host">[] = [];
-  for (const { element } of program.usesById.get(composer.id) ?? []) {
-    const hosts = drawnIn(program, element);
-    if (hosts.length === 0) {
-      unread.add(`${where(element)}: <MentionComposer>, drawn by no component the census reads`);
+  // Each element drawing a field's component, or under a field's handle, is a mount of each
+  // component it is drawn in; one drawn in none the census reads, a field component read as a
+  // value rather than drawn, or a field whose host keeps its draft nowhere the census reads, is a
+  // mount it cannot place.
+  const placedMounts: Placed[] = [];
+  for (const field of DRAFT_FIELDS) {
+    if ("component" in field) {
+      const comp = program.comps.get(field.component);
+      if (comp === undefined) throw new Error(`${field.component} not found`);
+      const props = [...readAddressProps(comp, field.homes), "key"].sort();
+      for (const { element } of program.usesById.get(comp.id) ?? []) {
+        const hosts = drawnIn(program, element);
+        if (hosts.length === 0) {
+          unread.add(`${where(element)}: <${comp.name}>, drawn by no component the census reads`);
+        }
+        for (const host of hosts) {
+          const address = passedLines(element, host, props);
+          placedMounts.push({ address, element, host, naming: field.sendName, upTo: field.upTo });
+        }
+      }
+      for (const ref of moduleRefs(program, comp.id)) {
+        unread.add(`${where(ref)}: ${comp.name}, read as a value, not drawn as an element`);
+      }
+      continue;
     }
-    for (const host of hosts) placedMounts.push({ element, host });
-  }
-  for (const ref of moduleRefs(program, composer.id)) {
-    unread.add(`${where(ref)}: MentionComposer, read as a value, not drawn as an element`);
+    const decl = declOf(program, field.hook);
+    const fn = decl === undefined ? undefined : componentFunction(decl);
+    if (decl === undefined || fn === undefined) throw new Error(`${field.hook} not found`);
+    const hook = field.hook.slice(field.hook.lastIndexOf("#") + 1);
+    const props = readAddressProps({ fn, mod: modOf(program, decl) }, field.homes);
+    for (const element of handled(program, field.handle)) {
+      const shown = `<${text(tagOf(element) as ts.Node)} ${field.handle}>`;
+      const hosts = drawnIn(program, element);
+      if (hosts.length === 0) {
+        unread.add(`${where(element)}: ${shown}, drawn by no component the census reads`);
+      }
+      for (const host of hosts) {
+        const address = [...passedLines(element, host, ["key"]), ...handedLines(host, hook, props)];
+        if (address.every((line) => line.kind === "key")) {
+          unread.add(
+            `${where(element)}: ${shown} in ${host.name}, which hands ${hook} nowhere the census can see`
+          );
+        }
+        placedMounts.push({ address, element, host, naming: field.handle, upTo: field.upTo });
+      }
+    }
   }
   const mounts = mountNames(placedMounts);
   const items: TreeItem[] = [];
-  for (const mount of mounts) {
+  for (const [index, mount] of mounts.entries()) {
     const { element, host } = mount;
-    const lines: Item[] = [];
+    const lines: Item[] = [...placedMounts[index].address];
     const carried = new Set<string>();
-    for (const prop of addressProps) {
-      const passed = attribute(element, prop);
-      if (passed?.initializer === undefined) continue;
-      const line: Item = {
-        at: where(passed),
-        deps: dependsOn(passed.initializer, host),
-        expression: text(passed),
-        inside: false,
-        kind: prop === "key" ? "key" : "address prop",
-        unit: host,
-      };
+    for (const line of lines) {
       for (const name of propsRead(line)) carried.add(name);
-      // A value the host computes from nothing of its own never moves the address.
-      if (line.deps.length > 0) lines.push(line);
-    }
-    for (const spread of spreads(element)) {
-      lines.push({
-        at: where(spread),
-        deps: dependsOn(spread.expression, host),
-        expression: text(spread),
-        inside: false,
-        kind: "address prop",
-        unit: host,
-      });
     }
     const walked: Item[] = [];
     walkFrom(element, host, walked, mount.name);
@@ -912,7 +1074,7 @@ export function readTrees(program: Program): Trees {
         mounts: [mount.name],
       });
     }
-    climb(host.id, carried, mount.name);
+    climb(host.id, carried, mount.name, placedMounts[index].upTo);
   }
   // Read once every mount has climbed, since a later mount's climb adds itself to a place an
   // earlier one already reached.
@@ -930,5 +1092,5 @@ export function readTrees(program: Program): Trees {
       });
     }
   }
-  return { composer, edges: allEdges, items, mounts, program, unread: [...unread] };
+  return { edges: allEdges, items, mounts, program, unread: [...unread] };
 }

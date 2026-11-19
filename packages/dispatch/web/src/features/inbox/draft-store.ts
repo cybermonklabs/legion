@@ -6,6 +6,12 @@ import { pageStorage, type Shape, shape } from "../writes/write-storage";
 export interface DraftStore {
   /** The key's draft, read without subscribing to it. */
   read(key: string): string;
+  /** What a reload of the page does to the store, for a test that stands for one (the draft
+   *  matrix's `endAsAReload`): a store a module holds outlives the tree the test ends, where the
+   *  next page load's would start empty. It forgets every draft in the page and whose they were,
+   *  and every word that one is not kept, and leaves what the tab keeps, which the next sign-in
+   *  takes up (`signedIn`). */
+  reload(): void;
   /** Forgets every draft, and whose they were, in the page and in the tab. The unit-test preload
    *  calls it after each test, since the store outlives any one render. */
   reset(): void;
@@ -40,9 +46,21 @@ export interface DraftStore {
  * draft is one entry, `dispatch.draft:<store>:<key>`, in one versioned format: the text, and the
  * login of the person who typed it. A store reads its entries back only for that person, at the
  * first sign-in it is told of, and drops each entry of another person's or of another format; a
- * sign-out drops every entry that names the person who signed out, of whatever format.
+ * sign-out drops every entry that names the person who signed out, of whatever format. No store
+ * reads the entries of a store name that is none of `STORE_NAMES`, so the first store to load
+ * over a tab's storage drops those.
  */
 const ENTRY_PREFIX = "dispatch.draft:";
+
+/** The names of the app's draft stores: the composers' drafts and the ones each keeps by
+ *  address (`unsent-drafts.ts`), and the asks' answers and replies (`answer-drafts.ts`,
+ *  `reply-drafts.ts`). */
+const STORE_NAMES = ["unsent", "away", "answer", "reply"] as const;
+
+export type StoreName = (typeof STORE_NAMES)[number];
+
+/** The storages a store has loaded over, whose entries of no store's name are dropped. */
+const swept = new WeakSet<Storage>();
 
 /** The format's version: an entry of any other is dropped on load, never read. */
 const FORMAT_VERSION = 1;
@@ -127,12 +145,24 @@ function removeEntry(storage: Storage | undefined, name: string): void {
   }
 }
 
+/** Drops, once for each storage, every draft entry of a store name none of `STORE_NAMES` is,
+ *  whoever kept it: an entry of a store the app has is that store's own load to judge. */
+function dropUnknownStores(storage: Storage): void {
+  if (swept.has(storage)) return;
+  swept.add(storage);
+  const known = STORE_NAMES.map((name) => `${ENTRY_PREFIX}${name}:`);
+  for (const entry of entryNames(storage, ENTRY_PREFIX)) {
+    if (!known.some((prefix) => entry.startsWith(prefix))) removeEntry(storage, entry);
+  }
+}
+
 /**
  * A store of unsent text, keyed by what the text belongs to (an ask id): the draft belongs to
  * that thing rather than to the field showing it, so every field for one key reads and writes
  * the same draft, a field that remounts picks it back up, and the draft outlives every render.
- * Once the store knows who is signed in, each draft is kept in the tab under the store's `name`
- * as well (`ENTRY_PREFIX`), so it outlives a reload of the page too, within the bounds above.
+ * Once the store knows who is signed in, each draft is kept in the tab under the store's `name`,
+ * one of `STORE_NAMES`, as well (`ENTRY_PREFIX`), so it outlives a reload of the page too, within
+ * the bounds above.
  *
  * Each of the app's draft stores is one of these - the answer drafts (`answer-drafts.ts`), the
  * reply drafts (`reply-drafts.ts`), and the two the composers' unsent drafts keep for each query
@@ -142,7 +172,7 @@ function removeEntry(storage: Storage | undefined, name: string): void {
  * reload and says so.
  */
 export function createDraftStore(
-  name: string,
+  name: StoreName,
   storage: Storage | undefined = pageStorage()
 ): DraftStore {
   const drafts = new Map<string, string>();
@@ -224,11 +254,13 @@ export function createDraftStore(
   };
 
   /** Takes up the drafts the tab kept for `login` before the page loaded, and drops every entry
-   *  of this store's that another person kept or that is of another format. A draft already in
+   *  of this store's that another person kept or that is of another format; the first load over a
+   *  storage drops every entry of no store's name too (`dropUnknownStores`). A draft already in
    *  the page wins over the one the tab kept for its key, and is kept in its place. */
   const load = (login: string): void => {
     const loaded = new Set<string>();
     if (storage !== undefined) {
+      dropUnknownStores(storage);
       for (const entry of entryNames(storage, prefix)) {
         const key = entry.slice(prefix.length);
         const kept = readEntry(storage, entry);
@@ -291,6 +323,10 @@ export function createDraftStore(
 
   return {
     read: (key) => drafts.get(key) ?? "",
+    reload: () => {
+      ended = false;
+      forget();
+    },
     reset,
     set,
     signedIn: (login) => {

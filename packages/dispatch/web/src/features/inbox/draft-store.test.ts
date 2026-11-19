@@ -81,6 +81,21 @@ test("another person's sign-in forgets every draft in the tab too, and a lapse k
   });
 });
 
+// No store reads back the entries of a store name the app no longer has, so the first store to
+// load drops them, whoever kept them. An entry of a store the app has is that store's own load to
+// judge, so this pass leaves it, another person's included.
+test("the first load drops every entry of a store the app no longer has, and none of one it has", () => {
+  const { storage } = keptTab();
+  const kept = (login: string, text: string) => JSON.stringify({ login, text, version: 1 });
+  storage.setItem("dispatch.draft:retired:ask-1", kept("alice", "A draft of a retired store"));
+  storage.setItem("dispatch.draft:reply:ask-2", kept("bob", "Bob's reply"));
+  createDraftStore("answer", storage).signedIn("alice");
+  expect({
+    known: storage.getItem("dispatch.draft:reply:ask-2"),
+    retired: storage.getItem("dispatch.draft:retired:ask-1"),
+  }).toEqual({ known: kept("bob", "Bob's reply"), retired: null });
+});
+
 // A sign-out that lands ends the person's session at this browser, so the next person to sign in
 // here must find nothing they typed: the store forgets their drafts in the page and in the tab,
 // and takes none a field hands it before the next sign-in (the shell going, its fields with it),

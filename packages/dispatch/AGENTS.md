@@ -107,11 +107,17 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   refused or stopped send, and the files pasted into it.
   The draft matrix (`draft-matrix.*.test.tsx`) holds every composer host to this rule, one row
   per move, form and lifetime its host has, and `__tests__/composer-census/composer-census.test.ts`
-  holds the matrix to the code: it lists every `MentionComposer` mount, every way its address or
-  its tree moves and every layout form, and fails on an item with neither a row nor a numbered
-  reason in its file's `*.coverage.ts`, so a new conditional above a composer is a red test.
-  It fails closed: a `MentionComposer` drawn in no component it reads, and a component element,
-  helper or slot between a mount and the routes it cannot follow, fail it where they are.
+  holds the matrix to the code: it lists every `MentionComposer` mount and every mount of the ask
+  card's two fields, its answer field (`data-ask-answer`) and `AskReplyComposer`
+  (`DRAFT_FIELDS` in `composer-census/trees.ts`), every way its address or its tree moves and
+  every layout form, and fails on an item with neither a row nor a numbered reason in its file's
+  `*.coverage.ts`, so a new conditional above a composer or an ask's field is a red test.
+  It follows a composer up to the routes, and an ask's field up to the `AskCard` it is drawn in
+  and not past it: both fields' drafts are the ask's, by its id, in stores that outlive every
+  card (`answer-drafts.ts`, `reply-drafts.ts`), so a place above the card ends or moves both as
+  the card's own conditionals do (`draft-matrix.ask.test.tsx`).
+  It fails closed: a field drawn in no component it reads, and a component element, helper or
+  slot between a mount and the routes it cannot follow, fail it where they are.
   An item's key names the mount it is about, so an expression repeated above a second mount is a
   new item, which the file answering for that mount must answer.
   The reader's own controls move the draft with the address: Cancel reply (and Escape, which ends
@@ -258,10 +264,12 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   as the page goes (`pagehide` in `useKeptDrafts`), since a reload unmounts nothing. The page a
   reload loads takes up only the signed-in person's drafts, and `AuthGate` draws the shell only in
   the commit after the stores were told who that is, so no composer mounts before its draft is
-  back. A store keeps at most `DRAFT_KEPT_UNITS` (65,536 UTF-16 units) of one draft and
-  `STORE_KEPT_UNITS` (262,144) of all its drafts. A draft past either bound, or one the browser
-  refuses to write, stays in the page while it is open, and the shell's status corner says it is
-  lost on a reload (`DraftsNotKept`) until there is room and it is kept again. With no compose
+  back. That first load also drops every `dispatch.draft:` entry of a store name none of the
+  four stores has (`STORE_NAMES`), which no store would read back. A store keeps at most
+  `DRAFT_KEPT_UNITS` (65,536 UTF-16 units) of one draft and `STORE_KEPT_UNITS` (262,144) of all
+  its drafts. A draft past either bound, or one the browser refuses to write, stays in the page
+  while it is open, and the shell's status corner says it is lost on a reload (`DraftsNotKept`)
+  until there is room and it is kept again. With no compose
   open on a document, the margin draws what its compose kept for the document's words, with
   Discard my draft (`MarginKeptDrafts`): after a reload, a sign-in after a lapse, or the closing of
   the issue of a suggestion or ask compose that held it.

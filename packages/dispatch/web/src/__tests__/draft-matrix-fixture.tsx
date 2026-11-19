@@ -33,9 +33,9 @@ import type {
 import { ConversationTab } from "../features/conversation/ConversationTab";
 import { unsentDraftsOf } from "../features/conversation/unsent-drafts";
 import { DocumentRuntime } from "../features/doc/runtime";
-import { answerDraftsSignedIn } from "../features/inbox/answer-drafts";
+import { answerDraftsSignedIn, reloadAnswerDrafts } from "../features/inbox/answer-drafts";
 import { ReadingPane } from "../features/inbox/ReadingPane";
-import { replyDraftsSignedIn } from "../features/inbox/reply-drafts";
+import { reloadReplyDrafts, replyDraftsSignedIn } from "../features/inbox/reply-drafts";
 import { Margin } from "../features/margin/Margin";
 import { type DocumentBridge, MarginProvider, useMargin } from "../features/margin/margin-context";
 import {
@@ -264,7 +264,8 @@ const READER_LOGIN = "alice";
  * reader's login so that the tab's `sessionStorage` keeps it; every store told who is signed in;
  * and the writes the tab kept taken up again (`Writes.resume`). A reload row signs in the page it
  * starts on so, and the page the reload loads, whose query client is new, and so are its write
- * store and its unsent drafts, over the same tab.
+ * store and its unsent drafts, over the same tab; the answer and reply drafts a reload emptied
+ * (`endAsAReload`) take up what the tab kept for the reader at this sign-in.
  */
 export function signedInAsReader(queryClient: QueryClient): QueryClient {
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: READER_LOGIN });
@@ -281,7 +282,9 @@ export function signedInAsReader(queryClient: QueryClient): QueryClient {
  * a deploy (`DeploymentResilience`). The page is told it goes (`pagehide`), and what the tab's
  * `sessionStorage` holds then is all the next load of the page finds. `end` takes the whole tree
  * away, and React runs every unmount in it, which a reload never does, so whatever those unmounts
- * write there is put back as the page left it.
+ * write there is put back as the page left it. The answer and reply drafts, which modules hold
+ * and so outlive the tree, forget what they hold as the next page's would start without it, and
+ * keep what the tab keeps (`DraftStore.reload`), so only what the tab kept comes back.
  */
 export function endAsAReload(end: () => void): void {
   act(() => {
@@ -292,6 +295,8 @@ export function endAsAReload(end: () => void): void {
   ).filter((name): name is string => name !== null);
   const left = names.map((name) => [name, sessionStorage.getItem(name) ?? ""] as const);
   end();
+  reloadAnswerDrafts();
+  reloadReplyDrafts();
   sessionStorage.clear();
   for (const [name, value] of left) sessionStorage.setItem(name, value);
 }
