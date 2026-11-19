@@ -579,6 +579,48 @@ func TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries(
 	}
 }
 
+// TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds: a row an older broker replica wrote while
+// the broker rolls carries the pod's account alone (spellAccountAlone), and migration 0037 rewrites
+// only the rows it finds when it runs. Such a row of the account the pods move off is still the
+// session rule's predecessor for the moved account's pod, where a login of the same account
+// enrolled both, as a row of the pair is: the pod takes its grant, its pending request and its
+// withheld name with the same trail. Another daemon's login takes none of it, whichever spelling
+// the row carries.
+func TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds(t *testing.T) {
+	ctx := context.Background()
+	t.Run("the same daemon's login takes all of it", func(t *testing.T) {
+		m := replacedPod(t)
+		spellAccountAlone(t, m.svc, m.old.ID)
+		pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)
+		moved, err := m.svc.Create(ctx, m.cluster, m.next(t))
+		if err != nil {
+			t.Fatalf("the moved account's pod enrolment with the pair = %v, want it enrolled", err)
+		}
+		m.tookAllOfIt(t, moved)
+	})
+	t.Run("another daemon's login takes none of it", func(t *testing.T) {
+		m := replacedPod(t)
+		spellAccountAlone(t, m.svc, m.old.ID)
+		pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)
+		const otherDaemonAccount = "system:serviceaccount:other-project:legion-daemon"
+		m.svc.ServiceLogins[otherDaemonAccount] = "legion-daemon"
+		other := podRig{svc: m.svc}.login(t, otherDaemonAccount, "")
+		moved, err := m.svc.Create(ctx, other, m.next(t))
+		if err != nil {
+			t.Fatalf("another daemon's pod of the paired account enrolling = %v, want it enrolled", err)
+		}
+		if holder := grantHolder(t, m.svc, m.grant); holder != m.old.ID {
+			t.Fatalf("grant %s hangs off %s, want the legacy row %s: another daemon's pod takes none of it", m.grant, holder, m.old.ID)
+		}
+		if got := withheldNames(t, m.svc, moved.ID); len(got) != 0 {
+			t.Fatalf("another daemon's pod withholds %v, want nothing", got)
+		}
+		if got := adoptionsOf(t, m.svc, moved.ID); len(got) != 0 {
+			t.Fatalf("another daemon's pod has enrollment.adopted rows %+v, want none", got)
+		}
+	})
+}
+
 // TestAPairedAccountsEnrollmentAfterItsExchangeTookTheNameTakesWhatItCarries: a Legion pod
 // trades a token under its session name before or after it enrols
 // (TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount), so the moved account's pod
