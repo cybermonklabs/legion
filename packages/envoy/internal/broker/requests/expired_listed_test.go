@@ -578,7 +578,7 @@ func TestReadRecordReadsAnOverdueRecordExpiredBeforeTheSweep(t *testing.T) {
 	}
 }
 
-// TestCoalescingSkipsARequestPastItsDeadline pins pendingRequest's deadline: a request made again
+// TestCoalescingSkipsARequestPastItsDeadline pins pendingRequests' deadline: a request made again
 // once the first one's deadline has passed, with no sweep run, opens a record of its own rather
 // than joining one every decision refuses, and the approver's list holds it pending beside the
 // expired one.

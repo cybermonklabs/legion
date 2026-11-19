@@ -7,8 +7,9 @@
 // not answered yet, and the session comes up again against the new one. The session's next
 // enrollment there adopts the request it left waiting (enroll.adopt), so the request now hangs off
 // the new broker's enrollment, but its record is a request object signed for the old broker's
-// address. Nobody on the new broker can decide that record: its approval page and its judge verify
-// every record for their own address and leave this one out (requests.PendingLeftOutMessage).
+// address. Nobody on the new broker can decide that record: its approval page verifies every
+// record for its own address and leaves this one out (requests.PendingLeftOutMessage), and its
+// judge was never handed it, since only the broker that wrote a request holds it for its judge.
 // Before Create ended such a request, it also held the session's names on the new broker until
 // it expired: the session's ask was coalesced onto it, or refused REQUEST_PENDING naming it.
 //
@@ -183,7 +184,7 @@ func TestAPendingRequestFollowsItsSessionToTheNewBroker(t *testing.T) {
 		t.Fatalf("the new request %s is %+v, want it pending on broker B's enrollment %s with the record %s it was answered", again.RequestID, fresh, onB.enrollmentID, *again.RecordID)
 	}
 	requireSignedFor(rigB, *again.RecordID, rigB.base,
-		"the new request's record is the request object signed for B's address, which B's own approval page and judge can verify")
+		"the new request's record is the request object signed for B's address, which B's own approval page can verify")
 
 	// The end's line: one, on B, naming the four ids; none on A, which ended nothing.
 	awaitLogCaughtUp(rigB, brokerB)

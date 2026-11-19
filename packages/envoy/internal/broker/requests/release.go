@@ -152,7 +152,7 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 	}()
 	for _, g := range checked.granted {
-		entry := m.Airlock.Lookup(g.name)
+		entry := m.Airlock.Bound(g.name)
 		if entry == nil && want.airlockOnly {
 			continue
 		}

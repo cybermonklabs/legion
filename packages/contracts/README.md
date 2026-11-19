@@ -9,7 +9,8 @@ Current scope:
 - envelope schema and subject helpers
 - the Dispatch specs the `dispatch` command is built from, over `zodSchemaApi(hostZod)`
 - Go generation: `scripts/gen-go.ts`
-- generated Go output: `packages/envoy/internal/contracts/generated.go`
+- generated Go output: `packages/envoy/listenerwire/envelope_generated.go` (the envelope) and
+  `packages/envoy/internal/contracts/generated.go` (the shared constants)
 
 This package has no release of its own, so nothing renders its changelog entries: each stays
 readable as the fragment file that holds it, under `.changes/unreleased/`. `CHANGELOG.md` is the

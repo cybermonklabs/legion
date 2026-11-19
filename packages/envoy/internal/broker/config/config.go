@@ -338,10 +338,10 @@ type Config struct {
 	// the broker mints that account's token for BROKER_JUDGE_MODEL_AUDIENCE at IAM Service
 	// Account Credentials' generateIdToken, with includeEmail, spending the pod's own credential,
 	// the access token its metadata server answers; it never reads the metadata server's identity
-	// token and never falls back to it, and a mint that fails refers the request with an error
-	// naming the account and the audience. Unset, the judge reads the metadata server's identity
-	// token as before. It is for a pod that runs as a bare Workload Identity principal, whose
-	// metadata server mints no identity token. The broker's principal needs
+	// token and never falls back to it, and a mint that fails hands the request to its person with
+	// an error naming the account and the audience. Unset, the judge reads the metadata server's
+	// identity token as before. It is for a pod that runs as a bare Workload Identity principal,
+	// whose metadata server mints no identity token. The broker's principal needs
 	// roles/iam.serviceAccountOpenIdTokenCreator on that account, and the account's project needs
 	// the IAM Service Account Credentials API (iamcredentials.googleapis.com) turned on.
 	//
@@ -354,9 +354,10 @@ type Config struct {
 	// must not be able to mint their tokens. Each refusal names the setting and the value.
 	JudgeModelAccount string
 	// BROKER_JUDGE_DISPATCH_URL: the base URL of the Dispatch the judge reads an issue from, an
-	// absolute http(s) URL. It makes two GETs there — one for the issue a request's reason
-	// names, which answers that issue's key, title and status, and one for the whole markdown
-	// of the issue's spec document — and writes nothing: no ask, no comment, no status.
+	// absolute http(s) URL. It makes GETs there — one for the issue a request's reason names,
+	// which answers that issue's key, title and status, one for the whole markdown of the issue's
+	// spec document, and one for the ask the reason cites — and writes nothing: no ask, no
+	// comment, no status.
 	// Required with the rest of JudgeSettings.
 	JudgeDispatchURL string
 	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
@@ -1690,8 +1691,9 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		// The account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to
 		// (parseServiceAccountSecrets), for the same reasons: a value that is no one service
-		// account's address would boot and then refer every request on a refused mint, and a
-		// service agent is an account of Google's own that the broker must not mint for.
+		// account's address would boot and then hand every request the judge holds to its person
+		// on a refused mint, and a service agent is an account of Google's own that the broker
+		// must not mint for.
 		if cfg.JudgeModelAccount != "" {
 			if !secrets.ValidServiceAccountEmail(cfg.JudgeModelAccount) {
 				return Config{}, fmt.Errorf("%s must name one user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, got %q", judgeModelAccountSetting, cfg.JudgeModelAccount)

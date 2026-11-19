@@ -1,9 +1,9 @@
 // packages/envoy/internal/broker/judge/model_token_test.go
 // The bearer the judge presents to its model, as NewModel wires it from a
 // brokertoken.GoogleAccount: the metadata server's identity token with no account named, the token
-// generateIdToken mints with one, and a referral, with no call to the model, when that mint is
-// refused. The metadata server and IAM Service Account Credentials are brokertokentest's
-// stands-in, and the model is this package's own.
+// generateIdToken mints with one, and no verdict but an error, with no call to the model, when
+// that mint is refused. The metadata server and IAM Service Account Credentials are
+// brokertokentest's stands-in, and the model is this package's own.
 package judge
 
 import (
@@ -33,9 +33,9 @@ func tokenModel(model *modelStandIn, account *brokertoken.GoogleAccount) Model {
 // tokenData is the block these judges ask the model about. What it says does not matter here.
 func tokenData() Data {
 	return Data{
-		Secret: testSecret,
+		Keys:   []KeyData{{Name: testSecret}},
 		Reason: pending().Reason,
-		Issue:  IssueData{Key: testIssue, Title: "The broker's model judge", Status: "doing"},
+		Issue:  &IssueData{Key: testIssue, Title: "The broker's model judge", Status: "doing"},
 	}
 }
 
@@ -45,13 +45,13 @@ func tokenData() Data {
 func TestTheJudgePresentsTheMetadataIdentityTokenWithNoAccount(t *testing.T) {
 	brokertokentest.NewMetadataStand(t)
 	iam := brokertokentest.NewIAMStand(t)
-	model := newModel(t, verdictReply(Approve, "The reason names the issue."))
+	model := newModel(t, verdictReply(Grant, "The reason names the issue."))
 	account := brokertoken.NewGoogleAccount(gatewayAudience)
 	account.IAMCredentialsURL = iam.Server.URL
 
 	verdict, _, _, err := tokenModel(model, account).Ask(t.Context(), tokenData())
-	if err != nil || verdict.Word != Approve {
-		t.Fatalf("Ask = %+v, %v; want the model's approval", verdict, err)
+	if err != nil || verdict.Word != Grant {
+		t.Fatalf("Ask = %+v, %v; want the model's grant", verdict, err)
 	}
 	if got, want := model.presented(), "Bearer "+brokertokentest.MetadataIdentityToken; len(got) != 1 || got[0] != want {
 		t.Errorf("the model was presented %q; want one call with %q, the metadata server's identity token", got, want)
@@ -67,14 +67,14 @@ func TestTheJudgePresentsTheMetadataIdentityTokenWithNoAccount(t *testing.T) {
 func TestTheJudgePresentsTheMintedTokenWithAnAccount(t *testing.T) {
 	metadata := brokertokentest.NewMetadataStand(t)
 	iam := brokertokentest.NewIAMStand(t)
-	model := newModel(t, verdictReply(Approve, "The reason names the issue."))
+	model := newModel(t, verdictReply(Grant, "The reason names the issue."))
 	account := brokertoken.NewGoogleAccount(gatewayAudience)
 	account.ServiceAccount = judgeAccount
 	account.IAMCredentialsURL = iam.Server.URL
 
 	verdict, _, _, err := tokenModel(model, account).Ask(t.Context(), tokenData())
-	if err != nil || verdict.Word != Approve {
-		t.Fatalf("Ask = %+v, %v; want the model's approval", verdict, err)
+	if err != nil || verdict.Word != Grant {
+		t.Fatalf("Ask = %+v, %v; want the model's grant", verdict, err)
 	}
 	if got, want := model.presented(), "Bearer "+brokertokentest.IAMIdentityToken; len(got) != 1 || got[0] != want {
 		t.Errorf("the model was presented %q; want one call with %q, the minted token", got, want)
@@ -98,26 +98,27 @@ func TestTheJudgePresentsTheMintedTokenWithAnAccount(t *testing.T) {
 	}
 }
 
-// TestTheJudgeRefersWhenTheMintIsRefused: a mint Google refuses leaves the judge no token, so it
-// refers the request, with an error naming the account and the audience for its audit row, and
+// TestTheJudgeHandsTheRequestOverWhenTheMintIsRefused: a mint Google refuses leaves the judge no
+// token, so Ask answers no verdict of the model's but Deny beside an error naming the account and
+// the audience for the audit row, which is the run's sign to hand the request to its person, and
 // never calls the model, with the pod's own identity token or with none. The metadata server here
 // would still hand out an identity token, so a judge that fell back would have reached the model.
-func TestTheJudgeRefersWhenTheMintIsRefused(t *testing.T) {
+func TestTheJudgeHandsTheRequestOverWhenTheMintIsRefused(t *testing.T) {
 	metadata := brokertokentest.NewMetadataStand(t)
 	iam := brokertokentest.NewIAMStand(t)
 	iam.AnswersStatus(http.StatusForbidden, `{"error":{"code":403,"message":"Permission 'iam.serviceAccounts.getOpenIdToken' denied on resource (or it may not exist).","status":"PERMISSION_DENIED"}}`)
-	model := newModel(t, verdictReply(Approve, "The reason names the issue."))
+	model := newModel(t, verdictReply(Grant, "The reason names the issue."))
 	account := brokertoken.NewGoogleAccount(gatewayAudience)
 	account.ServiceAccount = judgeAccount
 	account.IAMCredentialsURL = iam.Server.URL
 
 	verdict, _, _, err := tokenModel(model, account).Ask(t.Context(), tokenData())
-	if verdict.Word != Refer || err == nil {
-		t.Fatalf("Ask = %+v, %v; want a referral with an error", verdict, err)
+	if verdict.Word != Deny || err == nil {
+		t.Fatalf("Ask = %+v, %v; want no verdict but an error", verdict, err)
 	}
 	for _, want := range []string{judgeAccount, gatewayAudience, "HTTP 403"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the referral's error %q does not name %q", err, want)
+			t.Errorf("the mint's error %q does not name %q", err, want)
 		}
 	}
 	if got := model.asked(); got != 0 {

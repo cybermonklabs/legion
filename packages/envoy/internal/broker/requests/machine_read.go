@@ -369,7 +369,7 @@ func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, n
 		return "", ErrNarrowingNotApplicable
 	}
 	for _, g := range granted {
-		if m.Airlock.Lookup(g.name) != nil {
+		if m.Airlock.Bound(g.name) != nil {
 			return g.name, fmt.Errorf("%w: the airlock holds %s, whose value the proxy spends for this grant", ErrNarrowingBehindAirlock, g.name)
 		}
 	}
@@ -588,6 +588,15 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	return requested, rows.Err()
 }
 
+// neededADecision answers, for a request's names as requestedSecrets reads them, which ones the
+// policy wanted approved when the request was made: the keys the judge decided of a request it
+// held, where every other name is one the session got at once (record.MayJudge).
+func neededADecision(requested []requestedSecret) func(string) bool {
+	return func(name string) bool {
+		return slices.ContainsFunc(requested, func(g requestedSecret) bool { return g.name == name && g.decision == policy.Approval })
+	}
+}
+
 // stillAllowed re-checks one granted name against a policy newer than the one its request was
 // decided under. The policy must still serve the name and still let this requester have it: a
 // deny refuses; so does a name granted automatically that the current policy wants approved,
@@ -781,14 +790,15 @@ func (m *Machine) JudgeRequestState(ctx context.Context, recordID string) (strin
 
 // Get reads one request by id. Its Approver is the approver column of its credential-request
 // record, the column PendingForApprover lists the record by, so the request names exactly the
-// person whose list shows it; a request with no record has none.
+// person whose list shows it; a request with no record has none. JudgeDeciding is whether the
+// judge holds it now: pending, with its judge_until ahead.
 func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	var r Request
 	var enrollmentID string
 	err := m.Store.Pool.QueryRow(ctx, `select r.id, r.state, r.enrollment_id, r.lifetime_seconds, r.decided_at, r.decided_by, r.decision_detail, r.record_id, cr.approver,
-		(select g.id::text from grants g where g.request_id=r.id and g.revoked_at is null limit 1)
+		(select g.id::text from grants g where g.request_id=r.id and g.revoked_at is null limit 1), r.state='pending' and coalesce(r.judge_until > now(), false)
 		from requests r left join credential_requests cr on cr.id = r.record_id where r.id=$1`, id).
-		Scan(&r.ID, &r.State, &enrollmentID, &r.LifetimeSeconds, &r.DecidedAt, &r.DecidedBy, &r.Detail, &r.RecordID, &r.Approver, &r.GrantID)
+		Scan(&r.ID, &r.State, &enrollmentID, &r.LifetimeSeconds, &r.DecidedAt, &r.DecidedBy, &r.Detail, &r.RecordID, &r.Approver, &r.GrantID, &r.JudgeDeciding)
 	if err != nil {
 		return Request{}, err
 	}
@@ -807,12 +817,14 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	return r, rows.Err()
 }
 
-// OwnerAndState reads the enrollment that owns request id and its state, in one statement on the
-// requests row alone: what GET /v1/requests/{id} checks before it answers, and what its held read
-// reads again at each step while the request is pending. A request with no row is pgx.ErrNoRows.
-func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, err error) {
-	err = m.Store.Pool.QueryRow(ctx, `select enrollment_id, state from requests where id=$1`, requestID).Scan(&owner, &state)
-	return owner, state, err
+// OwnerAndState reads the enrollment that owns request id, its state, and whether the model judge
+// holds it (pending with judge_until ahead), in one statement on the requests row alone: what GET
+// /v1/requests/{id} checks before it answers, and what its held read reads again at each step
+// while the request is pending. A request with no row is pgx.ErrNoRows.
+func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, judging bool, err error) {
+	err = m.Store.Pool.QueryRow(ctx, `select enrollment_id, state, coalesce(state = 'pending' and judge_until > now(), false)
+		from requests where id=$1`, requestID).Scan(&owner, &state, &judging)
+	return owner, state, judging, err
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the
@@ -1138,6 +1150,18 @@ func (m *Machine) RecordKind(ctx context.Context, recordID string) (string, erro
 	return kind, err
 }
 
+// JudgeHolds reports whether the model judge holds the request of a credential-request record now:
+// the request is pending and its judge_until lies ahead. It reads that one fact and not the
+// record, so api.decideRecord can say JUDGE_DECIDES for a record whose signed request verifies for
+// no audience of this broker's, which ReadRecord refuses. A record with no request (a machine
+// login) is held by nobody.
+func (m *Machine) JudgeHolds(ctx context.Context, recordID string) (bool, error) {
+	var held bool
+	err := m.Store.Pool.QueryRow(ctx, `select coalesce(bool_or(state = 'pending' and judge_until > now()), false)
+		from requests where record_id=$1`, recordID).Scan(&held)
+	return held, err
+}
+
 // Session is the two possibly-differing session ids a credential-request record can name, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment stated
 // when it enrolled (enrollments.session_id — agentbox's --session-id, or the Legion daemon's
@@ -1195,18 +1219,22 @@ type PendingStates struct {
 // rather than a function of the alias, so the constant statements below can be built from it.
 const requestBeforeDeadline = `(req.pending_expires_at is null or req.pending_expires_at > now())`
 
-// recordStateSQL is the one SQL rule for whether a credential-request record is pending or
-// expired, over cr, its credential_requests row, and req, its requests row left joined on
-// requests.record_id (none for a machine login). It is 'pending' for a record a decision may still
-// settle, 'expired' for a record whose deadline passed before anybody decided it, and null for
+// recordStateSQL is the one SQL rule for whether a credential-request record is pending, held for
+// the model judge or expired, over cr, its credential_requests row, and req, its requests row left
+// joined on requests.record_id (none for a machine login). It is 'pending' for a record a person's
+// decision may still settle, 'held' for a secret request the model judge holds before its
+// deadline, 'expired' for a record whose deadline passed before anybody decided it, and null for
 // every other record: one decided, or a secret request cancelled before its deadline, which never
 // reached it. Expired is exactly what a decision refuses as expired, with the database's now():
 //
 //   - A secret request by its request row: 'expired', which the sweep wrote; or 'pending' past its
 //     pending_expires_at (requestBeforeDeadline), which applyDecisionAttempt answers ErrExpired
-//     before the sweep gets to it; or 'cancelled' at or after that deadline (pending_expires_at <=
-//     decided_at), a cancel that came after the deadline had passed, which the requesting session
-//     (Cancel) or its enrollment's end writes on any pending request whatever its deadline.
+//     before the sweep gets to it, the judge's hold or none; or 'cancelled' at or after that
+//     deadline (pending_expires_at <= decided_at), a cancel that came after the deadline had
+//     passed, which the requesting session (Cancel) or its enrollment's end writes on any pending
+//     request whatever its deadline. Before its deadline, one with judge_until ahead is 'held': it
+//     is no person's yet, so no list shows it and Dismiss refuses it as not expired; once the hold
+//     ends (handed over, or run out) it is 'pending'.
 //   - A machine login by its terminal event: an 'expired' event, which the sweep wrote
 //     (machine.Service.ExpirePending); or none, with expires_at passed, which machine's
 //     ApplyDecision answers ErrLoginExpired. Nothing cancels a machine login.
@@ -1216,6 +1244,7 @@ const requestBeforeDeadline = `(req.pending_expires_at is null or req.pending_ex
 // refuses by it, and ReadRecord reads a record still pending past its deadline as expired by it.
 const recordStateSQL = `case cr.kind
 		when 'agent_secret' then case
+			when req.state = 'pending' and ` + requestBeforeDeadline + ` and req.judge_until > now() then 'held'
 			when req.state = 'pending' and ` + requestBeforeDeadline + ` then 'pending'
 			when req.state = 'pending' then 'expired'
 			when req.state = 'expired' then 'expired'
@@ -1255,7 +1284,10 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // rows only to another enrollment of the same session id (the carry pair enroll.Create matches
 // on), so that id is the one the enrollment holding the request names too. Which records are
 // pending comes from the requests rows, which move, so a moved card is listed once and the box it
-// moved off lists it no more.
+// moved off lists it no more. A request the model judge holds (judge_until ahead) is no person's
+// yet: recordStateSQL reads it as neither pending nor expired while its deadline has not passed,
+// so neither statement lists it until its hold has ended (handed over, or run out), and past its
+// deadline it reads expired, as every request does.
 const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
 		s.state, ` + recordDeadlineSQL + `
 	from credential_requests cr
@@ -1267,12 +1299,13 @@ const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce
 // pendingForApproverQuery is PendingForApprover's statement for a caller that asks for no state
 // (PendingStates' zero value): every record of the approver still pending by what is stored,
 // newest first, which is exactly the list from before records had a state. An agent_secret record
-// is that while its request row is 'pending', and a machine login while it carries no terminal
-// event, its deadline passed or not, so a record past its deadline stays on this list until the
-// expiry sweep ends it, and leaves it then. Each row carries its state all the same, so a record
-// past its deadline reads 'expired' here too. It and pendingOrExpiredForApproverQuery are pulled
-// out so TestPendingForApproverAvoidsSequentialScans (same package) can PREPARE and EXPLAIN the
-// exact statements the pool runs rather than copies that could drift from them.
+// is that while its request row is 'pending' and the model judge does not hold it, and a machine
+// login while it carries no terminal event, its deadline passed or not, so a record past its
+// deadline stays on this list until the expiry sweep ends it, and leaves it then. Each row carries
+// its state all the same, so a record past its deadline reads 'expired' here too. It and
+// pendingOrExpiredForApproverQuery are pulled out so TestPendingForApproverAvoidsSequentialScans
+// (same package) can PREPARE and EXPLAIN the exact statements the pool runs rather than copies
+// that could drift from them.
 //
 // The launcher_credential branch's NOT EXISTS spells its terminal-event predicate literally
 // (event in ('approved','denied','expired','cancelled')) rather than binding
@@ -1294,7 +1327,7 @@ const pendingListFrom = `select cr.id, cr.kind, cr.body, cr.created_at, coalesce
 // measured locally at 5,000 enrollments — free to change with the planner's own cost estimates,
 // and not this test's concern).
 const pendingForApproverQuery = pendingListFrom + `(
-		cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending')
+		cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending' and (r.judge_until is null or r.judge_until <= now()))
 		or cr.kind='launcher_credential' and not exists (
 			select 1 from credential_request_events ev where ev.record_id=cr.id and ev.event in ('approved','denied','expired','cancelled'))
 	) order by cr.created_at desc`
@@ -1484,6 +1517,9 @@ type RecordDetail struct {
 	RequestedAt     time.Time
 	Decided         *RecordDecision
 	Session         Session
+	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
+	// judge_until ahead. No person decides such a record until the judge has given it up.
+	JudgeDeciding bool
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
@@ -1500,14 +1536,21 @@ type RecordDetail struct {
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
 	var canonical, approver, kind, requestSession, enrollmentSession, state string
 	var createdAt, expiresAt time.Time
+	var judgeDeciding bool
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
-			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending')
+			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending'),
+			coalesce(req.state = 'pending' and req.judge_until > now(), false)
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state, &judgeDeciding); err != nil {
 		return RecordDetail{}, err
+	}
+	// A record the judge holds reads pending, with JudgeDeciding saying who decides it: the page
+	// and the lookup show an undecided record as pending or expired, and the hold beside it.
+	if state == "held" {
+		state = "pending"
 	}
 	body, err := record.ParseBody(canonical)
 	if err != nil {
@@ -1535,7 +1578,8 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: state, Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession},
+		Session:       Session{Request: requestSession, Enrollment: enrollmentSession},
+		JudgeDeciding: judgeDeciding,
 	}
 	// Whether the record is still undecided follows PendingForApprover's rule: an agent_secret
 	// record by its request's state, a machine login by its terminal event. A decided record's

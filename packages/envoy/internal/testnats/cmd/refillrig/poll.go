@@ -17,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // observation is one answer a poll got, as one line of its output. Start and End are wall-clock
@@ -119,12 +121,22 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 	case list == "metrics":
 		o.Sessions, o.Interests = sample(body, "envoy_active_sessions"), sample(body, "envoy_active_interests")
 	case resp.StatusCode == http.StatusOK:
-		var rows []struct {
-			SessionID string   `json:"session_id"`
-			Title     string   `json:"title"`
-			Topics    []string `json:"topics"`
+		// A session row is read by its title and an interest row by its topics (variantOf).
+		var rows []listedRow
+		if list == "sessions" {
+			var sessions []listenerwire.SessionInfo
+			err = json.Unmarshal(body, &sessions)
+			for _, row := range sessions {
+				rows = append(rows, listedRow{sessionID: row.SessionID, title: row.Title, topics: row.Topics})
+			}
+		} else {
+			var interests []listenerwire.InterestRow
+			err = json.Unmarshal(body, &interests)
+			for _, row := range interests {
+				rows = append(rows, listedRow{sessionID: row.SessionID, topics: row.Topics})
+			}
 		}
-		if err := json.Unmarshal(body, &rows); err != nil {
+		if err != nil {
 			o.Transport = "undecodable 200: " + err.Error()
 			return o
 		}
@@ -136,26 +148,23 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 			chars[set.name] = bytes.Repeat([]byte{'.'}, set.count)
 		}
 		for _, row := range rows {
-			name, i, ok := parseSessionID(row.SessionID)
+			name, i, ok := parseSessionID(row.sessionID)
 			set, known := index[name]
 			if !ok || !known || i >= set.count || chars[name][i] != '.' {
 				o.Unknowns++
 				if len(o.Unknown) < 5 {
-					o.Unknown = append(o.Unknown, row.SessionID)
+					o.Unknown = append(o.Unknown, row.sessionID)
 				}
 				continue
 			}
-			chars[name][i] = variantOf(list, name, i, row.Title, row.Topics)
+			chars[name][i] = variantOf(list, name, i, row.title, row.topics)
 		}
 		o.Sets = map[string]string{}
 		for name, c := range chars {
 			o.Sets[name] = encodeRuns(c)
 		}
 	default:
-		var answer struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
+		var answer listenerwire.APIError
 		if json.Unmarshal(body, &answer) == nil {
 			o.Error, o.Code = answer.Error, answer.Code
 		} else {
@@ -163,6 +172,13 @@ func observe(ctx context.Context, client *http.Client, url, list string, sets []
 		}
 	}
 	return o
+}
+
+// listedRow is what a poll reads of one row a list answered: a session row's id, title and
+// topics, or an interest row's id and topics.
+type listedRow struct {
+	sessionID, title string
+	topics           []string
 }
 
 // variantOf reads which variant of its record a listed row is: a session row by its title, an
@@ -176,7 +192,7 @@ func variantOf(list, name string, index int, title string, topics []string) byte
 		return '?'
 	}
 	found := byte('?')
-	prefix := "notifications.refill." + name + ".v"
+	prefix := variantTopicPrefix(name)
 	for _, topic := range topics {
 		rest, ok := strings.CutPrefix(topic, prefix)
 		if !ok {

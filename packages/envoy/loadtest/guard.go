@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
 
 // stackFile is $LOADTEST_ROOT/stack.json. stack.sh setup writes it; stack.sh rewrites the pids as it
@@ -494,21 +495,21 @@ func checkStack(ctx context.Context, e endpoints) error {
 	if status != http.StatusOK {
 		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, trunc(body))
 	}
-	status, body, err = guardGet(ctx, client, e.listener+"/v1/sessions", e.listenerToken)
+	status, body, err = (&listenerclient.Client{URL: e.listener, Token: e.listenerToken, HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: listener check failed: GET %s/v1/sessions with the stack's listener token answered %d %s", redactURL(e.listener), status, trunc(body))
+		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, trunc(body))
 	}
 	other := make([]byte, 16)
 	_, _ = rand.Read(other)
-	status, _, err = guardGet(ctx, client, e.listener+"/v1/sessions", hex.EncodeToString(other))
+	status, _, err = (&listenerclient.Client{URL: e.listener, Token: hex.EncodeToString(other), HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status/100 == 2 {
-		return fmt.Errorf("guard: listener check failed: %s/v1/sessions answers %d to a token that is not the stack's, so it does not hold the stack's token", redactURL(e.listener), status)
+		return fmt.Errorf("guard: listener check failed: %s%s answers %d to a token that is not the stack's, so it does not hold the stack's token", redactURL(e.listener), listenerclient.SessionsRoute, status)
 	}
 	return nil
 }
