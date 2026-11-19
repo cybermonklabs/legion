@@ -205,7 +205,7 @@ exec 7>&1
 ${helperGuard}
 stop_tree() { :; }; stop_pid() { :; }; collect_transcripts() { :; }; record_pair() { :; }; op() { :; }
 teardown() { :; }; namespace_clean() { :; }; delete_consumers() { :; }; remove_run_branches() { :; }
-run_processes() { :; }; stop_marked_processes() { :; }; note() { echo "   $*"; }; interests_sample() { :; }
+stop_marked_processes() { :; }; note() { echo "   $*"; }; interests_sample() { :; }
 production_audit() {
   audited=1
   printf '%s\\n' "$OUTSIDE" >"$evidence/production-issues-touched-outside.json"

@@ -595,53 +595,22 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
     }
   );
 
-  // Catches: a stop that trusts the walk's pid after the walk, so a pid that passed to another
-  // process of this user in between is stopped with its tree.
-  test("stops a process of the run only while it is the one the walk read: another start time leaves it running", async () => {
+  // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
+  // process, held to its start and its mark, is kill_held (scripts/e2e/lib/process-tree.sh), the
+  // run's sweep's own; its rows, a pid that passed to another process and a parent that exits after
+  // the freeze, are run-processes.test.ts's, and are not written a second time here.
+  test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
     await untilRunning(run.pid, "sleep");
     try {
       const rig = path.join(root, "scripts/e2e/lib/rig.sh");
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
-      const stale = groupBash(
-        `${prelude}\nrun_env_pids() { printf '%s %s\\n' ${run.pid} 1; }\nstop_env_processes "$1"; echo "status $?"`,
-        [dir]
-      );
-      expect(stale).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
-      await Bun.sleep(200);
-      expect(
-        readFileSync(`/proc/${run.pid}/stat`, "utf8")
-          .replace(/^.*\) /, "")
-          .slice(0, 1)
-      ).toBe("S");
       const own = groupBash(
         `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
         [dir]
       );
       expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
-      expect(await run.exited).not.toBe(0);
-      expect(run.signalCode).toBe("SIGKILL");
-    } finally {
-      run.kill("SIGKILL");
-    }
-  });
-
-  // Catches: a stop of a frozen process held to the parent read before the freeze, which leaves it
-  // stopped and alive when the parent exits between the two reads. proc_parent answers the real
-  // parent on its first read of the process and pid 1 after, as a parent that exited does.
-  test("ends a process of the run it froze even where its parent reads otherwise the second time", async () => {
-    const dir = freshDir("env-reparented");
-    const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep");
-    try {
-      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
-      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}\n${fn("run_env_pids")}`;
-      const shadow = `eval "real_$(declare -f proc_parent)"\nproc_parent() { if [ "$1" != ${run.pid} ]; then real_proc_parent "$1"; elif [ -e "$work/read-once" ]; then echo 1; else : >"$work/read-once"; real_proc_parent "$1"; fi; }`;
-      const swept = groupBash(`${prelude}\n${shadow}\nstop_env_processes "$1"; echo "status $?"`, [
-        dir,
-      ]);
-      expect(swept).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
       expect(await run.exited).not.toBe(0);
       expect(run.signalCode).toBe("SIGKILL");
     } finally {

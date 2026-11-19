@@ -82,9 +82,10 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
-# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
 # carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
-# environment (`env -i`) names the mark itself.
+# environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
+# none and is stopped by its pid (run_marks' comment there).
 export LEGION_E2E_RUN=$work
 
 tm() { tmux -S "$work/tmux.sock" "$@"; }

@@ -171,9 +171,11 @@ mkdir -p "$evidence/logs" "$evidence/transcripts" "$evidence/pods" "$evidence/co
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
-# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
-# carries it and nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started
-# above, carries none, so it outlives the sweep and writes the run's last line.
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing, such as its watches and samplers, carries none and is stopped by its pid (run_marks'
+# comment there). The transcript's tee, started above, carries none, so it outlives the sweep and
+# writes the run's last line.
 export LEGION_E2E_RUN=$work
 # fd 7 keeps the transcript for cleanup: a signal runs the EXIT trap under the redirections of the
 # command it interrupted, whose output may be /dev/null or an evidence file.
@@ -592,7 +594,7 @@ limit_pending() {
 # Prints nothing when there is none, when a read fails, or when its jq itself fails (guarded,
 # never the ERR trap: set -E inherits it into a command substitution, so an unguarded failure here
 # would print a FAIL line from inside a check this hook is trying to end BLOCKED; stop_tree's read
-# of a process's children in lib/rig.sh is guarded the same way). Reads the live pod watch the way it already reads the daemon log,
+# of a process's children in lib/process-tree.sh is guarded the same way). Reads the live pod watch the way it already reads the daemon log,
 # one JSON value a line with a failed parse skipped, not slurped as one JSON document: watch_raw
 # appends each event with one printf, a pod object larger than the stdio buffer can go out in more
 # than one write, and a read that falls between those writes would otherwise see a torn last

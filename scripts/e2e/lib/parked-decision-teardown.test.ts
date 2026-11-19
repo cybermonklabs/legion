@@ -253,3 +253,41 @@ wait
   },
   30_000
 );
+
+// The walk reads every process's session from its whole /proc/<pid>/stat: a process names itself,
+// and a name that holds a newline cut a first-line read short of the session field, so a broker so
+// named was tied to no broker.pid and outlived the run.
+test.skipIf(skipWithout("python3"))(
+  "stops a broker's session whose leader's name holds a newline and a `) `",
+  async () => {
+    const work = join(dir, "newline-broker");
+    const runtime = join(work, "state", "omp-daemon");
+    mkdirSync(runtime, { recursive: true });
+    const pidFile = join(runtime, "broker.pid");
+    // The stand-in leads a session of its own, renames itself to `) S 1` and a newline (prctl
+    // PR_SET_NAME), and only then writes broker.pid, so the walk starts after the rename.
+    const broker = Bun.spawn(
+      [
+        "python3",
+        "-I",
+        "-c",
+        'import ctypes, json, os, sys, time; os.setsid(); ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); open(sys.argv[1] + ".tmp", "w").write(json.dumps({"pid": os.getpid()})); os.rename(sys.argv[1] + ".tmp", sys.argv[1]); time.sleep(60)',
+        pidFile,
+      ],
+      {
+        env: { PATH: process.env.PATH ?? "", OMP_DAEMON_RUNTIME_DIR: runtime },
+        stdout: "ignore",
+        stderr: "ignore",
+      }
+    );
+    teardowns.push(() => {
+      if (alive(broker.pid) && sessionOf(broker.pid) === broker.pid) killSession(broker.pid);
+    });
+    await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
+    expect(readFileSync(`/proc/${broker.pid}/comm`, "utf8")).toBe(") S 1\n\n");
+    const stopped = harness(work, "stop_agent_daemons");
+    expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+    await until("the broker to end", () => !alive(broker.pid));
+  },
+  30_000
+);

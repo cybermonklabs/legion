@@ -6026,6 +6026,7 @@ It names a marked process double-forked to pid 1, which no tree the run started 
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
+A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
 it signals no pid whose start time is not the one its walk read;
@@ -6044,7 +6045,7 @@ A group whose parent, the runner, is in another group of the same session is not
 A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
 `untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s, the bound of `lib/claude-backend-guards.test.ts`'s `await_child`: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
-It reads the signals through a perl the shell starts (`sigprocmask` and `%SIG`), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
+It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
 `lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
 
 ## lib/arg-max-force.sh
@@ -6072,7 +6073,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
 - `proc_parent PID`, `proc_group PID`, `proc_children PID`
 
-  print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read past its last `) `, since a command name may hold both) and every thread's `/proc/PID/task/*/children`.
+  print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read whole and past its last `) `, since a command name may hold both and a newline) and every thread's `/proc/PID/task/*/children`.
   None reads every process of the machine, as procps-ng's `ps -p` and `pgrep -P` do: one `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times at about 13,000 processes.
   Each prints nothing for a process that is gone; a host with no `/proc` asks `ps` and `pgrep`.
   [`signalable`](#libprocess-treesh), `stop_tree` (below), `stop_pid` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them.
@@ -6087,7 +6088,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
   is whether PID can name one process the run started, refusing with a printed line 0 however spelled, 1, a negative or non-numeric value, the calling shell and its process group's leader
 
-- `stop_tree PID [PARENT]`, `proc_descendants PID [START]`, `kill_frozen PID`
+- `stop_tree PID [PARENT]`, `proc_descendants PID [START]`, `kill_frozen PID`, `kill_held DIR NAME…`
 
   `stop_tree` stops a background loop with every process under it:
   it freezes the loop, stops each child the same way, then kills the loop, so the `kubectl`, `jq` or `sleep` the loop was waiting on goes with it.
@@ -6097,7 +6098,8 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
   Stage 3's and Stage 4b's watchers are stopped with it.
   `proc_descendants` prints `PID START` for every process below PID, each parent held to its process and not to its pid: with START, the parent's start must read START before its children are read and again after each child's parent check, and each child, taken only while its parent is that pid and its start reads the same before and after the check, has its own children walked held to its start; so a stranger that took a reaped pid under a running parent, and the stranger's children, are left out.
   `kill_frozen` ends a process a caller has stopped and held to its start and its mark (`freeze_if … STOP`) with every process under it, each child through `stop_tree` held to it as the parent, without reading its own parent again: a parent that exits after the freeze cannot leave it stopped and alive.
-  The run's sweep and the skill-scenario rig's `stop_env_processes` end each frozen process with it
+  `kill_held` reads `PID START` lines on stdin and ends each through `freeze_if … STOP` and `kill_frozen` while it is still that process and still carries one of the NAMEs under DIR.
+  The run's sweep and the skill-scenario rig's `stop_env_processes` end their walks' processes with it, the one copy of that loop
 
 - `incarnation_pid INCARNATION`
 

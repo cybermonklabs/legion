@@ -289,9 +289,6 @@ start_process() {
   set +m
 }
 
-# signalable and stop_tree (lib/process-tree.sh) refuse a pid that names no one process the run
-# started; stop_tree stops a process with everything under it.
-
 # stop_pid is intentionally best effort: a failed cleanup must never obscure the check that failed.
 stop_pid() {
   local pid=${1:-} i
@@ -321,11 +318,9 @@ run_processes() {
 }
 
 # lib/process-tree.sh holds how a proof knows a process it started by the pid it started, never by
-# a walk of the machine's /proc for its name or working directory: proc_parent, proc_group,
-# proc_start, proc_children, proc_descendants and proc_describe, which read one process's own /proc
-# entry (signalable, stop_pid above and stop_tree use them), stop_tree, record_pid_sh, recorded_pid,
-# incarnation_pid, freeze_if, launched, child_of, omp_program, env_of, env_has and env_length, and
-# the run's mark and its sweep (marked_processes, stop_marked_processes). It needs nothing of this
+# a walk of the machine's /proc for its name or working directory, and the run's mark and its
+# sweep; its own comments and the README's lib/process-tree.sh section name each function, and
+# signalable and stop_tree there are what stop_pid above holds a pid to. It needs nothing of this
 # rig's, and stage2-tmux-supervision.sh sources it without it.
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
 . "$root/scripts/e2e/lib/process-tree.sh"

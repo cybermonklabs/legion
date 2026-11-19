@@ -74,9 +74,11 @@ work=$(mktemp -d "/tmp/legion-e2e2.$$.XXXXXXXX")
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$work/transcript.log"
-# Every process the run starts from here on carries its mark, and the sweeps in cleanup end what
-# carries it and nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started
-# above, carries none, so it outlives the sweeps and writes the run's last line.
+# Every program the run execs from here on carries its mark, and the sweeps in cleanup end what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing carries none and is stopped by its pid (run_marks' comment there). The
+# transcript's tee, started above, carries none, so it outlives the sweeps and writes the run's
+# last line.
 export LEGION_E2E_RUN=$work
 ok=
 daemon_pid=

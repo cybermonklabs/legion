@@ -18,6 +18,8 @@ const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
 const skip = skipWithout("perl");
+// python3: the newline-name row renames its process through prctl (ctypes).
+const withoutPython = skipWithout("python3");
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -38,14 +40,34 @@ beforeAll(() => {
   );
 });
 
-// Every process a row starts, killed when the row ends whatever it ended on. Each, and each harness
-// shell, runs in a process group of its own (ownGroup): the sweeps stop what they end, and a stopped
-// member of the test runner's own group hangs the runner up where that group is orphaned. A sweep
-// row waits until what it spawned runs its program (untilRunning), and so leads its own group,
-// before it sweeps.
-const started: number[] = [];
+// Every process a row starts, with its start time read when it is recorded, killed when the row ends
+// whatever it ended on, and only while its pid is still the process that started then: a sweep has
+// reaped most of them by then, and a pid the kernel gave to another process since is left alone.
+// Each, and each harness shell, runs in a process group of its own (ownGroup): the sweeps stop what
+// they end, and a stopped member of the test runner's own group hangs the runner up where that group
+// is orphaned. A sweep row waits until what it spawned runs its program (untilRunning), and so leads
+// its own group, before it sweeps.
+// startOf is PID's start time, stat field 22, read past the last `) ` of the whole file, or
+// undefined once PID is gone.
+function startOf(pid: number): string | undefined {
+  try {
+    return readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^[\s\S]*\) /, "")
+      .split(" ")[19];
+  } catch {
+    return undefined;
+  }
+}
+const started = {
+  held: [] as { pid: number; start: string }[],
+  push(pid: number) {
+    const start = startOf(pid);
+    if (start !== undefined) this.held.push({ pid, start });
+  },
+};
 afterEach(() => {
-  for (const pid of started.splice(0)) {
+  for (const { pid, start } of started.held.splice(0)) {
+    if (startOf(pid) !== start) continue;
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
@@ -65,7 +87,7 @@ function spawn(argv: string[], options: { cwd: string; env?: Record<string, stri
 function state(pid: number): string {
   try {
     return readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /, "")
+      .replace(/^[\s\S]*\) /, "")
       .slice(0, 1);
   } catch {
     return "gone";
@@ -181,7 +203,7 @@ test.skipIf(skip)(
     started.push(pid);
     // Its parent, the subshell, has ended, so nothing the test started is its parent any more.
     const parent = readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /, "")
+      .replace(/^[\s\S]*\) /, "")
       .split(" ")[1];
     expect(parent).not.toBe(String(process.pid));
     const r = harness(work, "run_processes");
@@ -583,5 +605,40 @@ stop_marked_processes "$work" 1; echo "status $?"`
     expect(r.out).toBe("status 0\n");
     expect(await gone(marked.pid)).toBe(true);
     expect(state(strangers)).toBe("S");
+  }
+);
+
+test.skipIf(skip || withoutPython)(
+  "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
+  async () => {
+    // The process renames itself to `) S 1` and a newline (prctl PR_SET_NAME, through python3's
+    // ctypes: perl's $0 would write over the environment the walk reads the mark from): the first
+    // line of its /proc/<pid>/stat then reads as a process whose parent is pid 1, with nothing
+    // after, and a walk held to its start found none and left it out of every sweep. It says
+    // "ready" once renamed, and the walk starts only then.
+    const work = join(dir, "newline-name");
+    mkdirSync(work);
+    const renamed = Bun.spawn(
+      ownGroup([
+        "python3",
+        "-I",
+        "-c",
+        'import ctypes, time; ctypes.CDLL(None).prctl(15, b") S 1\\n", 0, 0, 0); print("ready", flush=True); time.sleep(60)',
+      ]),
+      { cwd: dir, env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work }, stdout: "pipe" }
+    );
+    started.push(renamed.pid);
+    await renamed.stdout.getReader().read();
+    const pid = renamed.pid;
+    const named = harness(
+      work,
+      `run_processes; printf 'parent %s start %s\\n' "$(proc_parent ${pid})" "$(proc_start ${pid})"`
+    );
+    expect(named.err).toBe("");
+    expect(named.out).toBe(`${pid}\nparent ${process.pid} start ${startOf(pid)}\n`);
+    const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
+    expect(r.err).toBe("");
+    expect(r.out).toBe("status 0\n");
+    expect(await gone(pid)).toBe(true);
   }
 );

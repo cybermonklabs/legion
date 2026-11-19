@@ -208,9 +208,10 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/envoy-session-states.$$.XXXXXXXX")
-# Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh); each
+# Every program the run execs from here on carries its mark (run_marks, lib/process-tree.sh); each
 # start that clears its environment (`env -i`: the listeners, Dispatch, the CLI and both agents)
-# names the mark itself. The transcript's tee, started above, carries none.
+# names the mark itself, and a fork of this shell that execs nothing carries none and is stopped by
+# its pid (run_marks' comment there). The transcript's tee, started above, carries none.
 export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }

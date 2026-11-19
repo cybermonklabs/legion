@@ -49,8 +49,9 @@ wait_for_run_processes ${args}`;
 
 describe("wait_for_run_processes", () => {
   test("a poll that costs more than the whole deadline does not end the wait", () => {
-    // The first walk outlasts the deadline and still finds a process; the next finds none. Like the
-    // real walk, the stub's status is that of the last thing it ran: 1 here.
+    // The first walk outlasts the deadline and still finds a process; the next finds none. The
+    // stub's status is that of the last thing it ran, 1 here: the real walk (run_processes) exits 0,
+    // or 2 when it cannot read the processes, and the wait fails only on 2.
     const r = wait('if ((call == 1)); then sleep 1.1; echo 4242; fi; [ "$call" = 1 ]', "0 2");
     expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
     expect(r.calls).toBeGreaterThan(1);
@@ -80,7 +81,8 @@ describe("wait_for_run_processes", () => {
   }, 15_000);
 
   test("a call with no arguments waits the production bounds, 600 s and 10 polls", () => {
-    // The walk finds nothing at once and, like the real walk, exits 1 from its last test.
+    // The walk finds nothing at once and exits 1 from its last test, which the wait, failing only
+    // on the real walk's 2, reads as no failure.
     const r = wait("false", "");
     expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
     const announced = r.stdout.split("\n")[0].match(/\d+/g)?.map(Number);

@@ -61,10 +61,11 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$(dirname "$0")/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
-# Every process the run starts from here on carries its mark, and the sweeps in services-stopped and
-# cleanup end what carries it and nothing else (marked_processes, lib/process-tree.sh). The
-# transcript's tee, started above, carries none, so it outlives the sweeps and writes the run's last
-# line.
+# Every program the run execs from here on carries its mark, and the sweeps in services-stopped and
+# cleanup end what carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of
+# this shell that execs nothing, such as the pane_watcher or the instructor, carries none and is
+# stopped by its pid (run_marks' comment there). The transcript's tee, started above, carries none,
+# so it outlives the sweeps and writes the run's last line.
 export LEGION_E2E_RUN=$work
 ok=
 check=setup
@@ -164,7 +165,9 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "${instructor_pid:-}"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  stop_marked_processes "$work" || true
+  # A lib older than lib/process-tree.sh has no sweep; require_process_tree then failed the run
+  # before it started anything, so there is nothing to sweep.
+  ! declare -F stop_marked_processes >/dev/null || stop_marked_processes "$work" || true
   collect_transcripts
   rm -rf "$work/model-gateway-cache" || true
   github_cleanup
@@ -590,6 +593,22 @@ until_true_quiet() {
   return 1
 }
 
+# require_process_tree fails, naming each function it lacks and ACCEPT_ROOT, when the lib sourced
+# from ACCEPT_ROOT has no lib/process-tree.sh: this run finds its panes' Oh My Pi and sweeps its
+# processes with that file's functions (omp_program, launched, incarnation_pid, env_of, env_has and
+# stop_marked_processes), and a lib from before it passed every other guard and then died on the
+# first call with "command not found", behind a FAIL line with no reason, its cleanup sweeping
+# nothing. It runs before the run starts anything, so there is nothing to sweep.
+require_process_tree() {
+  local name
+  local -a missing=()
+  for name in omp_program launched incarnation_pid env_of env_has stop_marked_processes; do
+    declare -F "$name" >/dev/null || missing+=("$name")
+  done
+  [ "${#missing[@]}" = 0 ] ||
+    fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates lib/process-tree.sh and has no ${missing[*]}: point ACCEPT_ROOT at a checkout that has it"
+}
+
 begin prerequisites
 for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
@@ -612,6 +631,7 @@ read_app_logins
 # The services serve on held ports (start_held, keep_port), which ACCEPT_ROOT's lib/rig.sh and its
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
+require_process_tree
 real_gh=$(mise which gh) || fail "mise has no gh"
 # The real tmux comes after the real gh on the daemon's PATH: the tmux runtime runs tmux with the
 # pane allow-list alone, where a shimmed tmux, run from a directory under the operator's real

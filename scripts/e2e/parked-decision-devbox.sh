@@ -81,10 +81,11 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
 transcript_to "$evidence/transcript.log"
-# Every process the run starts from here on carries its mark, and the sweep in cleanup and
+# Every program the run execs from here on carries its mark, and the sweep in cleanup and
 # cleanup-is-complete's wait take what carries it and nothing else (marked_processes,
-# lib/process-tree.sh). The transcript's tee, started above, carries none, so it outlives the sweep
-# and writes the run's last line.
+# lib/process-tree.sh); a fork of this shell that execs nothing carries none and is stopped by its
+# pid (run_marks' comment there). The transcript's tee, started above, carries none, so it outlives
+# the sweep and writes the run's last line.
 export LEGION_E2E_RUN=$work
 ok=
 check=setup
@@ -585,9 +586,13 @@ stop_agent_daemons() {
   ((${#dirs[@]} > 0)) || return 0
   mapfile -t run < <(run_processes)
   for p in /proc/[0-9]*; do
-    { read -r stat <"$p/stat"; } 2>/dev/null || continue
-    # The fields after the command, which may itself hold spaces or parentheses: state, ppid,
-    # process group, session.
+    # Read whole (proc_stat_field's way, lib/process-tree.sh), since a process names itself and a
+    # name may hold a newline, which a read of the first line stops at.
+    stat=
+    { IFS= read -r -d '' stat <"$p/stat"; } 2>/dev/null || :
+    [ -n "$stat" ] || continue
+    # The fields after the command, which may itself hold spaces, parentheses or a newline: state,
+    # ppid, process group, session.
     read -r _ _ _ sid _ <<<"${stat##*\) }"
     [ -n "${dirs[$sid]+set}" ] || continue
     env_dir=

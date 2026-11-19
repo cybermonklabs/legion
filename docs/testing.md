@@ -169,7 +169,9 @@ A test, and each script library that a test runs, reads one process by its pid: 
 from `/proc/<pid>/cmdline`, its parent, process group and session from `/proc/<pid>/stat`, and its
 children from `/proc/<pid>/task/*/children`. `scripts/e2e/lib/process-tree.sh`, which
 `scripts/e2e/lib/rig.sh` sources, has `proc_parent`, `proc_group`, `proc_children` and
-`proc_describe`. Each of them asks `ps` or `pgrep` only on a host with no `/proc`.
+`proc_describe`. Each of them asks `ps` or `pgrep` only on a host with no `/proc`, but for
+`proc_children`, which also asks `pgrep -P` where a process's `task/<tid>/children` file is
+missing (a kernel built without `CONFIG_PROC_CHILDREN`).
 
 `pgrep` reads every process on the machine, and so does procps-ng's `ps` with `-p`: one
 `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times on the dev box at 12,086 to 13,662

@@ -222,10 +222,11 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/clean-session-stop.$$.XXXXXXXX")
-# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
 # carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
-# environment (`env -i`) names the mark itself. The transcript's tee, started above, carries none,
-# so it outlives the sweep and writes the run's last line.
+# environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
+# none and is stopped by its pid (run_marks' comment there). The transcript's tee, started above,
+# carries none, so it outlives the sweep and writes the run's last line.
 export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }

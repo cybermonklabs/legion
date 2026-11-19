@@ -91,9 +91,11 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
-# Every process the run starts from here on carries its mark, and the sweeps end what carries it and
-# nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started above, carries
-# none, so it outlives the sweeps and writes the run's last line.
+# Every program the run execs from here on carries its mark, and the sweeps end what carries it and
+# nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that execs nothing,
+# such as the pane_watcher, carries none and is stopped by its pid (run_marks' comment there). The
+# transcript's tee, started above, carries none, so it outlives the sweeps and writes the run's last
+# line.
 export LEGION_E2E_RUN=$work
 ok=
 check=setup

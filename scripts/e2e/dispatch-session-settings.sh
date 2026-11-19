@@ -75,9 +75,10 @@ mkdir -p "$evidence/logs" "$evidence/checks"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-session-settings.$$.XXXXXXXX")
-# Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh): the
+# Every program the run execs from here on carries its mark (run_marks, lib/process-tree.sh): the
 # driver hands it to each Oh My Pi it starts, and the listener's and Dispatch's `env -i` starts name
-# it. The transcript's tee, started above, carries none.
+# it. A fork of this shell that execs nothing carries none and is stopped by its pid (run_marks'
+# comment there). The transcript's tee, started above, carries none.
 export LEGION_E2E_RUN=$work
 driver=$root/scripts/e2e/lib/dispatch-session-settings.ts
 check=setup

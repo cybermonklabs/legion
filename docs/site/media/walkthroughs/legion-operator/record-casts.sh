@@ -62,10 +62,11 @@ done
 work=$(mktemp -d /tmp/legion-docs-casts.XXXXXX)
 evidence=$(mktemp -d /tmp/legion-docs-casts-evidence.XXXXXX)
 mkdir -p "$evidence/logs" "$work/bin" "$work/xdg" "$work/tmux"
-# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
-# carries it and nothing else (marked_processes, scripts/e2e/lib/process-tree.sh). The operator's
-# shells and the daemon start under `env -i` (shell_env) and name the mark themselves; a daemon pane
-# carries the XDG_CONFIG_HOME the daemon moves under its state directory, $work/state.
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, scripts/e2e/lib/process-tree.sh); a fork of this
+# shell that execs nothing carries none and is stopped by its pid (run_marks' comment there). The
+# operator's shells and the daemon start under `env -i` (shell_env) and name the mark themselves; a
+# daemon pane carries the XDG_CONFIG_HOME the daemon moves under its state directory, $work/state.
 export LEGION_E2E_RUN=$work
 timeout_hook=
 pg_container=legion-docs-casts-pg-$$

@@ -33,7 +33,9 @@ recorded_pid() {
   { read -r pid start <"$1"; } 2>/dev/null || return 1
   case $pid in '' | *[!0-9]*) return 1 ;; esac
   case $start in '' | *[!0-9]*) return 1 ;; esac
-  { read -r stat <"/proc/$pid/stat"; } 2>/dev/null || return 1
+  stat=
+  { IFS= read -r -d '' stat <"/proc/$pid/stat"; } 2>/dev/null || :
+  [ -n "$stat" ] || return 1
   read -r -a fields <<<"${stat##*) }"
   [ "${fields[19]-}" = "$start" ] || return 1
   want=$(realpath -e -- "$2" 2>/dev/null || :)
@@ -60,11 +62,16 @@ recorded_pid() {
 # still miss a child that its walk has passed. stop_tree stops the parent first, so it starts no new
 # child, and it does not stop the children. So this changes what the list can miss, and neither
 # form is the frozen read that the man page asks for.
+# The stat is read whole (`read -d ''`, whose status is 1 at the end of a file that holds no NUL,
+# which is no error, so `|| :` keeps a caller's ERR trap quiet) and cut after its last `) `: a
+# process names itself, and a name that holds `) ` or a newline is then still read past, where a
+# read of the first line alone took a forged parent and no start.
 proc_stat_field() {
-  local stat
+  local stat=
   local -a fields
   if [ -d /proc/self ]; then
-    { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 0
+    { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+    [ -n "$stat" ] || return 0
     read -r -a fields <<<"${stat##*) }"
     printf '%s\n' "${fields[$2 - 3]}"
   else
@@ -276,6 +283,23 @@ kill_frozen() {
   kill -KILL "$pid" 2>/dev/null || true
 }
 
+# kill_held DIR NAME… reads `PID START` lines on stdin, as a walk of the run's processes prints them
+# (procs_naming), and ends each with everything under it (kill_frozen) once freeze_if has stopped it
+# while it is still the process that started at START and its environment still gives one of the
+# NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
+# the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
+# run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
+# walks' processes through it, so the loop and its rows are written once.
+kill_held() {
+  local dir=$1 pid start
+  shift
+  while read -r pid start; do
+    [ -n "$pid" ] || continue
+    freeze_if "$pid" "$start" STOP names_dir "$dir" "$@" || continue
+    kill_frozen "$pid"
+  done
+}
+
 # stop_tree PID [PARENT] stops PID and every process under it. A watcher is a loop whose kubectl, jq
 # or sleep outlives the loop when only the loop is stopped; the loop is frozen first, so it starts
 # nothing new while its children go. PID is signalled only while its parent is PARENT (default this
@@ -422,11 +446,7 @@ stop_marked_processes() {
     pairs=
     [ "${#alive[@]}" = 0 ] || pairs=$(printf '%s\n' "${alive[@]}")
   fi
-  while read -r pid start; do
-    [ -n "$pid" ] || continue
-    freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
-    kill_frozen "$pid"
-  done <<<"$pairs"
+  kill_held "$dir" "${run_marks[@]}" <<<"$pairs"
   for entry in ${below[@]+"${below[@]}"}; do
     freeze_if "${entry%% *}" "${entry#* }" KILL || true
   done
@@ -451,7 +471,9 @@ proc_describe() {
   boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
   ticks=$(getconf CLK_TCK)
   for pid in "$@"; do
-    { read -r stat <"/proc/$pid/stat"; } 2>/dev/null || continue
+    stat=
+    { IFS= read -r -d '' stat <"/proc/$pid/stat"; } 2>/dev/null || :
+    [ -n "$stat" ] || continue
     read -r -a fields <<<"${stat##*) }"
     words=()
     { mapfile -d '' -t words <"/proc/$pid/cmdline"; } 2>/dev/null || true

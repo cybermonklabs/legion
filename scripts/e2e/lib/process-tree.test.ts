@@ -618,6 +618,38 @@ echo "pid $pid"
   );
 });
 
+// stage3-4b13b-acceptance.sh sources ACCEPT_ROOT's lib/rig.sh, which can be another checkout's. Its
+// require_process_tree fails before the run starts anything, naming each lib/process-tree.sh
+// function that lib lacks and ACCEPT_ROOT, where a lib from before that file passed every other
+// guard and died later on "command not found". An older ACCEPT_ROOT is a shell that sourced no
+// process-tree.sh; this checkout's lib is the run() harness, which sources it through rig.sh.
+const requireProcessTree = scriptFunctions(
+  join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh")
+)("require_process_tree");
+describe.skipIf(skip)("require_process_tree", () => {
+  test("names each missing function and ACCEPT_ROOT for a lib from before lib/process-tree.sh, and passes this checkout's", () => {
+    const older = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `set -Eeuo pipefail\nroot=/older/checkout\nfail() { echo "FAIL: $*"; exit 1; }\n${requireProcessTree}\nrequire_process_tree\necho "went on"`,
+      ],
+      { env: { PATH: process.env.PATH ?? "" } }
+    );
+    expect({
+      code: older.exitCode,
+      out: older.stdout.toString(),
+      err: older.stderr.toString(),
+    }).toEqual({
+      code: 1,
+      out: "FAIL: ACCEPT_ROOT's scripts/e2e/lib/rig.sh (/older/checkout) predates lib/process-tree.sh and has no omp_program launched incarnation_pid env_of env_has stop_marked_processes: point ACCEPT_ROOT at a checkout that has it\n",
+      err: "",
+    });
+    const current = run(`${requireProcessTree}\nrequire_process_tree\necho "went on"`);
+    expect(current).toEqual({ code: 0, out: "went on\n", err: "" });
+  });
+});
+
 // stage3-4b13b-acceptance.sh's merger-pane-mints-no-grant reads the merger pane's environment for
 // LEGION_GRANT_FILE and LEGION_GRANT through env_has, and holds an absence only on its status 1.
 const carriesNoGrant = scriptFunctions(join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh"))(

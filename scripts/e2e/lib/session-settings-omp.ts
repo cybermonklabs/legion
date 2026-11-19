@@ -4,6 +4,20 @@ import { appendFileSync } from "node:fs";
 import type { FileSink, Subprocess } from "bun";
 import { fail, type Rig, sleep, until } from "./session-settings-common";
 
+/** The run's mark, LEGION_E2E_RUN, which dispatch-session-settings.sh exports before it starts
+ *  this driver, and which every Oh My Pi the driver starts carries. It throws when the driver was
+ *  started without it: an Oh My Pi given an empty mark carries none, and the rig's stop_omp, which
+ *  signals a pid only while it carries the run's mark, would leave it running. */
+export function runMark(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const mark = env.LEGION_E2E_RUN ?? "";
+  if (mark === "") {
+    throw new Error(
+      "LEGION_E2E_RUN is not set: dispatch-session-settings.sh exports it before it starts this driver, and the rig stops only an Oh My Pi that carries it"
+    );
+  }
+  return mark;
+}
+
 export interface RpcEvent {
   readonly type?: string;
   readonly id?: string;
@@ -73,7 +87,7 @@ export class Omp {
       HOME: rig.home,
       // The run's mark, which the rig's teardown checks a pid for before it signals it (stop_omp,
       // dispatch-session-settings.sh; run_marks, lib/process-tree.sh).
-      LEGION_E2E_RUN: process.env.LEGION_E2E_RUN ?? "",
+      LEGION_E2E_RUN: runMark(),
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       PI_CODING_AGENT_DIR: rig.agentDir,
       TMPDIR: rig.tmp,
