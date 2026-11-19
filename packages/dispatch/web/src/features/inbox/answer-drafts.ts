@@ -30,5 +30,9 @@ export const setAnswerDraft = store.set;
  *  person's who typed it (`DraftStore.signedIn`). */
 export const answerDraftsSignedIn = store.signedIn;
 
+/** The person whose sign-out landed: every answer draft of theirs is forgotten, in the page and
+ *  in the tab, and none is taken until someone signs in (`DraftStore.signedOut`). */
+export const answerDraftsSignedOut = store.signedOut;
+
 /** Forgets every answer draft, for the unit-test preload. */
 export const resetAnswerDrafts = store.reset;

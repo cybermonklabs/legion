@@ -16,9 +16,17 @@ export interface DraftStore {
    *  person's who typed it, and the store outlives the shell, which another person signed in
    *  from another tab arrives in: their sign-in forgets every draft, the ones the tab keeps with
    *  them, as it drops every write not theirs (`Writes.signedIn`). A lapse keeps the drafts for
-   *  the sign-in that follows, and the same person's keeps them on. The first sign-in the store
-   *  is told of takes up the drafts the tab kept for that person before a reload. */
+   *  the sign-in that follows, and the same person's keeps them on; a sign-out is no lapse
+   *  (`signedOut`). The first sign-in the store is told of takes up the drafts the tab kept for
+   *  that person before a reload. */
   signedIn(login: string | undefined): void;
+  /** `login` signed out, and the sign-out landed - in this tab or another of the browser, or
+   *  under a lapse that landed it (`Writes.onSignedOut`) - so whoever signs in next at this
+   *  browser must find nothing they typed: every draft of theirs is forgotten in the page, with
+   *  every entry the tab keeps for them, and the store takes no draft until someone signs in,
+   *  since what a field hands it meanwhile - the shell going, its fields with it - is theirs too.
+   *  Another person's drafts, and what the tab keeps for them, stay. */
+  signedOut(login: string): void;
   /** The key's draft and its setter; the component re-renders whenever any field for that key
    *  changes it. An updater reads the draft as it is now, so a text added when an upload lands
    *  never overwrites what another upload or a keystroke put there since the render that
@@ -31,7 +39,8 @@ export interface DraftStore {
  * reload keeps and closing the tab drops, as the held sends are kept (`write-storage.ts`). Each
  * draft is one entry, `dispatch.draft:<store>:<key>`, in one versioned format: the text, and the
  * login of the person who typed it. A store reads its entries back only for that person, at the
- * first sign-in it is told of, and drops each entry of another person's or of another format.
+ * first sign-in it is told of, and drops each entry of another person's or of another format; a
+ * sign-out drops every entry that names the person who signed out, of whatever format.
  */
 const ENTRY_PREFIX = "dispatch.draft:";
 
@@ -100,6 +109,16 @@ function entryNames(storage: Storage, prefix: string): string[] {
   );
 }
 
+/** What `storage` holds under `name`, read as JSON, or undefined where it holds nothing readable:
+ *  an entry to check against `keptDraftShape` before it is read as a draft. */
+function readEntry(storage: Storage, name: string): unknown {
+  try {
+    return JSON.parse(storage.getItem(name) ?? "null");
+  } catch {
+    return undefined;
+  }
+}
+
 function removeEntry(storage: Storage | undefined, name: string): void {
   try {
     storage?.removeItem(name);
@@ -118,9 +137,9 @@ function removeEntry(storage: Storage | undefined, name: string): void {
  * Each of the app's draft stores is one of these - the answer drafts (`answer-drafts.ts`), the
  * reply drafts (`reply-drafts.ts`), and the two the composers' unsent drafts keep for each query
  * client (`unsent-drafts.ts`) - so a fix to the subscription, the listener cleanup, the updater,
- * the sign-in or the keeping reaches every one. `storage` is the tab's own unless a test names
- * another; undefined, as where the browser gives the page none, it keeps nothing for a reload and
- * says so.
+ * the sign-in, the sign-out or the keeping reaches every one. `storage` is the tab's own unless a
+ * test names another; undefined, as where the browser gives the page none, it keeps nothing for a
+ * reload and says so.
  */
 export function createDraftStore(
   name: string,
@@ -130,6 +149,9 @@ export function createDraftStore(
   const listeners = new Map<string, Set<() => void>>();
   /** The person signed in when the drafts were typed: the last sign-in that named someone. */
   let owner: string | undefined;
+  /** Whether that person signed out, with nobody signed in since (`signedOut`): until someone
+   *  does, the store takes no draft. */
+  let ended = false;
   const prefix = `${ENTRY_PREFIX}${name}:`;
   /** The units of each draft the tab keeps, by key, and their sum: what the store's bound
    *  counts. */
@@ -191,6 +213,7 @@ export function createDraftStore(
   };
 
   const set = (key: string, next: SetStateAction<string>): void => {
+    if (ended) return;
     const current = drafts.get(key) ?? "";
     const text = typeof next === "function" ? next(current) : next;
     if (current === text) return;
@@ -208,12 +231,7 @@ export function createDraftStore(
     if (storage !== undefined) {
       for (const entry of entryNames(storage, prefix)) {
         const key = entry.slice(prefix.length);
-        let kept: unknown;
-        try {
-          kept = JSON.parse(storage.getItem(entry) ?? "null");
-        } catch {
-          kept = undefined;
-        }
+        const kept = readEntry(storage, entry);
         if (!keptDraftShape(kept) || kept.login !== login || kept.text === "") {
           removeEntry(storage, entry);
           continue;
@@ -249,19 +267,26 @@ export function createDraftStore(
     return [draft, setDraft];
   }
 
-  const reset = (): void => {
+  /** Forgets every draft in the page and whose they were, telling each field that holds one, and
+   *  every word that one is not kept; what the tab keeps for a reload is the caller's to drop. */
+  const forget = (): void => {
     // Nobody's first, so forgetting each draft writes nothing to the tab on the way.
     owner = undefined;
     for (const key of [...drafts.keys()]) set(key, "");
-    if (storage !== undefined) {
-      for (const entry of entryNames(storage, prefix)) removeEntry(storage, entry);
-    }
     for (const entry of [...notKept.keys()]) {
       if (entry.startsWith(prefix)) noteNotKept(entry, undefined);
     }
     keptUnits.clear();
     keptTotal = 0;
     waiting.clear();
+  };
+
+  const reset = (): void => {
+    ended = false;
+    forget();
+    if (storage !== undefined) {
+      for (const entry of entryNames(storage, prefix)) removeEntry(storage, entry);
+    }
   };
 
   return {
@@ -271,8 +296,24 @@ export function createDraftStore(
     signedIn: (login) => {
       if (login === undefined || login === owner) return;
       if (owner !== undefined) reset();
+      ended = false;
       owner = login;
       load(login);
+    },
+    signedOut: (login) => {
+      // The drafts in the page are the owner's alone, and an entry may be anyone's: one kept
+      // before this page was told who is signed in, or one of another format, still names them.
+      if (login === owner) {
+        forget();
+        ended = true;
+      }
+      if (storage === undefined) return;
+      for (const entry of entryNames(storage, prefix)) {
+        const kept = readEntry(storage, entry);
+        if (typeof kept === "object" && kept !== null && Reflect.get(kept, "login") === login) {
+          removeEntry(storage, entry);
+        }
+      }
     },
     useDraft,
   };

@@ -15,11 +15,11 @@ import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread
 import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
-import { answerDraftsSignedIn } from "./features/inbox/answer-drafts";
+import { answerDraftsSignedIn, answerDraftsSignedOut } from "./features/inbox/answer-drafts";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
-import { replyDraftsSignedIn } from "./features/inbox/reply-drafts";
+import { replyDraftsSignedIn, replyDraftsSignedOut } from "./features/inbox/reply-drafts";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
@@ -662,7 +662,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // Only now, with Dispatch's answer, are the person's writes discarded, in every tab of this
       // browser: none outlives their session, the next person to sign in here resumes nothing of
       // theirs and sees none of their refusals, and the page stops asking to confirm leaving.
-      writesOf(queryClient).clear();
+      // Their drafts go with them (`Writes.onSignedOut`, which `AuthGate` listens to).
+      writesOf(queryClient).signedOut(signingOut);
       signIns.signedOut(signingOut);
     },
     // A reload never takes the sign-out up again: no request of it goes through `api.send` to be
@@ -1081,6 +1082,21 @@ export function AuthGate(): ReactNode {
     if (!signedOut) return;
     queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "whoami" });
   }, [queryClient, signedOut]);
+  // A sign-out that lands ends the person's session at this browser, whichever way it lands: this
+  // tab's, another tab's, or one a lapse lands (`Writes.onSignedOut`). Whoever signs in next here
+  // must find nothing they typed, so every draft store forgets their drafts, in the page and in
+  // the tab's storage, and takes none until someone signs in, the ones a field hands it as the
+  // shell goes among them (`DraftStore.signedOut`). It listens before the effect below tells the
+  // write store who is signed in, since a lapse that effect tells of can land a sign-out.
+  useEffect(
+    () =>
+      writesOf(queryClient).onSignedOut((person) => {
+        unsentDraftsOf(queryClient).signedOut(person);
+        answerDraftsSignedOut(person);
+        replyDraftsSignedOut(person);
+      }),
+    [queryClient]
+  );
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,
   // from another tab - every write of another login is dropped and stops trying, and once no one
   // is (the session lapsed), every write stops trying and waits, kept, for the sign-in that
@@ -1088,8 +1104,8 @@ export function AuthGate(): ReactNode {
   // browser is told to read who is signed in again, so it does the same. A draft the person typed
   // and has not sent is theirs too, in every draft store, which outlives the shell as the write
   // store does and keeps each draft in the tab's storage for a reload: another person's sign-in
-  // forgets it there too, a lapse keeps it, and the first sign-in of a page that loaded takes up
-  // only the drafts that person kept (`DraftStore.signedIn`).
+  // forgets it there too, a lapse keeps it (a sign-out is no lapse, above), and the first sign-in
+  // of a page that loaded takes up only the drafts that person kept (`DraftStore.signedIn`).
   const login = signedOut ? undefined : whoAmI.data?.login;
   const known = signedOut || whoAmI.data !== undefined;
   // Whose shell is drawn: only ever the person the stores were last told of, in the commit after

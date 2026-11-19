@@ -366,6 +366,7 @@ export class Writes {
   #rows: readonly Write[] = NO_WRITES;
   readonly #listeners = new Set<() => void>();
   readonly #outcomes = new Set<(outcome: WriteOutcome) => void>();
+  readonly #signedOut = new Set<(login: string) => void>();
   #ids = 0;
   #joins = 0;
   #resumed = false;
@@ -424,6 +425,15 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
+  /** Tells `listener` whom each sign-out that lands from now on signed out, once their writes are
+   *  gone: this page's (`signedOut`), another tab's (`dropLogin`), and one a lapse lands
+   *  (`signedIn`). What else the page holds of theirs goes on the same word: every draft they
+   *  typed and did not send (`app.tsx`). A lapse that lands none tells nothing. */
+  readonly onSignedOut = (listener: (login: string) => void): (() => void) => {
+    this.#signedOut.add(listener);
+    return () => this.#signedOut.delete(listener);
+  };
+
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
    *  `null` for a write that landed with no answer to give, or rejects with its refusal - or
    *  `SendStoppedError` once the reader stops it. A write that names its request is made from it
@@ -432,7 +442,7 @@ export class Writes {
    *  running an attempt, and the request kept could differ from the one sent. A sign-out
    *  (`endsWithSession`) holds every other write of its person until Dispatch answers it, as
    *  another tab's does (`holdFor`): refused, they go on; landed, they wait for the page to let
-   *  them go (`clear`). */
+   *  them go (`signedOut`). */
   run<T, D, K>(spec: WriteSpec<T, D, K>): Promise<T | null> {
     const { request } = spec;
     if (spec.target !== undefined && request === undefined && spec.kind.resume === undefined) {
@@ -676,7 +686,8 @@ export class Writes {
   }
 
   /** Lets every write go, out or refused, and everything kept with them, every kept file
-   *  included: the person who made them signed out. */
+   *  included: what a sign-out of this page's that landed does (`signedOut`), and the unit-test
+   *  preload after each test. */
   clear(): void {
     this.#take([...this.#entries.values()]);
     this.#signingOut.clear();
@@ -685,13 +696,22 @@ export class Writes {
     this.#kept.clear();
   }
 
+  /** This page's sign-out of `login` landed: every write goes (`clear`), and every listener is
+   *  told (`onSignedOut`). */
+  signedOut(login: string): void {
+    this.clear();
+    for (const listener of this.#signedOut) listener(login);
+  }
+
   /** Drops every write `login` pressed, out or refused, its trying stopped and everything kept
-   *  of it, its file included: that person signed out in another tab of this browser, which
-   *  discards their writes in every tab (`app.tsx`). */
+   *  of it, its file included, and tells every listener (`onSignedOut`): that person's sign-out
+   *  landed in another tab of this browser, which discards their writes in every tab
+   *  (`app.tsx`), or under a lapse here (`signedIn`). */
   dropLogin(login: string): void {
     this.#signingOut.delete(login);
     this.#signingOutElsewhere.delete(login);
     this.#drop([...this.#entries.values()].filter((entry) => entry.write.login === login));
+    for (const listener of this.#signedOut) listener(login);
   }
 
   /** Holds every write `login` pressed while their sign-out in another tab of this browser is

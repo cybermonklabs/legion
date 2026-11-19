@@ -99,6 +99,10 @@ export interface UnsentDrafts {
    *  typed it (`DraftStore.signedIn`); the first sign-in takes up the drafts the tab kept for that
    *  person before a reload. */
   signedIn(login: string | undefined): void;
+  /** `login`'s sign-out landed: both stores forget every draft of theirs, the drafts kept by
+   *  address with them, in the page and in the tab, and take none until someone signs in, so
+   *  whoever signs in next at this browser finds nothing they typed (`DraftStore.signedOut`). */
+  signedOut(login: string): void;
   /** Keeps `draft` under `name`, or, given none, forgets the draft there. */
   write(name: string, draft: SentDraft | undefined): void;
   /** The draft kept under `name` for the reply `replyTo` answers, or for none, at the words
@@ -165,6 +169,10 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       signedIn: (login) => {
         store.signedIn(login);
         awayStore.signedIn(login);
+      },
+      signedOut: (login) => {
+        store.signedOut(login);
+        awayStore.signedOut(login);
       },
       useAway,
       useKept,
