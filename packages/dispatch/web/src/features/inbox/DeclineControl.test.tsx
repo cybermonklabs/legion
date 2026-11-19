@@ -246,7 +246,7 @@ test("a decline sends the person's note and closes the question", async () => {
   }
 });
 
-test("the decline dialog counts what is left to write, and sends no note when empty", async () => {
+test("the decline dialog counts what is written against its bound, and sends no note when empty", async () => {
   const user = userEvent.setup();
   const open = openAsk();
   const declined = declinedAsk("");
