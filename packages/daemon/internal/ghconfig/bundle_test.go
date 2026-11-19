@@ -527,10 +527,10 @@ func TestWriteBundleRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
 // of them, a fifo, a link to /dev/zero or a link to a file outside the root, is replaced by
 // rename, never waited on or followed: WriteBundle answers within a second, the path is then a
 // regular file holding what the bundle renders for it, and the file a link named is as it was.
-// A bundle written again over its own untouched files leaves every one of them as it was. Read
-// with os.ReadFile, as all three were, a fifo waits for a writer for as long as none comes and
-// /dev/zero has no end; written with os.WriteFile, as config.yml was, a fifo waits for a reader
-// and a link has the file it names truncated.
+// A bundle written again over its own untouched files leaves every one of them as it was. A read
+// with os.ReadFile waits on such a fifo for a writer for as long as none comes and reads /dev/zero
+// without end, and a write with os.WriteFile waits on it for a reader and has the file a link
+// names truncated.
 func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 	bundle := twoOwnerBundle("ghs_acme_write")
 	bundle.Pairs = []ghrepo.Rename{ghrepo.MustRename("sjawhar/legion", "CyberMonkLabs/legion")}
@@ -626,11 +626,12 @@ func TestWriteBundleReplacesAFifoOrALinkAtEachFileItWrites(t *testing.T) {
 				select {
 				case err = <-answered:
 				case <-time.After(time.Second):
-					// The write waits in an open of the fifo. An open of it for reading and
-					// writing waits on nothing and is the writer or the reader that open waits
-					// for, so the goroutine ends before the test does. It is asked again until
-					// the write answers, since a write that read the fifo can wait again to
-					// write it.
+					// In a fifo row the write waits in an open of the fifo. An open of it for
+					// reading and writing waits on nothing and is the writer or the reader that
+					// open waits for, so the goroutine ends before the test does. It is asked
+					// again until the write answers, since a write that read the fifo can wait
+					// again to write it. In a /dev/zero row a reader that followed the link is in
+					// an endless read, which no such open releases, so its goroutine runs on.
 					released := time.After(10 * time.Second)
 					for {
 						if fifo, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0); err == nil {

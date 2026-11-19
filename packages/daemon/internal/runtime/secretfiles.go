@@ -37,9 +37,10 @@ func WriteSecretFiles(stateDir string, files []SecretFile) error {
 // ReplaceFile writes value to a 0600 temporary file in path's directory and renames it over path,
 // which swaps the whole file in one step: there is no moment where path is truncated and not yet
 // written. It is also what the tmux runtime writes a pane's own files with, in a directory the
-// pane can write (the Claude Code MCP configuration): the rename replaces whatever is at path, a
-// fifo or a link included, without opening it, following it or waiting on it. The temporary file
-// is removed when any step fails.
+// pane can write (the Claude Code MCP configuration): the rename replaces a file, a fifo or a link
+// at path without opening it, following it or waiting on it, and a directory at path, which no
+// rename of a file replaces, is answered as the rename's error. The temporary file is removed when
+// any step fails.
 func ReplaceFile(path, value string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
