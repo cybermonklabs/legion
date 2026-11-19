@@ -499,15 +499,12 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 	// outbox the wall clock, so here the turn is a moment of the test clock and the bound is five
 	// minutes of wall time, either of which can be minutes of wall time away although the test
 	// clock has passed every launch. Every launch is made by now, so the test makes each such row
-	// due now, as the bound would, and the outbox's sweep runs it.
+	// due now on both clocks (makeDue), as the bound would, and the outbox's sweep runs it.
 	keys := []string{}
 	for _, n := range noticed {
 		keys = append(keys, r.issue(n))
 	}
-	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() where kind = 'hook_prompt' and issue = any($1) and next_at > now()`,
-		keys); err != nil {
-		t.Fatalf("make the parked hook prompts due: %v", err)
-	}
+	r.makeDue(record.OutboxKindHookPrompt, keys...)
 	delivered := 0
 	for _, n := range noticed {
 		token := worker(n)

@@ -516,94 +516,14 @@ func TestAListenersWakeAfterTheResumeOfARoleThePauseStoppedIsThatPausesHeldWake(
 	}
 }
 
-// The production listener's answer to a role the pause stopped. Since cybermonklabs/legion#4088 a
-// stopped role's Envoy session reads gone, so the listener answers a publish to the role 404
-// `holder_lapsed` with `holder_state` `gone`, which notify reads as notify.ErrNoHolder. A role
-// message the pause held for that role waits through that answer rather than ending undelivered
-// (outbox.roleMessage, R4 of dispatch://INFRA-3759): the listener reports the role's wake beside
-// it, which the test applies, and the row reaches the role's session once the wake pacing has
-// launched it. The role launches once after the resume, under the pause's held wake with no
-// release, though a release of its pod from before the pause stands.
-//
-// The negative control is roleMessage without its wait on notify.ErrNoHolder for such a row: the
-// row ends undelivered at its first attempt, and the test fails where it reads the row after that
-// attempt.
-func TestAHeldRoleMessageWaitsThroughTheListenersGoneAnswerForTheRoleThePauseStopped(t *testing.T) {
-	r := newPauseDaemonRig(t, nil)
-	issue := r.issue(1)
-	worker := r.token(issue, claim.RoleImplementer)
-	r.seed(r.root(issue, phase.Implementing), r.running(issue, claim.RoleImplementer, supervise.StateIdle))
-	// A release of the issue's pod from before the pause, which a wake no pause held would pair
-	// with.
-	if _, err := r.pool.Exec(r.ctx, `insert into pod_releases (project, issue, generation, roles, at)
-		values ($1, $2, 1, 'implementer', $3)`, r.project, issue, r.clock.Now().UTC().Add(-2*time.Hour)); err != nil {
-		t.Fatalf("record a release of %s's pod: %v", issue, err)
-	}
-	r.envoy.gone(worker)
-	r.boot()
-
-	pause := r.pauseProject()
-	r.awaitState(worker, supervise.StateSuspended, "the pause stops the idle implementer")
-	const body = "The checks of your head settled."
-	message := r.enqueue(issue, record.RoleMessage{Role: string(worker), Body: body})
-	before := len(r.rt.launches())
-	r.resumeProject()
-	testwait.Eventually(t, "the held role message's first attempt after the resume", func() bool {
-		var attempts int
-		if err := r.pool.QueryRow(r.ctx, `select coalesce(max(attempts), 0) from outbox where id = $1`, message).Scan(&attempts); err != nil {
-			t.Fatalf("read the role message's row: %v", err)
-		}
-		return attempts > 0 || r.count(`select count(*) from outbox where id = $1`, message) == 0
-	})
-	if n := r.count(`select count(*) from outbox where id = $1`, message); n != 1 {
-		t.Fatalf("the held role message's row ended at its first attempt, with %d publishes taken for the role; want it waiting through the listener's gone answer for the role the pause stopped",
-			len(r.envoy.publishedTo(worker)))
-	}
-
-	r.applyFact("listener", "held-role-message-gone", intake.ListenerWake{Kind: intake.ListenerWakeRole,
-		Role: string(worker), At: r.clock.Now(), Report: "report-of-the-held-role-message"})
-	r.runPacing(before, 1, func(launch waveLaunch) {
-		if launch.claim == worker {
-			r.ready(worker)
-			r.envoy.hold(worker)
-		}
-	}, func(api.State) {})
-	testwait.WithinPolling(t, 6*time.Minute, 200*time.Millisecond, "the held role message to reach the role after its launch", func() bool {
-		return len(r.envoy.publishedTo(worker)) > 0 && r.count(`select count(*) from outbox where id = $1`, message) == 0
-	})
-	time.Sleep(time.Second)
-
-	if sent := r.envoy.publishedTo(worker); len(sent) != 1 || sent[0].message != body {
-		t.Fatalf("the role message reached the role %d times (%+v), want once with its body", len(sent), sent)
-	}
-	var launchedAfter int
-	for _, launch := range r.rt.launches()[before:] {
-		if launch.claim == worker {
-			launchedAfter++
-		}
-	}
-	if launchedAfter != 1 {
-		t.Fatalf("the implementer launched %d times after the resume, want once", launchedAfter)
-	}
-	if wakes := r.count(`select count(*) from pod_resumes where issue = $1 and role = 'implementer'`, issue); wakes != 1 {
-		t.Fatalf("the implementer took %d wakes after the resume, want one", wakes)
-	}
-	var held, release int64
-	if err := r.pool.QueryRow(r.ctx, `select coalesce(pause_id, 0), release_id from pod_resumes where issue = $1 and role = 'implementer'`,
-		issue).Scan(&held, &release); err != nil {
-		t.Fatalf("read the implementer's wake: %v", err)
-	}
-	if held != pause.ID || release != 0 {
-		t.Fatalf("the implementer's wake is marked with pause %d and release %d, want pause %d and no release", held, release, pause.ID)
-	}
-}
-
-// The bound of the wait above: a role message the pause held for a role it stopped waits only while
-// that role can come back for it (outbox.roleMessage). An operator's suspension of the stopped role
-// while the project is paused takes the suspension over from the pause's release
-// (supervise.SuspendedByOperator), and nothing of the daemon's brings that role back, so once the
-// resume lets the row run it takes main's path: it is published, the listener answers that the
-// role's session is gone, and the row ends undelivered, with no launch and no wake.
+// The bound of a held role message's wait through the listener's gone answer for the role the
+// pause stopped (TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume): it
+// waits only while that role can come back for it (outbox.heldMessageOwed). An operator's
+// suspension of the stopped role while the project is paused takes the suspension over from the
+// pause's release (supervise.SuspendedByOperator), and nothing of the daemon's brings that role
+// back, so once the resume lets the row run it takes main's path: it is published, the listener
+// answers that the role's session is gone, and the row ends undelivered, with no launch and no
+// wake.
 //
 // The negative control is the wait counted whatever the claim's state: the row waits for a role
 // that is not coming back, and the test fails where it waits for the row to end.

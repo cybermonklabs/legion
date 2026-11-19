@@ -190,14 +190,13 @@ func (r *pauseRuntime) suspendedOf(token claim.Token) int {
 }
 
 // pauseEnvoy is the Envoy listener's publish route as the daemon's outbox meets it. A role topic
-// whose session is not live is refused as the listener refuses a role whose holder stopped inside
-// its keep window (404 `holder_lapsed`, the holder `unresponsive`): the role is still its
-// session's, so the daemon keeps the message and tries again (notify.ErrHolderUnresponsive), as it
-// does for a role a release or a pause stopped. A test can make a role's topic answer as the
-// listener answers a role whose session reads gone instead (gone). Every other publish is taken,
-// each recorded with the topic and the moment on the test clock. A test says when a role's session
-// holds its topic (hold). The registry read and the clean session stop are answered as a listener
-// with no record of the session answers them.
+// no session holds is refused 404 `holder_lapsed` with the holder `unresponsive`, which is what a
+// listener before cybermonklabs/legion#4088 answered a role a release or a pause stopped: the
+// daemon keeps the message and tries again (notify.ErrHolderUnresponsive). The production listener
+// has answered such a role's session gone since #4088, which a test asks of a role's topic with
+// gone. Every other publish is taken, each recorded with the topic and the moment on the test
+// clock. A test says when a role's session holds its topic (hold). The registry read and the clean
+// session stop are answered as a listener with no record of the session answers them.
 type pauseEnvoy struct {
 	clock      *waveClock
 	url        string
@@ -894,6 +893,37 @@ func (r *pauseDaemonRig) dueNow() time.Time {
 		at = now
 	}
 	return at
+}
+
+// makeDue makes every row of kind and of issues still in the outbox due a minute ago on both
+// clocks that read it, as dueNow reads them: the outbox's lanes judge a row due by the wall clock,
+// and a resume marks the rows its pause held that are due by the daemon's clock, the rig's test
+// clock (pause.Service.Resume, record.MarkPauseHeldRows). It waits first until no lane holds any
+// of those rows, so that no run in flight settles its next attempt over the moment, and answers
+// how many rows it moved.
+func (r *pauseDaemonRig) makeDue(kind record.OutboxKind, issues ...string) int {
+	r.t.Helper()
+	of := fmt.Sprintf("the %s rows of %s", kind, strings.Join(issues, ", "))
+	testwait.Eventually(r.t, "no lane to hold "+of, func() bool {
+		return r.count(`select count(*) from outbox where kind = $1 and issue = any($2) and lease_token <> ''`, string(kind), issues) == 0
+	})
+	moved, err := r.pool.Exec(r.ctx, `update outbox set next_at = least(now(), $3) - interval '1 minute' where kind = $1 and issue = any($2)`,
+		string(kind), issues, r.clock.Now().UTC())
+	if err != nil {
+		r.t.Fatalf("make %s due: %v", of, err)
+	}
+	return int(moved.RowsAffected())
+}
+
+// heldByPause is the pause outbox row id is marked with (outbox.held_by_pause), 0 for none, and -1
+// once the row has ended.
+func (r *pauseDaemonRig) heldByPause(id int64) int64 {
+	r.t.Helper()
+	var pause int64
+	if err := r.pool.QueryRow(r.ctx, `select coalesce((select coalesce(held_by_pause, 0) from outbox where id = $1), -1)`, id).Scan(&pause); err != nil {
+		r.t.Fatalf("read the pause outbox row %d is marked with: %v", id, err)
+	}
+	return pause
 }
 
 // later is the later of the test clock and the wall clock: the engine stamps the rows it queues
