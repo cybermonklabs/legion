@@ -1,5 +1,5 @@
 # This repository's own leak rules, ported one for one from .github/scripts/check-private-names.sh
-# (its patterns are that file's lines 85-115, its labels lines 117-120, and the way they are applied
+# (its patterns are that file's lines 148-178, its labels lines 180-183, and the way they are applied
 # to a line and to a path its `search` and `search_paths`). The four classes are the private
 # repository Legion is deployed from, the company that runs it, a private host of its own network,
 # and a Tailscale MagicDNS host. No [extend] section: gitleaks' own default rule set is deliberately
@@ -16,7 +16,7 @@
 # brackets.
 #
 # The two case-insensitive flags differ by design, exactly as the script's -i flags do (its lines
-# 216-223): four classes are matched in any case, the proper noun is matched case-sensitively, and
+# 525-532): four classes are matched in any case, the proper noun is matched case-sensitively, and
 # so are the two Lean names the host rule allows, whose case is their shape.
 title = "Legion private names"
 

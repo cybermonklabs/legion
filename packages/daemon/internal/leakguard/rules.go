@@ -23,7 +23,7 @@ import (
 var ruleFile string
 
 // maskedBy are the content rules a path component is masked by, the three
-// check-private-names.sh's own `names` reads (its lines 149-152): the deployment repository, the
+// check-private-names.sh's own `names` reads (its lines 140-143): the deployment repository, the
 // company, and the company's first word as a proper noun.
 var maskedBy = []string{"repository_rule", "company_rule", "proper_noun_rule"}
 
@@ -122,7 +122,7 @@ func (r *rules) scan(ctx context.Context, records []Record) ([]string, error) {
 
 // mask is label with each slash-separated component the repository or company rules match
 // replaced by "<name>", the masking .github/scripts/check-private-names.sh does (its lines
-// 154-163). A label that names no file has no component to mask and comes back as it was.
+// 145-154). A label that names no file has no component to mask and comes back as it was.
 func (r *rules) mask(label string) string {
 	parts := strings.Split(label, "/")
 	for i, part := range parts {
