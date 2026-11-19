@@ -16,6 +16,11 @@ export type DetailsRow = "collaborators" | "labels" | "parent" | "route";
  *  closed section, which is hidden, is shown and can take the focus. */
 export const DETAILS_ROW_REQUEST_EVENT = "details-row-request";
 
+/** The controls of a row of Details that take a press, in the order the row draws them: the
+ *  first is the one the opener focuses or presses (`useOpenDetailsAt`). */
+export const ROW_CONTROL_SELECTOR =
+  ":is(input, textarea, select, button:not(:disabled), a[href]):not([aria-disabled=true])";
+
 /**
  * Opens Details at one of its rows: the drawer opens, it is asked for the row
  * (`DETAILS_ROW_REQUEST_EVENT`), the row is brought into its view, and the
@@ -43,9 +48,7 @@ export function useOpenDetailsAt(): (row: DetailsRow, press?: boolean) => void {
           );
           if (found === null) return;
           found.scrollIntoView({ block: "nearest" });
-          const control = found.querySelector<HTMLElement>(
-            ":is(input, textarea, select, button:not(:disabled), a[href]):not([aria-disabled=true])"
-          );
+          const control = found.querySelector<HTMLElement>(ROW_CONTROL_SELECTOR);
           if (press) control?.click();
           else control?.focus({ preventScroll: true });
         })

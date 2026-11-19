@@ -18,13 +18,6 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  DetailsErrorLine,
-  readFailed,
-  retryRead,
-  useFocusHandOff,
-} from "../issue-page/details-error";
-import { firstUsable } from "../issue-page/usable-control";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
@@ -82,6 +75,29 @@ export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
 
+/** A failed read or write of the repository control, as the control hands it to a host that says
+ *  it in a line of its own (`sayFailure`). */
+export type RepoControlFailure =
+  | {
+      readonly kind: "read";
+      readonly message: string;
+      /** The read of the repositories Dispatch maps to projects, failed or not. */
+      readonly read: {
+        readonly errorUpdateCount: number;
+        readonly isError: boolean;
+        readonly isFetching: boolean;
+        readonly isPending: boolean;
+        readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
+      };
+    }
+  | {
+      readonly kind: "write";
+      readonly message: string;
+      /** Makes the refused pick again; undefined where a newer write of the repository is live
+       *  (`IssueFieldWrite.retry`). */
+      readonly retry: (() => void) | undefined;
+    };
+
 /**
  * The issue's repository in the details rail: `Repository:` and one combobox, labelled
  * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` of the
@@ -121,9 +137,9 @@ export function repoControlName(issueKey: string): string {
  * assistive technology because the description already says it. The clear control's `title` is
  * its description there (`aria-describedby`), so its name stays `Clear the repository of <KEY>`
  * and a reader still hears that the issue then inherits a repository. The refusal keeps its
- * words, which the page's list has none for; a failed read or write is said by the page's own
- * line (`DetailsErrorLine`), with the page's Retry, which keeps a reader's focus as Details' own
- * lines do. Each colour is the page's: the box is the page's field, the repository the issue
+ * words, which the page's list has none for; a failed read or write shows `QueryError`, as on
+ * every page, unless the host says it in a line of its own (`sayFailure`), as Details does. Each
+ * colour is the page's: the box is the page's field, the repository the issue
  * inherits (its placeholder) in the quiet grey; the clear control is the muted grey that turns
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
@@ -166,6 +182,7 @@ export function RepoControl({
   project,
   repo: hostRepo,
   resolvedRepo: hostResolvedRepo,
+  sayFailure,
 }: {
   disabled?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
@@ -175,6 +192,13 @@ export function RepoControl({
   project: string;
   repo: string | null;
   resolvedRepo: string | null;
+  /** Says a failed read of the mappings, or a failed write, in the host's own line, in place of
+   *  `QueryError`. It is called for the read at every render, failed or not, and the host decides
+   *  whether to say it: a read Retry sent again holds no error while it is out. It is called for
+   *  the write while that stands refused. The host draws the line, so the control imports
+   *  nothing of the new issue page that passes it, and the page's word list loads with that page
+   *  alone (`components/tooltips.tsx`). */
+  sayFailure?: (failure: RepoControlFailure) => ReactNode;
 }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
@@ -271,13 +295,6 @@ export function RepoControl({
   const box = useRef<HTMLInputElement>(null);
   /** The place the row's text or the box is drawn in, the box's clear control with it. */
   const place = useRef<HTMLSpanElement>(null);
-  // As a failed line goes with a reader's focus on its Retry - a write's at the press of that
-  // Retry, a read's once the mappings answer - the focus would fall to the page's body. It goes
-  // to the repository's own control instead: the box, drawn while a write is out, else the text
-  // or "None" a row of Details draws in its place.
-  const failedLineLeft = useFocusHandOff(() =>
-    firstUsable(box.current, textControl.current, noneControl.current)
-  );
   // Whether the focus is on the row's text or in the box, its clear control included. Whichever
   // of them takes the other's place takes the focus the other held, which the one leaving the
   // page drops to the document: a press of the text leaves it in the box; Escape, or a write that
@@ -565,7 +582,7 @@ export function RepoControl({
           {NOT_OWNER_NAME}
         </p>
       ) : null}
-      {page === null && mappings.isError ? (
+      {sayFailure === undefined && mappings.isError ? (
         <QueryError
           message={apiErrorMessage(
             mappings.error,
@@ -575,35 +592,25 @@ export function RepoControl({
           retrying={mappings.isFetching}
         />
       ) : null}
-      {/* Inside `NoTooltips` a failed read or write is said by the page's own line, in the page's
-          colours and with the page's Retry, as Details says each of its own. A read's line keeps
-          its words while Retry reads again, as Details' own read lines do: the read that is out
-          holds no error, so words taken from the error would change as Retry is pressed. */}
-      {page !== null && readFailed(mappings) ? (
-        <DetailsErrorLine
-          failure={mappings.errorUpdateCount}
-          message={`Could not load the repositories mapped to ${project}.`}
-          onRetry={retryRead(mappings)}
-          retryRef={failedLineLeft}
-          retrying={mappings.isFetching}
-        />
-      ) : null}
-      {page === null && write.failed ? (
+      {sayFailure?.({
+        kind: "read",
+        message: `Could not load the repositories mapped to ${project}.`,
+        read: mappings,
+      })}
+      {sayFailure === undefined && write.failed ? (
         <QueryError
           message={write.error ?? `Could not update the repository of ${issueKey}.`}
           onRetry={write.retry}
           retrying={write.pending}
         />
       ) : null}
-      {/* A press of its Retry clears the refusal as it sends the pick again, taking the line with
-          it, so the Retry never waits on the write it sent and reads no busy. */}
-      {page !== null && write.failed ? (
-        <DetailsErrorLine
-          message={write.error ?? `Could not update the repository of ${issueKey}.`}
-          onRetry={write.retry}
-          retryRef={failedLineLeft}
-        />
-      ) : null}
+      {write.failed && sayFailure !== undefined
+        ? sayFailure({
+            kind: "write",
+            message: write.error ?? `Could not update the repository of ${issueKey}.`,
+            retry: write.retry,
+          })
+        : null}
     </div>
   );
 }

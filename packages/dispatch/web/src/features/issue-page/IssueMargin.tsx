@@ -31,7 +31,7 @@ import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
-import { RepoControl } from "../issue/RepoControl";
+import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
@@ -234,11 +234,11 @@ export function IssueMarginPanel({
     const left = leftEditor.current;
     leftEditor.current = null;
     if (left === null || editingField !== null || !focusOnDocument()) return;
-    const inRow =
+    const rowControls =
       left === "parent"
         ? [parentControl.current, parentValue.current?.querySelector<HTMLElement>("a[href]")]
         : [routeControl.current];
-    firstUsable(...inRow, developmentHeading.current)?.focus();
+    firstUsable(...rowControls, developmentHeading.current)?.focus();
   }, [editingField]);
   // The failure of Details' last field save, which the route's row says when it is a route's.
   // The focus of that line's Retry goes on in the row as the line goes: to the row's control, and
@@ -335,6 +335,40 @@ export function IssueMarginPanel({
       developmentHeading.current
     )
   );
+  // The Repository row's control draws its own failed read of the mappings and its own refused
+  // write, and hands each to the row to say (`sayFailure`), as Details says its own. A read's
+  // line keeps its words while its Retry reads again, as Details' own read lines do: the read
+  // that is out holds no error, so words taken from the error would change as Retry is pressed. A
+  // press of a write's Retry clears the refusal as it sends the pick again, taking the line with
+  // it, so that Retry never waits on the write it sent and reads no busy. As a line goes with a
+  // reader's focus on its Retry - a write's at the press of that Retry, a read's once the
+  // mappings answer - the focus goes on to the row's own control: the box, drawn while a write is
+  // out, else the text or None the row draws in its place; and where the row holds nothing that
+  // takes it, on a closed issue, to Development's heading.
+  const repoValue = useRef<HTMLDivElement>(null);
+  const repoRetryLeft = useFocusHandOff(() =>
+    firstUsable(
+      repoValue.current?.querySelector<HTMLElement>("input"),
+      ...(repoValue.current?.querySelectorAll<HTMLElement>("button") ?? []),
+      developmentHeading.current
+    )
+  );
+  const sayRepoFailure = (failure: RepoControlFailure): ReactNode =>
+    failure.kind === "write" ? (
+      <DetailsErrorLine
+        message={failure.message}
+        onRetry={failure.retry}
+        retryRef={repoRetryLeft}
+      />
+    ) : readFailed(failure.read) ? (
+      <DetailsErrorLine
+        failure={failure.read.errorUpdateCount}
+        message={failure.message}
+        onRetry={retryRead(failure.read)}
+        retryRef={repoRetryLeft}
+        retrying={failure.read.isFetching}
+      />
+    ) : null;
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
@@ -527,7 +561,7 @@ export function IssueMarginPanel({
             <IssueList issues={blocks} />
           )}
         </Row>
-        <Row glyph={HOUSE} label={PROPERTY_LABELS.repository}>
+        <Row glyph={HOUSE} label={PROPERTY_LABELS.repository} valueRef={repoValue}>
           <RepoControl
             disabled={isClosed}
             inRow
@@ -535,6 +569,7 @@ export function IssueMarginPanel({
             project={issue.project}
             repo={issue.repo}
             resolvedRepo={issue.resolved_repo}
+            sayFailure={sayRepoFailure}
           />
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
@@ -838,8 +873,8 @@ function PropertySection({
   // A control elsewhere on the page that opens Details at one of this section's rows asks the
   // drawer for that row before it looks for it (`useOpenDetailsAt` sends
   // `DETAILS_ROW_REQUEST_EVENT`). A closed section opens for it as its heading opens it, so the
-  // reader's kept choice follows, and in the same task, so the row is on the page when the
-  // control looks for it.
+  // reader's kept choice follows, and in the same task, so the row is no longer hidden when the
+  // control looks for it and its control takes the focus.
   const latest = useRef(sections);
   latest.current = sections;
   useEffect(() => {

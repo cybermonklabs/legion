@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
@@ -36,18 +36,12 @@ import type {
   RepoProject,
   UserState,
 } from "../../api/types";
-import {
-  dangerText,
-  linkText,
-  pageFailedText,
-  pageHeaderControl,
-  pageInkText,
-} from "../../theme/classes";
+import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
-import { RepoControl, repoControlName } from "../issue/RepoControl";
+import { repoControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
@@ -58,7 +52,12 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { blockedByControlName } from "./BlockedByControl";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
+import {
+  DETAILS_ROW_ATTRIBUTE,
+  DETAILS_ROW_REQUEST_EVENT,
+  type DetailsRow,
+  ROW_CONTROL_SELECTOR,
+} from "./details-rows";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID } from "./IssueMargin";
 import { narrowIssue } from "./issue-fixtures";
@@ -78,13 +77,16 @@ import {
   issueStatusWord,
   NODE_TYPE_NAMES,
 } from "./page-words";
-import { architecture } from "./shared-controls-fixture";
+import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
 import { usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
+
+/** The fixture's issue, closed. */
+const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" };
 
 /** The page's words the labels control and the components picker are named from inside
  *  `NoTooltips` (`labelsControlName`, `componentsControlName`). */
@@ -94,16 +96,17 @@ const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
  *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
  *  the Details drawer it is drawn in; with none, Details makes none of the reads it makes only
- *  while open. */
+ *  while open. `redraw` draws the same Details in the drawer it is handed, as a drawer that
+ *  opens or closes does. */
 function renderDetails(beside?: (issue: IssueDetails) => ReactNode, drawer?: MarginDrawer) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
   });
-  const view = render(
+  const tree = (inDrawer: MarginDrawer | undefined) => (
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
-          <MarginSlotProvider drawer={drawer}>
+          <MarginSlotProvider drawer={inDrawer}>
             <NoTooltips>
               <CachedIssue>
                 {(details, state) => (
@@ -119,7 +122,12 @@ function renderDetails(beside?: (issue: IssueDetails) => ReactNode, drawer?: Mar
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { queryClient, unmount: view.unmount };
+  const view = render(tree(drawer));
+  return {
+    queryClient,
+    redraw: (inDrawer: MarginDrawer) => view.rerender(tree(inDrawer)),
+    unmount: view.unmount,
+  };
 }
 
 function CachedIssue({
@@ -209,6 +217,19 @@ function stubIssueApi() {
       patchIssue.mockRestore();
     },
   };
+}
+
+/** Draws `details` as the issue Dispatch holds now: the cached issue Details draws, and the
+ *  answer to the issue's next read. */
+function drawIssue(
+  getIssue: Mock<typeof api.getIssue>,
+  queryClient: QueryClient,
+  details: IssueDetails
+): void {
+  getIssue.mockResolvedValue(details);
+  act(() => {
+    queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
+  });
 }
 
 /** One row of Details, by the name in its label column (`IssueMargin.tsx`'s `Row`). */
@@ -525,6 +546,66 @@ test("closing Development hides its rows and keeps the repository box's refused 
     unmount();
     restore();
     window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
+// A closed section keeps its rows on the page, hidden (`PropertySection`), and each link reads
+// GitHub as it is drawn (`GitHubLink`), so a Details opened with Development closed read GitHub
+// for links its reader could not see. The links are drawn, and read, once Development opens.
+test("Details open with Development closed reads no GitHub link, and opening Development reads each", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({
+    ...issue,
+    external_links: [
+      { kind: "github_pr", url: "https://github.com/acme/web/pull/7" },
+      { url: "https://github.com/acme/web/issues/8" },
+    ],
+  });
+  // A reference with no head, so a pull request's read reads no checks after it.
+  const githubRest = spyOn(api, "githubRest").mockImplementation(
+    async () =>
+      new Response(JSON.stringify({ state: "open", title: "Ship the web app" }), {
+        headers: { "Content-Type": "application/json" },
+      })
+  );
+  // What this issue blocks, which Details reads once it is open.
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
+  window.localStorage.setItem(kept, "development");
+  const shut: MarginDrawer = { open: false, setOpen: () => undefined, setPage: () => undefined };
+  const { redraw, unmount } = renderDetails(undefined, shut);
+
+  try {
+    const development = await screen.findByRole("button", {
+      name: MARGIN_SECTION_NAMES.development,
+    });
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+    redraw({ ...shut, open: true });
+    // The open drawer's reads start in the commit that opens it, a link's with them.
+    await waitFor(() => expect(getReferences).toHaveBeenCalled());
+    expect(
+      githubRest,
+      "Details read GitHub for the links of a closed Development"
+    ).not.toHaveBeenCalled();
+
+    await user.click(development);
+    await waitFor(() =>
+      expect(
+        githubRest.mock.calls.map(([path]) => path).sort(),
+        "opening Development did not read each of its links"
+      ).toEqual(["repos/acme/web/issues/8", "repos/acme/web/pulls/7"])
+    );
+  } finally {
+    unmount();
+    getReferences.mockRestore();
+    githubRest.mockRestore();
+    restore();
+    window.localStorage.removeItem(kept);
   }
 });
 
@@ -1323,12 +1404,7 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
 test("on a closed issue, the titles' Retry hands its focus to the first issue the row waits on", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  getIssue.mockResolvedValue({
-    ...issue,
-    blocked_by: ["CORE-3"],
-    closed_at: "2026-09-10T00:00:00Z",
-    status: "done",
-  });
+  getIssue.mockResolvedValue({ ...closedIssue, blocked_by: ["CORE-3"] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
@@ -1643,7 +1719,7 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   const { getIssue, restore } = stubIssueApi();
   // The Advances row reads the priorities, to name the one the issue advances.
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  getIssue.mockResolvedValue({ ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" });
+  getIssue.mockResolvedValue(closedIssue);
   let view = renderDetails();
 
   try {
@@ -2560,17 +2636,16 @@ test("Add lists Repository on a row that inherits its repository and presses its
 });
 
 /** That `alert`, a failure said in `row` of Details, is Details' own line (`details-error.tsx`):
- *  in the page's colour for what failed, with nothing in the row in the app's danger colour that
- *  the shared `QueryError` draws, and with the page's Retry. */
+ *  in the page's colour for what failed, with nothing in the row in a colour that is not the
+ *  page's (`offPageColours`), as the shared `QueryError`'s danger colour is not, and with the
+ *  page's Retry. */
 function expectPageFailure(row: HTMLElement, alert: HTMLElement): void {
   expect(alert, "the failure is not in the page's colour for what failed").toHaveClass(
     pageFailedText
   );
   expect(
-    Array.from(row.querySelectorAll("*")).filter((element) =>
-      dangerText.split(" ").some((token) => element.classList.contains(token))
-    ),
-    "the row draws the failure in the app's danger colour"
+    offPageColours(PROPERTY_LABELS.repository, [row, ...row.querySelectorAll("*")]).offenders,
+    "the row draws the failure in a colour that is not the page's"
   ).toEqual([]);
   expect(
     within(row).getByRole("button", { name: CONTROL_LABELS.retry }),
@@ -2652,39 +2727,6 @@ test("a repository Dispatch refuses is said in the page's colours, with Retry", 
   } finally {
     unmount();
     restore();
-  }
-});
-
-// Outside `NoTooltips`, on every page but the new issue page, the control says a failed read of
-// the mappings with the shared `QueryError` in the app's danger colour, as it always has.
-test("outside the page a failed read of the repository mappings is said by QueryError", async () => {
-  const user = userEvent.setup();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockResolvedValue([]);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <QueryClientProvider client={queryClient}>
-      <RepoControl issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />
-    </QueryClientProvider>
-  );
-
-  try {
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Could not load the repositories mapped to CORE.");
-    expect(alert, "the failure is not in the app's danger colour").toHaveClass(dangerText);
-    expect(alert, "the failure is in the page's colour for what failed").not.toHaveClass(
-      pageFailedText
-    );
-    await user.click(within(alert).getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
-  } finally {
-    view.unmount();
-    queryClient.clear();
-    listRepoProjects.mockRestore();
   }
 });
 
@@ -3120,6 +3162,34 @@ function IssueKeys(): null {
   return null;
 }
 
+/** The details slot and the margin's own content in a column, under the issue page's keys
+ *  (`IssueKeys`), so the key `l` reads the labels' control the slot draws for `details`. */
+function renderWithKeys(details: IssueDetails) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  return render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <IssueKeys />
+          <MarginProvider>
+            <MarginSlotProvider drawsSlot>
+              <DetailsSlot issue={details} route={{ key: "CORE-1", kind: "issue" }} />
+              <MarginBody />
+            </MarginSlotProvider>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** Whether the key `l` is on, as the list of keys says it. */
+function labelsKey(): boolean | undefined {
+  return appKeymap.describe().find((entry) => entry.id === "labels")?.enabled;
+}
+
 // On an issue with no label the labels' control is named for adding one (`labelsControlName`),
 // and the add menu's Labels and the key `l` find it by that name. While both looked for "Edit
 // labels", the menu listed no Labels on such an issue and `l` did nothing.
@@ -3128,24 +3198,7 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
   const { restore } = stubIssueApi();
   // The labels' popover reads the project's issues for the labels it offers.
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
-  });
-  const view = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <IssueKeys />
-          <MarginProvider>
-            <MarginSlotProvider drawsSlot>
-              <DetailsSlot issue={issue} route={{ key: "CORE-1", kind: "issue" }} />
-              <MarginBody />
-            </MarginSlotProvider>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = renderWithKeys(issue);
 
   try {
     const control = within(await waitFor(() => rowAt("labels"))).getByRole("button", {
@@ -3188,24 +3241,7 @@ test("while the labels are saving, the key l is off, and on again once the save 
   const labelled: IssueDetails = { ...issue, labels: ["bug"] };
   const saving = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => saving.promise);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
-  });
-  const view = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <IssueKeys />
-          <MarginProvider>
-            <MarginSlotProvider drawsSlot>
-              <DetailsSlot issue={labelled} route={{ key: "CORE-1", kind: "issue" }} />
-              <MarginBody />
-            </MarginSlotProvider>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = renderWithKeys(labelled);
   const savingName = labelsControlName("CORE-1", {
     labels: [],
     saving: true,
@@ -3231,7 +3267,7 @@ test("while the labels are saving, the key l is off, and on again once the save 
       "the labels control is not named for its save while the save is out"
     ).toBeInTheDocument();
     expect(
-      appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
+      labelsKey(),
       "l is enabled while the labels control it presses is busy with the save"
     ).toBe(false);
 
@@ -3239,10 +3275,7 @@ test("while the labels are saving, the key l is off, and on again once the save 
     await waitFor(() =>
       expect(within(row).queryByRole("button", { name: savingName })).not.toBeInTheDocument()
     );
-    expect(
-      appKeymap.describe().find((entry) => entry.id === "labels")?.enabled,
-      "l is not on again once the labels' save has landed"
-    ).toBe(true);
+    expect(labelsKey(), "l is not on again once the labels' save has landed").toBe(true);
   } finally {
     view.unmount();
     listIssues.mockRestore();
@@ -3279,7 +3312,6 @@ test("with Details closed, l is on for the labels control, and off while its row
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const labelsKey = () => appKeymap.describe().find((entry) => entry.id === "labels")?.enabled;
 
   try {
     const row = await waitFor(() => rowAt("labels"));
@@ -3319,25 +3351,7 @@ test("with Details closed, l is on for the labels control, and off while its row
 test("with Development closed, l is off, and on again once Development opens", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
-  });
-  const view = render(
-    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <IssueKeys />
-          <MarginProvider>
-            <MarginSlotProvider drawsSlot>
-              <DetailsSlot issue={issue} route={{ key: "CORE-1", kind: "issue" }} />
-              <MarginBody />
-            </MarginSlotProvider>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  const labelsKey = () => appKeymap.describe().find((entry) => entry.id === "labels")?.enabled;
+  const view = renderWithKeys(issue);
 
   try {
     await waitFor(() => rowAt("labels"));
@@ -3419,7 +3433,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   const firstControl = (row: Element | null) =>
-    row?.querySelector<HTMLElement>("input, textarea, select, button:not(:disabled), a[href]");
+    row?.querySelector<HTMLElement>(ROW_CONTROL_SELECTOR);
 
   try {
     const empty = renderDetails();
@@ -3512,9 +3526,7 @@ test("Details clears the parent with an empty editor save", async () => {
     // The row's first control is the one the header's Set parent issue presses.
     await waitFor(() =>
       expect(
-        detailsRow(PROPERTY_LABELS.parent).querySelector(
-          "input, textarea, select, button:not(:disabled), a[href]"
-        ),
+        detailsRow(PROPERTY_LABELS.parent).querySelector(ROW_CONTROL_SELECTOR),
         "the Parent row still offers to edit a parent the issue no longer has"
       ).toHaveTextContent(CONTROL_LABELS.set_parent)
     );
@@ -3773,16 +3785,7 @@ test("a route refused because the issue closed is said without Retry, and the ro
     );
 
     // The issue closes while the save is out, and Dispatch refuses the save for it.
-    const closed: IssueDetails = {
-      ...issue,
-      closed_at: "2026-09-10T00:00:00Z",
-      route: saved,
-      status: "done",
-    };
-    getIssue.mockResolvedValue(closed);
-    act(() => {
-      queryClient.setQueryData(issueQuery("CORE-1").queryKey, closed);
-    });
+    drawIssue(getIssue, queryClient, { ...closedIssue, route: saved });
     saving.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: reason }));
 
     await waitFor(() =>
@@ -3846,9 +3849,6 @@ test("leaving the parent's or the route's editor gives the focus back to its row
   }
 });
 
-/** The fixture's issue, closed. */
-const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" };
-
 // On a closed issue the Parent row draws no control and the route's control is disabled, so
 // leaving either editor once the issue had closed under it gave the focus to no control that
 // takes it, and it stayed on the page's body. It goes to Development's heading, the button that
@@ -3857,28 +3857,22 @@ test("on a closed issue, leaving the parent's or the route's editor hands the fo
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   const { queryClient, unmount } = renderDetails();
-  const drawIssue = (details: IssueDetails) => {
-    getIssue.mockResolvedValue(details);
-    act(() => {
-      queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
-    });
-  };
   const heading = () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development });
 
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.set_parent }));
     await screen.findByLabelText(PROPERTY_LABELS.parent);
-    drawIssue(closedIssue);
+    drawIssue(getIssue, queryClient, closedIssue);
     await user.click(within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.cancel }));
     expect(
       document.activeElement,
       "Cancel of the parent's editor on a closed issue did not give the focus to Development's heading"
     ).toBe(heading());
 
-    drawIssue(issue);
+    drawIssue(getIssue, queryClient, issue);
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     await screen.findByLabelText(PROPERTY_LABELS.route);
-    drawIssue(closedIssue);
+    drawIssue(getIssue, queryClient, closedIssue);
     await user.click(within(rowAt("route")).getByRole("button", { name: CONTROL_LABELS.cancel }));
     expect(
       document.activeElement,
@@ -3944,11 +3938,7 @@ test("the refused route's Retry hands its focus to the editor's box while it is 
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_route }));
     await refused();
     act(() => retryOfRoute().focus());
-    const closed: IssueDetails = { ...closedIssue, route };
-    getIssue.mockResolvedValue(closed);
-    act(() => {
-      queryClient.setQueryData(issueQuery("CORE-1").queryKey, closed);
-    });
+    drawIssue(getIssue, queryClient, { ...closedIssue, route });
     expect(
       within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
       "the refusal of a route on a closed issue offers a Retry that sends nothing"

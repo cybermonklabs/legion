@@ -172,15 +172,19 @@ export function useSaidFailure<Variables>(
  * The ref of an element that may leave the page with the focus inside it. As React takes the
  * element off the page, the ref notes whether the focus is inside it; if it is, the hook's next
  * layout effect, which runs in each commit that renders the component calling the hook, focuses
- * what `to` returns, without scrolling. `to` is called only then, after that commit has changed
- * the page, so it can return an element the commit drew. Where it returns none, or an element
- * that takes no focus, the focus stays where the browser put it; a focus outside the element as
- * it leaves is not moved.
+ * what `to` returns, without scrolling. The commit that takes the element away need not render
+ * that component - where another component draws the element, as the repository's control draws
+ * the lines the Repository row hands it - so the ref then asks for a render of it, whose layout
+ * effect hands the focus on. `to` is called only then, after that commit has changed the page,
+ * so it can return an element the commit drew. Where it returns none, or an element that takes
+ * no focus, the focus stays where the browser put it; a focus outside the element as it leaves
+ * is not moved.
  */
 export function useFocusHandOff(
   to: () => HTMLElement | null | undefined
 ): RefCallback<HTMLElement> {
   const left = useRef(false);
+  const [, render] = useState(0);
   useLayoutEffect(() => {
     if (!left.current) return;
     left.current = false;
@@ -191,7 +195,9 @@ export function useFocusHandOff(
     // React runs this before it takes the element out of the page, so the focus is still where
     // the reader left it.
     return () => {
-      left.current = element.contains(document.activeElement);
+      if (!element.contains(document.activeElement)) return;
+      left.current = true;
+      render((renders) => renders + 1);
     };
   }, []);
 }

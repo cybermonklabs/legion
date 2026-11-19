@@ -452,19 +452,7 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
 test("the claim shows the holder's live title, not the one stamped on the claim", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockResolvedValue([
-    {
-      session_id: "session-one",
-      title: "Live registry title",
-      dir: "/w",
-      host: "host",
-      machine_id: "host",
-      roles: [],
-      capabilities: [],
-      last_seen: 1,
-      open_asks: 0,
-      last_activity: null,
-      state: "live",
-    },
+    running("session-one", "Live registry title"),
   ]);
   const view = claimRow({ ...base, claim });
   try {

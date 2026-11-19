@@ -9,6 +9,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { narrowIssue } from "../issue-page/issue-fixtures";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
@@ -93,11 +94,6 @@ function renderIssuePage() {
     </MemoryRouter>
   );
   return { queryClient, unmount: view.unmount };
-}
-
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
 }
 
 function stubIssueApi() {

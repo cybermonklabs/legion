@@ -1,8 +1,9 @@
 import type { Agent, Issue, IssueDetails } from "../../api/types";
 
-/** The sessions the claim chip's tests (`ClaimChip.test.tsx`, `IssueClaimControl.test.tsx`) list
- *  as the claim's holder, and the answer the tests of the page's writes (`shared-writes.test.ts`,
- *  `IssueMargin.test.tsx`) give a PATCH of the issue. */
+/** The sessions the claim chip's tests (`ClaimChip.test.tsx`, `IssueClaimControl.test.tsx`) and
+ *  the Activity tab's (`ActivityTab.test.tsx`) list as a session, and the answer the tests of the
+ *  page's writes (`shared-writes.test.ts`, `IssueMargin.test.tsx`, `issue-writes.test.tsx`) give
+ *  a PATCH of the issue. */
 
 /** One live session, as `GET /api/v1/agents` lists it. */
 export function running(sessionID: string, title: string): Agent {
