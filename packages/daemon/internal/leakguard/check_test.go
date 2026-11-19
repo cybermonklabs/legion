@@ -289,33 +289,41 @@ func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	}
 }
 
-// A read of the guard's that a signal ended after its gh or git printed (the kernel's out-of-memory
+// A read of the guard's that a signal ended after its program printed (the kernel's out-of-memory
 // kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
-// carries it: the gh visibility read, its GraphQL read, the read with no credential and a git read
-// of a push's records. Each row's stand-in is the one program it names, first on PATH, printing a
-// line and killing itself.
+// carries it: the gh visibility read, its GraphQL read, the curl read, the read with no credential,
+// a git read of a push's records, and the token read, which quotes only its standard error, never
+// the password on its standard output. Each row's stand-in is the one program it names, first on
+// PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is pointed
+// at the stand-in.
 func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	const slug = "invented-org/invented-repo"
-	killsItself := func(t *testing.T, name, said string) *Guard {
+	killsItself := func(t *testing.T, name, script string, env ...string) *Guard {
 		t.Helper()
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\necho '"+said+"' >&2\nkill -KILL $$\n"), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script+"\nkill -KILL $$\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		return New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+		guard := New(Options{Env: append(append(fixtureenv.Isolated(t.TempDir()), env...), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+		guard.curl = filepath.Join(dir, "curl")
+		return guard
 	}
 	said := "error connecting to api.github.com for " + slug
+	toStderr := "echo '" + said + "' >&2"
 	for _, row := range []struct {
-		name, program string
-		read          func(g *Guard) error
+		name, program, script string
+		env                   []string
+		read                  func(g *Guard) error
 	}{
-		{"the gh visibility read", "gh", func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
-		{"the GraphQL read", "gh", func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
-		{"the read with no credential", "git", func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
-		{"a git read of a push's records", "git", func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{"the gh visibility read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
+		{"the GraphQL read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
+		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
+		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
+		{"a git read of a push's records", "git", toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			err := row.read(killsItself(t, row.program, said))
+			err := row.read(killsItself(t, row.program, row.script, row.env...))
 			if want := "signal: killed\n" + said; err == nil || err.Error() != want {
 				t.Errorf("read = %v, want %q", err, want)
 			}
