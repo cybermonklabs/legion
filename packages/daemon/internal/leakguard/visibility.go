@@ -207,10 +207,10 @@ func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateL
 // unauthenticated REST read is no way round that either: GitHub allows 60 of those an hour to an
 // address, shared by everything that reads GitHub from it. The read is git's ls-remote with no
 // credential (Guard.lsRemote), which makes no API request and answers public and nothing else:
-// its exit 0, listing the repository's refs, is the evidence that anyone can read the
-// repository. Every other outcome, the 401 GitHub answers an anonymous read of a private
-// repository and of a name no repository has with included, refuses the call, naming the refusal
-// of `legion gh` and what git said.
+// its exit 0 is the evidence that anyone can read the repository (an empty repository lists no
+// ref and exits 0 all the same). Every other outcome, the 401 GitHub answers an anonymous read of
+// a private repository and of a name no repository has with included, refuses the call, naming
+// the refusal of `legion gh` and what git said.
 func (g *Guard) readUnservedOwner(ctx context.Context, slug string, unserved *unservedOwnerError) (Visibility, VisibilitySource, error) {
 	visibility, err := g.lsRemote(ctx, githubOrigin, slug)
 	if err != nil {
