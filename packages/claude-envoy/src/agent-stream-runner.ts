@@ -7,7 +7,6 @@ import {
   AGENT_STREAM_WATCH_INTERVAL_MS,
   type AgentStreamCommand,
   type AgentStreamControlMessage,
-  agentStreamControlSubject,
   agentStreamFramesSubject,
 } from "@legion/contracts"
 import { messageFor } from "@legion/envoy-client/errors"
@@ -15,19 +14,14 @@ import { AgentStreamPublisher } from "@legion/pi-shared/agent-stream"
 import type { ModConfigRow, ModEffort, ModEvent } from "../hooks/mod-protocol"
 import { claudeAgentStreamCommands, createClaudeAgentStream } from "./agent-stream-claude"
 import { rememberBounded } from "./bounded-set"
-import type { ChannelConnection, ChannelTopicSubscription } from "./channel-topics"
+import type { ChannelConnection } from "./channel-topics"
+import { controlSubscription } from "./control-subscription"
 import type { ModLink } from "./mod-link"
-
-const encoder = new TextEncoder()
-const decoder = new TextDecoder()
 
 /** How long the live view waits for the mod to answer one of its reads (`$.session.model()`,
  *  `$.config.list()`, `$.command.list()`). Each is served out of the session's own memory, so a
  *  wait this long means the mod is gone rather than busy, and the header keeps its last values. */
 const AGENT_STREAM_CALL_TIMEOUT_MS = 5_000
-/** How long the live view waits before taking its control subject again after the subscription's
- *  iterator ended, which is what a dropped connection looks like from here. */
-const AGENT_STREAM_RESUBSCRIBE_MS = 1_000
 
 /**
  * The most row ids this stream remembers having read, so a row that arrives twice is read once.
@@ -147,19 +141,22 @@ export interface AgentStreamRunner {
  */
 export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner {
   const { link } = options
-  /** The session's connection now; the server swaps in a new one when it closes for good. */
-  let connection = options.connection
   const now = options.now ?? Date.now
   const warn =
     options.warn ?? ((text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`))
+  /** The id both subjects name now; it moves with the mod's own id after a `/clear`. */
+  let session = options.sessionId
+  /** The viewer's control subject, on the session's connection now (`./control-subscription`). */
+  const control = controlSubscription({
+    connection: options.connection,
+    session: () => session,
+    ...(options.admitted === undefined ? {} : { admitted: options.admitted }),
+    warn,
+    answer: answerControl,
+  })
   const publisher = new AgentStreamPublisher({
     now,
-    // A closed connection throws on a publish, and a throw here would end the read of the mod's
-    // events below for good. Its frames are dropped until the server swaps in a new connection;
-    // the ring keeps them for a replay.
-    publish: (subject, payload) => {
-      if (!connection.isClosed()) connection.publish(subject, encoder.encode(payload))
-    },
+    publish: (subject, payload) => control.publish(subject, payload),
   })
   const stream = createClaudeAgentStream({
     isPane: options.isPane === true,
@@ -172,10 +169,6 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
       : { runsUnreadPrompt: options.runsUnreadPrompt }),
     ...(options.tagFor === undefined ? {} : { tagFor: options.tagFor }),
   })
-  /** The id both subjects name now; it moves with the mod's own id after a `/clear`. */
-  let session = options.sessionId
-  let subscription: ChannelTopicSubscription | undefined
-  let stopped = false
   /** What the mod last said of the session's model, its `/config` rows and its commands. They
    *  survive a session id change: the process and its model do not change with the id. */
   let model: string | undefined
@@ -215,7 +208,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
   /** Read the session's model and its `/config` rows, and publish what they say. One read at a
    *  time: a watch arrives every ten seconds and the answers rarely change. */
   const refreshSettings = (): void => {
-    if (stopped || readingSettings || !link.connected()) return
+    if (control.stopped || readingSettings || !link.connected()) return
     readingSettings = true
     void Promise.all([
       link.request("session.model", undefined, { timeoutMs: AGENT_STREAM_CALL_TIMEOUT_MS }),
@@ -224,7 +217,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
       .then(([answeredModel, rows]) => {
         model = answeredModel
         configRows = rows
-        if (!stopped) publishSettings()
+        if (!control.stopped) publishSettings()
       })
       .catch((error: unknown) => {
         warn(`the live view could not read this session's model — ${messageFor(error)}`)
@@ -235,13 +228,13 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
   }
 
   const refreshCommands = (): void => {
-    if (stopped || readingCommands || !link.connected()) return
+    if (control.stopped || readingCommands || !link.connected()) return
     readingCommands = true
     void link
       .request("command.list", undefined, { timeoutMs: AGENT_STREAM_CALL_TIMEOUT_MS })
       .then((commands) => {
         listedCommands = claudeAgentStreamCommands(commands)
-        if (!stopped) publishCommands()
+        if (!control.stopped) publishCommands()
       })
       .catch((error: unknown) => {
         warn(`the live view could not read this session's commands — ${messageFor(error)}`)
@@ -251,85 +244,41 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
       })
   }
 
-  const pump = async (taken: ChannelTopicSubscription, forSession: string): Promise<void> => {
-    try {
-      for await (const message of taken) {
-        // Any client on the bus can publish here. A `null` payload parses cleanly and then
-        // throws on `.type`, and a reply over the server's max_payload throws out of the
-        // publish; either would end the iterator and take the session deaf with it.
-        try {
-          const parsed: unknown = JSON.parse(decoder.decode(message.data))
-          if (typeof parsed !== "object" || parsed === null) continue
-          const request = parsed as AgentStreamControlMessage
-          if (request.type !== "replay" && request.type !== "watch") continue
-          refreshSettings()
-          if (
-            request.type === "replay" ||
-            !viewerAttached ||
-            now() - commandsRefreshedOnWatchAt >= AGENT_STREAM_WATCH_INTERVAL_MS
-          ) {
-            refreshCommands()
-            if (request.type === "watch" && viewerAttached) commandsRefreshedOnWatchAt = now()
-          }
-          // Taken before this message arms anything, so a bare replay from a client that never
-          // attached a viewer gets an empty history rather than the ring.
-          const reply = message.reply
-          const answer =
-            request.type === "replay" && reply !== undefined
-              ? JSON.stringify(publisher.replay(forSession))
-              : undefined
-          const arming = !publisher.watched
-          publisher.noteViewer()
-          viewerAttached = true
-          if (arming) publisher.publishState(agentStreamFramesSubject(forSession))
-          if (answer === undefined || reply === undefined) continue
-          connection.publish(reply, encoder.encode(answer))
-        } catch (error) {
-          warn(`a live view control message failed — ${messageFor(error)}`)
-        }
-      }
-    } catch {
-      // A dead iterator is a dropped connection, taken again below.
+  /** Answers one `replay` or `watch` message on the control subject of `forSession`
+   *  (`ControlSubscriptionOptions.answer`), the way every Oh My Pi session does
+   *  (`packages/pi-envoy`, `pumpAgentStreamControl`). A declaration: the control subscription is
+   *  made before it. */
+  function answerControl(
+    request: AgentStreamControlMessage,
+    replying: boolean,
+    forSession: string,
+  ): string | undefined {
+    refreshSettings()
+    if (
+      request.type === "replay" ||
+      !viewerAttached ||
+      now() - commandsRefreshedOnWatchAt >= AGENT_STREAM_WATCH_INTERVAL_MS
+    ) {
+      refreshCommands()
+      if (request.type === "watch" && viewerAttached) commandsRefreshedOnWatchAt = now()
     }
-    if (subscription === taken) subscription = undefined
-    if (stopped || session !== forSession) return
-    const retry = setTimeout(() => {
-      // Taken again meanwhile: by a `/clear`'s new id, or on the connection the server swapped in.
-      if (stopped || session !== forSession || subscription !== undefined) return
-      subscribeWhenAdmitted(forSession)
-    }, AGENT_STREAM_RESUBSCRIBE_MS)
-    retry.unref()
-  }
-
-  /** Takes the control subject on the connection held now. A closed one throws on a subscribe, so
-   *  the subject waits for the connection the server swaps in (`useConnection`). */
-  function subscribe(): void {
-    if (stopped || connection.isClosed()) return
-    subscription?.unsubscribe()
-    const taken = connection.subscribe(agentStreamControlSubject(session))
-    subscription = taken
-    void pump(taken, session)
-  }
-
-  /** Takes `forSession`'s control subject once the connection may take it
-   *  (`AgentStreamOptions.admitted`), unless the stream moved on or took it meanwhile: a `/clear`
-   *  whose move has not landed leaves the connection unable to take the new id's subjects, on the
-   *  connection it began on and on any the server swaps in before the move lands. */
-  function subscribeWhenAdmitted(forSession: string): void {
-    const admitted = options.admitted?.(forSession)
-    if (admitted === undefined) {
-      subscribe()
-      return
-    }
-    void admitted.then(() => {
-      if (!stopped && session === forSession && subscription === undefined) subscribe()
-    })
+    // Taken before this message arms anything, so a bare replay from a client that never
+    // attached a viewer gets an empty history rather than the ring.
+    const answer =
+      request.type === "replay" && replying
+        ? JSON.stringify(publisher.replay(forSession))
+        : undefined
+    const arming = !publisher.watched
+    publisher.noteViewer()
+    viewerAttached = true
+    if (arming) publisher.publishState(agentStreamFramesSubject(forSession))
+    return answer
   }
 
   /** A `/clear` ends the conversation and the process goes on under `next`: the ring holds the
    *  previous one, and a viewer opening the new id must not be served it. */
   const moveTo = (next: string): void => {
-    if (stopped || !options.followsSessionId || next === session) return
+    if (control.stopped || !options.followsSessionId || next === session) return
     session = next
     publisher.reset()
     stream.reset()
@@ -341,9 +290,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     publishCommands()
     // The old id's control subject goes at once, and the new id's is taken once the connection
     // may take it (`AgentStreamOptions.admitted`): a later `/clear` before then takes its own.
-    subscription?.unsubscribe()
-    subscription = undefined
-    subscribeWhenAdmitted(next)
+    control.moved()
   }
   // The mod's report moves the stream between the conversation's own events. The id the link
   // reported before this listener joined is not read: it can be older than `options.sessionId`,
@@ -374,32 +321,22 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     warn(`the live view stopped reading this session's events — ${messageFor(error)}`)
   })
 
-  // The first subject goes through the gate too: the live view starts once the mod's link binds,
-  // which can be after a `/clear` whose move has not landed.
-  subscribeWhenAdmitted(session)
+  control.start()
 
   return {
     refresh(): void {
       refreshSettings()
     },
     pickedEffort(effort: ModEffort): void {
-      if (stopped) return
+      if (control.stopped) return
       stream.pickedEffort(effort)
       publishSettings()
     },
     stop(): void {
-      if (stopped) return
-      stopped = true
-      subscription?.unsubscribe()
-      subscription = undefined
+      control.stop()
     },
     useConnection(next: ChannelConnection): void {
-      connection = next
-      if (stopped) return
-      // The subscription on the closed connection is dead; the new one is taken through the gate.
-      subscription?.unsubscribe()
-      subscription = undefined
-      subscribeWhenAdmitted(session)
+      control.useConnection(next)
     },
     sessionAdopted(previous: string, next: string): void {
       if (session === previous) moveTo(next)

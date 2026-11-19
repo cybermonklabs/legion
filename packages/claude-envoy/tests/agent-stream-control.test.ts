@@ -16,7 +16,7 @@ import {
 } from "@legion/contracts"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type AgentStreamRunner, startAgentStream } from "../src/agent-stream-runner"
-import { sessionAdmission } from "../src/envoy-channel-server"
+import { sessionAdmission } from "../src/channel-connection"
 import type { ModLink } from "../src/mod-link"
 import { FakeNats } from "./channel-session-harness"
 

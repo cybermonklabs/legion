@@ -18,7 +18,7 @@ import {
   NatsError,
   nkeys,
 } from "nats"
-import { dialChannelNats } from "../src/envoy-channel-server"
+import { dialChannelNats } from "../src/channel-connection"
 
 /** Each row's home, removed after it, failed or not. */
 const makeDirectory = temporaryDirectories("channel-nats")

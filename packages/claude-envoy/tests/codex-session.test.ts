@@ -5,6 +5,7 @@ import { agentStreamControlSubject } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
+import { sessionAdmission } from "../src/channel-connection"
 import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel-topics"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
@@ -24,7 +25,6 @@ import {
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { CODEX_COMMAND_REFUSAL, createCodexUserTurnRouter } from "../src/codex/codex-user-turns"
-import { sessionAdmission } from "../src/envoy-channel-server"
 import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user-turn-state"
 
 const directory = temporaryDirectory("codex-session")

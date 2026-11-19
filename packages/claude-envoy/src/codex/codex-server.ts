@@ -21,21 +21,23 @@ import { connect } from "nats"
 import { z } from "zod"
 /** The npm package a Codex session runs, which its registrations name. */
 import { name as CODEX_PACKAGE_NAME } from "../../codex/package.json" with { type: "json" }
+import {
+  admittingMoves,
+  channelReopener,
+  closeUnstartedConnection,
+  dialChannelNats,
+  sessionAdmission,
+} from "../channel-connection"
 import type { ChannelConnection } from "../channel-topics"
 import { configuredValue } from "../claude-session"
 import {
-  admittingMoves,
   type ChannelSession,
   type ChannelToolRuntime,
-  channelReopener,
   channelToolDefinitions,
-  closeUnstartedConnection,
-  dialChannelNats,
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
   postDispatchReply,
-  sessionAdmission,
   startChannelSession,
 } from "../envoy-channel-server"
 import { inboundOffChannelSession } from "../envoy-off"

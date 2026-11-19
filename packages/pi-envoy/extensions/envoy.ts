@@ -3942,46 +3942,46 @@ export default function envoyExtension(hostApi: PiApi): void {
     // first (a Legion claim through the bridge included); the pass reports it, and the next pass
     // opens the relay and registers again. A steady pass touches no NATS.
     let inboundFailure: unknown;
-    if (inbound && registrationState.inboundOpenSession() !== host) {
-      try {
-        handle.markAgentSessionOpen(host);
-        const connected = await handle.connect();
-        // The auth service grants a session's token that session's subjects alone, so a session
-        // the connection was not admitted as - one the host switched to - subscribes nothing
-        // until the connection is back, admitted with its token (`followNatsCredential`).
-        // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
-        // a short pass deadline would run on beside the pass after it.
-        const broker = brokerNatsCredentialOf();
-        if (broker !== undefined) {
-          await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
-        }
-        await handle.subscribe(legacyAgentSubject(host));
-        // The relay subject opens before any registration asks for consumer delivery, so the
-        // listener's first relayed frame has a subscriber.
-        await openRelay(context, host, handle.connect);
-        // A viewer's replay request and its watch pings reach the session here. Opening it costs
-        // one core subscription and publishes nothing: a session nobody opens stays silent.
-        await watchAgentStream(host, handle.connect);
-        if ((context.sessionManager.getBranch?.() ?? []).length > 0) {
-          await recoverRegisteredInterests(handle);
-        }
-        handle.markInboundOpen(host);
-      } catch (error) {
-        inboundFailure = error;
-      }
-    } else if (
-      inbound &&
-      ((relay?.sessionID === host && relay.subscription === undefined) ||
-        (agentStreamControlSession === host && agentStreamControl === undefined))
+    // A session whose inbound this pass opens, and one a subject of whose inbound went after it
+    // opened - its connection closed for good, or its subscription ended - while its own
+    // resubscribe has not opened it again: the relay's waits NATS_RETRY_INTERVAL_MS after a dial
+    // that failed, and the agent stream's gives up. Both take the one path below, so every
+    // heartbeat restores what is missing, and a refused registration below names why it could not.
+    const opening = inbound && registrationState.inboundOpenSession() !== host;
+    if (
+      opening ||
+      (inbound &&
+        ((relay?.sessionID === host && relay.subscription === undefined) ||
+          (agentStreamControlSession === host && agentStreamControl === undefined)))
     ) {
-      // A subject this session's inbound opened went after it opened - its connection closed for
-      // good, or its subscription ended - and its own resubscribe has not opened it again: the
-      // relay's waits NATS_RETRY_INTERVAL_MS after a dial that failed, and the agent stream's
-      // gives up. The pass opens what is missing, so every heartbeat restores it, and a refused
-      // registration below names why it could not.
       try {
+        if (opening) {
+          handle.markAgentSessionOpen(host);
+          const connected = await handle.connect();
+          // The auth service grants a session's token that session's subjects alone, so a session
+          // the connection was not admitted as - one the host switched to - subscribes nothing
+          // until the connection is back, admitted with its token (`followNatsCredential`).
+          // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
+          // a short pass deadline would run on beside the pass after it.
+          const broker = brokerNatsCredentialOf();
+          if (broker !== undefined) {
+            await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
+          }
+          await handle.subscribe(legacyAgentSubject(host));
+        }
+        // The relay subject opens before any registration asks for consumer delivery, so the
+        // listener's first relayed frame has a subscriber. A viewer's replay request and its watch
+        // pings reach the session on the agent-stream control subject; opening it costs one core
+        // subscription and publishes nothing, so a session nobody opens stays silent. Each opens
+        // only what is not open already.
         await openRelay(context, host, handle.connect);
         await watchAgentStream(host, handle.connect);
+        if (opening) {
+          if ((context.sessionManager.getBranch?.() ?? []).length > 0) {
+            await recoverRegisteredInterests(handle);
+          }
+          handle.markInboundOpen(host);
+        }
       } catch (error) {
         inboundFailure = error;
       }
