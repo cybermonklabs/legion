@@ -522,7 +522,7 @@ type liveWritePauseQuery struct {
 // there; the routes it does not list rest on this rule alone. Two things that look like the same
 // fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews, POST
 // .../versions/{number}/reviews and POST .../plan-reviews name model.ArtifactReview while the
-// GET beside them names []artifactReviewRead - the handlers write what docs.WriteReview
+// GET beside them names []artifactReviewRead - the handlers write what docs.QueueReview
 // returned, and the dashboard draws the read rather than the write's answer (ApprovalChip.tsx
 // invalidates and refetches); and a model that carries its own tree field needs no shaped read
 // at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and

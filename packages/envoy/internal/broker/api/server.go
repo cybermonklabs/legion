@@ -649,13 +649,14 @@ func (s *server) approveURL(recordID string) string {
 	return s.deps.PublicURL + "/approve/" + recordID
 }
 
-// pendingApproveURL is approveURL for a request's record while the request waits on it, and ""
-// for a request granted or denied at once (no record), and once it is no longer pending.
-func (s *server) pendingApproveURL(state string, recordID *string) string {
-	if state != "pending" || recordID == nil {
+// pendingApproveURL is approveURL for a request's record while the request waits on a person, and
+// "" for a request granted or denied at once (no record), once it is no longer pending, and while
+// the model judge holds it (requests.Request.JudgeDeciding), since no person decides it then.
+func (s *server) pendingApproveURL(req requests.Request) string {
+	if req.State != "pending" || req.RecordID == nil || req.JudgeDeciding {
 		return ""
 	}
-	return s.approveURL(*recordID)
+	return s.approveURL(*req.RecordID)
 }
 
 // writeInternal logs a failed operation with its error and answers 500 INTERNAL naming the

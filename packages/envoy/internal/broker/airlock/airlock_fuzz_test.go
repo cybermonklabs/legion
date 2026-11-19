@@ -388,6 +388,43 @@ func FuzzAirlock(f *testing.F) {
 	})
 }
 
+// TestTheModelReadsAHostlessEntryWithGuidance: a rules file whose entry binds no host and
+// carries a judge and guidance — the entry that says who decides a key the airlock binds
+// nowhere — is valid on both sides, and both refuse a proxy request for it as a secret not
+// behind the airlock. The generator never writes guidance, so this case is the one that puts the
+// field on the wire to the model, whose derived FromJson must read past it. It needs the model,
+// as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh expects its skip and the
+// airlock-lean job's seed step runs it by name.
+func TestTheModelReadsAHostlessEntryWithGuidance(t *testing.T) {
+	if modelPath() == "" {
+		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
+	}
+	judge := uint32(600)
+	c := wireCase{
+		Rules: Rules{Secrets: []SecretRule{{
+			Name: "HOSTLESS", Hosts: []string{}, Judge: &judge,
+			Guidance: "grant only for the release job named in the reason",
+		}}},
+		Grant: Grant{Secret: "HOSTLESS", Placeholder: "PH"},
+		Value: "the-value-not-a-secret",
+		Request: &Request{
+			ConnectHost: "api.example.com", ConnectPort: 443, SNI: "api.example.com", HostHeader: "api.example.com",
+			Method: "GET", Path: "/", Headers: [][2]string{{"Authorization", "Bearer PH"}},
+		},
+	}
+	line, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, got := leanModel(t).ask(t, line), goAnswer(c)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("Go and the Lean model disagree\ncase: %s\nlean: %+v\ngo:   %+v", line, want, got)
+	}
+	if !got.Valid || got.Allow || got.Reason != "secret not behind airlock" {
+		t.Fatalf("the host-less entry answers %+v; want a valid file and a refusal, secret not behind airlock", got)
+	}
+}
+
 // TestModelAgreesOnHostShapes compares Go's Validate with the Lean model's validate over the
 // host shapes the rules file may hold, the ones no request can ever match among them. They are
 // read here rather than added to hostPool, because every seed of the committed corpus decodes

@@ -1,70 +1,19 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
-import { projectDefaultAssigneesQuery } from "../../api/queries";
-import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
-import { issueProject } from "../../lib/issue-key";
-import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
-
-export interface IssueAssigneeWrite {
-  /** The server's reason after a refused save (an unlisted login), until the next attempt. */
-  error: string | undefined;
-  /** True after a save failed until the next attempt starts. */
-  failed: boolean;
-  pending: boolean;
-  /** Repeats the failed save; a no-op while one is in flight. */
-  retry: () => void;
-  /** Saves `assignee` (a login, or null to unassign). A pick made while a save is in flight
-   *  shows at once and is saved when that save settles; the newest such pick is the one saved. */
-  submit: (assignee: string | null) => void;
-}
+/** The assignee's write: `error` is the server's reason after a refused pick (an unlisted
+ *  login), and `submit` takes a login, or null to unassign. */
+export type IssueAssigneeWrite = IssueFieldWrite<string | null>;
 
 /**
  * The one way the SPA writes an issue's assignee. The issue header's picker and the inbox's
- * "Assign to me" share this: the new login lands optimistically in the issue detail, every
- * project issue list and every inbox row that belongs to the issue (so a row the Inbox's
- * assignee filter judges by that login moves in or out of the list at once), rolls back on
- * failure, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
- *
- * An inbox row is judged by the person it waits on, which the server answers as
- * `coalesce(a.asked_of, i.assignee, p.default_assignee)`: so a row whose ask nobody has handed on
- * follows the new assignee here, and one somebody handed to a person keeps that person whoever
- * holds its issue. An unassign moves a row nobody handed on to its project's default assignee,
- * taken from the defaults read the Settings page holds (`projectDefaultAssigneesQuery`) where the
- * client has it; where it does not, the row keeps the person it waited on until the refetch names
- * the default. It never names nobody: every project names a default, so no row the server
- * answers does, and one written so would read as an ask no person waits on.
+ * "Assign to me" share this: the pick's write shows the new login on the issue detail, every
+ * list of issues and every inbox row that belongs to the issue (so a row the Inbox's assignee
+ * filter judges by that login moves in or out of the list at once), keeps it there over every
+ * answer until it lands, and puts back the assignee Dispatch last confirmed if it is refused (see
+ * `useIssueFieldWrite`). An inbox row nobody handed on waits on the new assignee, or on an
+ * unassign on its project's default assignee where the client holds the defaults read
+ * (`showOnInboxRow` in `issue-field-looks.ts`).
  */
 export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
-  const queryClient = useQueryClient();
-  const detailKey = ["issue", issueKey] as const;
-  const showAssignee = (assignee: string | null) => {
-    queryClient.setQueryData<IssueDetails>(detailKey, (current) =>
-      current === undefined ? undefined : { ...current, assignee }
-    );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, assignee } : issue))
-    );
-    // Every row the update moves is of this issue, so of its project: the person a row nobody
-    // handed on waits on now is the new assignee, else that project's default where the client
-    // holds the defaults read, looked up once.
-    const project = issueProject(issueKey);
-    const person =
-      assignee ??
-      queryClient
-        .getQueryData(projectDefaultAssigneesQuery().queryKey)
-        ?.find((entry) => entry.project === project)?.assignee;
-    queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => {
-        if (row.issue_key !== issueKey || row.issue === undefined) return row;
-        const moved = { ...row, issue: { ...row.issue, assignee } };
-        if (row.asked_of !== null && row.asked_of !== undefined) return moved;
-        return person === undefined ? moved : { ...moved, waiting_on_person: person };
-      })
-    );
-  };
-  return useIssueFieldWrite<string | null>(issueKey, {
-    label: (assignee) => `${issueKey} assigned to ${assignee ?? "nobody"}`,
-    patch: (assignee) => ({ assignee }),
-    show: showAssignee,
-  });
+  return useIssueFieldWrite(issueKey, "assignee");
 }

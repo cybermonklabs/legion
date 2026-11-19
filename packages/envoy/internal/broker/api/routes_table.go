@@ -300,9 +300,10 @@ func routes() []apiRoute {
 		{http.MethodGet, "/v1/enrollments/self", sessionAuth((*server).readSelf)},
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
-		// Read one of the calling session's requests; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
+		// Read a request the calling session's owner made: its person, its Legion claim or its
+		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
 		{http.MethodGet, "/v1/requests/{id}", sessionAuth((*server).readRequest)},
-		// Cancel one of the calling session's pending requests.
+		// Cancel a pending request the calling session's owner made, by the same rule as the read.
 		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
 		// Release a live grant's values to the session that holds it.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},

@@ -116,27 +116,34 @@ knows whether the broker made, or revoked, the enrollment. These messages say so
 | `secret is not in the secrets store (SECRET_NOT_IN_STORE)` | The secret was deleted from the secret store by something that did not ask the broker to reread it (the AWS console or the AWS CLI), after the broker last read the namespace: outright, or with a recovery window (their default, which keeps the secret until the window passes and refuses every read of its value meanwhile). A delete through `agent-secrets secret delete` is reread at once, so its grants end `GRANT_NOT_LIVE` instead. | Ask again within about ten minutes: the broker rereads the namespace every five, and Secrets Manager's listing can lag a change by up to five more. The request is then refused `UNKNOWN_SECRET` unless the secret is back (a secret within its recovery window is restorable: `agent-secrets secret restore`). |
 | `request object invalid (REQUEST_INVALID)` | The broker could not verify the signed request: usually a clock far off, or an `AGENT_SECRETS_URL` that is not the broker's public URL. | Check the clock and the URL. |
 
-## A request the judge could have decided is still pending
+## A request the judge decides is pending, refused, or with a person
 
-The model judge approves a request or leaves it for the person who approves it today, and it
-never denies, so a request it did not take waits as any other does
-([Concepts](/legion/broker/concepts/#the-model-judge)). What it decided, and why, is one
+A request for keys the airlock rules let the model judge decide is the judge's alone while it holds
+it, for at most two minutes from when it was written: it carries `judge_deciding` and no page, and it
+is on no person's list. The judge then grants it, refuses it for good, or hands it to its person
+once, as an ordinary card ([Concepts](/legion/broker/concepts/#the-model-judge)). A refusal reads
+`the model judge refused this request: <reason>. This request will not be granted. Tell whoever
+gave you this work.` and `agent-secrets` exits 77. Do not send the same request again: tell
+whoever gave you the work what the reason says. What the judge decided, and why, is one
 `request.judged` row in the broker's `audit` table and one line in that broker's log,
 `broker judge: wrote a verdict`, naming the record, the verdict, the model's reason and, where a
-check stopped the run, `failed_check` and `failed_detail`.
+check stopped the run, `failed_check` and `failed_detail`; a refusal's line adds `decided=denied`
+and the `refusal` its agent read.
 
 | What you find | Cause | Fix |
 | --- | --- | --- |
-| No row and no line for the record | This broker runs no judge (its `BROKER_JUDGE_*` settings are unset), or the request joined one already pending, which the judge does not run for. Nothing is written either when the run passed its 30 seconds or the broker stopped serving under it, which logs `broker judge: the run ended before it wrote anything`. | Ask the approver, as before. |
-| `failed_check=rules-judge` | The request names more than one secret, or the airlock rules let the judge decide nothing for that secret. | Ask for one secret. Which secrets the rules give the judge is the deployment's own choice, changed only in its rules file, which a person reviews. |
-| `failed_check=lifetime` | The grant would last more than 15 minutes, more seconds than the rules let the judge decide for that secret, or until its session ends. With no `--ttl` the judge reads the broker's default instead: 15 minutes for a human-tier secret, and the whole session for one tagged `default-grant=session`. | Ask again with `--ttl 15m` or less, within the seconds that secret's entry gives the judge. |
-| `failed_check=policy` | The tag policy, read again at that moment, no longer answers approval for the name: its owner or tier changed, or it left the broker's policy. | The approver the request names decides it, or the session cancels it and asks again under the tags now in force. |
-| `failed_check=admin` | The secret is tagged as an administrator's (`admin: "true"`), and a person approves every release of one. The judge refuses it whatever seconds the rules give that name, so a rules entry cannot move it off its approver ([Concepts](/legion/broker/concepts/#the-model-judge)). | That approver decides it. |
-| `failed_check=withheld` | The session's own person revoked a grant this session got without asking, so that secret is withheld from it and only its owner may approve it ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). | That owner decides it. |
-| `failed_check=issue` | The signed reason names no Dispatch issue key, Dispatch holds no issue with that key, the issue is `done`, or Dispatch could not be read; `failed_detail` says which. | Ask again with an open issue's key in `--reason`. The reason is signed, so an existing request cannot gain one. |
-| `verdict=refer` | The model read the request and left it for a person. Its own words are the row's and the line's `reason`. | The approver decides it. |
-| `asked=true` with `model_err` | The model could not be reached, or did not answer within the judge's 20 seconds. | The approver decides it. Tell whoever runs the broker if it keeps happening. |
-| `applied=false` | The judge approved, and the approval wrote nothing: a person or an expiry decided the record first, which is no fault of the judge's. | Read the record's own state; the request is decided already. |
+| A request for a judge key is on the approver's list from the start, with no row and no line | The broker that took it runs no judge (its `BROKER_JUDGE_*` settings are unset), the request also names a key a person decides, or a key is an administrator's. | The approver decides it, as before. |
+| No row and no line, and the request reached the approver two minutes after it was written | The run passed its 35 seconds or the broker stopped serving under it, which logs `broker judge: the run ended before it wrote anything`. | The approver decides it. Tell whoever runs the broker if it keeps happening. |
+| `a requested secret requires a shorter grant lifetime … --ttl …` when the request is written | The judge would decide the request, and its lifetime is longer than a judge key's seconds. Nothing was written and the judge was not asked. A request a person decides keeps the ordinary lifetime rules. | Ask again with the `--ttl` the message names, or less. |
+| `failed_check=rules-judge` or `failed_check=lifetime` | The rules changed between the request and the run, so a key's entry no longer gives the judge seconds, or no longer covers the lifetime. The request went to its person. | The approver decides it. Which keys the rules give the judge is the deployment's own choice, changed only in its rules file, which a person reviews. |
+| `failed_check=policy` | The tag policy, read again at that moment, no longer answers approval for a key: its owner or tier changed, or it left the broker's policy. A policy that now denies the key refuses the request for good; any other answer hands it to its person. | The approver the request names decides it, or the session asks again under the tags now in force. |
+| `failed_check=admin` | A key was tagged as an administrator's (`admin: "true"`) after the request was written. A person approves every release of one, so the request went to its person. | That approver decides it. |
+| `failed_check=withheld` | The session's own person revoked a grant this session got without asking, so that secret is withheld from it ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). The request is refused for good. | Tell whoever gave you the work. |
+| `failed_check=dispatch` | The judge could not read the Dispatch issue the reason names or the ask it cites, so it handed the request to its person. | The approver decides it. Tell whoever runs the broker if it keeps happening. |
+| `verdict=deny` | The model read the request against each key's guidance and refused it. Its own words are the row's and the line's `reason`, and the agent's refusal. | Nothing to retry: the refusal is final. Read `agent-secrets secret show NAME`'s `guidance:` line before the next piece of work that needs the key. |
+| `asked=true` with `model_err` | The model could not be reached, did not answer within the judge's 20 seconds, or gave no verdict of `grant` or `deny`. | The approver decides it. Tell whoever runs the broker if it keeps happening. |
+| `JUDGE_DECIDES` (403) from `POST /v1/credential-requests/{record}/approve` or `/deny` | The model judge holds the request now, so no person decides it until the judge has given it up; the refusal names no page. | Nothing; the judge decides it, or hands it to its person within two minutes. |
+| `applied=false` | The judge's grant or refusal wrote nothing: the session cancelled the request, or the hold ended and the request went to its person first, which is no fault of the judge's. | Read the record's own state. |
 
 ## Managing a secret
 
