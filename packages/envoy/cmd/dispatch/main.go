@@ -542,11 +542,8 @@ func main() {
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
-	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction. Its writer of
-	// the private-projects record is the router's (routes.AppContextOptions.BusProjects), which this
-	// build leaves nil: a seeded mapping into a private project is left out and logged, as a
-	// deployment with no bus answers it (api.SeedRepoProjects).
-	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, nil, boot.RepoProjects); err != nil {
+	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction.
+	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, boot.RepoProjects); err != nil {
 		slog.Error("dispatch: seed repository projects", "error", err)
 		os.Exit(1)
 	}

@@ -1028,7 +1028,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			// Its one reader is api.SeedRepoProjects, which main runs before it builds the router: a
 			// malformed mapping is refused there, naming the variable, before anything is written.
-			if err := api.SeedRepoProjects(context.Background(), nil, nil, nil, resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": "acme/widgets"}).RepoProjects); err == nil || !strings.Contains(err.Error(), "DISPATCH_REPO_PROJECTS") {
+			if err := api.SeedRepoProjects(context.Background(), nil, nil, resolveWith(t, map[string]string{"DISPATCH_REPO_PROJECTS": "acme/widgets"}).RepoProjects); err == nil || !strings.Contains(err.Error(), "DISPATCH_REPO_PROJECTS") {
 				t.Errorf("DISPATCH_REPO_PROJECTS=acme/widgets: seeding the repository mappings: err = %v, want a refusal naming DISPATCH_REPO_PROJECTS", err)
 			}
 		},

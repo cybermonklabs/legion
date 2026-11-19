@@ -395,14 +395,12 @@ this order:
    has no node naming its project, `envoy-dispatch backfill-session-projects` until the sessions'
    projects are filled, and `envoy-dispatch scrub-access-events` until the stored access events
    are scrubbed.
-5. A repository of the project that shares its GitHub subject lane with another project's
-   repository is `409 REPOSITORY_LANE_SHARED`.
-6. Last, in the same transaction, Dispatch writes the project's key in the hub's
+5. Last, in the same transaction, Dispatch writes the project's key in the hub's
    `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
    project's messages back from a token that does not list it. When the hub refuses that write,
    as a hub without its auth service does, or Dispatch has no bus to write it to, the switch is
    `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch has no writer
-   of that bucket, so every switch that passes steps 1 to 5 is
+   of that bucket, so every switch that passes steps 1 to 4 is
    `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private until a release carries the
    writer.
 

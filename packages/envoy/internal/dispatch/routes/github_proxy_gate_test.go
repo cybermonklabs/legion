@@ -2,68 +2,31 @@ package routes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// gateRead is the GitHub proxy's read the gate tests make: one pull request of acme/web.
+// gateRead is the GitHub proxy's read the no-database test makes: one pull request of acme/web.
 const gateRead = "/api/github/rest/repos/acme/web/pulls/1"
-
-// TestTheGitHubProxyAnswersAHiddenRepositoryAsUninstalled: for alice, a full member PRIV's list
-// does not name, acme/web, which the App is installed on and repo_projects maps to the private
-// PRIV, answers exactly what acme/web answers on a deployment where the App is not installed on it
-// and nothing maps it: equal status, body and Retry-After, with an App key, with no App key, and
-// under a rate limit already met. GitHub is never read for her. carol, whom PRIV's list names,
-// reads the same pull request through the same router, so the answer alice gets is the gate's
-// and not a router that reads nothing.
-func TestTheGitHubProxyAnswersAHiddenRepositoryAsUninstalled(t *testing.T) {
-	hiding := newGateRig(t, true)
-	uninstalled := newGateRig(t, false)
-	for _, test := range []struct {
-		name    string
-		withKey bool
-		limited bool
-	}{
-		{"with an App key", true, false},
-		{"with no App key", false, false},
-		{"under a met rate limit", true, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			hidden := hiding.read(t, test.withKey, test.limited, "alice@example.com")
-			missing := uninstalled.read(t, test.withKey, test.limited, "alice@example.com")
-			if hidden != missing {
-				t.Fatalf("%s, a hidden installed repository answers\n\t%s\nand an uninstalled one\n\t%s", test.name, hidden, missing)
-			}
-		})
-	}
-	if reads := hiding.fake.repositoryReads(); len(reads) != 0 {
-		t.Fatalf("GitHub was read for alice: %q", reads)
-	}
-	if seen := hiding.read(t, true, false, "carol@example.com"); !strings.HasPrefix(seen, "200 ") {
-		t.Fatalf("carol, whom PRIV names, read acme/web as %s, want GitHub's 200", seen)
-	}
-}
 
 // A router with no database has no viewer to resolve for the cookie's person, so its proxy gate
 // fails closed: a repository the App is installed on answers as one it is not, and GitHub is not
 // read.
 func TestTheGitHubProxyOfARouterWithNoDatabaseHidesEveryRepository(t *testing.T) {
-	fake := &gateGitHub{installed: true}
+	fake := &gateGitHub{installed: []string{"acme/web"}}
 	_, pem := githubapptest.Key(t)
 	people := newMemoryPeople()
 	ctx, err := BuildAppContext(AppContextOptions{
@@ -90,110 +53,192 @@ func TestTheGitHubProxyOfARouterWithNoDatabaseHidesEveryRepository(t *testing.T)
 	}
 }
 
-// gateRig is one deployment the gate test reads through: a database seeded with PRIV, alice and
-// carol, and a fake GitHub. A hiding rig has the App installed on acme/web and maps it to PRIV; the
-// other has neither.
-type gateRig struct {
-	database *store.Store
-	fake     *gateGitHub
-	base     string
-	pem      string
+// proxiedRepositories are the nine repositories of the proxy gate's seed (seedProxyGate), each one
+// way an issue resolves to a repository or none does. The App is installed on every one of them.
+var proxiedRepositories = []string{
+	"acme/pub", "acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/none", "acme/both",
+	"acme/oldname", "acme/newname",
 }
 
-func newGateRig(t *testing.T, hiding bool) *gateRig {
+// uninstalledRepository is a repository the App is not installed on, whose answer every hidden
+// repository's answer must equal.
+const uninstalledRepository = "acme/uninstalled"
+
+// TestTheGitHubProxyShowsARepositoryByItsIssues (c-proxy-by-issue): the proxy shows a person a
+// repository when an issue the person sees resolves to it, or when the person is an open viewer
+// and no issue of a project the person does not see resolves to it, and answers every other
+// repository, in status and bytes, as one the App is not installed on, reading nothing of it from
+// GitHub. An issue resolves through its own repository, its parent's and its project's default,
+// and a done issue counts as an open one does; no rename is read.
+//
+// alice, a full member no private list names, reads acme/pub, acme/none, acme/both and
+// acme/newname; bob, a restricted member PRIV's list names, reads every acme/priv*, acme/both and
+// acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. Each readable repository is
+// read through a pull request path and a check path, and each hidden one through both too.
+func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
+	database := seedProxyGate(t)
+	fake := &gateGitHub{installed: proxiedRepositories}
+	handler := gateRouter(t, database, fake)
+	for _, caller := range []struct {
+		login string
+		reads []string
+	}{
+		{"alice@example.com", []string{"acme/pub", "acme/none", "acme/both", "acme/newname"}},
+		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/both", "acme/oldname"}},
+		{"carol@example.com", proxiedRepositories},
+	} {
+		for _, path := range []struct{ name, suffix string }{
+			{"pull request", "pulls/1"},
+			{"check", "commits/0123abcd/check-runs"},
+		} {
+			uninstalled := proxyAnswer(t, handler, caller.login, uninstalledRepository, path.suffix)
+			if !strings.HasPrefix(uninstalled, `503 "" `) || !strings.Contains(uninstalled, "is not installed on <repo>") {
+				t.Fatalf("%s's %s read of %s, which the App is not installed on, answered %s: the comparison proves nothing",
+					caller.login, path.name, uninstalledRepository, uninstalled)
+			}
+			for _, repository := range proxiedRepositories {
+				before := len(fake.repositoryReads())
+				got := proxyAnswer(t, handler, caller.login, repository, path.suffix)
+				read := len(fake.repositoryReads()) > before
+				switch {
+				case slices.Contains(caller.reads, repository):
+					if want := `200 "" {"repository":"<repo>"}`; got != want || !read {
+						t.Errorf("%s reads %s through its %s path as %s (GitHub read: %t), want GitHub's answer %s",
+							caller.login, repository, path.name, got, read, want)
+					}
+				case got != uninstalled || read:
+					t.Errorf("%s reads %s, which no issue the person sees resolves to, through its %s path as\n\t%s (GitHub read: %t)\nwant what %s, which the App is not installed on, answers:\n\t%s",
+						caller.login, repository, path.name, got, read, uninstalledRepository, uninstalled)
+				}
+			}
+		}
+	}
+}
+
+// seedProxyGate writes the people, projects and issues the proxy gate test reads through: alice and
+// carol, full members, bob, a restricted member, and olga, every project's owner; PUB, public;
+// PRIV, private, whose list names bob and carol; and PRIV2, private, whose list names carol and not
+// bob. PUB-1 names acme/pub; PRIV-1 names acme/priv; PRIV-2 names acme/privdone and is done; PRIV-3
+// names none and is a child of PRIV2-1, which names acme/privparent, so only the parent walk gives
+// bob that repository; PRIV-4 names none and resolves to PRIV's default repository,
+// acme/privdefault; PUB-2 and PRIV-5 both name acme/both; PRIV-6 names acme/oldname. No issue names
+// acme/none or acme/newname. seedRepositoryRecords stores the default and the rename.
+func seedProxyGate(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
-	seed := `
+	if _, err := database.Pool.Exec(context.Background(), `
 		insert into people (email, member_kind) values
-			('alice@example.com', 'full'), ('carol@example.com', 'full'), ('olga@example.com', 'full');
-		insert into projects (key, name, default_assignee, visibility) values ('PRIV', 'Private', 'olga@example.com', 'private');
+			('alice@example.com', 'full'), ('bob@example.com', 'restricted'), ('carol@example.com', 'full'), ('olga@example.com', 'full');
+		insert into projects (key, name, default_assignee, visibility) values
+			('PUB', 'Public', 'olga@example.com', 'public'),
+			('PRIV', 'Private', 'olga@example.com', 'private'),
+			('PRIV2', 'Private two', 'olga@example.com', 'private');
 		insert into project_access (project_key, principal_kind, principal, added_by) values
-			('PRIV', 'person', 'carol@example.com', '{"kind":"user","id":"olga@example.com"}');`
-	if hiding {
-		seed += `
-		insert into repo_projects (repo, project, created_by) values ('acme/web', 'PRIV', '{"kind":"user","id":"olga@example.com"}');`
+			('PRIV', 'person', 'bob@example.com', '{"kind":"user","id":"olga@example.com"}'),
+			('PRIV', 'person', 'carol@example.com', '{"kind":"user","id":"olga@example.com"}'),
+			('PRIV2', 'person', 'carol@example.com', '{"kind":"user","id":"olga@example.com"}');
+		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
+			('PUB-1', 'PUB', 1, 'Names acme/pub', '{"kind":"user","id":"olga@example.com"}', 'a', null, 'acme/pub', 'triage'),
+			('PUB-2', 'PUB', 2, 'Names acme/both', '{"kind":"user","id":"olga@example.com"}', 'b', null, 'acme/both', 'triage'),
+			('PRIV2-1', 'PRIV2', 1, 'Names acme/privparent', '{"kind":"user","id":"olga@example.com"}', 'a', null, 'acme/privparent', 'triage'),
+			('PRIV-1', 'PRIV', 1, 'Names acme/priv', '{"kind":"user","id":"olga@example.com"}', 'a', null, 'acme/priv', 'triage'),
+			('PRIV-2', 'PRIV', 2, 'Names acme/privdone', '{"kind":"user","id":"olga@example.com"}', 'b', null, 'acme/privdone', 'done'),
+			('PRIV-3', 'PRIV', 3, 'Under PRIV2-1', '{"kind":"user","id":"olga@example.com"}', 'c', 'PRIV2-1', null, 'triage'),
+			('PRIV-4', 'PRIV', 4, 'Names none', '{"kind":"user","id":"olga@example.com"}', 'd', null, null, 'triage'),
+			('PRIV-5', 'PRIV', 5, 'Names acme/both', '{"kind":"user","id":"olga@example.com"}', 'e', null, 'acme/both', 'triage'),
+			('PRIV-6', 'PRIV', 6, 'Names acme/oldname', '{"kind":"user","id":"olga@example.com"}', 'f', null, 'acme/oldname', 'triage');
+	`); err != nil {
+		t.Fatalf("seed the proxy gate: %v", err)
 	}
-	if _, err := database.Pool.Exec(context.Background(), seed); err != nil {
-		t.Fatalf("seed the gate rig: %v", err)
-	}
-	fake := &gateGitHub{installed: hiding}
-	_, pem := githubapptest.Key(t)
-	return &gateRig{database: database, fake: fake, base: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}), pem: pem}
+	seedRepositoryRecords(t, database)
+	return database
 }
 
-// read answers the proxy's read as login, through a router of the rig with or without the App's
-// key, and under a met limit of the App's scope when limited, as "<status> <Retry-After> <body>".
-func (rig *gateRig) read(t *testing.T, withKey, limited bool, login string) string {
+// seedRepositoryRecords records PRIV's default repository, acme/privdefault, and a rename of
+// acme/oldname to acme/newname, as this build stores both: rows of repo_projects, the default
+// marked is_default and the rename a PRIV row with renamed_to. A build that stores either
+// elsewhere changes this function alone.
+func seedRepositoryRecords(t *testing.T, database *store.Store) {
 	t.Helper()
-	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
-	options := AppContextOptions{
-		SigningKey: testSigningKey,
-		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-		Store:      rig.database,
-		Lifetime:   t.Context(),
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into repo_projects (repo, project, is_default, renamed_to, created_by) values
+			('acme/privdefault', 'PRIV', true, null, '{"kind":"user","id":"olga@example.com"}'),
+			('acme/oldname', 'PRIV', false, 'acme/newname', '{"kind":"user","id":"olga@example.com"}');
+	`); err != nil {
+		t.Fatalf("record PRIV's default repository and the rename: %v", err)
 	}
-	if withKey {
-		options.App, options.GitHubAPIBase = &auth.AppConfig{ClientID: "Iv1.gate", PEM: rig.pem}, rig.base
-	}
-	ctx, err := BuildAppContext(options)
+}
+
+// gateRouter is a router over database whose GitHub is fake, with the App's key, its callers
+// named by the X-Dispatch-User header as a person at the browser.
+func gateRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.Handler {
+	t.Helper()
+	_, pem := githubapptest.Key(t)
+	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
+	ctx, err := BuildAppContext(AppContextOptions{
+		SigningKey:    testSigningKey,
+		People:        people,
+		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store:         database,
+		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
+		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
+		Lifetime:      t.Context(),
+	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
 	handler, background := New(ctx)
 	t.Cleanup(background.Wait)
-	if limited {
-		// An hour's limit on the App's own scope, recorded just before the read, so the read's
-		// whole seconds left are the same for every rig.
-		if err := ratelimit.New(rig.database.Pool).Record(context.Background(), githubapp.AppScope, time.Hour); err != nil {
-			t.Fatalf("record the App's rate limit: %v", err)
-		}
-		t.Cleanup(func() {
-			if _, err := rig.database.Pool.Exec(context.Background(), `delete from github_rate_limits`); err != nil {
-				t.Errorf("lift the App's rate limit: %v", err)
-			}
-		})
-	}
-	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+gateRead, nil)
+	return handler
+}
+
+// proxyAnswer reads repos/<repository>/<suffix> through the proxy as login, and answers it as
+// "<status> <Retry-After> <body>", with the repository's own name written as <repo>, the one byte
+// of an answer two repositories may differ in.
+func proxyAnswer(t *testing.T, handler http.Handler, login, repository, suffix string) string {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/github/rest/repos/"+repository+"/"+suffix, nil)
 	request.Header.Set("X-Dispatch-User", login)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	var decoded any
-	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("the proxy's answer %q is no JSON: %v", response.Body.String(), err)
-	}
-	return fmt.Sprintf("%d %q %s", response.Code, response.Header().Get("Retry-After"), strings.TrimSpace(response.Body.String()))
+	return strings.ReplaceAll(fmt.Sprintf("%d %q %s", response.Code, response.Header().Get("Retry-After"),
+		strings.TrimSpace(response.Body.String())), repository, "<repo>")
 }
 
-// gateGitHub is GitHub for one repository, acme/web: the App's installation on it when installed,
-// a token for that installation, and the pull request, recording every read of the repository.
+// gateGitHub is GitHub for the repositories it names installed: the App's installation on each of
+// them, a token for that installation, and every read of a repository, answered with the
+// repository's name and recorded.
 type gateGitHub struct {
-	installed bool
+	installed []string
 	mu        sync.Mutex
 	reads     []string
 }
 
 func (g *gateGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/web/installation":
-		if !g.installed {
+	if r.Method == http.MethodPost && r.URL.Path == "/app/installations/11/access_tokens" {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_gate","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+		return
+	}
+	owner, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+	name, path, _ := strings.Cut(rest, "/")
+	repository := owner + "/" + name
+	if path == "installation" {
+		if !slices.Contains(g.installed, repository) {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 			return
 		}
-		fmt.Fprint(w, `{"id":11,"app_slug":"envoy","permissions":{"pull_requests":"read"}}`)
-	case r.Method == http.MethodPost && r.URL.Path == "/app/installations/11/access_tokens":
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_gate","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
-	default:
-		g.mu.Lock()
-		g.reads = append(g.reads, r.Method+" "+r.URL.RequestURI())
-		g.mu.Unlock()
-		fmt.Fprint(w, `{"state":"open","title":"Ship it"}`)
+		fmt.Fprint(w, `{"id":11,"app_slug":"envoy","permissions":{"pull_requests":"read","checks":"read"}}`)
+		return
 	}
+	g.mu.Lock()
+	g.reads = append(g.reads, r.Method+" "+r.URL.RequestURI())
+	g.mu.Unlock()
+	fmt.Fprintf(w, `{"repository":%q}`, repository)
 }
 
-// repositoryReads is every read of acme/web beyond the installation lookup and the token mint.
+// repositoryReads is every read of a repository beyond the installation lookup and the token mint.
 func (g *gateGitHub) repositoryReads() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
