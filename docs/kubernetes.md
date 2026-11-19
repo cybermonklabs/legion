@@ -985,6 +985,9 @@ runtime:
       # optional: the Google service account that each pod's proxy impersonates and signs in as.
       # With it, user must be that account's IAM login: its email without .gserviceaccount.com.
       impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com
+      # optional: the audience of a token that only each pod's launcher reads, which impersonates that account.
+      # It is a workload identity provider's full resource name, and it needs impersonate_service_account.
+      writer_audience: //iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
 ```
 
 `postgres` and `cloudsql-iam` both keep every pod agent's conversation, each role's and a daemon-launched controller's, in Oh My Pi's table;
@@ -1061,6 +1064,64 @@ A daemon before this release refuses `impersonate_service_account` as an unknown
 The worker image moves with the daemon at this release's daemon API contract.
 So a rollback takes back the file, the daemon and the image together.
 
+**A token that only the launcher reads.**
+`writer_audience` is optional, and it needs `impersonate_service_account`.
+Its value is the full resource name of a workload identity provider: `//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`.
+With it, each pod carries a projected ServiceAccount token of that audience, and only the pod's launcher reads it.
+Each pod's proxy exchanges that token at Google's Security Token Service and impersonates the account with the federated token, in place of the pod's own credentials.
+The proxy's socket then admits only the launcher and the generation's Oh My Pi process ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
+
+The loader holds the value to `ompsessions.ValidWriterAudience` (`internal/ompsessions/store.go`), and the launcher and the proxy hold to the same rule.
+The project is its number in decimal digits, never its id.
+The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, and neither starts with `gcp-`, which Google keeps for itself.
+`legion config check` and the daemon's boot load refuse the same files with the same words (`readSessionDatabase`, `internal/config/kubernetes.go`):
+
+- the member without `impersonate_service_account`:
+  `runtime.kubernetes.session_database.writer_audience needs runtime.kubernetes.session_database.impersonate_service_account: the writer token signs in to Cloud SQL only by impersonating that service account`
+
+- a value of another form:
+  `runtime.kubernetes.session_database.writer_audience "<value>" must be a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>, each id 4 to 32 characters of a-z, 0-9 and -`
+
+- a blank value:
+  `runtime.kubernetes.session_database.writer_audience must not be empty`
+
+- the member under `postgres`, where `session_database` as a whole is refused:
+  `runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it`
+
+A deployment that sets the member makes these four things true:
+
+- A workload identity pool has one OIDC provider that trusts the cluster's issuer.
+  The provider's allowed audience is its own full resource name, which is the member's value.
+  Its attribute condition admits the Kubernetes ServiceAccounts that the pods run as.
+
+- The account grants `roles/iam.workloadIdentityUser` to the principal of the pods' ServiceAccount in that pool:
+  `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/subject/system:serviceaccount:<namespace>:<service account>`.
+  `<namespace>` is `runtime.kubernetes.namespace`, and `<service account>` is the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
+  This grant takes the place of the account's grant to the pod's own principal, the first item of the list above.
+
+- The Security Token Service API (`sts.googleapis.com`) and the IAM Service Account Credentials API (`iamcredentials.googleapis.com`) are enabled.
+
+- Where the cluster has an admission policy on projected tokens, a rule of that policy admits the member's audience in the daemon's Sandbox pods.
+  The pods ask for each such token for 3600 seconds (`workloadIdentityTokenSeconds`, `manifest.go`).
+
+Turn `writer_audience` on in this order:
+
+1. Make the pool and its provider, and the account's grant to the pool's principal.
+   A pod whose exchange or impersonation Google refuses fails its proof dial, and the generation's start error names the instance and carries Google's refusal.
+
+2. Set `writer_audience`, and restart the daemon on the file.
+   A pod keeps the session flags it was created with, and a writer audience added is a moved session store.
+   So each pod takes the writer token when it is replaced: an issue pod by its update round, and the controller's pod at the next launch into it.
+
+3. When every pod shows the writer setting, remove the account's grant to the pod's own principal.
+   A pod shows it when its launcher container's command carries `--session-writer-audience`, and its proxy's start line ends `with the launcher's writer token`.
+   Until that grant is gone, the pod's own credentials still impersonate the account, and every process that holds them can sign in as it.
+
+A daemon before the release that adds `writer_audience` refuses the member by name, as a key it does not know.
+The worker image moves with the daemon at that release's daemon API contract, so a rollback takes back the file, the daemon and the image together.
+Once the account's grant to the pod's own principal is gone, a release without `writer_audience` cannot sign in: its proxy impersonates the account with the pod's own credentials, and Google refuses them.
+So restore that grant before such a rollback.
+
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
@@ -1090,6 +1151,8 @@ Under `cloudsql-iam` there is no such credential to hold:
 what the agent reads carries a login and no password at all (`Endpoint.AgentURL`, `internal/ompsessions/store.go`), and what it names is a unix socket in the generation's own directory on the role's own memory-backed private volume, which the pod's one `roles` container mounts under that role's directory alone and which no other role's namespace is shown (`legion launcher role-init`).
 Any process of the role's own generation can still dial that socket, as any process in a pod can read the URL file under `postgres`:
 this store removes the password, not that trade, and the rights the login has in the database are still every conversation's.
+With `writer_audience`, the socket admits only the launcher and the generation's Oh My Pi process, and closes every other connection ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
+That limits which process connects, not what a connection reaches: the login's rights still cover every conversation, and code that runs inside Oh My Pi uses Oh My Pi's own connection ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod), "the session transcripts").
 
 Under `pvc` a session was a file on a disk only its own issue's pod could mount, so no issue could reach another's at all, and this release widens that boundary rather than keeping it.
 That is the trade LEGION-654's spec accepts for sessions that outlive their pods, and it is a trade to weigh before the rollout rather than after:
@@ -1178,9 +1241,9 @@ The recreated-workspace notice reaches a Claude Code role too:
 its own MCP server (`packages/claude-envoy`) reads `LEGION_WORKSPACE_RECREATED` at start and writes the same text into the session over the bridge's inbox, once per launch, recorded beside the phase reminder's state so a restarted server does not repeat it.
 
 The variables are a generation's, but the store a pod was created under is the pod's:
-the providers volume's session item under `postgres`, and under `cloudsql-iam` the session-proxy flags the pod's launcher container carries: three, and a fourth when `impersonate_service_account` is set (`sessionStoreInPod`).
+the providers volume's session item under `postgres`, and under `cloudsql-iam` the session-proxy flags the pod's launcher container carries: three, a fourth when `impersonate_service_account` is set, and a fifth when `writer_audience` is set (`sessionStoreInPod`).
 A pod that holds another session store than a pod created now would holds a move (`movedSessionStore`, `internal/runtime/sandbox/addresses.go`)
-— one created before this release, under a deployment whose sessions were still files, one created under the other kind or another key, or, under `cloudsql-iam`, a changed instance, database or login, or a service account named, dropped or changed
+— one created before this release, under a deployment whose sessions were still files, one created under the other kind or another key, or, under `cloudsql-iam`, a changed instance, database or login, a service account named, dropped or changed, or a writer audience named, dropped or changed
 — and the pod is replaced: an issue pod by its update round, and the controller's pod at the next launch into it ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 Under `postgres` the image probe's container is told `OMP_SESSION_SQL_DSN_FILE` too, so `legion probe-image`, which reads the providers directory as the shim does, never exports the URL into Oh My Pi's environment;
 under `cloudsql-iam` the probe's pod mounts no session key and is told no pointer at all (`sessionDSNPointer`, `manifest.go`).
@@ -1197,7 +1260,19 @@ What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
 When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
 A launcher told the fourth without all of the three refuses the database as named in part before it connects, and names each missing flag (`validateSessionDatabase`, `internal/launcher/launcher.go`).
+When `writer_audience` is set, a fifth flag follows the fourth: `--session-writer-audience <audience>` (`sessionWriterAudienceFlag`, `manifest.go`).
+A launcher refuses the fifth before it connects, and says why: without the fourth, in another form than `ompsessions.ValidWriterAudience` takes, and in the single-role form, whose agent runs in the container's own namespaces, where the token would be in its view (`validateSessionDatabase`).
 There is no address among them: the launcher binds each generation's socket in that generation's own directory, under the role's own private directory, which it already knows from `--roles-dir` (`--private-dir` in the controller's pod).
+
+With `writer_audience`, the pod also carries the session writer token (`sessionWriterVolumes`, `manifest.go`).
+It is one projected ServiceAccount token volume, `session-writer-token`, of the member's audience, for 3600 seconds, with mode 0440, where the token is the file `token`.
+The kubelet writes a fresh token before the old one expires, and the proxy reads the file again at each exchange.
+Only the launcher's container mounts it, read-only, at `/var/run/legion/roles/session-writer` (`SessionWriterDir`, `names.go`, and `podTokenMounts`, `manifest.go`).
+That container is the `roles` container of an issue pod, or the controller's container, which then runs the roles-dir form ([Daemon-launched controller](#daemon-launched-controller)).
+No init container mounts it, and the image probe's pod carries none.
+No role reads the token, because the directory is under `/var/run/legion/roles`, which role-init covers with an empty filesystem in each role's namespaces (`prepareRoleNamespace`, `internal/launcher/roleinit_linux.go`).
+The launcher gives the path, `<roles-dir>/session-writer/token`, to its proxy alone, and writes it into no generation's environment and no file (`startSession`).
+The volume name is Legion's in every deployment, with or without the member, so the loader refuses an operator's volume named `session-writer-token` (`CheckPod`).
 
 Every generation of that role then gets its own connection, in this order (`manager.start`, `packages/daemon/internal/launcher/launcher.go`):
 
@@ -1262,6 +1337,14 @@ The source for the database login has the `sqlservice.login` scope alone.
 Each source refreshes its one-hour token for as long as the proxy serves.
 The proxy's start line then names the account: `sessionproxy: serving <instance> on <socket> as <account>`.
 
+With `writer_audience`, both sources impersonate the account with a federated token, never with the pod's own credentials (`connectorOptions`).
+One federated source exchanges the writer token at Google's Security Token Service, `https://sts.googleapis.com/v1/token` (`STSTokenURL`, `internal/sessionproxy/sessionproxy.go`), where the pod-local metadata endpoint exchanges too.
+The exchange names the member's value as its audience, a JWT as its subject token type and the `cloud-platform` scope.
+The proxy gives both sources one IAM Service Account Credentials client, which puts the federated token on each `generateAccessToken` call.
+The federated token is exchanged again five minutes before it expires (`writerTokenEarlyRefresh`), and each exchange and each `generateAccessToken` call has a bound of 30 seconds (`writerCallTimeout`).
+So the proxy reads no credential of the pod: it looks up no Application Default Credentials and asks no metadata server.
+Its start line says which credential signs in: `sessionproxy: serving <instance> on <socket> as <account> with the launcher's writer token`.
+
 The two readers of that socket spell it differently, so `ompsessions.Endpoint` composes both (`internal/ompsessions/store.go`):
 
 | reader | spelling | why |
@@ -1274,10 +1357,59 @@ Neither carries a password.
 The file is the agent's to read through its pointer and nothing else's to export:
 it is in the generation's private directory, not in the providers mount the worker shim exports from.
 
+**Who may use the socket under `writer_audience`.**
+With the member, the proxy reads the process at the other end of each connection it accepts, as the kernel recorded it at connect (`SO_PEERCRED`, `readPeer`, `peer_linux.go`).
+It reads it before it dials anything for the connection (`admitted`, `sessionproxy.go`).
+The generation's check admits two processes (`sessionPeer`, `internal/launcher/sessionpeer.go`):
+
+- The launcher's own process, because the resume lookup (`resumable`) and a Claude Code keeper (`claudeKeeper`) connect from it.
+
+- The generation's Oh My Pi process.
+  The check finds it in the process table (`memoryguard.Scan`), never from the process that connects.
+  It reads the generation's role-init, then the role's shim, then the oldest direct child of the shim whose `/proc/<pid>/exe` is the agent's executable.
+  The shim is the oldest direct child of the role-init that runs the launcher's own executable as `worker-shim` (`roleShim`, `internal/launcher/memoryguard.go`), the rule the memory guard uses too.
+  The first connection that finds the Oh My Pi process pins its pid and its start time.
+  Every later connection must come from that pid, with that start time, so a process that takes the pid after Oh My Pi ends is refused.
+
+A Claude Code generation has no agent that connects, so its check admits the launcher alone.
+The proxy closes every other connection before any dial, writes nothing back, and logs one line, which the container's log shows behind the role's prefix:
+`sessionproxy: refused a connection to <instance> from pid <pid> (<command>): <reason>`.
+`<command>` is the process's `/proc/<pid>/comm`, quoted because the process chooses it, or `?` when it cannot be read.
+A connection whose peer cannot be read is closed in the same way, with the line `sessionproxy: refused a connection to <instance> from a process whose pid could not be read: <error>`.
+A process table that cannot be read, a missing role-init, shim or agent, and a peer that is not the pinned process each refuse the connection, and `<reason>` says which.
+A refused connection costs no dial and no credential work, and its line holds no token.
+
+No other process of the role passes the check:
+
+- A command that Oh My Pi runs is a descendant of Oh My Pi, so it is never a direct child of the shim.
+  No process of the shim makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+
+- An orphan that runs `legion worker-shim` is younger than the real shim, and the check takes the oldest.
+
+- The shim's other direct children (the secrets renewer, the working copy's adoption, the CodeGraph warm-up) run other executables.
+  Oh My Pi's own helpers are its children, not the shim's.
+
+The start command names the agent's executable as `agentExecutable` (`shimwire.LauncherStart.AgentExecutable`).
+The daemon fills it for every Oh My Pi launch with the first word of the agent's own argv, `/opt/omp/bin/omp` in the image, and leaves it out of a Claude Code launch (`launcherCommand`, `internal/runtime/sandbox/launcher.go`).
+The argv after `--` cannot say it, because a deployment's `setup` wraps the agent in `/bin/sh -c <script> legion-start`.
+While that wrapper runs, the shim's child runs `/bin/sh`, so nothing is pinned until the wrapper's `exec`.
+Under the member, the launcher refuses an Oh My Pi start whose `agentExecutable` is empty or not an absolute path (`newSessionPeer`).
+It resolves the path's links once, because `/proc/<pid>/exe` names the file the links lead to.
+
+The launcher also refuses a generation under the member unless `/proc/sys/kernel/yama/ptrace_scope` reads an integer of 1 or more (`requireTraceScope`, `sessionpeer.go`).
+The check admits Oh My Pi and none of its descendants.
+That holds only while no descendant can act as Oh My Pi: take its admitted connection (`pidfd_getfd`), read or write its memory (`/proc/<pid>/mem`, `process_vm_writev`), or trace it.
+Each of these needs ptrace attach access, and at a scope of 1 or more Yama refuses that access to a descendant.
+A scope of 0, a file that cannot be read and text that is not an integer each refuse the start, and the start's error names the file and what it read:
+`generation <n>: the session writer token needs /proc/sys/kernel/yama/ptrace_scope to read 1 or more, and it reads "0": a process of the role could then trace the agent and use its connection to the session database`.
+A gVisor issue pod read 1 when this was measured, on 2026-11-19.
+Nobody has measured the kernel of a microVM pod, so such a pod starts a generation under the member only where its own kernel reads 1 or more.
+
 What the operator supplies is the three required values of `session_database`, the pods' cloud identity and the login's rights in the database.
 The pods' cloud identity is the identity of the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
 Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
+With `writer_audience`, the operator also supplies that fifth value and the four things that [Selecting the store](#selecting-the-store) lists for it.
 The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
@@ -2658,6 +2790,7 @@ Contract 141, cybermonklabs/legion#3575, has its own section below, which gives 
 Its one migration, `20261111045636_experiment_assignments.up.sql`, adds the table `experiment_assignments`, which a release before it names in no statement, so that release boots with the table and its rows in place, and the block below touches neither the table nor that migration's row.
 No release declares 138, 139 or 140: the contract went from 137 to 141 in that one change, so a rollback from 141 to 137 crosses no other contract.
 Contract 137, cybermonklabs/legion#4046, has no section of its own here: it adds no migration, and a daemon before it refuses `impersonate_service_account` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, as [Selecting the store](#selecting-the-store) says.
+Contract 170, cybermonklabs/legion#4495, has no section of its own here either: it adds no migration, and a daemon before it refuses `writer_audience` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, and restores the account's grant to the pod's own principal where the deployment removed it, as [Selecting the store](#selecting-the-store) says.
 Contract 133, cybermonklabs/legion#3937, has no section of its own here either: its one migration, `20261112070503_pull_request_state_read_at.up.sql`, adds the column `pull_requests.state_read_at` at a default every row takes, which a release before it neither reads nor writes, since its pull request reads and its insert name each column they touch, and its header gives no step.
 Neither has cybermonklabs/legion#3983, which landed after it at the same contract: its one migration, `20261113082415_claim_ended_work.up.sql`, adds the nullable column `claims.ended_work`, which a release before it names in no statement, and its header gives no step.
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
@@ -3173,7 +3306,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;
   `postgres` without `session_dsn_secret`, or with one that is empty or not a Secret data key (`[-._a-zA-Z0-9]+`);
-  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user` and `impersonate_service_account`, leaves one of the three required members empty or `impersonate_service_account` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, or whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`);
+  `cloudsql-iam` without `session_database`, or with one that is not a mapping, names a member but `instance`, `name`, `user`, `impersonate_service_account` and `writer_audience`, leaves one of the three required members empty or `impersonate_service_account` or `writer_audience` blank, or whose `instance` is not a connection name the Cloud SQL connector uses whole (`project:region:instance`, or `domain:project:region:instance` for a domain-scoped project, with no whitespace), whose `impersonate_service_account` is not a Google service account's email, whose `user` is not that account's IAM login (its email without `.gserviceaccount.com`), whose `writer_audience` is not a workload identity provider's full resource name (`//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`), or that names `writer_audience` without `impersonate_service_account`;
   a `session_dsn_secret` under `cloudsql-iam`; and a `session_database` under `postgres` (an inert key is refused, never ignored).
   At boot the daemon also refuses, under `postgres`, a `session_dsn_secret` that is the providers Secret's `NATS_NKEY_SEED` and a `provider_keys` entry that reads the same key (the shim would export the URL into Oh My Pi's environment)
   — neither can arise under `cloudsql-iam`, where no pod mounts a session key
@@ -4325,6 +4458,7 @@ the launcher token, as `LAUNCHER_TOKEN`), `/var/run/legion/roles/<r>/gh` (`gh-<r
 the role's gh bundle, each directory's two keys as `<dir>/hosts.yml` and `<dir>/config.yml`), `/var/run/legion/roles/<r>/private` (`private-<r>`, memory), `/var/run/legion/roles/<r>/state` (`state-<r>`, memory) and, only when the pod enrolls with the secrets broker, `/var/run/legion/roles/<r>/agent-secrets` (`agent-secrets-key-<r>`, memory).
 One disk `emptyDir`, `role-homes`, is at `/var/run/legion/roles/.homes`.
 A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` also mounts the projected token volume `workload-identity-token`, read-only, at `/var/run/legion/roles/workload-identity`, where no role's namespace shows it ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+An issue pod whose `session_database` names a `writer_audience` also mounts the projected token volume `session-writer-token`, read-only, at `/var/run/legion/roles/session-writer`, where no role's namespace shows it ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
 The pod's shared mounts appear once: the issue volume at `/legion`, the config home, the feed read-only, the providers Secret's configured keys when there are any (with its `NATS_NKEY_SEED` key when the daemon has a NATS nkey seed), the broker's token when the pod enrolls, its exchange token at `/var/run/legion/agent-secrets-exchange` where `agent_secrets.exchange_audience` is set, and the operator's volumes and mounts.
 Every one of them that belongs at or under `/home/legion` (the config home at `.config`, an operator's mount there) is mounted under `/var/run/legion/home` at the same relative path instead, so `/home/legion` itself carries no mount in the `roles` container;
 each role's namespace binds it back at its own path, except the config home.
@@ -4454,6 +4588,8 @@ The Kubernetes service-account tokens this runtime projects for a role are the b
 Each reaches the secrets broker and nothing else.
 A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` carries another projected token, `workload-identity-token`, for the Workload Identity pool's audience.
 No role's namespace shows it, and the pod's launcher exchanges it at Google's Security Token Service for the token its metadata endpoint hands out ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
+A pod whose `session_database` names a `writer_audience` carries another projected token, `session-writer-token`, for that audience.
+No role's namespace shows it, and the launcher's session proxy exchanges it at Google's Security Token Service to impersonate the session database's service account ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
 The operator's own pod volumes are outside this statement: the operator controls them.
 An operator-launched controller can differ:
@@ -4500,6 +4636,13 @@ Every role can write the whole issue volume, and the roles share the pod's netwo
   Under `cloudsql-iam` each generation's connection is private to its role (the socket is in that role's private directory), but every role signs in as the pod's one IAM login, whose rights reach every session row, so any role that opens a connection of its own reads and writes a sibling's transcript as well ([Session store](#session-store)).
   With `impersonate_service_account`, that login is the service account's.
   The pod's identity can impersonate that account, so every role can sign in as it, and can use every other role that the account holds ([Selecting the store](#selecting-the-store)).
+  With `writer_audience`, the proxy impersonates the account with the session writer token, and no role reads that token: it is under `/var/run/legion/roles`, which role-init covers in each role's namespaces.
+  The socket admits only the launcher and the generation's Oh My Pi process, so no other process of a role opens a connection of its own ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
+  Two routes stay open, and each reaches the database through Oh My Pi, the admitted process.
+  The first is code inside Oh My Pi: code that a tool call writes into `.omp/tools` or into an installed plugin, which Oh My Pi loads at its next start (the `.omp/` directory and the installed plugins above).
+  The second is Oh My Pi's RPC stdin: a child of Oh My Pi can open `/proc/<omp pid>/fd/0`, the pipe the shim writes Oh My Pi's RPC frames to (`spawnOnce`, `internal/shim/shim.go`), and write RPC commands there, which Oh My Pi then acts on.
+  Also, `writer_audience` alone does not stop a tool call from getting the pod's own credentials from the metadata server, or from the pod-local metadata endpoint in a microVM pod.
+  Those credentials impersonate the account until the deployment removes the account's grant to the pod's own principal ([Selecting the store](#selecting-the-store)).
 
 The issue's roles trust one another's writes to the volume as they did when each ran in a container of its own.
 The namespaces keep a role's tokens and private files out of a sibling's own reads, and no further.
@@ -4939,11 +5082,16 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
 - **The shell can read every role's credentials.**
   `kubectl exec -c roles` runs as user 1000, the launcher's own user, outside every role's namespaces, so it can read everything under `/var/run/legion/roles/`.
   The pod's `fsGroup` opens the mode-0440 mounts to it:
-  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, the broker's exchange token at `/var/run/legion/agent-secrets-exchange/token` where `agent_secrets.exchange_audience` is set, and the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint.
+  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, the broker's exchange token at `/var/run/legion/agent-secrets-exchange/token` where `agent_secrets.exchange_audience` is set, the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint, and the session writer token at `/var/run/legion/roles/session-writer/token` where `session_database.writer_audience` is set.
   It reads the rest as their owner: each running generation's `<role>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each role's `<role>/agent-secrets/` key directory and each role's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
   It reads each agent's environment through `/proc/<pid>/environ` too, and whatever the operator's `runtime.kubernetes.pod.volume_mounts` mount.
   Where the pods' ServiceAccount is federated to a cloud identity, it can act as that identity, as every role can.
   Under `cloudsql-iam` with `impersonate_service_account`, that identity can also impersonate the service account, so the shell and every role can act as that account: they can sign in to the session database as it, and use every other role that it holds.
+  Under `writer_audience`, the shell reads the session writer token, because the token is in the container's namespaces, outside every role's.
+  With it, the shell can impersonate the account and write the project's session database.
+  So whoever may exec into a Legion pod may write its project's session database.
+  A deployment that sets the member must therefore grant `pods/exec` on Legion pods to no agent identity.
+  No role reads the token: role-init covers `/var/run/legion/roles/` in each role's namespaces.
 
 - **The clone's configuration is every role's to write.**
   The clone's `.git/config`, its hooks, a legacy jj configuration file and the workspace's `.jj/repo` pointer are on the issue's disk, which every role writes ([Trust model](#trust-model-the-provisioning-token)), and the shell's git is given none of the overrides a role's git is.
@@ -7680,6 +7828,35 @@ Its one container, the launcher, carries the controller's reservation
 — `runtime.kubernetes.resources.controller` where the file sets a field, the daemon's default of 1 CPU and 4Gi otherwise
 — as request and limit alike unless the file sets a lower `cpu_request` or `memory_request`, so at the default the pod is `Guaranteed`, never the class the kubelet evicts first under node memory pressure (a lower request makes it `Burstable`, [Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable");
 the image probe pod carries its own, smaller reservation, not the controller's, so a controller reservation the pool cannot place leaves the probe, and the boot, unaffected ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
+
+**The pod under `writer_audience`.**
+Where `runtime.kubernetes.session_database.writer_audience` is set ([Selecting the store](#selecting-the-store)), the `controller` container runs the launcher's roles-dir form for its one role: `legion launcher --roles-dir /var/run/legion/roles --role controller` (`controllerPod.rolesDirContainer`, `podkind.go`).
+The launcher refuses the writer audience in the single-role form, whose agent runs in the container's own namespaces, where the writer token would be in its view.
+The container lays out its volumes as an issue pod lays out one of its roles (`rolesDirLayout`).
+The launcher token, the gh files and the private, state and agent-secrets key directories are under `/var/run/legion/roles/controller`, and the role homes volume is at `/var/run/legion/roles/.homes`.
+Every mount at or under `/home/legion` is under `/var/run/legion/home` instead (`homeMountsView`).
+The container mounts the writer token at `/var/run/legion/roles/session-writer`, and the broker's tokens once for the pod where it enrolls (`podTokenMounts`).
+It mounts nothing at the fixed paths of the single-role form: `/var/run/legion/launcher`, `/var/run/legion/private`, `/var/run/legion/state`, `/var/run/legion/gh` and `/var/run/legion/agent-secrets`.
+role-init starts the controller's generation in namespaces of its own and binds the controller's own gh, private, state and agent-secrets key directories back at those paths, but not its launcher token.
+So the controller's agent finds each directory where it always has, and it reads neither the writer token nor the launcher token.
+The roles-dir form changes five things for the controller:
+
+- The memory guard is off once the daemon has answered the launcher's first hello: `launcherHelloAck` sends the controller's pod no `MemoryGuard`, and an answer without it turns the guard off.
+  Before that answer the guard runs at its defaults, as in an issue pod.
+  Off, it keeps its readings and its hourly lines and ends nothing.
+
+- The git lock sweep finds no clone, because the container's working directory is `/legion`, which is no jj workspace, and no start of the controller names a workspace.
+  It writes one line, `launcher: the git lock sweep's working directory "/legion" is no jj workspace it can sweep (…); it takes its workspace from the first role start`, and then sweeps nothing (`newGitLockSweep`, `internal/launcher/gitlocks.go`).
+
+- The launcher's lines for the role, and the lines of the controller's shim and Oh My Pi, carry the prefix `controller: ` in the container's log, as each role's lines do in an issue pod.
+
+- A process that the controller's generation leaves running after its shim exits gets role-init's drain: SIGTERM over the role's namespace, two seconds (`roleNamespaceDrain`), then SIGKILL (`runRoleShim`, `internal/launcher/roleinit_linux.go`).
+  In the single-role form, the launcher as PID 1 gives such a process up to `--stop-grace` (`cleanExitedGeneration`).
+
+- The controller's home overlay, its `/tmp` and `/var/tmp` and its own config home are on the role homes volume, a disk `emptyDir` that counts against the controller pod's ephemeral storage ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
+
+Without the member, the controller's pod is the pod this section describes above.
+A writer audience added, dropped or changed is a moved session store, and the controller's pod shape records the audience too (`movedSessionStore`, `podShapeRecord`), so the next launch into the controller's pod replaces it.
 
 The Sandbox is the claim's alone, where an issue's is its tree's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.
