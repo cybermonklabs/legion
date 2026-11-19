@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
@@ -62,7 +63,7 @@ func newProvisioningCredential(parent, token string) (remote, error) {
 		return remote{}, fmt.Errorf("create provisioning credential directory: %w", err)
 	}
 	cleanup := func(cause error) (remote, error) {
-		if removeErr := os.RemoveAll(directory); removeErr != nil {
+		if removeErr := rolefile.RemoveTree(directory); removeErr != nil {
 			return remote{}, fmt.Errorf("%w; remove provisioning credential directory: %v", cause, removeErr)
 		}
 		return remote{}, cause
@@ -112,7 +113,7 @@ func (r remote) remove() error {
 	if r.dir == "" {
 		return nil
 	}
-	if err := os.RemoveAll(r.dir); err != nil {
+	if err := rolefile.RemoveTree(r.dir); err != nil {
 		return fmt.Errorf("remove provisioning credential directory: %w", err)
 	}
 	return nil
@@ -277,7 +278,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 		} else if complete {
 			return nil
 		}
-		if err := os.RemoveAll(cloneDir); err != nil {
+		if err := rolefile.RemoveTree(cloneDir); err != nil {
 			return fmt.Errorf("remove incomplete clone %s: %w", cloneDir, err)
 		}
 	}
@@ -290,7 +291,7 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 		return fmt.Errorf("create temporary clone directory: %w", err)
 	}
 	defer func() {
-		_ = os.RemoveAll(temporary)
+		_ = rolefile.RemoveTree(temporary)
 	}()
 
 	// Every step runs in the clone's parent, the directory os.MkdirAll made above: it is there

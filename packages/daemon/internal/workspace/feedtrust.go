@@ -46,7 +46,7 @@ func ownFeedRepository(gitDir string, repo ghrepo.Repository, now time.Time, log
 	if why == "" {
 		return true, nil
 	}
-	if err := os.RemoveAll(gitDir); err != nil {
+	if err := rolefile.RemoveTree(gitDir); err != nil {
 		return false, fmt.Errorf("remove the feed's %s, which %s: %w", gitDir, why, err)
 	}
 	log(fmt.Sprintf("the feed's %s is not one this fetch wrote (%s): removed; the feed is filled afresh", repo, why))

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // isolatedGitConfig is the configuration Fetch's git reads besides its own: none. Not the system's,
@@ -206,7 +207,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		return FetchReport{}, err
 	}
 	defer func() {
-		_ = os.RemoveAll(staging)
+		_ = rolefile.RemoveTree(staging)
 	}()
 	if request.CacheURL == "" {
 		clone := feedTransfer{verb: "clone", argv: []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", GitHubURL(request.Repo), staging}, destination: staging, dir: filepath.Dir(staging)}
@@ -1022,7 +1023,7 @@ func stageBeside(feed string, log func(string)) (string, error) {
 		return "", err
 	}
 	for _, left := range stale {
-		if err := os.RemoveAll(left); err != nil {
+		if err := rolefile.RemoveTree(left); err != nil {
 			return "", fmt.Errorf("remove the clone an earlier fetch left at %s: %w", left, err)
 		}
 		log("removed the clone an earlier fetch left at " + left)
@@ -1101,7 +1102,7 @@ func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, 
 		request.Log(fmt.Sprintf("%s attempt %d failed; retrying in %s: %s", transfer.verb, attempt, wait,
 			strings.ReplaceAll(strings.TrimSpace(result.Stderr), "\n", " | ")))
 		if transfer.destination != "" {
-			if err := os.RemoveAll(transfer.destination); err != nil {
+			if err := rolefile.RemoveTree(transfer.destination); err != nil {
 				return Result{}, fmt.Errorf("remove what %s attempt %d left at %s: %w", transfer.verb, attempt, transfer.destination, err)
 			}
 		}
