@@ -625,8 +625,10 @@ func wholeTextKept(w lineWords, text string) string {
 	return strings.Join(kept, " ")
 }
 
-// lineTail is the tail checkResultLine and ciVerdictLine print for kept: nothing when it is empty,
-// else kept cut.
+// lineTail is kept cut, or nothing when kept is empty: the tail ciVerdictLine prints, and the tail
+// checkResultLine prints when it keeps a word (with none kept it says the reading holds only words
+// the line leaves out). keepThrough keeps a word before it can stop, so kept is empty on the same
+// bodies whichever way it was judged.
 func lineTail(w lineWords, kept string) string {
 	if kept == "" {
 		return ""
@@ -640,8 +642,9 @@ const earlyStopBodies = 50000
 // The line judges a text's words only until its kept text passes the cut (keepThrough), and the
 // tail it prints equals the tail judging the whole text prints (wholeTextKept), over
 // earlyStopBodies random bodies from a seeded generator, so every run judges the same bodies. The
-// run counts the bodies whose judging stopped early and the bodies whose tail was cut, and fails
-// on none of either, which would mean it tested nothing. Its control stops judging one rune early
+// run counts the bodies where the stop left out a word that whole-text judging keeps (a lower bound
+// on the bodies where judging stopped early) and the bodies whose tail was cut, and fails on none
+// of either, which would mean it tested nothing. Its control stops judging one rune early
 // (budget 79, as `runes >= budget` would): that tail must differ from the whole text's on some
 // body, which shows the comparison can fail.
 func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
@@ -669,10 +672,10 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 			controlMismatches++
 		}
 	}
-	t.Logf("bodies %d: judging stopped early on %d, the tail was cut on %d, mismatches %d; control (budget %d): mismatches %d",
+	t.Logf("bodies %d: the stop left out a kept word on %d, the tail was cut on %d, mismatches %d; control (budget %d): mismatches %d",
 		earlyStopBodies, stopped, cut, mismatches, checkResultReadingRunes-1, controlMismatches)
 	if stopped == 0 || cut == 0 {
-		t.Fatalf("judging stopped early on %d bodies and the tail was cut on %d: the run tested nothing", stopped, cut)
+		t.Fatalf("the stop left out a kept word on %d bodies and the tail was cut on %d: the run tested nothing", stopped, cut)
 	}
 	if controlMismatches == 0 {
 		t.Fatalf("a stop one rune early printed the whole text's tail on every body: the comparison cannot fail")
