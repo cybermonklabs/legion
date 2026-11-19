@@ -31,8 +31,11 @@ const source = fileURLToPath(new URL("./fsync-stall.c", import.meta.url));
 
 /** The directory `DISPATCH_E2E_PG_STALL_DIR` names, or undefined when it is unset or empty. A
  *  relative path is refused: the server is handed the same path, and a container resolves it
- *  against a working directory of its own. So is a path holding a space or a colon: the loader
- *  splits `LD_PRELOAD` on both, so the server would never load the library. */
+ *  against a working directory of its own. So is a path holding any whitespace or a colon: the
+ *  loader splits `LD_PRELOAD` on a space and a colon, so the server would never load the library,
+ *  and its memory map escapes a newline, so the check that it did would fail; a tab or other
+ *  whitespace is refused with them, one rule rather than a list of the characters each part
+ *  reads. */
 export function diskStallDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const dir = (env[diskStallVariable] ?? "").trim();
   if (dir === "") return undefined;
@@ -44,9 +47,10 @@ export function diskStallDir(env: NodeJS.ProcessEnv = process.env): string | und
   }
   if (/[\s:]/u.test(dir)) {
     throw new Error(
-      `${diskStallVariable}=${JSON.stringify(dir)} holds a space or a colon. The run's Postgres ` +
-        "preloads the library under it through LD_PRELOAD, which the loader splits on both, so " +
-        "it would never load it."
+      `${diskStallVariable}=${JSON.stringify(dir)} holds whitespace (a space, a tab, a newline or ` +
+        "any other) or a colon, and none is allowed. The run's Postgres preloads the library " +
+        "under it through LD_PRELOAD, which the loader splits on a space and a colon, and its " +
+        "memory map escapes a newline, so the run could not load the library or tell that it had."
     );
   }
   return dir;

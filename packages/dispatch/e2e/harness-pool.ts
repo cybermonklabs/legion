@@ -133,9 +133,13 @@ async function terminate(): Promise<void> {
   // `stacks` yet, so `stopStacks` would stop nothing and remove the run directory under a
   // server that is still up. The wait is bounded, so a start that never settles still ends.
   if (starting !== undefined) await Promise.race([starting, sleep(terminateGraceMs)]);
-  // The run's files are kept, since nothing here knows how it ended, but no container's log is
-  // printed: a SIGTERM is how e2e/visual-run.sh ends e2e/harness-up.ts after every run, passed
-  // or failed, and printing there would put a whole Postgres log in every visual job's output.
+  // Stacks that are up are stopped keeping what a failed run keeps, since nothing here knows how
+  // the run ended: the log directories of a run of more than one stack (a run of one stack, such
+  // as e2e/harness-up.ts's, has none, and `clearRunDir` removes its directory either way). No
+  // container's log is printed for them: a SIGTERM is how e2e/visual-run.sh ends harness-up after
+  // every run, passed or failed, and printing there would put a whole Postgres log in every visual
+  // job's output. A SIGTERM that lands while stacks are still starting ends that start, which
+  // stops what it started as any failed start does, its container's log printed.
   await stopStacks(true, false);
   process.kill(process.pid, "SIGTERM");
 }

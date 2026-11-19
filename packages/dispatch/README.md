@@ -215,8 +215,8 @@ and start the server with that library preloaded: while `stalled` exists in the
 directory, every `fsync` and `fdatasync` of the server waits, as on a disk that
 has stopped answering. The harness makes the directory readable by every user
 and mounts all of it into a container, so it refuses one that holds anything
-but an earlier build's files, and one whose path holds a space or a colon,
-which the loader's `LD_PRELOAD` splits on.
+but an earlier build's files, and one whose path holds any whitespace or a
+colon: the loader's `LD_PRELOAD` splits on a space and a colon.
 `e2e/read-marker-disk-stall.multiprocess.e2e.ts` stalls it so. Without the
 variable it is skipped, in an agent's shell too, which sets `CI`; on GitHub
 Actions (`GITHUB_ACTIONS=true`) it fails naming the variable

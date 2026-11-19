@@ -217,17 +217,21 @@ test.skipIf(!live)(
   rowLimit()
 );
 
-// The loader splits LD_PRELOAD on spaces and colons, so a stall directory holding either would
-// never be loaded by the server; it is refused before anything is built. The refusal reads the
-// variable alone, so the row needs no cc.
+// A stall directory holding any whitespace or a colon is refused before anything is built, and
+// the refusal says so in those words: the loader splits LD_PRELOAD on a space and a colon, and a
+// tab, which it would load, is refused with them, so the message must name it rather than claim
+// a space. The refusal reads the variable alone, so the row needs no cc.
 test(
-  "a stall directory holding a space or a colon is refused",
+  "a stall directory holding whitespace or a colon is refused, the message naming what it holds",
   () => {
-    for (const dir of ["/tmp/stall dir", "/tmp/stall:dir"]) {
-      expect(() => diskStallDir({ [diskStallVariable]: dir }), dir).toThrow(
-        `${diskStallVariable}=${JSON.stringify(dir)} holds a space or a colon.`
+    const refusal = "holds whitespace (a space, a tab, a newline or any other) or a colon";
+    for (const dir of ["/tmp/stall dir", "/tmp/stall\tdir", "/tmp/stall\ndir", "/tmp/stall:dir"]) {
+      expect(() => diskStallDir({ [diskStallVariable]: dir }), JSON.stringify(dir)).toThrow(
+        `${diskStallVariable}=${JSON.stringify(dir)} ${refusal}`
       );
     }
+    // The message a tab gets names a tab, which a path holding one is refused for.
+    expect(() => diskStallDir({ [diskStallVariable]: "/tmp/stall\tdir" })).toThrow("a tab");
     expect(diskStallDir({ [diskStallVariable]: "/tmp/stall-dir" })).toBe("/tmp/stall-dir");
   },
   rowLimit()

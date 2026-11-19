@@ -180,8 +180,9 @@ export interface StackDatabase {
   readonly port: number;
   /** Stops the server. `keepLog` asks the image provider to print the container's whole log on
    *  stderr before the container goes, since it is the one record of what that server said: the
-   *  pool asks for it for a run whose logs it keeps, a failed one, and for a stack whose start
-   *  failed, and not on a SIGTERM, whose run's outcome it does not know (`e2e/harness-pool.ts`).
+   *  pool asks for it for a run whose logs it keeps, a failed one, and for a start that failed or
+   *  was interrupted, a SIGTERM during the start included; not when a SIGTERM stops stacks that
+   *  are already up, whose run's outcome it does not know (`e2e/harness-pool.ts`).
    *  The binaries provider's log is a file under the run's directory (`postgres.log`), which the
    *  pool keeps or loses with the rest. */
   stop(keepLog: boolean): Promise<void>;
