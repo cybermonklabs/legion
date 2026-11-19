@@ -418,9 +418,13 @@ func TestABrowsersUpdateIsBoundedByTheDocumentBound(t *testing.T) {
 // (scanCeiling, internal/dispatch/docs/scan_budget.go) is refused whole, over a real
 // document socket of a real server, and the room is left as it was. A paragraph is first made a
 // chain of tangledChain one-character items, each of a client of its own, so a run of them is never
-// merged into one item; then a frame whose items each name the chain's first item as their left
-// origin and no right origin, so each scans the whole chain, after a 256 KiB string at the
-// chain's end, where nothing follows it to scan.
+// merged into one item. The chain is in the document's stored history before the server starts
+// (tangledDocument), as the server's own tangle hooks put theirs, since no browser may send it:
+// it writes under tangledChain client ids no history names, past the claims one socket and one
+// person may make (docs' client_ids.go). What the drive is about still comes from browsers, each
+// over a document socket of its own: a frame whose items each name the chain's first item as
+// their left origin and no right origin, so each scans the whole chain, after a string of
+// scanFramePadding bytes at the chain's end, where nothing follows it to scan.
 //
 // The allowance is the frame's own, not the per-frame ceiling. A tangle frame can never earn the
 // ceiling: the ceiling belongs to an apply over unslottedApplyBytesForTest, 2 MiB, and an update
@@ -445,22 +449,15 @@ func TestABrowsersUpdateIsBoundedByTheDocumentBound(t *testing.T) {
 // refused scans: what refused the frame is the allowance and nothing else.
 func TestAScanFrameIsRefusedWholeAndTheRoomIsAsItWas(t *testing.T) {
 	memory := newMemoryHarness(t)
+	room := memory.tangledDocument(t)
+	// The room loads the chain with the rest of its stored history, which the server's start
+	// settled before it served (drainBeforeStart): the room is charged what its load decoded and
+	// owes no settlement, so nothing moves the budget's figures or the room's count of structs
+	// but what the browsers below send.
 	server := memory.start(t)
-	stored := server.upload(t, "json", memory.issue, "# Tangled\n\nOne paragraph of ordinary prose.\n")
-	if stored.status != http.StatusCreated {
-		t.Fatalf("upload: status %d body %.300s, want 201", stored.status, stored.body)
-	}
-	memory.waitForSettlement(t, stored)
-	room := stored.artifactID
-	setting := server.openBrowser(t, room)
-	t.Cleanup(setting.leave)
-	requireApplied(t, setting, chainFrame(t, setting.state(t)), fmt.Sprintf("a chain of %d one-character items", tangledChain))
-	// The chain's own bytes are on the room's charge the moment its drain commits (docs'
-	// renderedReplica.chargeAdded), so the only thing to wait for is the settlement after the
-	// room's settle delay; once it has landed, nothing moves the budget's figures or the room's
-	// count of structs but what the browsers below send.
-	memory.waitForSettled(t, room)
-	before := setting.state(t)
+	reader := server.openBrowser(t, room)
+	t.Cleanup(reader.leave)
+	before := reader.state(t)
 
 	frame, items, scans, allowance := scanFrameAtItsAllowance(t, before, tangledScanClient)
 	t.Logf("a %d-byte frame of %d items scanning %d items against an allowance of %d, sent to a room holding %d bytes of state",
@@ -519,15 +516,15 @@ func TestAScanFrameIsRefusedWholeAndTheRoomIsAsItWas(t *testing.T) {
 }
 
 // A room's scan total is re-measured by each load, over a real document socket of a real server:
-// a room takes a run of browsers' frames, each the longest its own bytes are allowed to scan
-// (scanCeilingForTest, about twenty-seven thousand items), until what is left of the room's
-// million-item total is less than one such frame; the frame that meets that is refused at an
-// allowance of what is left, which the server names in the line it logs for the refusal
-// (scanRefusalLine). The server stops, which flushes the room to the store, and a new server
-// loads the room from what it stored; the same frame then applies, because the reloaded room's
-// total is what its stored state re-scans (docs.RescanForTest) and not the one the room's own
-// applies came to. That re-scan is what the load's own decode cost, and it is what the total is
-// there to bound (roomScans.rescanned).
+// a room whose paragraph holds the chain tangledDocument stores takes a run of browsers' frames,
+// each the longest its own bytes are allowed to scan (scanCeilingForTest, about twenty-seven
+// thousand items), until what is left of the room's million-item total is less than one such
+// frame; the frame that meets that is refused at an allowance of what is left, which the server
+// names in the line it logs for the refusal (scanRefusalLine). The server stops, which flushes
+// the room to the store, and a new server loads the room from what it stored; the same frame then
+// applies, because the reloaded room's total is what its stored state re-scans
+// (docs.RescanForTest) and not the one the room's own applies came to. That re-scan is what the
+// load's own decode cost, and it is what the total is there to bound (roomScans.rescanned).
 //
 // That re-scan is not the sum of what the room's own applies scanned, and at sjawhar/ygo
 // v1.55.1-sami.1 it is the smaller of the two for a shape like this one: the room's browsers scan
@@ -538,16 +535,10 @@ func TestAScanFrameIsRefusedWholeAndTheRoomIsAsItWas(t *testing.T) {
 // TestTheRoomScanTotalIsReMeasuredByEachLoad holds the same truth in process.
 func TestTheRoomScanTotalIsReMeasuredByEachLoadOverARealSocket(t *testing.T) {
 	memory := newMemoryHarness(t)
+	room := memory.tangledDocument(t)
 	server := memory.start(t)
-	stored := server.upload(t, "json", memory.issue, "# Tangled\n\nOne paragraph of ordinary prose.\n")
-	if stored.status != http.StatusCreated {
-		t.Fatalf("upload: status %d body %.300s, want 201", stored.status, stored.body)
-	}
-	memory.waitForSettlement(t, stored)
-	room := stored.artifactID
 	setting := server.openBrowser(t, room)
 	t.Cleanup(setting.leave)
-	requireApplied(t, setting, chainFrame(t, setting.state(t)), fmt.Sprintf("a chain of %d one-character items", tangledChain))
 
 	// The room's scan total is a million items and no one browser's frame may scan more than
 	// what its own bytes are allowed, about twenty-four thousand (scanCeilingForTest), so the
@@ -775,10 +766,39 @@ const (
 	scanFramePadding = 8 << 10
 )
 
-// chainFrame is a frame of tangledChain one-character strings after the last character of the
+// tangledDocument is a document of one paragraph of ordinary prose with chainFrame's chain after
+// that paragraph's last character, stored as its history before any server holds it, as the
+// server's own tangle hooks store theirs (docs' TangleBeyondOneApplyForTest): the prose is
+// uploaded and settled, the server stops, and the chain is appended to the stored history
+// through the store's own append (docs.PgVersioned.AppendUpdate). The next server's start
+// settles it (drainBeforeStart), so a room loads the chain with the rest of the history and owes
+// nothing for it.
+//
+// No browser can send the chain. Its items are under tangledChain client ids no history names,
+// and a socket that presents no client id claims at most 64 of those, and a person at most 64 in
+// one document a UTC day (docs' maxConfirmedClients and maxClaimsADay, client_ids.go). What the
+// drives hold is what the frames after the chain meet, and those still come from browsers.
+func (h *memoryHarness) tangledDocument(t *testing.T) string {
+	t.Helper()
+	setup := h.start(t)
+	stored := setup.upload(t, "json", h.issue, "# Tangled\n\nOne paragraph of ordinary prose.\n")
+	if stored.status != http.StatusCreated {
+		t.Fatalf("upload: status %d body %.300s, want 201", stored.status, stored.body)
+	}
+	h.waitForSettlement(t, stored)
+	setup.stop(t)
+	room := stored.artifactID
+	if _, err := docs.NewPgVersioned(h.database).AppendUpdate(context.Background(), room, chainFrame(t, h.storedState(t, room))); err != nil {
+		t.Fatalf("store a chain of %d one-character items: %v", tangledChain, err)
+	}
+	return room
+}
+
+// chainFrame is an update of tangledChain one-character strings after the last character of the
 // first paragraph of state, each of a client of its own, from tangledChainClient up, naming the
 // one before it as its left origin and no right origin: every one lands at the paragraph's end,
 // scanning nothing, and none merges with its neighbour, since ygo merges only one client's run.
+// tangledDocument stores it.
 func chainFrame(t *testing.T, state []byte) []byte {
 	t.Helper()
 	document := newBrowserDocument(t, state)
