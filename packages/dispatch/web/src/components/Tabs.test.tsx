@@ -170,12 +170,16 @@ test("a tablist with tabs past its trailing edge wears the trailing fade, and on
     fireEvent.scroll(tablist);
     expect(tablist).toHaveClass(scrollFadeTrailing);
 
-    // At the end of the scroll the last tab is all there is to see; a fade there would hide it.
+    // The reader scrolls to the end: their wheel, then the strip's own scroll event, which
+    // user-event has no form for. At the end of the scroll the last tab is all there is to see; a
+    // fade there would hide it.
+    fireEvent.wheel(tablist);
     tablist.scrollLeft = 60;
     fireEvent.scroll(tablist);
     expect(tablist).not.toHaveClass(scrollFadeTrailing);
 
-    // The reader scrolls back to the start: a scroll event, which user-event has no form for.
+    // The reader scrolls back to the start, by a wheel again.
+    fireEvent.wheel(tablist);
     tablist.scrollLeft = 0;
     fireEvent.scroll(tablist);
     expect(tablist).toHaveClass(scrollFadeTrailing);
@@ -299,12 +303,25 @@ function issueTablist(sizes: ResizeControl) {
     tablist.scrollLeft = Math.min(tablist.scrollLeft, Math.max(box.scroll - client, 0));
     sizes.resize();
   };
-  /** The reader's own sideways scroll: the strip's scroll event, which user-event has no form for. */
+  /** The reader's own sideways scroll: their wheel, then the strip's scroll event, which user-event
+   *  has no form for. */
   const scrollTo = (scrollLeft: number) => {
+    fireEvent.wheel(tablist);
     tablist.scrollLeft = scrollLeft;
     fireEvent.scroll(tablist);
   };
-  return { activity, artifacts, layOut, scrollTo, tablist };
+  /** The browser clamping the strip to a layout no observer reports: the strip is laid out
+   *  `wide` px wide and read, which clamps its scroll to that width, and laid out at its old width
+   *  again inside the same task, so no size changed when the observers next look. Only the clamp's
+   *  own scroll event is left. */
+  const clampThrough = (wide: number) => {
+    const client = box.client;
+    box.client = wide;
+    tablist.scrollLeft = Math.min(tablist.scrollLeft, Math.max(box.scroll - wide, 0));
+    box.client = client;
+    fireEvent.scroll(tablist);
+  };
+  return { activity, artifacts, clampThrough, layOut, scrollTo, tablist };
 }
 
 test("the strip stops where its last layout puts it, not where a narrower layout before it left it", () => {
@@ -367,6 +384,38 @@ test("a sideways scroll the reader makes stays until the strip's layout changes"
     // 505 - (400 - 32) = 137.
     layOut(400);
     expect(tablist.scrollLeft).toBe(137);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// A layout that widens the strip, is read, and narrows again inside one browser task clamps the
+// scroll to the wide layout and changes no size the observers see: only the clamp's own scroll
+// event is left, and no reader input came before it. The strip must settle on it, back where its
+// layout puts the selected tab. A reader's scroll, which comes after their input, stays (the row
+// above).
+test("a scroll the browser makes clamping the strip to a layout no observer reports settles the strip again", () => {
+  const sizes = installResizeObserver();
+  const view = render(
+    <Tabs
+      activeTab="artifacts"
+      ariaLabel="Issue detail"
+      idPrefix="issue"
+      onSelect={() => {}}
+      tabs={issueTabs}
+    />
+  );
+
+  try {
+    const { clampThrough, layOut, tablist } = issueTablist(sizes);
+    // A 449 px tablist puts Artifacts at 505 - (449 - 32) = 88.
+    layOut(449);
+    expect(tablist.scrollLeft).toBe(88);
+
+    // Laid out 749 px wide for a moment, every tab fits and the scroll clamps to 0.
+    clampThrough(749);
+    expect(tablist.scrollLeft).toBe(88);
   } finally {
     view.unmount();
     sizes.restore();
