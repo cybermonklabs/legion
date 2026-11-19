@@ -9,6 +9,7 @@ import { expect, test } from "bun:test"
 import { chmod, readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import {
   codexSessionRecordFile,
   processStarted,
@@ -242,6 +243,50 @@ test(
       expect(run.sessions).toEqual([])
       expect(broker.connections).toBe(0)
     } finally {
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+// A stop that lands while the start's first registration is out lets the start finish, and the
+// live view it then starts is stopped at once, before the session's shutdown closes the relay:
+// its control subject goes first. Left to the shutdown, it would go only at the drain, after the
+// relay.
+test(
+  "a stop while a Codex session's start registers stops its live view before the session shuts down",
+  async () => {
+    const held = Promise.withResolvers<void>()
+    let asked = false
+    const run = await startReopenServer({
+      sessionId: SESSION,
+      args: ["--host", "codex"],
+      env: (stateDirectory) => ({ PLUGIN_DATA: stateDirectory }),
+      prepare: codexSession,
+      awaitRegistration: false,
+      onRequest: (method, path) => {
+        if (method !== "POST" || path !== "/v1/interests/subscribe") return undefined
+        asked = true
+        return held.promise
+      },
+    })
+    const { broker, server, stderr, state } = run
+    try {
+      await waitFor(async () => asked, "the first registration, held", state, PROCESS_WAIT_MS)
+      server.kill("SIGTERM")
+      await Bun.sleep(300)
+      held.resolve()
+      const exited = await Promise.race([
+        server.exited,
+        Bun.sleep(PROCESS_WAIT_MS).then(() => "still running" as const),
+      ])
+      expect({ exited, stderr: stderr() }).toMatchObject({ exited: 0 })
+      const relay = deliverSubject(SESSION)
+      expect(
+        broker.unsubscribed.filter((subject) => subject === CONTROL || subject === relay)[0],
+      ).toBe(CONTROL)
+    } finally {
+      held.resolve()
       await run.stop()
     }
   },
