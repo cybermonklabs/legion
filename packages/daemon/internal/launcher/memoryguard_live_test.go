@@ -38,6 +38,10 @@ import (
 // it stands for, with which no test can be re-entered, so TestMain runs them itself
 // (mainHelpers). The others carry what the agent needs: the directory it writes its pids and its
 // command's wait status in, its executable, the bytes it holds, and its command's argv as JSON.
+//
+// controllerLiveSizesEnv set to 1 has the test log the smaps size of each process at each of the
+// guard's readings at or above the band's start (controllerLiveWatch.sizes), as the traced
+// scenarios always do: a Job that runs a probe of its own in place of a scenario sets it.
 const (
 	memoryGuardLiveEnv        = "LEGION_MEMORY_GUARD_LIVE"
 	controllerLiveScenarioEnv = "LEGION_CONTROLLER_LIVE_SCENARIO"
@@ -46,11 +50,12 @@ const (
 	controllerLiveAgentEnv    = "LEGION_CONTROLLER_LIVE_AGENT"
 	controllerLiveHoldEnv     = "LEGION_CONTROLLER_LIVE_HOLD"
 	controllerLiveRunEnv      = "LEGION_CONTROLLER_LIVE_RUN"
+	controllerLiveSizesEnv    = "LEGION_CONTROLLER_LIVE_SIZES"
 )
 
 func init() {
 	mainHelpers[controllerLiveEnv] = controllerLiveHelper
-	guardKeep = append(guardKeep, memoryGuardLiveEnv, controllerLiveScenarioEnv)
+	guardKeep = append(guardKeep, memoryGuardLiveEnv, controllerLiveScenarioEnv, controllerLiveSizesEnv)
 }
 
 const (
@@ -692,6 +697,12 @@ func (r *controllerLiveRun) startGeneration() string {
 		return fmt.Sprintf("copy the test binary for the agent: %v", err)
 	}
 	r.watch = &controllerLiveWatch{act: r.settings.ActPercent, traced: controllerLiveTraced(r.scenario)}
+	if r.watch.traced || os.Getenv(controllerLiveSizesEnv) == "1" {
+		r.watch.sizes = make(chan controllerLiveSizesAsk, controllerLiveSizesQueue)
+		stop := make(chan struct{})
+		r.t.Cleanup(func() { close(stop) })
+		go r.logSizes(r.watch.sizes, stop)
+	}
 	previous := newMemoryGuard
 	newMemoryGuard = func(guard memoryguard.Config) *memoryguard.Guard {
 		guard.Observe = r.watch.observe
@@ -1856,6 +1867,94 @@ func controllerLiveAnonPages() (uint64, error) {
 	return 0, errors.New("no AnonPages line in " + path)
 }
 
+// controllerLiveSizesAsk is one of the guard's readings at which the log of sizes reads every
+// process (logSizes): the time the guard took it, and the reading, by which the log's line is
+// matched to the trace's line of the same reading.
+type controllerLiveSizesAsk struct {
+	at      time.Time
+	reading uint64
+}
+
+// controllerLiveSizesQueue is how many readings the watch holds for the log of sizes while the log
+// reads (controllerLiveWatch.sizes): at 100 ms an interval, 25 seconds at or above the band's start.
+const controllerLiveSizesQueue = 256
+
+// logSizes writes one `live: sizes` line for each reading the watch hands it, until stop: the
+// reading, the guard's time of it, how long after it the read began, how long the read took, and
+// each process's smaps size (controllerLiveProcSizes). It reads on a goroutine of its own, so the
+// guard's loop waits for none of it, and it begins a few milliseconds after the reading, as the
+// guard's own reads of that reading do: the line says what the guard could read there, so a run
+// where the guard went on with nothing after a kill shows whether a grower had grown since it
+// (INFRA-3531, verification version 37). At stop it writes how many readings it read and how many
+// the watch dropped because the log was too far behind.
+func (r *controllerLiveRun) logSizes(asks <-chan controllerLiveSizesAsk, stop <-chan struct{}) {
+	read := 0
+	for {
+		select {
+		case <-stop:
+			r.watch.mu.Lock()
+			dropped := r.watch.sizesDropped
+			r.watch.mu.Unlock()
+			r.out.printf("live: sizes readings=%d dropped=%d", read, dropped)
+			return
+		case a := <-asks:
+			began := time.Now()
+			sizes := controllerLiveProcSizes()
+			took := time.Since(began)
+			r.out.printf("live: sizes reading=%d reading_at=%s read_after=%.1fms took=%.1fms %s", a.reading,
+				controllerLiveTime(a.at), float64(began.Sub(a.at).Microseconds())/1000, float64(took.Microseconds())/1000, sizes)
+			read++
+		}
+	}
+}
+
+// controllerLiveProcSizes is the smaps size of every process but the test's own, the launcher, as
+// `pid=bytes` fields in pid order: the sum of its smaps `Anonymous:` lines, the size R1 names, or
+// `pid=-` where its smaps cannot be read, as for a process that exited between the list and the
+// read.
+func controllerLiveProcSizes() string {
+	entries, err := os.ReadDir(controllerLiveProc)
+	if err != nil {
+		return "unlisted=" + strconv.Quote(err.Error())
+	}
+	self := os.Getpid()
+	var pids []int
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil && pid != self {
+			pids = append(pids, pid)
+		}
+	}
+	slices.Sort(pids)
+	var b strings.Builder
+	for i, pid := range pids {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		data, err := os.ReadFile(filepath.Join(controllerLiveProc, strconv.Itoa(pid), "smaps"))
+		if err != nil {
+			fmt.Fprintf(&b, "%d=-", pid)
+			continue
+		}
+		fmt.Fprintf(&b, "%d=%d", pid, controllerLiveAnonymous(data))
+	}
+	return b.String()
+}
+
+// controllerLiveAnonymous is the sum of a smaps's `Anonymous:` lines, in bytes.
+func controllerLiveAnonymous(smaps []byte) uint64 {
+	var kb uint64
+	for line := range bytes.Lines(smaps) {
+		if rest, ok := bytes.CutPrefix(line, []byte("Anonymous:")); ok {
+			if f := bytes.Fields(rest); len(f) > 0 {
+				if n, err := strconv.ParseUint(string(f[0]), 10, 64); err == nil {
+					kb += n
+				}
+			}
+		}
+	}
+	return kb << 10
+}
+
 // controllerLiveCPU is the user and system CPU time the test process has used so far, every
 // thread of it, as TestMemoryGuardLiveSandbox's liveCPU reads its own.
 func controllerLiveCPU() (user, sys time.Duration, err error) {
@@ -2052,15 +2151,19 @@ func (f *controllerLiveFrames) stopped() string {
 // test under mu (startGeneration hands both to the guard the launcher builds). act is the guard's
 // act share, by which the watch reckons the mark and the band's start from each reading's limit,
 // and traced whether it keeps the guard's trace (controllerLiveTrace) and holds each process the
-// guard ends by a pidfd until it exits.
+// guard ends by a pidfd until it exits. sizes, where it is not nil, takes each reading at or above
+// the band's start for the test's log of every process's smaps size at that reading (logSizes),
+// without waiting: a reading the log is too far behind to take is counted in sizesDropped.
 type controllerLiveWatch struct {
 	act    int
 	traced bool
+	sizes  chan controllerLiveSizesAsk
 
-	mu    sync.Mutex
-	seen  controllerLiveSeen
-	band  controllerLiveBand
-	trace controllerLiveTrace
+	mu           sync.Mutex
+	seen         controllerLiveSeen
+	band         controllerLiveBand
+	trace        controllerLiveTrace
+	sizesDropped int
 }
 
 // controllerLiveSeen is what the watch has taken of the guard's readings and kills so far.
@@ -2171,6 +2274,13 @@ func (w *controllerLiveWatch) observe(now time.Time, reading, limit uint64) {
 			s.firstAtMark, s.firstAtMarkReading = now, reading
 		}
 		s.atMark++
+	}
+	if w.sizes != nil && reading >= bandStart {
+		select {
+		case w.sizes <- controllerLiveSizesAsk{at: now, reading: reading}:
+		default:
+			w.sizesDropped++
+		}
 	}
 	if w.traced {
 		t := &w.trace
