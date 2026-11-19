@@ -2511,9 +2511,10 @@ package api
 // caller at 160 is served what one at 152 is, and 160's records are 152's under its own number.
 // Contract 168 is served with no code of its own here: it moves no key path or value of any
 // answer, so a caller at 168 is served what one at 160 is, and 168's records are 160's under its
-// own number. Its two request fields, `planRating` and `planReason`, are read by name, so this
-// contract's record of `POST /legion/v1/handoff/complete` holds them, and a plugin at 168, which
-// sends them on its retro, and one below it, which never does, are both read.
+// own number. Its two request fields, `planRating` and `planReason`, are fields of
+// `HandoffCompleteRequest`, so this change's request record of the completion route, which is
+// 172's (no request record is kept below it), holds them, and a plugin at 168, which sends them
+// on its retro, and one below it, which never does, are both decoded.
 // Contract 146 is one of the contracts served down here too, by its row of shaping.go's
 // stateNarrowings, and this contract is served above it: a caller below 146 is served every
 // issue without `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (`withoutEntryTimes`,
