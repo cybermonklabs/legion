@@ -15,14 +15,20 @@
 # later command of a pipeline, an export inside another function, env -u GOPROXY, and a .mts
 # test; and the offline form of the environment each language binds to its own command passes.
 # Its file reason: refused in a test file, and in a file ci.yaml or a workflow ci.yaml calls names,
-# but not in one only a workflow outside that set or a comment names. Its second rule: a job of
-# any workflow that runs
-# internal/daemon's tests, which build envoy commands through testbuild.EnvoyBinary, is refused
-# when no step before that one runs `.github/scripts/go-fetch.sh deps packages/envoy` of every such
-# command - a step with none, one after, one that leaves a command out, one in another job - and
-# passes when one does; the tests a step runs through a script and the library it sources count;
-# a compile to /dev/null runs no test. A tree with no file of a language, a tree with testbuild and
-# no caller, and a tree with no ci.yaml each give UNKNOWN and exit 2.
+# but not in one only a workflow outside that set or a comment names. Its second rule: a job of any
+# workflow that runs internal/daemon's tests, which build envoy commands through
+# testbuild.EnvoyBinary, is refused when no step before that one runs `.github/scripts/go-fetch.sh
+# deps packages/envoy` of every such command - a step with none, one after, one that leaves a
+# command out, one in another job - and passes when one does; the tests a step runs through a
+# script and the library it sources, after a cd, with -C, or through bash -c count; a compile to
+# /dev/null runs no test. Its other half: a step that reaches an offline go build - in a script it
+# runs, in a function a sourced library defines and the script calls with its module and packages,
+# or in a script the TypeScript of a Playwright run names - is refused with no fetch of those
+# packages before it, or one that leaves a package out, and passes after one, or with a reason. Its
+# third rule: a required job whose fetch step comes before a restore of ~/go/pkg/mod, or after a
+# restore of another path, is refused, and one whose restore comes first passes and is listed. A
+# tree with no file of a language, a tree with testbuild and no caller, and a tree with no ci.yaml
+# each give UNKNOWN and exit 2.
 #
 # Each case builds a miniature tree under a temporary directory and symlinks the real script into
 # it, so the script under test is the file CI runs: it resolves its root from its own path, which
@@ -784,6 +790,10 @@ refuses sh-pipeline tools/pipeline.test.sh 3 2 <<'EOF'
 GOPROXY=off go list -deps ./... |
   xargs go build
 EOF
+refuses sh-pipeline-line tools/pipeline-line.test.sh 2 <<'EOF'
+#!/usr/bin/env bash
+GOPROXY=off go list -deps ./... | xargs go build
+EOF
 
 echo "case: shell: an export GOPROXY=off inside a function covers that function alone"
 refuses sh-function-export tools/function.test.sh 6 <<'EOF'
@@ -1048,6 +1058,176 @@ EOF
 run_check "$root"
 check "exits 0, the compile before the fetch refused nothing" "$(is "$status" 0)"
 check "judges the test step alone" "$(contains "$out" "each of the 1 steps that run testbuild's tests")"
+
+echo "case: a step that runs the tests through bash -c is judged"
+needs_fetch job-bash-c "Test the daemon through bash -c" "$(cat <<'EOF'
+      - name: Test the daemon through bash -c
+        run: bash -c 'cd packages/daemon && go test ./internal/daemon/'
+EOF
+)"
+
+# --- The second rule's other half: every offline build a step reaches ---------------------------
+# A job of any workflow whose step reaches a go build made with GOPROXY=off - in its run text, in
+# a script it runs or sources, in a function such a script calls, or in a script the TypeScript of
+# a bun or Playwright test run names - fetches what that build builds in a step before.
+
+# broker_script <root>: scripts/run-broker.sh, which builds two commands of packages/envoy offline
+# from its own directory, as the Dispatch launchers do.
+broker_script() {
+  mkdir -p "$1/packages/envoy"
+  put "$1" scripts/run-broker.sh <<'EOF'
+#!/usr/bin/env bash
+cd "$(dirname "$0")/../packages/envoy"
+env GOPROXY=off go build -o ./out/ ./cmd/broker ./cmd/dev-oidc-issuer
+EOF
+}
+
+echo "case: a job whose step runs a script that builds offline, with no fetch before it, is refused"
+root=$(fixture offline-bare)
+broker_script "$root"
+nightly "$root" <<'EOF'
+      - name: Start the broker
+        run: bash scripts/run-broker.sh
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the step, the build and its packages" \
+  "$(contains "$out" 'job proof, step "Start the broker", reaches scripts/run-broker.sh:3, an offline go command of packages/envoy: ./cmd/broker ./cmd/dev-oidc-issuer')"
+check "names the fetch to add" "$(contains "$out" 'add `.github/scripts/go-fetch.sh deps packages/envoy ./cmd/broker ./cmd/dev-oidc-issuer`')"
+
+echo "case: the same job passes after a fetch of both commands, and not after a fetch of one"
+root=$(fixture offline-fetched)
+broker_script "$root"
+nightly "$root" <<'EOF'
+      - run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/broker ./cmd/dev-oidc-issuer
+      - name: Start the broker
+        run: bash scripts/run-broker.sh
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the step it judged" "$(contains "$out" 'each of the 1 steps that reach an offline build comes after a fetch')"
+root=$(fixture offline-partial)
+broker_script "$root"
+nightly "$root" <<'EOF'
+      - run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/broker
+      - name: Start the broker
+        run: bash scripts/run-broker.sh
+EOF
+run_check "$root"
+check "fails when the fetch leaves a command out" "$(is "$status" 1)"
+check "naming the one it leaves out" "$(contains "$out" 'reaches scripts/run-broker.sh:3')"
+
+echo "case: a build in a sourced function, called with its module and packages, is judged"
+root=$(fixture offline-function)
+mkdir -p "$root/packages/envoy"
+put "$root" lib/go-build-offline.sh <<'EOF'
+go_build_offline() {
+  local dir=$1 out=$2 root
+  shift 2
+  root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+  [[ "$dir" == /* ]] || dir="$root/$dir"
+  (cd -- "$dir" && GOPROXY=off go build -o "$out" "$@")
+}
+EOF
+put "$root" scripts/start.sh <<'EOF'
+#!/usr/bin/env bash
+. "$(dirname "$0")/../lib/go-build-offline.sh"
+go_build_offline packages/envoy ./bin/ ./cmd/listener
+EOF
+nightly "$root" <<'EOF'
+      - name: Start the listener
+        run: scripts/start.sh
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the build in the function, with the caller's module and package" \
+  "$(contains "$out" 'reaches lib/go-build-offline.sh:6, an offline go command of packages/envoy: ./cmd/listener')"
+
+echo "case: a Playwright run whose TypeScript names a script that builds offline is judged"
+root=$(fixture offline-harness)
+mkdir -p "$root/packages/envoy"
+put "$root" packages/dispatch/e2e/harness.ts <<'EOF'
+export const serverScript = join(import.meta.dir, "run-server.sh");
+EOF
+put "$root" packages/dispatch/e2e/run-server.sh <<'EOF'
+#!/usr/bin/env bash
+cd "$(dirname "$0")/../../envoy"
+env GOPROXY=off go build -o ./dispatch-e2e ./cmd/dispatch
+EOF
+nightly "$root" <<'EOF'
+      - name: Run the browser suite
+        run: bunx playwright test --config e2e/playwright.config.ts
+        working-directory: packages/dispatch
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the script the harness starts" \
+  "$(contains "$out" 'step "Run the browser suite", reaches packages/dispatch/e2e/run-server.sh:3, an offline go command of packages/envoy: ./cmd/dispatch')"
+
+echo "case: a step that says why it needs no fetch passes, counted as such"
+root=$(fixture offline-reasoned)
+broker_script "$root"
+nightly "$root" <<'EOF'
+      - name: Start the broker
+        run: |
+          # go-offline: the binaries job built the broker; DISPATCH_E2E_BROKER_BIN_DIR names it.
+          bash scripts/run-broker.sh
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts its reason" "$(contains "$out" '(1 say why they need none)')"
+
+# --- Item 1's rule: a fetch step of a required job comes after the job's module cache ------------
+
+echo "case: a required job whose fetch step comes before its module cache restore is refused"
+root=$(fixture fetch-first)
+cat >>"$root/.github/workflows/ci.yaml" <<'EOF'
+      - name: Fetch the modules the tests build
+        run: .github/scripts/go-fetch.sh deps packages/app ./cmd/app
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the fetch step" \
+  "$(contains "$out" 'job lint, step "Fetch the modules the tests build", runs go-fetch.sh with no step before it that restores ~/go/pkg/mod')"
+
+echo "case: the same job with the restore first passes, and lists the fetch step with that restore"
+root=$(fixture fetch-after)
+cat >>"$root/.github/workflows/ci.yaml" <<'EOF'
+      - name: Restore the module cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app
+      - name: Fetch the modules the tests build
+        run: .github/scripts/go-fetch.sh deps packages/app ./cmd/app
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "lists the pair" \
+  "$(contains "$out" '^  .github/workflows/ci.yaml job lint: "Fetch the modules the tests build" after "Restore the module cache"')"
+check "counts it" "$(contains "$out" 'each of the 1 fetch steps of a required job comes after a restore of ~/go/pkg/mod')"
+
+echo "case: a restore of another path does not count"
+root=$(fixture fetch-other-cache)
+cat >>"$root/.github/workflows/ci.yaml" <<'EOF'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: go-build
+      - name: Fetch the modules the tests build
+        run: .github/scripts/go-fetch.sh deps packages/app ./cmd/app
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the fetch step" "$(contains "$out" 'step "Fetch the modules the tests build", runs go-fetch.sh with no step before it')"
 
 # --- A scan that cannot see -----------------------------------------------------------------------
 

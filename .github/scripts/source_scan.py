@@ -24,7 +24,6 @@ import ast
 import bisect
 import os
 import re
-import shlex
 import sys
 from pathlib import Path
 
@@ -284,114 +283,6 @@ def code(text, lang, keep=lambda value: False, tokens=None):
     position = _render(text, lex(text, lang) if tokens is None else tokens, keep, out, 0)
     out.append(text[position:])
     return "".join(out).split("\n")
-
-
-# --- Reading shell -------------------------------------------------------------------------------
-
-HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][\w]*)\2")
-
-
-def shell_code(text):
-    """Shell with the text of quoted strings, comments and heredoc bodies blanked. A $(...)
-    inside double quotes is code, and a double-quoted path ending /go becomes the word go."""
-    lines, out, stack, heredocs = text.split("\n"), [], [], []
-    for line in lines:
-        if heredocs:
-            strip, word = heredocs[0]
-            if (line.strip() if strip else line) == word:
-                heredocs.pop(0)
-            out.append(blank(line))
-            continue
-        code_, i, n, starts = [], 0, len(line), []
-        while i < n:
-            c = line[i]
-            state = stack[-1] if stack else "code"
-            if state in ("sq", "ansi"):
-                if state == "ansi" and c == "\\":
-                    code_.extend("  "[:n - i])
-                    i += 2
-                    continue
-                if c == "'":
-                    stack.pop()
-                code_.append(" ")
-                i += 1
-                continue
-            if state == "dq":
-                if c == "\\":
-                    code_.extend("  "[:n - i])
-                    i += 2
-                    continue
-                if c == '"':
-                    stack.pop()
-                    if starts:
-                        start, raw_start = starts.pop()
-                        if re.fullmatch(r'"[^"\s]*/go', line[raw_start:i]):
-                            code_[start:] = list("go" + " " * (len(code_) - start - 2))
-                    code_.append(" ")
-                    i += 1
-                    continue
-                if line.startswith("$(", i):
-                    stack.append("sub")
-                    code_.extend("$(")
-                    i += 2
-                    continue
-                code_.append(" ")
-                i += 1
-                continue
-            # code, or a $(...) inside double quotes
-            if c == "\\":
-                code_.extend(line[i:i + 2])
-                i += 2
-                continue
-            if line.startswith("$'", i):
-                stack.append("ansi")
-                code_.extend("  ")
-                i += 2
-                continue
-            if c == "'":
-                stack.append("sq")
-                code_.append(" ")
-                i += 1
-                continue
-            if c == '"':
-                stack.append("dq")
-                starts.append((len(code_), i))
-                code_.append(" ")
-                i += 1
-                continue
-            if c == "#" and (i == 0 or line[i - 1] in " \t;&|("):
-                code_.extend(" " * (n - i))
-                break
-            if c == ")" and state == "sub":
-                stack.pop()
-            if line.startswith("$(", i):
-                stack.append("sub")
-                code_.extend("$(")
-                i += 2
-                continue
-            code_.append(c)
-            i += 1
-        rendered = "".join(code_)
-        out.append(rendered)
-        for doc in HEREDOC.finditer(line):
-            if doc.start() < len(rendered) and rendered[doc.start()] == "<":
-                heredocs.append((doc.group(1) == "-", doc.group(3)))
-    return out
-
-
-SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")", "$(", "`"})
-
-
-def shell_words(line):
-    """The words of a shell line, its operators ; & | ( ) as words of their own and its comment
-    dropped; a line shlex cannot read is split on whitespace."""
-    try:
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        return list(lexer)
-    except ValueError:
-        return line.split()
 
 
 # --- Reading statements of Go and TypeScript: calls, their arguments, and what a name is bound to ---
@@ -819,12 +710,20 @@ def python_scope(node):
 
 def python_bound(name, node):
     """The value of the nearest plain assignment of name before node in its function or module."""
+    scope = python_scope(node)
+    assigns = getattr(scope, "_assigns", None)
+    if assigns is None:  # each scope's assignments, by name, read once
+        assigns = {}
+        for stmt in ast.walk(scope):
+            if isinstance(stmt, ast.Assign):
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        assigns.setdefault(target.id, []).append(stmt)
+        scope._assigns = assigns
     best = None
-    for stmt in ast.walk(python_scope(node)):
-        if isinstance(stmt, ast.Assign) and stmt.lineno <= node.lineno and stmt is not node:
-            for target in stmt.targets:
-                if isinstance(target, ast.Name) and target.id == name and (best is None or stmt.lineno >= best.lineno):
-                    best = stmt
+    for stmt in assigns.get(name, ()):
+        if stmt.lineno <= node.lineno and stmt is not node and (best is None or stmt.lineno >= best.lineno):
+            best = stmt
     return best.value if best is not None else None
 
 

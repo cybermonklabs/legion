@@ -3,10 +3,10 @@
 # check-omp-offline.sh share: the language of a path (.mts and .cts are TypeScript, a .d.ts is no
 # source), the walk that skips a test's inputs, installed packages and links, the lexing of Go,
 # TypeScript and Python into code with comments blanked and string text blanked but for the
-# literals the caller keeps, shell read the same way, a continued shell line, its words, and where a
-# reason comment counts. Last, one row both checks read through it: a .mts test that holds a quoted
-# example of a start and, in its control, the start itself; each check names the start and neither
-# reads the example.
+# literals the caller keeps, a Go or TypeScript call's arguments, assignments and environments,
+# Python's through its ast module, shell as simple commands, and where a reason comment counts.
+# Last, one row both checks read through it: a .mts test that holds a quoted example of a start
+# and, in its control, the start itself; each check names the start and neither reads the example.
 #
 # Only what the module does. What each check makes of it stays in that check's own suite,
 # check-go-offline.test.sh and check-omp-offline.test.sh, each of which runs the module beside the
@@ -48,9 +48,6 @@ code() {
   shift
   py 'print("\n".join(scan.code(sys.stdin.read(), sys.argv[1], set(sys.argv[2:]).__contains__)), end="")' "$lang" "$@"
 }
-
-# shell <file>: the shell code of this harness's stdin, line for line.
-shell() { py 'print("\n".join(scan.shell_code(sys.stdin.read())), end="")'; }
 
 echo "case: the language of a path"
 for row in "a.go go" "a_test.go go" "a.ts ts" "a.tsx ts" "a.mts ts" "a.cts ts" "a.js ts" "a.mjs ts" "a.cjs ts" \
@@ -120,8 +117,8 @@ check "a triple-quoted string blanks over its lines" "$(is "$(sed -n 2p <<<"$out
 check "and its last line" "$(is "$(sed -n 3p <<<"$out")" '     """; s = '"'"'  ')"
 check "an escaped newline continues the string" "$(is "$(sed -n 4p <<<"$out")" ' '"'"'; t = "go"')"
 
-echo "case: shell: quoted text, comments and a heredoc's body blank; a \$(...) in double quotes is code"
-out=$(shell <<'EOF'
+echo "case: shell: a quoted command is one word, a \$(...) in double quotes runs, a comment and a heredoc's body run nothing"
+out=$(py 'print([c.values() for c in scan.shell_script(sys.stdin.read())])' <<'EOF'
 echo "go build $(go version)" # go list
 cat <<'TEXT'
 go build
@@ -129,15 +126,8 @@ TEXT
 "$root/bin/go" build ./...
 EOF
 )
-check "the quoted text blanks and its \$(...) stays" \
-  "$(is "$(sed -n 1p <<<"$out" | sed 's/ *$//')" 'echo           $(go version)')"
-check "the heredoc's body is blank" "$(is "$(sed -n 3p <<<"$out" | tr -d ' ')" "")"
-check "a double-quoted path ending /go is the word go" "$(is "$(sed -n 5p <<<"$out")" 'go             build ./...')"
-
-echo "case: the words of a shell line"
-check "operators are words of their own and the comment is dropped" \
-  "$(is "$(py 'print("|".join(scan.shell_words(sys.argv[1])))' 'cd "a b" && go test ./x; echo ok # c')" \
-    'cd|a b|&&|go|test|./x|;|echo|ok')"
+check "each command's words, in order, an expansion as \\x00" \
+  "$(is "$out" "[['echo', 'go build \\x00'], ['go', 'version'], ['cat'], ['\\x00/bin/go', 'build', './...']]")"
 
 # src_of <lang> <statements>: runs the statements with this harness's stdin read as `src`, a
 # scan.Source of that language.

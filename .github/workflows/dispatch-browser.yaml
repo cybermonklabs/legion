@@ -512,6 +512,8 @@ jobs:
           done
           [ "$(curl -sf "$store/readiness")" = ready ] || { echo "::error::the file store did not serve back what it stored"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
           curl -sf -X DELETE -o /dev/null "$store/readiness"
+      # go-offline: this job has no Go; run-server.sh and run-broker.sh run the binaries job's builds,
+      # which DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR below name, and build nothing.
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling Playwright directly reuses the "Build dispatch dashboard" step's dist above and
@@ -918,6 +920,8 @@ jobs:
       # four, since this job runs one worker.
       - name: Read the lanes' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 1
+      # go-offline: this job has no Go; run-server.sh and run-broker.sh run the binaries job's builds,
+      # which DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR below name, and build nothing.
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling Playwright directly reuses the "Build dispatch dashboard" step's dist above and
@@ -1231,6 +1235,8 @@ jobs:
         timeout-minutes: 4
         run: bun run e2e:multiprocess
         working-directory: packages/dispatch
+      # go-offline: two server processes start no real broker (e2e/harness-real-broker.ts:24), so
+      # run-broker.sh builds nothing here; the fetch step above covers the server and the issuer.
       - name: Browser-test a sign-in across two server processes
         # Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=oidc,
         # e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
