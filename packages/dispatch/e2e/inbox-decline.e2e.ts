@@ -355,7 +355,7 @@ test("an answered ask and a declined ask draw no Decline to answer, which an ope
 
 // SLOW(>=2s): a note of 32,000 characters filled into the dialog, written, and read back from
 // the server.
-test("the decline dialog counts what is left of the note's bound and takes a note of exactly it", async ({
+test("the decline dialog counts what is written against the note's bound and takes a note of exactly it", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
