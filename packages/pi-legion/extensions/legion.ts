@@ -729,8 +729,15 @@ export default function legionExtension(pi: PiApi): void {
   // earlier recreation saved not counting, and the run saves it on the branch. An Envoy card,
   // sent with triggerTurn, starts its turn with neither the recovery nor before_agent_start, so
   // its branch keeps the saved copy.
+  //
+  // It is also where a model fallback whose wait is over goes back on before the run's first
+  // request (src/model-fallback.ts): the host reads a request's model before it runs the
+  // `context` hook below, so that hook's switch is the model of the request after its own, and a
+  // run that starts past the due time — a relaunched worker, or a task sent to a pane that sat
+  // idle through its cooldown — would otherwise send its first request to the weaker model.
   let resentNoticeId: string | undefined;
   pi.on("before_agent_start", async (_event, context) => {
+    if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
     if (recreatedNotice === undefined) return undefined;
     const branch = context.sessionManager.getBranch?.() ?? [];
     if (branchHoldsWorkspaceRecreatedNotice(branch, recreatedNotice.id)) return undefined;
@@ -757,8 +764,10 @@ export default function legionExtension(pi: PiApi): void {
     stallWatch?.sessionChanged();
   });
   // Every provider request of this session passes here, so this is where the session goes back
-  // on the model it fell back from: the host checks its own restore only when a new prompt
-  // arrives, which a long unattended tool loop never reaches (src/model-fallback.ts).
+  // on the model it fell back from inside a run: the host checks its own restore only when a new
+  // prompt arrives, which a long unattended tool loop never reaches, and it reads each request's
+  // model before this hook runs, so a switch here is the model of the next request
+  // (src/model-fallback.ts; before_agent_start above covers a run's first).
   //
   // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
   // in the process's live context, so once it is sent again every later request of this process

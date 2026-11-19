@@ -74,8 +74,11 @@ export interface ModelFallback {
   /** The host's `agent_end`: a turn that has settled, which the provider ended cleanly, with a
    * content filter, or with some other failure. */
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
-  /** The host's `context`, which runs before every provider request: the arming's model goes back
-   * on as soon as its wait is over, inside a long tool loop as well as at a new prompt. */
+  /** The host's `before_agent_start`, which runs before a run's first provider request, and its
+   * `context`, which runs before every request but after the host has read that request's model:
+   * the arming's model goes back on as soon as its wait is over, at the first request of a run
+   * that starts past it, and at the request after the one whose hook found it over inside a long
+   * tool loop. */
   readonly maybeRestore: (ctx: ModelFallbackContext) => Promise<void>;
 }
 

@@ -6864,7 +6864,8 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
 
 // The model fallback (src/model-fallback.ts) as the entry wires it: every Legion role gets it,
 // the architect included, the arming is persisted in the transcript and restored from it, and
-// the return happens in the `context` hook, which runs before every provider request.
+// the return happens in `before_agent_start`, ahead of a run's first provider request, and in the
+// `context` hook, which runs before every provider request after the host has read its model.
 describe("the model fallback", () => {
   const OPUS = "anthropic/claude-opus-5-5";
   const SONNET = "anthropic/claude-sonnet-5";
@@ -6913,15 +6914,17 @@ describe("the model fallback", () => {
     expect(armings(pane)[1]).toEqual({ levels: {} });
   });
 
+  /** The arming a worker's transcript holds when the daemon relaunches it, its wait long over. */
+  const recorded = {
+    type: "custom",
+    customType: LEGION_FALLBACK_ENTRY,
+    data: {
+      arming: { restoreTo: OPUS, entryId: "mc-fallback", dueAt: 1, cause: "refusal" },
+      levels: { [OPUS]: 3 },
+    },
+  };
+
   test("a relaunched worker takes the return its transcript records", async () => {
-    const recorded = {
-      type: "custom",
-      customType: LEGION_FALLBACK_ENTRY,
-      data: {
-        arming: { restoreTo: OPUS, entryId: "mc-fallback", dueAt: 1, cause: "refusal" },
-        levels: { [OPUS]: 3 },
-      },
-    };
     const pane = await bootPane({
       role: "implementer",
       issue: "REPO-43",
@@ -6934,6 +6937,25 @@ describe("the model fallback", () => {
     expect(pane.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
     // The levels the record carried survive the return: the next refusal of that model waits on
     // the one it left off at.
+    expect(armings(pane)).toEqual([{ levels: { [OPUS]: 3 } }]);
+  });
+
+  test("a run that starts past the wait takes the return before its first request", async () => {
+    // The host reads a request's model before it runs the `context` hook, so a return made there
+    // is the model of the request after it: the run's first request goes out on the model
+    // `before_agent_start` leaves the session on.
+    const pane = await bootPane({
+      role: "implementer",
+      issue: "REPO-43",
+      branch: [walked, recorded],
+    });
+    pane.models.current = SONNET;
+
+    expect(
+      await pane.handlers.get("before_agent_start")?.({ prompt: "task" }, pane.context)
+    ).toBeUndefined();
+
+    expect(pane.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
     expect(armings(pane)).toEqual([{ levels: { [OPUS]: 3 } }]);
   });
 
