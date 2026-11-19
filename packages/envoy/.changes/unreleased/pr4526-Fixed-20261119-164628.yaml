@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `envoy-dispatch` holds no lock of its own while it waits for a NATS reconnect's dial and handshake, during which nats.go holds its connection lock. An outbox window's send that holds the window's pin answers `ErrUnavailable` within 100 ms, and the window's other sends take the pin at once rather than waiting behind it. A role or session read of the outbox opens its bucket with the buckets' lock released and within the read's own bound, so the other reads no longer wait for an open that outlived its read. While the intake's connection is not connected, its stop drains the subscription on a goroutine of its own and leaves the messages it held with the durable, so neither that stop nor a second one waits for the handshake to end.
+time: 2026-11-19T16:46:28Z
+custom:
+  Issue: pr4526
