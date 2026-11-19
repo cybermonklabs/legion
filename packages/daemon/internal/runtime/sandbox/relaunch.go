@@ -197,7 +197,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// it.
 	replace := !live || (accountDrifted && !covered) || migrate ||
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
-		(!installing && !covered && (len(r.shapeDrift(s, l.shapeKey())) > 0 || len(r.leakCheckDrift(s.Spec.PodTemplate.Metadata.Annotations)) > 0))
+		(!installing && !covered && (len(r.shapeDrift(s, l.shapeKey())) > 0 ||
+			len(r.leakCheckDrift(recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, string(pod.UID)))) > 0))
 	if !replace {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -214,7 +215,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// nothing the daemon can read, it cannot tell what the pod carries, and the launch
 		// replaces the pod where it stands, which is what every launch into a drifted pod did
 		// before the round existed.
-		kept, readable := r.keptBy(s, l)
+		kept, readable := r.keptBy(s, string(pod.UID), l)
 		if !readable {
 			replace = true
 		} else {
@@ -305,10 +306,16 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	// A kept pod that records no leak check digest, whose launcher held no install before this
 	// connection, is about to be pushed the check of the setting this daemon runs (serveLeakCheck),
-	// so its role is told that setting's digest: its shim and guard then hash the check pushed.
-	// One whose launcher held an install from before keeps none (keptPod.checker).
+	// so its role is told that setting's digest: its shim and guard then hash the check pushed. The
+	// digest is recorded on the Sandbox first (recordLeakCheckPushed), so a role started after the
+	// launcher reconnects, when its hello says it holds that install from before, is told the
+	// digest too. One whose launcher held an install from before, unrecorded, holds one a daemon of a
+	// release before the setting pushed, and keeps none (keptPod.checker).
 	if l.kept != nil && !l.kept.recorded && r.leakCheck.Configured() {
 		if held, connected := r.launchers.heldLeakCheck(spec.Claim, string(pod.UID)); connected && !held {
+			if err := r.recordLeakCheckPushed(starting, s, string(pod.UID)); err != nil {
+				return fail("record the leak check pushed into its pod", err)
+			}
 			l.kept.checker = r.leakCheck.ManifestSHA256
 		}
 	}
@@ -327,13 +334,13 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	return loc, nil
 }
 
-// keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
-// it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
+// keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts
+// in it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
-// overlays
-// its container holds (heldRoleOverlays), the session store it was built under
-// (heldSessionStore, the URL file its generation is pointed at), and the leak check checker its
-// template recorded (leakCheckerAnnotation, the one its install hashes to). A launch that keeps such a pod
+// overlays its container holds (heldRoleOverlays), the session store it was built under
+// (heldSessionStore, the URL file its generation is pointed at), and the leak check digest the pod
+// records (recordedLeakChecker: its template's, else the one this daemon pushed into it, the one
+// its install hashes to). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to push its work and answer that
@@ -348,14 +355,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // annotation existed does not carry. readable is false when the template
 // holds no container for the role — a template of another shape, or one this daemon cannot read:
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
-func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
+func (r *Runtime) keptBy(s *sandbox, podUID string, l launch) (keptPod, bool) {
 	spec := s.Spec.PodTemplate.Spec
 	overlays, variantFiles, readable := r.heldRoleOverlays(spec, l.spec.Role)
 	if !readable {
 		return keptPod{}, false
 	}
 	kind, _, _ := heldSessionStore(spec)
-	checker, recorded := s.Spec.PodTemplate.Metadata.Annotations[leakCheckerAnnotation]
+	checker, recorded := recordedLeakChecker(s.Spec.PodTemplate.Metadata.Annotations, s.Annotations, podUID)
 	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind,
 		checker: checker, recorded: recorded}, true
 }

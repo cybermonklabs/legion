@@ -96,8 +96,10 @@ type launcherSession struct {
 	// to the push on this connection did (serveLeakCheck). leakCheckHeld is what the hello said
 	// alone, and never changes: an install the launcher held before this connection, whether an
 	// earlier daemon pushed it or this daemon did on an earlier connection of the same launcher
-	// (heldLeakCheck). A role told none for such an install, in a kept pod that records no digest,
-	// runs the check that was pushed then, unhashed, until the pod is next replaced.
+	// (heldLeakCheck). A daemon that pushes into a kept pod that records no digest records the
+	// digest it pushed first (recordLeakCheckPushed), so only an install a daemon of a release before
+	// the setting pushed is held in a pod that records none; a role told none for it runs that
+	// check, unhashed, until the pod is next replaced.
 	leakCheckTag       string
 	leakCheckInstalled bool
 	leakCheckHeld      bool
@@ -243,7 +245,8 @@ func (d *launchers) state(token claim.Token, podUID string) (shimwire.LauncherSt
 // check installed from before this connection (leakCheckHeld), and whether that launcher is
 // connected at all. A launcher that held none is pushed the check of the setting this daemon runs
 // before its first start (serveLeakCheck), so its role is told that setting's manifest digest even
-// in a kept pod that records none (relaunch).
+// in a kept pod that records none, and the digest is recorded on its Sandbox before the push
+// (relaunch, recordLeakCheckPushed).
 func (d *launchers) heldLeakCheck(token claim.Token, podUID string) (held, connected bool) {
 	d.mu.Lock()
 	session := d.sessions[token]

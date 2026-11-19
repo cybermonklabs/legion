@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/api/equality"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -273,14 +276,135 @@ func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T)
 			if pushed := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck) > before; pushed != tc.pushed {
 				t.Fatalf("the restarted daemon pushed the check to the kept pod's launcher: %t, want %t", pushed, tc.pushed)
 			}
-			told := map[string]string{}
-			for name, value := range startEnv(startSent(t, g, 2)) {
-				if name == leakguard.CheckVar || name == leakguard.CheckerVar {
-					told[name] = value
+			if told := leakCheckTold(startSent(t, g, 2)); !maps.Equal(told, tc.told) {
+				t.Fatalf("the role started in the kept pod was told %v of the leak check, want %v", told, tc.told)
+			}
+		})
+	}
+}
+
+// leakCheckTold is what start tells its role of the leak check: the two variables of it it sets.
+func leakCheckTold(start shimwire.LauncherStart) map[string]string {
+	told := map[string]string{}
+	for name, value := range startEnv(start) {
+		if name == leakguard.CheckVar || name == leakguard.CheckerVar {
+			told[name] = value
+		}
+	}
+	return told
+}
+
+// A pod built under no setting records no digest on its template. Once a daemon running the
+// setting keeps it and pushes the setting's check into it, the Sandbox records the digest pushed
+// for that pod (leakCheckPushedAnnotation), on its own metadata: the template, the Sandbox's
+// generation and the pod are as they were, and the pod has drifted from nothing. Its launcher holds
+// that install from then on and says so in the hello of every later connection, and a role started
+// after such a reconnect is told the digest pushed, so its guard hashes the check it runs; a daemon
+// restarted under another digest reads the record as drift. The control rows are the record
+// dropped and a record of another pod: each reads as no record at all, so the later role is told
+// no digest and its guard would run the pushed check unhashed, which is what every such role was
+// told before the record existed, and the restarted daemon reads no leak check drift.
+func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T) {
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+	movedReason := "leak check manifest " + testLeakCheck.ManifestSHA256 + ", now " + moved.ManifestSHA256
+	for _, tc := range []struct {
+		name string
+		// edit changes the Sandbox's own annotations after the push and before the reconnect; nil
+		// keeps the record as the push wrote it.
+		edit func(annotations map[string]string)
+		told map[string]string
+		// drifts is whether the daemon restarted under the moved digest reads the record as drift.
+		drifts bool
+	}{
+		{name: "the record the push wrote", drifts: true,
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.ManifestSHA256}},
+		{name: "the record dropped", edit: func(a map[string]string) { delete(a, leakCheckPushedAnnotation) },
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck}},
+		{name: "a record of another pod", edit: func(a map[string]string) {
+			a[leakCheckPushedAnnotation] = `{"pod":"another-pod","manifestSHA256":"` + testLeakCheck.ManifestSHA256 + `"}`
+		}, told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false),
+				withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), leakguard.Setting{} }))
+			loc := g.spawn(workerSpec(t))
+			name := loc.Sandbox.Name
+			built := g.sandbox(name)
+			if _, recorded := built.Spec.PodTemplate.Metadata.Annotations[leakCheckerAnnotation]; recorded {
+				t.Fatalf("a pod built under no setting records the digest %q on its template", built.Spec.PodTemplate.Metadata.Annotations[leakCheckerAnnotation])
+			}
+			if pushed := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck); pushed != 0 {
+				t.Fatalf("the daemon running no setting pushed %d slices of a check", pushed)
+			}
+
+			// The setting is turned on, and a launch that keeps the pod pushes the setting's check.
+			r2 := restartedOver(t, g, loc, func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), testLeakCheck })
+			kept := resumeTester(t, g, r2, loc)
+			if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
+				t.Fatalf("Resume replaced the pod; this row is about the pod a launch keeps")
+			}
+			if countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck) == 0 {
+				t.Fatalf("the daemon running the setting pushed nothing into a launcher that holds no install, so this row proves nothing")
+			}
+			if told := leakCheckTold(startSent(t, g, 2)); told[leakguard.CheckerVar] != testLeakCheck.ManifestSHA256 {
+				t.Fatalf("the role the push was made for was told %v of the leak check, want the setting's digest", told)
+			}
+			pushed := g.sandbox(name)
+			var record pushedLeakCheck
+			if err := json.Unmarshal([]byte(pushed.Annotations[leakCheckPushedAnnotation]), &record); err != nil ||
+				record != (pushedLeakCheck{Pod: loc.Sandbox.PodUID, ManifestSHA256: testLeakCheck.ManifestSHA256}) {
+				t.Fatalf("the Sandbox records %s=%q (%v), want the pod %s and the digest pushed, %s", leakCheckPushedAnnotation,
+					pushed.Annotations[leakCheckPushedAnnotation], err, loc.Sandbox.PodUID, testLeakCheck.ManifestSHA256)
+			}
+			if !equality.Semantic.DeepEqual(pushed.Spec.PodTemplate, built.Spec.PodTemplate) || pushed.Generation != built.Generation {
+				t.Fatalf("the record changed the Sandbox's pod template or its generation (%d, built at %d)", pushed.Generation, built.Generation)
+			}
+			if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
+				t.Fatalf("the pod is %v after the record, want the one built, %s", pod, loc.Sandbox.PodUID)
+			}
+			if drifted := driftOf(t, g.ctx, r2, kept); len(drifted) != 0 {
+				t.Fatalf("PodDrift = %q after the record, want nothing", drifted)
+			}
+			if tc.edit != nil {
+				tc.edit(pushed.Annotations)
+				u, err := encodeSandbox(*pushed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
+					t.Fatal(err)
 				}
 			}
-			if !maps.Equal(told, tc.told) {
-				t.Fatalf("the role started in the kept pod was told %v of the leak check, want %v", told, tc.told)
+
+			// The launcher reconnects, holding the install this daemon pushed.
+			g.leakCheckInstalled = true
+			g.connectRunning(workerToken, kept.Sandbox.Generation)
+			g.eventually("the tester's launcher to reconnect saying it holds the check installed", func() bool {
+				held, connected := r2.launchers.heldLeakCheck(workerToken, kept.Sandbox.PodUID)
+				state, ready := r2.launchers.state(workerToken, kept.Sandbox.PodUID)
+				return held && connected && ready && state.Child != nil
+			})
+			before := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck)
+			spec := workerSpec(t)
+			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 3, "boot-tester-g3", resumeSession
+			later, err := r2.Resume(g.ctx, &kept, spec)
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if later.Sandbox.PodUID != loc.Sandbox.PodUID {
+				t.Fatalf("the later Resume replaced the pod; this row is about the pod a launch keeps")
+			}
+			if after := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck); after != before {
+				t.Fatalf("the daemon pushed the check again to a launcher that holds it installed")
+			}
+			if told := leakCheckTold(startSent(t, g, 3)); !maps.Equal(told, tc.told) {
+				t.Fatalf("the role started after the reconnect was told %v of the leak check, want %v", told, tc.told)
+			}
+
+			// A daemon restarted under another digest reads the record as the digest the pod holds.
+			r3 := restartedOver(t, g, later, func(o *Options) { o.LeakCheck, o.LeakCheckSetting = servedLeakCheck(), moved })
+			if drifted := slices.Contains(driftOf(t, g.ctx, r3, later), movedReason); drifted != tc.drifts {
+				t.Fatalf("PodDrift under the moved digest names %q: %t, want %t", movedReason, drifted, tc.drifts)
 			}
 		})
 	}

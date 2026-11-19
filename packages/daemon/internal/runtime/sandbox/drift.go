@@ -377,11 +377,13 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		}
 		drifted = r.shapeDrift(s, shape)
 	}
-	// The leak check digest the pod was built under, read from the same stored template's
-	// annotations (leakCheckDrift): a pod that records another digest than the setting's is
-	// replaced by its round, and its workers are told the digest it records while they push.
+	// The leak check digest the pod records, read from the same stored template's annotations and,
+	// where the template records none, from the Sandbox's record of the check this daemon pushed
+	// into this very pod (recordedLeakChecker, leakCheckDrift): a pod that records another digest
+	// than the setting's is replaced by its round, and its workers are told the digest it records
+	// while they push.
 	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
-	drifted = append(drifted, r.leakCheckDrift(annotations)...)
+	drifted = append(drifted, r.leakCheckDrift(recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)))...)
 	// The account the pod runs as is read from the live pod this call already holds, and both
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
 	// `default` rather than reading every pod of the deployment as drifted (accountDrift). The
