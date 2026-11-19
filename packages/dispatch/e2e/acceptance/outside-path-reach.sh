@@ -45,9 +45,10 @@
 # never PASS's 0, and refuses an empty value with exit 2.
 # OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and OUTSIDE_PATH_ORIGIN_READ_SECONDS bound each of the two
 # reads of the origin, as curl's --connect-timeout and --max-time: 3 and 10 s when unset or empty.
-# Each must be a positive number of seconds, digits with an optional fraction (0.5, 30), and any
-# other value refuses the run, naming the setting. They do not bound the probes, whose 3 s to
-# connect and 5 s in all the classifier's rules count on.
+# Each must be a number of seconds from 0.001 to 999999, digits with an optional fraction (0.5,
+# 30), since curl counts in whole milliseconds, reads 0 as no bound and refuses a number past what
+# a long holds; any other value refuses the run, naming the setting. They do not bound the probes,
+# whose 3 s to connect and 5 s in all the classifier's rules count on.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
@@ -331,18 +332,18 @@ fi
 [ -n "${OUTSIDE_PATH_TARGETS:-}" ] ||
   unknown "OUTSIDE_PATH_TARGETS is unset: set it to the file of 'name host port' lines naming every internal target"
 
-# check_seconds NAME VALUE: refuses the run, naming NAME, unless VALUE is a positive number of
-# seconds, digits with an optional fraction, which curl's --connect-timeout and --max-time take.
+# check_seconds NAME VALUE: refuses the run, naming NAME, unless VALUE is a number of seconds as
+# `is_seconds` reads one, from 0.001 to 999999: curl's --connect-timeout and --max-time count
+# whole milliseconds and read 0 as no bound at all, and refuse a number past what a long counts
+# in milliseconds, 2147483 s where a long has 32 bits.
 check_seconds() {
-  case $2 in
-    '' | *[!0-9.]* | .* | *. | *.*.*)
-      unknown "$1 must be a positive number of seconds, digits with an optional fraction, not $2"
-      ;;
-  esac
-  case $2 in *[1-9]*) ;; *)
-    unknown "$1 must be a positive number of seconds, digits with an optional fraction, not $2"
-    ;;
-  esac
+  local whole=${2%%.*} fraction=''
+  case $2 in *.*) fraction=${2#*.} ;; esac
+  whole=${whole#"${whole%%[!0]*}"}
+  if is_seconds "$2" && [ "${#whole}" -le 6 ]; then
+    case $whole${fraction:0:3} in *[1-9]*) return ;; esac
+  fi
+  unknown "$1 must be a number of seconds from 0.001 to 999999, digits with an optional fraction, not $2"
 }
 origin_connect=${OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS:-3}
 origin_read=${OUTSIDE_PATH_ORIGIN_READ_SECONDS:-10}
@@ -530,10 +531,12 @@ printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"
   echo "outside-path-reach: warning: every target is a name, and a name proves only where it resolves on this device; list each of our services' addresses on the path as lines of their own"
 
 # fetch PATH: what the origin answers PATH with, no credential sent: its body, then its three-digit
-# status, 000 when none came.
+# status, 000 when none came. Its curl runs in the C locale, as the probe's does: curl 7.40 to 7.86
+# reads a fractional bound with the device's own locale, where `0.5` is not a number in a locale
+# whose decimal mark is a comma.
 fetch() {
   local answer
-  answer=$(curl -q --noproxy '*' -g -sS -o - --connect-timeout "$origin_connect" \
+  answer=$(LC_ALL=C curl -q --noproxy '*' -g -sS -o - --connect-timeout "$origin_connect" \
     --max-time "$origin_read" -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
   [ "${#answer}" -ge 3 ] || answer=000
   printf '%s' "$answer"

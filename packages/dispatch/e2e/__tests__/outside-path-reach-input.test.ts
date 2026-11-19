@@ -189,7 +189,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   row(withoutTools)(
-    "refuses an origin-read bound that is not a positive number of seconds, naming the setting, before going on the network",
+    "refuses an origin-read bound that is not a number of seconds from 0.001 to 999999, naming the setting, before going on the network",
     async () => {
       const origin = await fakeDispatch();
       try {
@@ -198,7 +198,24 @@ describe.concurrent("outside-path-reach.sh", () => {
           "OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS",
           "OUTSIDE_PATH_ORIGIN_READ_SECONDS",
         ] as const;
-        const values = ["abc", "0", "0.0", "-1", ".5", "5.", "1e3", "5s", "1.2.3", " 3"];
+        // curl counts these bounds in whole milliseconds, reads 0 as no bound, and refuses a
+        // number of milliseconds past what a long holds, so 0.0009 and 1000000 are refused.
+        const values = [
+          "abc",
+          "0",
+          "00",
+          "0.0",
+          "0.0009",
+          "1000000",
+          "99999999999999999999",
+          "-1",
+          ".5",
+          "5.",
+          "1e3",
+          "5s",
+          "1.2.3",
+          " 3",
+        ];
         const cases = settings.flatMap((setting) => values.map((value) => ({ setting, value })));
         const runs = await driveEach(
           cases.map(({ setting, value }) => ({
@@ -213,7 +230,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           cases.map(({ setting, value }) => ({
             setting,
             value,
-            verdict: `UNKNOWN: ${setting} must be a positive number of seconds, digits with an optional fraction, not ${value}`,
+            verdict: `UNKNOWN: ${setting} must be a number of seconds from 0.001 to 999999, digits with an optional fraction, not ${value}`,
             code: 2,
           }))
         );

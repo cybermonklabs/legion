@@ -201,15 +201,17 @@ describe.concurrent("outside-path-reach.sh", () => {
   });
 
   // The two reads of the origin take their bounds from OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and
-  // OUTSIDE_PATH_ORIGIN_READ_SECONDS, and from the script's own 3 s and 10 s when both are empty,
-  // as on a device that sets neither. The row's own curl answers the origin as Dispatch and logs
-  // what each read asked of curl, so no stand-in's speed decides the row.
+  // OUTSIDE_PATH_ORIGIN_READ_SECONDS, and from the script's own 3 s and 10 s when both are unset,
+  // as on a device that sets neither, or empty. Every run here sets both, so the unset run has bash
+  // unset them before the script starts, through BASH_ENV, which bash reads first. The row's own
+  // curl answers the origin as Dispatch and logs what each read asked of curl, so no stand-in's
+  // speed decides the row.
   probingRow(withoutTools)(
     "bounds each read of the origin by its two settings, and by 3 s to connect and 10 s in all when neither is set",
     async () => {
       const port = await closedPort();
       const origin = `127.0.0.1:${port}`;
-      const answered = async (connect: string, read: string) => {
+      const answered = async (connect: string, read: string, unset = false) => {
         const log = written("");
         const run = await drive(
           {
@@ -217,6 +219,13 @@ describe.concurrent("outside-path-reach.sh", () => {
             OUTSIDE_PATH_TARGETS: await list(),
             OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS: connect,
             OUTSIDE_PATH_ORIGIN_READ_SECONDS: read,
+            ...(unset
+              ? {
+                  BASH_ENV: written(
+                    "unset OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS OUTSIDE_PATH_ORIGIN_READ_SECONDS\n"
+                  ),
+                }
+              : {}),
           },
           {
             path: pathWithCurl(
@@ -244,7 +253,11 @@ describe.concurrent("outside-path-reach.sh", () => {
           });
         return { reads, verdict: verdict(run), code: run.code };
       };
-      const [unset, given] = await Promise.all([answered("", ""), answered("7", "0.5")]);
+      const [unset, empty, given] = await Promise.all([
+        answered("870", "870", true),
+        answered("", ""),
+        answered("7", "0.5"),
+      ]);
       expect(unset).toEqual({
         reads: [
           { path: "/healthz", connect: "3", read: "10" },
@@ -253,6 +266,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         verdict: `PASS: every target is unreachable from this device, and http://${origin} answered as Dispatch`,
         code: 0,
       });
+      expect(empty).toEqual(unset);
       expect(given.reads).toEqual([
         { path: "/healthz", connect: "7", read: "0.5" },
         { path: "/api/v1/projects", connect: "7", read: "0.5" },

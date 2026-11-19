@@ -192,15 +192,16 @@ async function control(path: string, init?: RequestInit): Promise<Response> {
  *  connections.
  *
  *  It answers from a process of its own, whose event loop does nothing but answer, because a
- *  server in the test process answers only while the test process's event loop runs, and the
- *  script gives each of its reads of the origin 10 s (`curl --max-time 10`). With the fake
+ *  server in the test process answers only while the test process's event loop runs. Under the
+ *  script's default of 10 s for each read of the origin (`curl --max-time 10`), with the fake
  *  Dispatch in the test process, the row "fails naming an origin that serves a read with no
  *  credential" read "did not answer as Dispatch" (UNKNOWN) in place of FAIL 2 times in 320 runs of
  *  its file under the e2e lane's load, and once in 47 ordinary runs of the lane. In four runs that
  *  each ran the harness lane 20 times (`bun run test:repeat --lane harness --reruns 20`), a 50 ms
  *  interval timer in that file measured the test process's longest stall at 5,850, 12,681, 6,080
  *  and 1,557 ms, and its longest stall during that row's run of the script at 1,517, 12,631, 6,030
- *  and 757 ms: a stall past 10 s leaves the script's read of `/api/v1/projects` unanswered. */
+ *  and 757 ms: under that default, a stall past 10 s leaves the script's read of
+ *  `/api/v1/projects` unanswered. The runs here give each read `originSeconds` instead. */
 export async function fakeDispatch(
   health = 200,
   projects = 401,
