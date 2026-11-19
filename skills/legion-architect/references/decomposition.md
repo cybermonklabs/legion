@@ -95,8 +95,9 @@ Split a change across repositories into children of one repository each, choosin
 (`dispatch issue … --repo <owner/name>`). Release a child that builds on another repository's
 change only after that pull request merges, never by `--blocked-by`, which starts it at the
 blocker's close, and name the merged commit in its task
-(`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`). Your `gh` reads every repository
-your App is installed on (`-R owner/repo`).
+(`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`); for a repository that pins the
+other one by commit (a lock file or dependency pin), the pin is that merged commit. Your `gh` reads
+every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
 

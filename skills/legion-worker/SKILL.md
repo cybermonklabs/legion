@@ -13,7 +13,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`. A path you did not write in either list: read `skill://legion-worker/references/foreign-path.md`.
 3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work: the working copy is the next role's first commit.
-5. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
+5. Every role writes the one workspace, so a file can change under your check. Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) where you can, and run `git diff --quiet <head> -- <files the check reads>` before you record a result. A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after. A run whose output you did not capture can be neither confirmed nor cleared.
 6. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
@@ -34,7 +34,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 ## Commits and pushes
 
-- Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`.
+- Before a push, run the trailer check in `skill://legion-worker/references/default-branch-check.md`. Then, with the `$default` it set, read your branch's full commit messages: `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'description ++ "\n"'`. Earlier phases' commits in it are expected; `description.first_line()` shows no trailer.
 - Write no trailer yourself. The pane's jj adds `Omp-Session:` and `Legion-Role:`, and `Dispatch: <KEY>` in a repository the deployment names; the git wrapper adds the first two to a `git commit`. A merge, revert, cherry-pick or rebase that git makes gets none. Cure a commit that lacks a line by describing it again in the pane's shell; where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the trailer line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
 - A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.

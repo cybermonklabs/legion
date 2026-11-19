@@ -77,7 +77,7 @@ Every move to `todo` you make is one of these:
 
 - a root you labelled at a person's request, or filed for a clear defect;
 - an issue a person asks you to start, a parked one included;
-- a root in the workflow whose architect failed, or that is held, once its cause is gone or none is found; one whose architect retired, once a person's decision gives it a next step;
+- a root in the workflow whose architect failed, once you found no cause or checked that its cause is gone; one that is held, once you checked that its cause is gone; one whose architect retired, once a person's decision gives its work a next step and you found no cause or checked that its cause is gone;
 - a tree you parked with the mark `Parked by Legion while it waits on:`, once its cause is gone or its event happened (comment the mark and what you checked), or a person's later decision gives it a next step;
 - stopped-session work a person's directive in the weekly plan moves to Legion.
 

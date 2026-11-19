@@ -79,6 +79,8 @@ its last round (section 4).
 - Prove every criterion of your issue in its own pull request, by its own tester evidence, never in
   a child; never downgrade one. A parent signs off only after its last round
   (`skill://legion-architect/references/acceptance.md`, "The last round").
+- While the work is built, a role runs the application from the issue's branch and uses it as its
+  user would: a passing check does not show that a person can do their job with it.
 - Where the work is a page or a tool a person uses, offer that person a running build before the
   review; the deployment instructions say how a pod runs one.
 
@@ -92,14 +94,8 @@ while it holds the phase. A retro that cannot write the body:
 ## 6. Acceptance and the merge
 
 In `accepting` no worker runs; the issue's own architect accepts it. Read, against the goal, every
-check and every requirement:
-
-1. the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the approved head;
-3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
-   (`skill://legion-worker/references/merge-gate.md`);
-4. each claim of the reviewer's prose, against the code at that head;
-5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI and no wake.
+check and every requirement, in the five sources that
+`skill://legion-architect/references/acceptance.md`, "Accepting", lists.
 
 Run the `goal-red-team` read your role prompt names. Accept only when a pass stands for every
 `before_merge` check at the approved head, every requirement has a check, and none is unmet or read

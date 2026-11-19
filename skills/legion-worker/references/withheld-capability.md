@@ -12,7 +12,8 @@ An install of your own (an interpreter, a browser, a second toolchain, an extrac
 2. Once the command exits, nothing else resolves differently. Export a toolchain's `PATH` or `LD_LIBRARY_PATH` only around your harness's own commands, never into the shell you go on working in or a subagent's environment.
 
 - A repository's own dependency install (`uv sync`, `bun install`) into its ignored directories is sanctioned.
-- Playwright already keeps its browsers under `XDG_CACHE_HOME`, shared under an install lock: leave `PLAYWRIGHT_BROWSERS_PATH` unset. A tool whose cache the runtime does not place, such as Puppeteer, needs its own variable (`PUPPETEER_CACHE_DIR`) pointed under one of the paths above.
+- A pinned runner line pins the named package alone; its dependencies are resolved when it runs. When the work needs the whole dependency closure pinned (a comparison that has to hold across days or across pods), use a project's own lockfile with `uv run` or `bun install`, not a one-off runner line.
+- Playwright keeps its browsers under `XDG_CACHE_HOME`, on the issue's volume, where the issue's roles share one registry under an install lock (`docs/kubernetes.md`, "Anatomy of a Sandbox pod"). Pointing `PLAYWRIGHT_BROWSERS_PATH` elsewhere loses that shared registry and the lock that makes a second role's install wait rather than race. A tool whose cache the runtime does not place, such as Puppeteer, needs its own variable (`PUPPETEER_CACHE_DIR`) pointed under one of the paths above.
 - Every cache is on the issue's volume, and the cache trimmer of `skill://legion-worker/references/tools.md` holds part of that volume under a mark. An install is paid once per pod in uv's cache and Pythons, the Go module cache and the Playwright registry, and can be paid again after a sweep in the bun install cache and the Go build cache.
 
 ## The Dispatch browser suite

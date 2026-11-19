@@ -47,8 +47,8 @@ Change the source and regenerate; never edit these by hand.
 - A zod object drops the keys it does not declare.
   A new wire field that a nested `z.object` does not declare vanishes from every frame read through it.
 
-- Dispatch, its clients and the plugins ship separately.
-  Make a new field optional, and read its absence as an older build, not as `null` or `false`.
+- Dispatch, its clients and the plugins ship separately: prefer backward-compatible additions when you extend the envelope.
+  A client reads an absent `service`, `session` or `project` in `WhoamiResponse` as a Dispatch older than that field, not as `null` (`src/dispatch-api-user.ts`).
 
 - Build each Dispatch spec's fields through `zodSchemaApi(hostZod)`, and validate a call with `dispatchToolSchema(spec, zodSchemaApi(hostZod))`:
   the host's Zod can be Oh My Pi's `pi.zod` facade, which differs from zod v4 (`src/tool-schema.ts` says where).

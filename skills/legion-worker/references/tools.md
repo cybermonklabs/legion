@@ -4,7 +4,7 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 
 ## What runs in your pod, and what runs on the pull request
 
-- The issue's roles share one pod memory limit. Near it the launcher's memory guard SIGKILLs the largest process that is not Legion's or an agent's, usually your command, and tells your role why; a faster fill ends every role's turn.
+- The issue's roles share one pod memory limit. In a gVisor pod, where the deployment runs the launcher's memory guard (it is on by default), the guard SIGKILLs near that limit the largest process that is not Legion's or an agent's, usually your command, and tells your role why; a faster fill ends every role's turn. In a microVM pod the pod's own kernel stops such a command instead (an agent too, where the pod requests less than its limit), and your role is told the same way.
 - In the pod: compile what you touched, run the tests you added or changed by name (`go test -run '<TestName>' ./internal/<package>/`, `bun test <files>`), build the program a check drives, and `go vet -tags e2e ./...`. For the race detector prefix `CGO_ENABLED=1`; the image sets it to 0.
 - A whole module's test run (`go test ./...`), a whole Postgres-backed package, a browser suite run whole, and `make -j` or `lake build` go to CI on the pull request. Every other heavy run goes where your deployment's instructions say.
 
@@ -47,11 +47,9 @@ Read the source at the fork tag `.omp-pin` names (`git ls-remote --tags https://
 
 Cite CI's run at the head for these and name each package the pod could not run. A failure not listed is yours to explain.
 
-- Read what your work wrote, never a Kubernetes Job's phase: `Succeeded` means the container exited 0, and `Running` can mean zero pods under a full quota (`kubectl get pods -l batch.kubernetes.io/job-name=<job>`).
+- Read what your work wrote, never a Kubernetes Job's phase: `Succeeded` means the container exited 0, and `Running` can mean zero pods under a full quota (`kubectl get pods -l batch.kubernetes.io/job-name=<job>`). A Job's harness detects the failure in the text its tool prints and exits non-zero itself, rather than passing a wrapper's exit code on, and writes a verdict that matters to durable storage as it is produced, not at the end: a node can vanish soon after its pod ends.
 - gVisor lacks `SO_PEERPIDFD` and some terminal ioctls, so `cmd/agent-secrets`, `cmd/agent-secrets-helper` and `internal/broker/helper` of `packages/envoy` fail; `internal/dispatch/pmdoc`'s timing tests read `+Inf times`.
-- Under gVisor `openat` with `O_DIRECTORY|O_NOFOLLOW` follows a link to a directory, and `openat2` can return `ENOSYS`. Open each path component with `O_PATH|O_NOFOLLOW|O_CLOEXEC` and read its kind with `fstat`.
-- Set the stack with `ulimit -S -s <n>` first, the hard limit only where it reads `unlimited`, then read both back and refuse a mismatch: `unlimited` gives 8 MiB under gVisor, which caps the stack at 128 MiB.
-- Compare durations within one pod only.
+- Before you walk a path with `openat`, trust a tool's binary, set a stack limit, or report a duration measured in the pod: read `skill://legion-worker/references/gvisor.md`.
 - No Docker: testcontainers panic. `DISPATCH_TEST_NO_CONTAINERS=1` skips `internal/dispatch/files`. For the daemon's NATS tests run one server per test binary and set both variables:
 
   ```sh

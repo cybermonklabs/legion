@@ -34,6 +34,8 @@ A park ask's answer goes to `skill://legion-controller/references/park-asks.md` 
 - `File an issue`: `dispatch issue --project <PROJECT> --title '<the problem>' --spec-file -` in the project where the fix belongs (this one when the answer names none). The spec states the problem and where the fix belongs, cites the ask and its evidence, and carries `Filed for <the answer's By:> at their request: dispatch://<REPORT KEY>/ask/<id>`.
 - `File it for Legion`: the same, with `--label legion`; its triage wake brings it back.
 
+An ask that re-files an escalated child also takes the steps of `skill://legion-controller/references/escalation.md#a-child-that-looks-independent`.
+
 Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>`, `Handed dispatch://<KEY>` or `Not filed: <reason>`: `dispatch comment --issue <the ask's issue> --reply-to-ask '<ask id>' --body-file -`. Dispatch cannot resolve an answered ask, so that reply is its record. Close an open finding ask that turned moot with `dispatch resolve-ask --kind resolved`, naming why.
 
 ## Catch up at every start

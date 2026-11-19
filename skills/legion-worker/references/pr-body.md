@@ -72,4 +72,4 @@ The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true af
 
 ## When no surface reaches the changed path
 
-Report it to the architect with `envoy_publish`, naming the missing surface and what it would have to do (a rig, a sandbox holding the resource, a credential, a command), and do not complete. The architect builds it and resumes you. A code path that first runs after the merge is an `after_merge` check instead.
+Report it to the architect with `envoy_publish`, naming the missing surface and what it would have to do (a rig, a sandbox holding the resource, a credential, a command), and do not complete. The architect builds it and resumes you. A code path that first runs after the merge (a deploy workflow's inline step, a post-merge helper, a production-only resource) is an `after_merge` check instead, recorded after the merge by the role the project's `production_check` names (under `off` nothing records it), unless the implementer can run it against a development stack before then.

@@ -51,3 +51,4 @@ Give a fresh session only what the reader has. It removes what the reader does n
 - For sentence structure (one instruction per sentence, active voice, simple tenses, short noun stacks), use `skill://asd-ste100`.
 - On an outside message, also follow `skill://outside-message`.
 - A form skill your stream's brief names for a kind of text (a comment to another project's maintainers, a document a buyer reads) applies as well.
+- Where your session installs a fuller pass of its own over AI writing tells, run it after this skill's "Cut what marks text as an agent's".

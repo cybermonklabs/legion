@@ -14,7 +14,7 @@ Legion repository.
 If your deployment instructions name a role that answers research questions, send it the question
 first with `envoy_publish(topic="notifications.role.<name>", expects_reply="required")` and end
 your turn: the reply starts your next one. When the publish says Envoy only kept the question
-because no session holds the role, research at once.
+because no session holds the role, put the publish's answer in your output and research at once.
 
 Run steps 1 and 2, in parallel if you like. Run step 3 when the question names a library, and
 step 4 when it asks for general practice, each only where steps 1 and 2 give no `file:line` source

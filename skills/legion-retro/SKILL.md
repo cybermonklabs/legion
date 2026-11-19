@@ -8,8 +8,13 @@ description: "Use when the Legion daemon starts you, the implementer, on `Phase:
 Retro runs on the reviewed head, between the architect's acceptance and the merger's merge.
 `<issue>` is your `LEGION_ISSUE`. Run every step, even on a mechanical change.
 
-Retro commits nothing and pushes nothing: the merger merges the head the reviewer approved, and a
-push would put a commit above it. Never rebase the branch or make another branch or bookmark.
+Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put
+a commit above the head the reviewer approved. No Legion check compares the head that merges with
+the one the review approved, so whether a push after the approval needs a new review is the
+repository's own rule. Never rebase the branch or make another branch or bookmark.
+Retro writes no handoff. In the workspace it changes nothing; outside it, it writes only step 4's
+`mktemp -d` directory, the PR body and the Dispatch comment and message. It sets no GitHub or
+Dispatch label: Legion keeps phase state in the daemon.
 What the work taught is a `dispatch comment` for the skill librarian; no role writes to
 `docs/solutions/`.
 

@@ -12,7 +12,7 @@ Simplify recently changed code for clarity, reuse, quality and efficiency while 
 2. Otherwise, in git, the current branch against its base; without a usable base, `git diff HEAD`.
 3. Outside git or without a diff, the files the user named or that were edited earlier in the conversation.
 
-If none of these gives a non-empty scope, ask the user what to simplify, with the host's question tool where it has one, else as numbered options in chat. Never skip the question.
+If none of these gives a non-empty scope, ask the user what to simplify, with the host's question tool where it has one, else as numbered options in chat. Where the host lists a question tool that is not loaded, load it with the host's tool-discovery primitive before you fall back to chat. Never skip the question.
 
 Every file of the scope is in the pass: documentation, workflow and configuration files as much as code, and a scope that holds no code at all still runs. Read generated, vendored and lockfile content for what it shows, and edit none of it. Size is no gate: callers own any size or cost threshold.
 

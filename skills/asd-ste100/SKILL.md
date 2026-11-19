@@ -16,7 +16,8 @@ Pick a mode before you rewrite. If the user does not name one, infer it from the
 
 | Rule | Do | Don't |
 |---|---|---|
-| Active voice | "The agent deletes the file." | "The file is deleted (by the agent)." — unless the actor is unknown or irrelevant |
+| Active voice in procedures and instructions | "The agent deletes the file." | "The file is deleted (by the agent)." Passive only in descriptive text, when the actor is unknown or irrelevant |
+| Safety first | Open a safety-critical instruction with its command or condition: "Stop the pump before you open the valve." | The command or condition buried mid-sentence |
 | No phrasal verbs (Rule 9.3) | "Remove the panel." / "Start the job." | "Take off the panel." / "Spin up the job." |
 | One instruction per sentence | "Open the file. Read line 3." | "Open the file and read line 3, then check if it matches." |
 | Sentence length | ≤20 words for instructions and procedures, ≤25 for descriptions | Long compound or subordinate-clause sentences |

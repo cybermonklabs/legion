@@ -12,6 +12,15 @@ instructions, or open a `dispatch ask` naming the missing instruction.
 
 ## Accepting
 
+Read, against the goal, every check and every requirement:
+
+1. the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+2. `dispatch results --issue <issue>`: whether a pass stands for each check at the approved head;
+3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
+   (`skill://legion-worker/references/merge-gate.md`);
+4. each claim of the reviewer's prose, against the code at that head;
+5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI and no wake.
+
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your
   `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 - A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the
@@ -30,12 +39,15 @@ instructions, or open a `dispatch ask` naming the missing instruction.
 ## The last round
 
 Sign off a parent only on an approved head that carries the merges of every child its checks
-need. Each check needs a pass at that head; one in another repository, at a commit on the branch
-that issue's pull request merged into or on its default branch; a `default_branch` check, on the
-default branch. A child's result proves no check of the parent: a child carrying part of a parent's
-requirement proves it with a check of its own whose `serves` names it. Nothing builds on the
-parent's merge, which comes last. Until those children close, leave the issue in `accepting`; that
-wait is no reason to park a child. Then, in one turn:
+need. Each check needs a pass at that head; one in another repository, a pass standing since the
+close of each child it needs, at a commit on the branch that issue's pull request merged into or
+on its default branch; a `default_branch` check, on the default branch. A criterion proven on a
+deployed system is proven after that child's deploy, as the repository's deploy skill says. A
+child's result proves no check of the parent: a child carrying part of a parent's requirement
+proves it with a check of its own whose `serves` names it. Nothing builds on the parent's merge,
+which comes last. Until those children close, leave the issue in `accepting`; that wait is no
+reason to park a child. Before you park a child, move its criterion to the parent's own pull
+request or a released, open child; never downgrade it. Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
    test round of every check of the issue with no `ci_check`, not the forward-merge re-check."

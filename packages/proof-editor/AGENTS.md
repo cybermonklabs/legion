@@ -17,8 +17,8 @@ There is no build step: `exports` serves `src/*.ts`, which Bun runs and Vite com
 - Besides those two, a file under `src/` is a copy when the fork's commit 24a5fc94 holds it at the same path; the rest are legion's own.
   A new file of legion's own joins the names the first override of the root `biome.json` excludes, so that Biome checks it.
 
-- Keep an edit to a copied file as small as the change needs; put new behaviour in a module of legion's own that the copy imports.
-  To audit a copy, diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r 24a5fc94 root:src/<file>`.
+- Edit a copied file only in the kinds `docs/copied-files.md` lists, and as little as the change needs; put new behaviour in a module of legion's own that the copy imports.
+  To audit a copy, diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r 24a5fc94 root:src/<file>`: every line that differs is one of those kinds.
 
 - Biome's formatter, linter and `assist` are off over the copies so that this diff stays readable.
   An editor that organizes imports on save still reorders them.

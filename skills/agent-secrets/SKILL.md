@@ -16,7 +16,7 @@ agent-secrets NAME... --reason 'TEXT' [--wait DURATION] [--ttl DURATION] -- <com
 ```
 
 - Each granted secret reaches `<command>`'s environment under its own name. Nothing runs unless every name is granted.
-- Always pass `--reason`: a request a person must decide that carries none is denied whole. Write one sentence the approver can decide on, and name in it the issue you work on.
+- `--reason` is necessary wherever a person or the model judge decides: such a request that carries none is denied whole. A request every name of which is granted at once needs none. Write one sentence the approver can decide on, and name in it the issue you work on.
 - Each key says who decides a request for it: `agent-secrets secret show NAME` prints it on its `decides:` line, beside the `guidance:` a model judge decides by. Meet that guidance in `--reason`. The judge grants a request or refuses it for good (77); one it cannot decide goes to the key's person.
 - A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
   The same command run again (the same names and `--ttl`) uses the live grant or joins the waiting request, and asks nobody again.
@@ -35,6 +35,7 @@ agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'check that the Slack token works'
 
 Read the body, not the exit status alone: Slack and many HTTP APIs answer `200` with `"ok": false`.
 Send the body to `jq` straight from `curl` or through `printf '%s'`, never through `echo`, which can turn a `\n` inside a JSON string into a control character.
+Slack's read methods go through `curl` under this client. Every post to Slack is a `slack_post` call, which holds the reply to one thread, to 4,000 characters and to one send.
 
 ## The value never reaches your transcript
 
@@ -82,7 +83,7 @@ After a grant the client writes `agent-secrets: <names> from <source>` to stderr
   `REQUEST_PENDING` names a waiting request of this session that shares a name with this one.
 - **2**: a usage error, such as no `AGENT_SECRETS_URL` or no `--`.
 - **75**: the request is still undecided when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it.
-- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: do not send the same request again.
+- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: ask for none of it again, and try no name of your own. The one exception is a message that says `ask again with --reason`: ask again with `--reason`.
 
 ## Where a name comes from
 
@@ -102,8 +103,4 @@ On a person's own machine, the person signs in with `agent-secrets login` or log
 
 ## Store a secret
 
-`agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human` creates one, and `agent-secrets secret set NAME` replaces the value of one that exists.
-Both read the value from standard input or from a prompt with echo off, never from an argument: type it at the prompt, so it reaches no shell history.
-They run under the cloud credential the environment gives them and print it first (`agent-secrets secret <form>: using …`).
-Never run one under a gcloud configuration or account that holds a person's login, because the write then runs as that person: ask the person to run it.
-Tags, deletion and restore: https://cybermonklabs.github.io/legion/broker/guides/manage-a-secret/.
+Read `skill://agent-secrets/references/store-a-secret.md` before you create a secret or replace its value.

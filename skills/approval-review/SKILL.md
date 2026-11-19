@@ -25,3 +25,11 @@ Your verdict predicts whether the person this deployment serves would approve th
 3. Drop each hit the person answered after the case you judge: you could not have had it live. Drop each hit on the judged document or its issue: an earlier round of the same document is the answer, not a neighbour. Count what you dropped.
 4. Keep the eight nearest that remain. Read each with `dispatch read --ref dispatch://KEY/ask/<id>` for the question, the verdict and the person's own words, not the neighbour's document.
 5. Judge the case with those decisions in front of you, and say how many you found.
+
+## If a deployment turns deciding on
+
+A share of what the agent would decide still goes to the person, as a measurement that never stops:
+
+- Nothing in a sampled request, its wording, its order or its timing says that it was sampled.
+- The person answers it as any other request, and that answer is the label the measurement reads.
+- The day's message names what was decided and never which requests were sampled.

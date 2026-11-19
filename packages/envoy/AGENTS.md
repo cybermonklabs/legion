@@ -69,7 +69,6 @@ Paths are from `packages/envoy`, except those under `.github/`, `.dispatch/` and
 
 - The listener refuses to bind its durable `listener-<machine id>` when the durable's idle heartbeat or ack policy differs from the listener's.
   Deleting the durable replays all 72 hours the stream retains; to keep its cursor, recreate it at one past its ack floor while no listener runs for that machine:
-
   ```bash
   d=listener-<machine id>
   nats consumer info ENVOY_NOTIFICATIONS "$d" --json > "$d.json"
@@ -77,3 +76,5 @@ Paths are from `packages/envoy`, except those under `.github/`, `.dispatch/` and
   nats consumer rm ENVOY_NOTIFICATIONS "$d" -f
   nats consumer add ENVOY_NOTIFICATIONS --config "$d.recreate.json"
   ```
+
+- Remove the listener's shared token and its open `/v1` only after `credential="shared_token"` and `credential="none"` of `envoy_listener_requests_total` read zero on every deployed listener for 72 hours.

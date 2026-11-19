@@ -7,6 +7,10 @@ Issues live in Dispatch, never in GitHub issues; Dispatch's server and Envoy, th
 
 ## Design principles
 
+Each line is a default and its reason.
+Where two collide, decide the case and say why.
+A measurement outranks any line here.
+
 - Everything in Dispatch is a node in the graph, and a feature is a query over it; a feature that is hard to build over the model shows a defect in the model.
 
 - One source of truth for each fact: a copy never overrules the system that writes the fact.
@@ -103,7 +107,8 @@ The real Oh My Pi and Claude Code suites skip without a word unless `LEGION_TEST
 - A change to the daemon API (`packages/daemon/internal/api`, mirrored in `packages/contracts/src/legion-api.ts`) raises `DaemonAPIVersion` in `internal/api/version.go` above its base's.
   `go -C packages/daemon test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` rewrites the two fixtures, and `.github/scripts/check-daemon-api-contract.sh` names a free number and each file that must agree.
 
-- When a merge of `main` conflicts in `bun.lock`, take one side whole (`git checkout origin/main -- bun.lock`), then run `bun install` and commit what it writes.
+- After a merge of `main` that touched `bun.lock`, take one side whole (`git checkout origin/main -- bun.lock`), then run `bun install`.
+  Commit what it writes only when the difference holds just the lines the change explains, `lockfileVersion` has not moved, and no entry names a registry other than npm's, which a configured mirror writes into every entry.
 
 - CI pulls each image by digest from `ghcr.io/cybermonklabs/legion/ci` (`.github/ci-images.yaml`) and each tool through a row of `.github/ci-tools.yaml`; the live proofs and the deployment examples pull through `mirror.gcr.io`.
 
@@ -113,6 +118,8 @@ The real Oh My Pi and Claude Code suites skip without a word unless `LEGION_TEST
 - An image this repository builds (a `built:` row) takes two pushes: the push that changes its recipe builds it, and a later push moves the row's `digest:` onto it.
 
 - Deploys come only from main: a fix a deployment needs merges to `main` and ships in the next release, and no long-lived integration or deployment branch is kept.
+
+- If a daemon built before migration `0058_catch_up_cursor` ran after a later one, set every catch-up cursor to null (`update issues set caught_up_seq = null`) before a later daemon starts again, or its catch-up replays events the earlier daemon already applied.
 
 ## Conventions
 
