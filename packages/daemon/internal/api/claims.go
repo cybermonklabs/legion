@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -801,4 +802,8 @@ func requireGeneration(w http.ResponseWriter, generation uint64) bool {
 	return true
 }
 
-func errorBody(message string) map[string]string { return map[string]string{"error": message} }
+// errorBody is the refusal shape of the claim and operator routes, its message with the query and
+// the userinfo of every URL it names removed, as writeFailure's is.
+func errorBody(message string) map[string]string {
+	return map[string]string{"error": redact.URLCredentials(message)}
+}

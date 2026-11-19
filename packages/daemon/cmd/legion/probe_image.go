@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -245,7 +246,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		Omp: invocation, Contract: expected, Env: env, WorkDir: workDir, PluginRoot: f.pluginRoot, EnvoyPluginRoot: f.envoyPluginRoot,
 		ClaudeRoot: f.claudeRoot, ClaudeCodePin: f.claudeCodePin,
 		RoleReferences: references, SkipAgentModels: f.skipAgentModels,
-		Log: slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(&slog.HandlerOptions{Level: slog.LevelWarn}))),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)

@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -333,7 +334,7 @@ func reservedUnder(request, limit string) string {
 // stop`, `legion status` and `legion legions` read one answer and not the daemon's own opinion
 // of itself.
 func start(ctx context.Context, configPath string, stderr io.Writer) int {
-	log := slog.New(slog.NewJSONHandler(stderr, nil))
+	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	slog.SetDefault(log)
 
 	// The inherited socket is adopted first, before the configuration's key commands run, so none
