@@ -4,8 +4,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { DispatchQueryClient } from "../../api/query-client";
 import { userAgentStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Message,
   UserAgentState,
@@ -91,7 +91,9 @@ function agentStatesServed(initial: Counts) {
     answerAll: async () => {
       for (let step = 0; step < 50; step += 1) {
         await turn();
-        const query = queryClient.getQueryCache().find({ queryKey: userAgentStateQuery().queryKey });
+        const query = queryClient
+          .getQueryCache()
+          .find({ queryKey: userAgentStateQuery().queryKey });
         if (out.length === 0 && query?.state.fetchStatus === "idle") return;
         out.shift()?.();
       }
