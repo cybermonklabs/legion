@@ -557,7 +557,10 @@ ran, as the auto-deployer does, which goes back to the image that was running. A
 database ran before this check is not detected: the first start records its own file. To see
 what a start would do, without changing the database, run
 `DATABASE_URL='<your database URL>' envoy-dispatch versions` with the image you mean to roll
-out, as you run its census.
+out, where the server would run, as you run its census. On the Kubernetes component
+(`packages/envoy/infra/README.md`, "The pods"), both run in a one-off pod of that image under the
+app's account, with the app's Cloud SQL Auth Proxy sidecar and its `DATABASE_URL`; the README
+gives the commands.
 
 Before you roll a new version out, you can see what its migrations will touch:
 

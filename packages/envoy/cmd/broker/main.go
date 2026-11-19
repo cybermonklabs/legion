@@ -1669,8 +1669,10 @@ func versions(ctx context.Context, stdout, stderr io.Writer) int {
 
 // endSessions deletes every session login is signed in to the approval page with, wherever and
 // whenever it was made, and prints how many it deleted: the operator's way to end one person's
-// sign-ins everywhere at once, run in a broker pod by whoever holds pods/exec in the broker's
-// namespace.
+// sign-ins everywhere at once. It runs in any one-off process of the image that has the serving
+// broker's settings and a way to its database: an exec into a broker pod where the deployment
+// admits one, or a one-off pod, job or container of the image, with BROKER_SIGNIN=off in place of
+// the sign-in settings (docs/site/src/content/docs/broker/operate.md, "Running a subcommand").
 //
 // It reads the same configuration the server does and opens the database the same way, the RDS
 // IAM token minter included (openStore), and it binds no listener. It does not migrate: an image

@@ -9,8 +9,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
-// `broker versions` is the check an operator runs in a broker pod before an image with another
-// set of migrations rolls out: it reads the pod's own configuration, signs in as the pod does, and
+// `broker versions` is the check an operator runs before an image with another set of migrations
+// rolls out, where the broker's settings reach its database (operate.md, "Running a subcommand"):
+// it reads those settings, signs in as a broker pod does, and
 // says what this image's next boot would do with each recorded migration, writing nothing. The
 // control is a database this image migrated, which reads ok, exit 0; a row recording another file
 // under a version reads REFUSED, exit 1, and stays as it was; an unmigrated database reads as

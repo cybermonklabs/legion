@@ -1485,13 +1485,37 @@ resources. Keep `deletionProtection` enabled outside deliberate teardown-and-reb
 deleting the Cloud SQL instance deletes its backups. A teardown therefore takes an `up` with
 `deletionProtection: false` before `destroy`.
 
-To inspect pending migrations before an image update, run the image with the deployment's service
-account and `DATABASE_URL` from its Secret:
+Before an image update, run two of its subcommands against the database, neither of which writes:
+`envoy-dispatch census`, which reports what its pending migrations will touch, and
+`envoy-dispatch versions`, which says what its next boot would do with each recorded version and
+exits 1 where a version would be refused or has no file in that image. Each reaches the database
+as the app does, so run it in a one-off pod built from the app's own pod template: its account,
+its one init container (the Cloud SQL Auth Proxy sidecar), and `DATABASE_URL` as the app's
+container reads it. Run it with a login that may create pods in `<namespace>`, `IMG` the image by
+its digest, and `RUN` either subcommand. The pod gets a name of its own (`generateName`), so a pod
+an earlier run left is never read as this one; nothing runs after a failed create; and once the
+pod exists, its logs and its exit code are printed and it is deleted:
 
 ```sh
-kubectl -n dispatch run census --rm -it --restart=Never --image=<envoyImage> \
-  --overrides='{"spec":{"serviceAccountName":"<hostname>"}}' \
-  --command -- /usr/local/bin/envoy-dispatch census
+IMG=<envoyImage> RUN=versions
+P=$(kubectl -n <namespace> get deployment <hostname> -o json | jq --arg img "$IMG" --arg run "$RUN" '
+  .spec.template.spec as $app
+  | {apiVersion: "v1", kind: "Pod",
+     metadata: {generateName: ("dispatch-" + $run + "-"), namespace: .metadata.namespace},
+     spec: {serviceAccountName: $app.serviceAccountName, restartPolicy: "Never",
+       activeDeadlineSeconds: 600, securityContext: $app.securityContext,
+       initContainers: $app.initContainers,
+       containers: [$app.containers[] | select(.name == "envoy-dispatch")
+         | {name: $run, image: $img, command: ["/usr/local/bin/envoy-dispatch", $run],
+            securityContext, env: [.env[] | select(.name == "DATABASE_URL")]}]}}' |
+  kubectl create -o name -f -) && P=${P#pod/} && {
+  until phase=$(kubectl -n <namespace> get pod "$P" -o jsonpath='{.status.phase}') &&
+    { [ "$phase" = Succeeded ] || [ "$phase" = Failed ]; }; do sleep 5; done
+  kubectl -n <namespace> logs "$P" -c "$RUN"
+  kubectl -n <namespace> get pod "$P" \
+    -o jsonpath='{.status.containerStatuses[?(@.name=="'"$RUN"'")].state.terminated.exitCode}{"\n"}'
+  kubectl -n <namespace> delete pod "$P"
+}
 ```
 
 ### The front door
