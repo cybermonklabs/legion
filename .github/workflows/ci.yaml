@@ -1672,7 +1672,7 @@ jobs:
               # hold them.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
-              # Another reads the two steps that run database-skips.sh, one with arguments.
+              # Another reads the two steps that run database-skips.sh, each with its own arguments.
               - '.github/workflows/ci-job-envoy-go.yaml'
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
