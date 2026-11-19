@@ -58,6 +58,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { listedReplies } from "../conversation/conversation-model";
 import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
@@ -810,6 +811,15 @@ function AgentRowDetails({
   const sendKey = useMemo(() => agentSendKey(agent.session_id), [agent.session_id]);
   const hold = useSending(sendKey);
   const capabilities = agent.capabilities ?? [];
+  // The session's conversation as the row's list reads it (`AgentMessageList`), the same read,
+  // whatever a fold or a Clear shows of it: a draft the composer keeps for one of its messages
+  // goes back by that message's Reply, and one kept for a message the read no longer holds is
+  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was.
+  const messages = useQuery(agentMessagesQuery(agent.session_id));
+  const listed = useMemo(
+    () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
+    [messages.data]
+  );
   return (
     <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
       <div
@@ -844,6 +854,7 @@ function AgentRowDetails({
         <AgentMessageComposer
           agent={agent}
           hold={hold}
+          listed={listed}
           onCancelReply={() => setReplyTo(null)}
           onClose={leaveAgentComposer}
           replyTo={replyTo}

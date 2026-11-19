@@ -16,7 +16,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import type { ReplyTarget } from "../conversation/composer-model";
+import type { ListedReplies, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
@@ -51,6 +51,7 @@ export function agentSendKey(sessionID: string): MutationKey {
 export function AgentMessageComposer({
   agent,
   hold,
+  listed,
   onCancelReply,
   onClose,
   replyTo,
@@ -63,6 +64,10 @@ export function AgentMessageComposer({
    *  addressed, so the picker holds until it lands, from Send's own task on. The send's request is
    *  frozen at Send either way. */
   hold: Sending;
+  /** The messages of the session's conversation the row lists (`MentionComposer`'s `listed`),
+   *  or none where its host has not read them, or where the box answers only its own thread's
+   *  newest message (`standing`), which leaves the page with the box. */
+  listed?: ListedReplies;
   onCancelReply: () => void;
   /** One level out of the composer: the row it belongs to takes focus. The composer calls it on
    *  Escape from an untouched draft and on Discard - and also right after a successful send,
@@ -332,6 +337,7 @@ export function AgentMessageComposer({
             ? undefined
             : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }]
         }
+        listed={listed}
         mutationKey={sendKey}
         onCancelReply={onCancelReply}
         onClose={() => {

@@ -117,9 +117,21 @@ export function giveWay(
  *  ways out - back there, where Retry sends it, or Discard. A standing box answers what its host
  *  gives it and no Reply the reader presses (`standing`): an Inbox agent thread's box replies to
  *  the thread's newest message, so one that has come since the refusal moved the box, and no
- *  press brings it back. */
-function writtenElsewhere(held: SentRequest, standing: boolean): string {
+ *  press brings it back. Nor does one where the host no longer lists the comment or message the
+ *  refusal answers (`listsReply`): its Reply is gone with it, so Discard is the way out, and the
+ *  draft stays in the field until the reader takes it. */
+function writtenElsewhere(
+  held: SentRequest,
+  standing: boolean,
+  listsReply: (reply: ReplyTarget) => boolean
+): string {
   if (held.replyTo !== null) {
+    if (!listsReply(held.replyTo)) {
+      return (
+        `This message was written as a reply to a ${held.replyTo.parentKind} that is no longer ` +
+        "listed. Discard it to write here."
+      );
+    }
     return standing
       ? "This message was written as a reply to an earlier message, and this box now replies " +
           "to a newer one. Discard it to write a reply here."
@@ -294,8 +306,17 @@ export function keptForOtherWords(
 }
 
 /** What the composer keeps of a draft the field does not send, the edit it offers beside a newer
- *  body, and the draft a margin compose offers beside a compose at other words. */
+ *  body, the draft a margin compose offers beside a compose at other words, and the presses for a
+ *  draft kept for a reply its host no longer lists. */
 export interface KeptDrafts {
+  /** Where Use it here can put a draft kept for another reply (`keptAway`) whose comment or
+   *  message its host no longer lists (`ListedReplies`), as the composer draws it beside its field
+   *  (`KeptDraftOffers`): into this field, while the composer shows its owner's own address and
+   *  the field holds nothing of the reader's own and no send (`"here"`); not yet, while that field
+   *  holds a draft or a send of its own, which Use it here never writes over (`"once empty"`); and
+   *  nowhere while the composer answers a reply or edits a comment, where such a draft answers
+   *  nothing (`"nowhere"`). */
+  readonly awayTakes: "here" | "nowhere" | "once empty";
   /** An edit written over a body the comment no longer holds (`changedUnder`): refused or kept
    *  for the comment while its editor was off the page, or written in the open editor when another
    *  writer changed the comment under it. It waits beside the newer body the field shows until
@@ -303,6 +324,9 @@ export interface KeptDrafts {
    *  Meanwhile the field is read only and Save refuses, so nothing is saved over a body the reader
    *  has not seen, and nothing they wrote goes with no word. */
   readonly changed: SentDraft | undefined;
+  /** Discard my draft for a draft kept for another address (`keptAway`): forgets it where it is
+   *  kept, in the page and in the tab. */
+  readonly dropAway: (away: AwayDraft) => void;
   /** Drops the edit waiting beside a newer body, with what is kept of it for the comment: Discard
    *  drops the draft the reader wrote there. */
   readonly dropChanged: () => void;
@@ -337,6 +361,11 @@ export interface KeptDrafts {
    *  draft, and Discard drops it with that. A stopped send, which the composer's host hands it
    *  (`stoppedAside`), is offered first, then the newest draft (`keptForOtherWords`). */
   readonly offered: OfferedDraft | undefined;
+  /** Use it here for a draft kept for another reply (`keptAway`), while `awayTakes` says
+   *  `"here"`: puts it in the field, under the channel's own seed as a draft that arrives at this
+   *  address takes it, and forgets it where it was kept. From here on it is the draft of the
+   *  address the composer shows, which the reader sends with their own press. */
+  readonly takeAway: (away: AwayDraft) => void;
   /** Takes an edit waiting beside a newer body back into the field, which the reader saves with
    *  their own press, having had the newer body before them. It is the field's draft from here
    *  on, kept over the body it now replaces should the host take the editor away again, and a
@@ -359,20 +388,24 @@ const KEEP_DRAFT_MS = 300;
  * as the host moves the composer from address to address or takes it off the page, and puts back
  * what an address keeps when the composer arrives there; writes what the reader wrote over a
  * refusal back to the held send (`keepDraft`); takes a draft the reader carried here from another
- * composer (`intake`); offers an edit written over a body the comment no longer holds beside the
- * newer body (`changed`); and offers a margin compose's draft kept for other words of the
- * document beside the compose at these (`offered`).
+ * composer, and drops the draft for a control its host draws out of the composer's sight
+ * (`intake`); offers an edit written over a body the comment no longer holds beside the newer body
+ * (`changed`); offers a margin compose's draft kept for other words of the document beside the
+ * compose at these (`offered`); and drops, or takes into the field, a draft kept for a reply its
+ * host no longer lists (`dropAway`, `takeAway`).
  *
  * The composer's own state is handed in as it stands at this render: the field (`field`), the
  * files pasted into it (`homes`), how many times the reader has moved its address with its own
  * controls (`moves`), and its send (`outgoing`). `mountedHeld` is the composer's own mark that
  * the field took a draft the reply prefill must not replace, which an arrival at an address that
  * keeps one sets again. `replaceDraft` and `replaceAsk` put a draft, and an ask's options and
- * settings, in the fields that edit them.
+ * settings, in the fields that edit them, `discard` holds the composer's own Discard, and
+ * `listsReply` says which replies the host lists.
  */
 export function useKeptDrafts({
   anchor,
   composerName,
+  discard,
   edit,
   field,
   homes,
@@ -380,6 +413,7 @@ export function useKeptDrafts({
   inline,
   intake,
   kind,
+  listsReply,
   mountedHeld,
   moves,
   outgoing,
@@ -401,10 +435,16 @@ export function useKeptDrafts({
       readonly replacement: string;
       readonly urgency: AskUrgency;
     };
+    /** The composer's own Discard, as it stands at the latest render, which the host's handle on
+     *  the field runs (`DraftIntake.drop`). */
+    readonly discard: RefObject<() => void>;
     readonly homes: DraftHomes;
     readonly initial: MountDraft;
     readonly intake: Ref<DraftIntake> | undefined;
     readonly kind: ComposerKind;
+    /** Whether the host lists `reply` (`ListedReplies`), which a refusal held for a reply the
+     *  composer has left goes back to by its Reply (`writtenElsewhere`). */
+    readonly listsReply: (reply: ReplyTarget) => boolean;
     readonly mountedHeld: RefObject<boolean>;
     readonly moves: number;
     readonly outgoing: ComposerSend;
@@ -491,9 +531,20 @@ export function useKeptDrafts({
     (heldRefusal === undefined ||
       body !== heldRefusal.draft.draft.body ||
       replacement !== heldRefusal.draft.draft.replacement);
+  // A draft kept for a reply its host no longer lists has no Reply to go back by, so Use it here
+  // takes it into the field at the owner's own address - the issue, the session - where it goes
+  // on as a message that answers none. It never writes over a draft or a send of the field's own,
+  // and waits until the field holds neither.
+  const awayTakes =
+    replyTo !== null || edit !== undefined
+      ? "nowhere"
+      : holdsSend || wroteOver(freshBody)
+        ? "once empty"
+        : "here";
   // A draft the reader carried here from another composer goes in the field only while nothing
-  // of this composer's own is there to be written over (`DraftIntake`). The host's handle reads
-  // the field as it stands, so it is made once.
+  // of this composer's own is there to be written over (`DraftIntake`), and a host's control for
+  // a draft out of the reader's sight drops it as the composer's own Discard does. The host's
+  // handle reads the field as it stands, so it is made once.
   const takeDraft = useRef<DraftIntake["take"]>(() => false);
   takeDraft.current = (draft, to) => {
     if (
@@ -506,7 +557,14 @@ export function useKeptDrafts({
     replaceDraft(draft);
     return true;
   };
-  useImperativeHandle(intake, () => ({ take: (draft, to) => takeDraft.current(draft, to) }), []);
+  useImperativeHandle(
+    intake,
+    () => ({
+      drop: () => discard.current(),
+      take: (draft, to) => takeDraft.current(draft, to),
+    }),
+    [discard]
+  );
   // What the reader wrote for this address and did not send waits for it once the composer leaves
   // the page (`awayName`): its host took the composer away - the issue the reader left, the Agents
   // page, the margin's document, a newer compose on that document, a comment's card - and the
@@ -624,7 +682,7 @@ export function useKeptDrafts({
   // it. The store refuses such a press too (`HeldSends.send`), whichever render made it.
   const elsewhere =
     heldRefusal !== undefined && refusedElsewhere
-      ? writtenElsewhere(heldRefusal.request, standing)
+      ? writtenElsewhere(heldRefusal.request, standing, listsReply)
       : undefined;
   // The reader's own moves of the composer's address - Cancel reply, and a control its host
   // draws for it (`ownMoves`) - take the draft with them, and what it holds: its refusal
@@ -723,7 +781,13 @@ export function useKeptDrafts({
     mountedHeld.current = true;
   });
   return {
+    awayTakes,
     changed,
+    dropAway: (away) => {
+      if (awayName !== undefined) {
+        unsent.forgetAway(awayName, { anchor: away.anchor, replyTo: away.replyTo });
+      }
+    },
     dropChanged: () => {
       if (changed !== undefined && awayName !== undefined) {
         unsent.forgetAway(awayName, { anchor, replyTo });
@@ -741,6 +805,14 @@ export function useKeptDrafts({
     },
     keptAway,
     offered,
+    takeAway: (away) => {
+      if (awayTakes !== "here" || awayName === undefined) return;
+      replaceDraft({
+        ...seededDraft(seedMentions, away.draft, owner),
+        replacement: away.draft.replacement,
+      });
+      unsent.forgetAway(awayName, { anchor: away.anchor, replyTo: away.replyTo });
+    },
     takeChanged: () => {
       if (changed === undefined) return;
       replaceDraft(changed);

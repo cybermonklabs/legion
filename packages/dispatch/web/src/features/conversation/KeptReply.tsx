@@ -29,6 +29,27 @@ export function KeptReply({
   );
 }
 
+/** What is said of a reply the reader wrote and that is kept for a comment or message its host no
+ *  longer lists (`ListedReplies`), whose Reply is gone with it: the reply's text is drawn after
+ *  these words with its own presses (`DraftOffer`), since no Reply goes back to it. Where Use it
+ *  here waits for the field to be empty (`KeptDrafts.awayTakes`), the words say so (`waits`). */
+export function GoneReply({
+  actor,
+  parentKind,
+  waits = false,
+}: {
+  readonly actor: Actor;
+  readonly parentKind: ReplyTarget["parentKind"];
+  readonly waits?: boolean;
+}): ReactNode {
+  return (
+    <>
+      The {parentKind} by <AgentName actor={actor} inline /> that your reply answered is no longer
+      listed. Your reply is kept here{waits ? ", to use in this field once it is empty" : ""}:
+    </>
+  );
+}
+
 /** What the composer says of a draft it keeps for another address than the one it shows
  *  (`AwayDraft`): whose message or comment that draft answers, or that it answers none, and the
  *  way back to it - that message's Reply, or Cancel reply. Nothing is sent until the reader

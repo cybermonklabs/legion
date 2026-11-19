@@ -133,7 +133,14 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   composer shows another address it says the text is kept, whose message it answers and the way
   back (`keptAwayLine`: `Your reply to the message by <author> is kept. Press Reply on that message
   to go on with it.`, or `The message you wrote for CORE-1 is kept. Press Cancel reply to go on
-  with it.`). What it holds when its host takes it off the page - the issue the reader leaves, the
+  with it.`). A draft kept for a reply its host no longer lists - its message or comment gone from
+  the host's reads (`ListedReplies`) - is drawn itself beside the field, with `The message by
+  <author> that your reply answered is no longer listed.`, Discard my draft, and at the owner's own
+  address Use it here once the field is empty (`KeptDraftOffers`); a phone thread reply put away
+  over the docked composer's own draft is drawn so in the docked composer, with Discard my draft
+  alone; and a refused or stopped reply the host moved the composer off stays in the field, where
+  Send says `This message was written as a reply to a message that is no longer listed.`, with
+  Discard draft. What it holds when its host takes it off the page - the issue the reader leaves, the
   Agents page, the margin's document - waits the same way for the composer drawn at that address
   next. Leaving a document leaves the margin's unsent compose open for it (`useMarginSheet`), and
   the margin holds one open compose per document (`composeForMark` replaces only the compose on

@@ -98,11 +98,12 @@ import {
   type ComposerOwner,
   type DraftIntake,
   hasUnsavedInput,
+  type ListedReplies,
   type ReplyTarget,
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
 import type { HeldSend } from "./held-sends";
-import { KeptDraftOffers } from "./KeptDraftOffers";
+import { type GoneReplyDraft, KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
 import { ReplyQuote } from "./ReplyQuote";
 import {
@@ -120,7 +121,7 @@ import {
   survivingMentions,
   unedited,
 } from "./send-request";
-import { useUnsentDrafts } from "./unsent-drafts";
+import { type AwayDraft, useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
@@ -403,6 +404,13 @@ interface MentionComposerProps {
   readonly seedMentions?: readonly { readonly target: string; readonly title: string }[];
   readonly inline?: boolean;
   readonly kind?: ComposerKind;
+  /** Which replies the host lists now (`ListedReplies`): a draft the composer keeps for another
+   *  reply is said to be kept with that reply's Reply as its way back only while the host lists
+   *  that reply, and is drawn itself beside the field once the host lists it no longer, with
+   *  Discard my draft, and Use it here at the owner's own address (`KeptDraftOffers`). A refusal
+   *  held for a reply the composer has left says so too, in place of naming that reply's Reply
+   *  (`useKeptDrafts`' `writtenElsewhere`). */
+  readonly listed?: ListedReplies;
   /** Names the send and the target it is held for (`useComposerSend`): a composer that mounts
    *  under a name whose send is out, or was refused, shows that send and its draft, and a host
    *  can hold its own controls - a Reply, an issue picker - while it is out (`useSending`), from
@@ -410,9 +418,10 @@ interface MentionComposerProps {
    *  starts (`SentRequest`), whatever those controls do. A composer with none names its sends
    *  after its own mount. */
   readonly mutationKey?: MutationKey;
-  /** A line the host says in the composer, as the composer says where an upload went: the
-   *  Conversation's note that a phone thread reply the reader cancelled over this composer's own
-   *  draft is kept, and how to go on with it (`usePhoneThread`'s `parked`). */
+  /** What the host says in the composer, as the composer says where an upload went, drawn as the
+   *  host draws it: the Conversation's note that a phone thread reply the reader cancelled over
+   *  this composer's own draft is kept, and how to go on with it, or that reply itself once its
+   *  comment is no longer listed (`usePhoneThread`'s `parked`). */
   readonly notice?: ReactNode;
   /** Ends the reply, handed the draft the field holds as the reader ends it. Cancel reply drops
    *  nothing itself: an inline reply's draft stays under its send name - typed, as a standing
@@ -468,6 +477,7 @@ export function MentionComposer({
   inline = false,
   intake,
   kind = "comment",
+  listed,
   mutationKey,
   notice,
   onCancelReply,
@@ -785,8 +795,16 @@ export function MentionComposer({
   }, []);
   const homes = useDraftHomes(owner, edit !== undefined, appendToField);
   const { upload, uploadOwner } = homes;
+  /** The composer's own Discard as the latest render defines it (`discard`, below), which the
+   *  host's handle on the field runs (`DraftIntake.drop`). */
+  const discardNow = useRef(() => {});
+  /** Whether the host lists `reply` (`ListedReplies`), so its Reply is there to go back by. */
+  const listsReply = (reply: ReplyTarget): boolean =>
+    listed === undefined || listed === "own reply" || listed.has(reply.id);
   const {
+    awayTakes,
     changed,
+    dropAway,
     dropChanged,
     dropOffered,
     elsewhere,
@@ -795,11 +813,13 @@ export function MentionComposer({
     keepNothing,
     keptAway,
     offered,
+    takeAway,
     takeChanged,
     takeOffered,
   } = useKeptDrafts({
     anchor,
     composerName,
+    discard: discardNow,
     edit,
     field: { askOptions, body, mentions, multiple, replacement, urgency },
     homes,
@@ -807,6 +827,7 @@ export function MentionComposer({
     inline,
     intake,
     kind,
+    listsReply,
     mountedHeld,
     moves: ownMoves + cancels,
     outgoing,
@@ -819,6 +840,12 @@ export function MentionComposer({
     stoppedAside,
     unsent,
   });
+  // A draft kept for a reply the host no longer lists has lost the Reply its line names, so it
+  // is drawn itself beside the field (`KeptDraftOffers`), and every other one with its line.
+  const unlisted = (away: AwayDraft): away is GoneReplyDraft =>
+    away.replyTo !== null && !listsReply(away.replyTo);
+  const goneAway = keptAway.filter(unlisted);
+  const keptLines = keptAway.filter((away) => !unlisted(away));
   // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered
   // beside the field: nothing of this composer is on screen. A margin compose its closed issue
   // refuses stays while it offers a draft (`useMarginSheet`), and shows that draft until the
@@ -1149,6 +1176,7 @@ export function MentionComposer({
     setConfirmingDiscard(false);
     onClose();
   };
+  discardNow.current = discard;
   const bodyLabel =
     edit !== undefined
       ? "Edit comment"
@@ -1353,11 +1381,15 @@ export function MentionComposer({
           with no word: it offers Discard my draft alone. */}
       <KeptDraftOffers
         changed={changed}
+        gone={goneAway}
+        goneTakes={awayTakes}
         kind={kind}
         offered={offered}
         onDiscardChanged={discard}
+        onDropGone={dropAway}
         onDropOffered={dropOffered}
         onTakeChanged={takeChanged}
+        onTakeGone={takeAway}
         onTakeOffered={refusedKind ? undefined : takeOffered}
       />
       {activeMentions.length === 0 ? null : (
@@ -1575,14 +1607,10 @@ export function MentionComposer({
           {text}
         </p>
       ))}
-      {notice === undefined ? null : (
-        <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
-          {notice}
-        </p>
-      )}
+      {notice}
       {/* A draft kept for another reply, or for none, while the composer answers this one: the
           line says whose it is and the way back, so the host's move takes nothing with no word. */}
-      {keptAway.map((away) => (
+      {keptLines.map((away) => (
         <p
           className={`text-sm ${textMutedOnSurfaceMuted}`}
           key={away.replyTo?.id ?? ""}

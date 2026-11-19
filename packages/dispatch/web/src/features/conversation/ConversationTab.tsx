@@ -73,6 +73,7 @@ import {
   commentDeliveries,
   focusConversation,
   handoffFields,
+  listedReplies,
   type MessageConversation,
   matchesFilter,
 } from "./conversation-model";
@@ -91,7 +92,8 @@ import {
   useHeldSends,
   useHeldSendsUnder,
 } from "./held-sends";
-import { KeptReply } from "./KeptReply";
+import { DraftOffer } from "./KeptDraftOffers";
+import { GoneReply, KeptReply } from "./KeptReply";
 import { MentionComposer } from "./MentionComposer";
 import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
@@ -992,6 +994,13 @@ export function ConversationTab({
       }),
     [asks.data, comments.data, handoffs.data, messages.data, unreadFrom]
   );
+  // The messages and comments the issue's reads hold, whatever the filter shows of them: a draft
+  // a composer keeps for one goes back by its Reply, and one kept for a reply the reads no longer
+  // hold is drawn itself (`ListedReplies`).
+  const listed = useMemo(
+    () => listedReplies(messages.data ?? [], comments.data ?? []),
+    [comments.data, messages.data]
+  );
   const [filter, setFilter] = useState<ConversationFilter>("all");
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const phone = usePhoneThread({
@@ -1107,11 +1116,31 @@ export function ConversationTab({
   // The thread composer shows in the thread its reply answers, unless the reader's Cancel reply
   // put it away there (`parked`).
   const phoneReplyTargetsThread =
-    phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id && !phone.parked;
+    phoneThread !== undefined &&
+    phone.replyTo?.id === phoneThread.root.id &&
+    phone.parked === undefined;
   // A thread reply put away over the docked composer's own draft is out of sight, so the docked
-  // composer says it is kept, whose comment it answers, and how to go on with it.
-  const parkedNotice =
-    phone.parked && phone.replyTo !== null ? <KeptReply actor={phone.replyTo.actor} /> : undefined;
+  // composer says it is kept, whose comment it answers, and how to go on with it: that comment's
+  // Reply. Once the list no longer holds the comment, no Reply brings it back, so the docked
+  // composer draws the reply itself, for the reader to read or copy, with Discard my draft. It
+  // offers no Use it here: the docked field holds a draft of its own, which is why the reply was
+  // put away rather than carried there (`usePhoneThread`'s `cancelReply`), and Use it here would
+  // write over it.
+  let parkedNotice: ReactNode;
+  if (phone.parked !== undefined && phone.replyTo !== null) {
+    parkedNotice = listed.has(phone.replyTo.id) ? (
+      <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+        <KeptReply actor={phone.replyTo.actor} />
+      </p>
+    ) : (
+      <DraftOffer
+        body={phone.parked.body}
+        drop={{ label: "Discard my draft", press: phone.dropParked }}
+        lead={<GoneReply actor={phone.replyTo.actor} parentKind={phone.replyTo.parentKind} />}
+        replacement={phone.parked.replacement}
+      />
+    );
+  }
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
   // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The
   // number is the newest activity's own millisecond, since the list is ordered by activity.
@@ -1272,6 +1301,7 @@ export function ConversationTab({
           closed={isClosed}
           docked
           intake={phone.dockedIntake}
+          listed={listed}
           mutationKey={sendKey}
           notice={parkedNotice}
           onCancelReply={() => setReplyTo(null)}
@@ -1536,6 +1566,8 @@ export function ConversationTab({
               <MentionComposer
                 closed={isClosed}
                 frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                intake={phone.threadIntake}
+                listed={listed}
                 mutationKey={phone.composerKey}
                 onCancelReply={phone.cancelReply}
                 onClose={phone.endReply}

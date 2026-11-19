@@ -339,7 +339,9 @@ export function ThreadCard({
      (`finishing`). `contents`, so the composer's own box is the one laid out. It sits next to
      the newest message: under the root in Newest first, at the foot of the thread in Oldest
      first. Its Cancel reply, and Escape in its field, close the thread and keep the draft for
-     it, typed or refused or stopped, which the closed card says (`keptReply`). */
+     it, typed or refused or stopped, which the closed card says (`keptReply`). It answers the
+     card's own comment alone, which leaves the page with the card, so no line of it can outlive
+     the comment it names (`listed`). */
   const replyComposer = expanded ? (
     <div className="contents" hidden={hideReplyComposer}>
       <MentionComposer
@@ -348,6 +350,7 @@ export function ThreadCard({
         frame={composerClassName}
         inline
         kind="comment"
+        listed="own reply"
         mutationKey={replyMutationKey}
         onCancelReply={onToggle}
         onClose={onToggle}

@@ -37,10 +37,16 @@ export interface PhoneThread {
    *  still out outlive Back; a send it holds is the held-send store's, and comes back with its
    *  reply. */
   readonly replyTo: ReplyTarget | null;
-  /** Whether the thread composer is put away with its reply, its draft and its send as they stand
-   *  (`cancelReply`): hidden in its own thread too, and said so beside the docked composer, until
-   *  that comment's Reply shows it again or its reply ends. */
-  readonly parked: boolean;
+  /** The draft the thread composer was put away with, its reply and its send as they stand
+   *  (`cancelReply`), or none while it is not put away: hidden in its own thread too, and said so
+   *  beside the docked composer, until that comment's Reply shows it again or its reply ends. The
+   *  field cannot change while it is hidden, so this is what it holds; the docked composer draws
+   *  it once the comment it answers is no longer listed, when no Reply brings it back. */
+  readonly parked: SentDraft | undefined;
+  /** Discard my draft beside a reply put away (`parked`) whose comment is no longer listed:
+   *  drops the thread composer's draft and its send as its own Discard does, which ends its reply
+   *  (`endReply`) and keeps nothing for the comment as it goes. */
+  readonly dropParked: () => void;
   /** The thread composer's send name: beneath the tab's, so every Reply holds for it as for the
    *  docked composer's, and its own, so the view can tell its send from the docked one's. */
   readonly composerKey: MutationKey;
@@ -54,6 +60,8 @@ export interface PhoneThread {
   /** The docked composer's field (`MentionComposer`'s `intake`), where the thread composer's
    *  Cancel reply puts its draft. */
   readonly dockedIntake: RefObject<DraftIntake | null>;
+  /** The thread composer's field (`MentionComposer`'s `intake`), which `dropParked` drops. */
+  readonly threadIntake: RefObject<DraftIntake | null>;
   /** The reader's own Cancel reply in the thread composer, or Escape in its field: a move to the
    *  issue's own address, where the docked composer is, so the draft goes there, as the docked
    *  composer's own Cancel reply takes its draft along. The docked composer's field takes
@@ -96,8 +104,9 @@ export function usePhoneThread({
   const [openId, setOpenId] = useState<string>();
   const composerKey = useMemo<MutationKey>(() => [...sendKey, "phone-thread"], [sendKey]);
   const [replyTo, setReplyTo] = useHeldReplyTo(composerKey);
-  const [parked, setParked] = useState(false);
+  const [parked, setParked] = useState<SentDraft>();
   const dockedIntake = useRef<DraftIntake>(null);
+  const threadIntake = useRef<DraftIntake>(null);
   // Set when the viewport widened past the phone layout while a send from the view was out - its
   // card's own reply, or the thread composer's: the view stays open, full-screen at any width,
   // until the reader leaves it with Back, so the send's draft and its refusal stay where the
@@ -132,7 +141,7 @@ export function usePhoneThread({
   const endReply = () => {
     store.discard(composerKey);
     setReplyTo(null);
-    setParked(false);
+    setParked(undefined);
   };
   const cancelReply = (draft: SentDraft) => {
     const to: CarriedAddress = { owner, replyTo: null };
@@ -148,7 +157,7 @@ export function usePhoneThread({
       setReplyTo(null);
       return;
     }
-    setParked(true);
+    setParked(draft);
   };
   const hide = () => {
     setOpenId(undefined);
@@ -159,7 +168,7 @@ export function usePhoneThread({
       if (sendingNow()) return false;
       const reply = redirectedReplyTarget(store, composerKey, target);
       setReplyTo(reply);
-      setParked(false);
+      setParked(undefined);
       setOpenId(reply.id);
       return reply.id === target.id;
     },
@@ -167,6 +176,7 @@ export function usePhoneThread({
     cardReplySending,
     composerKey,
     dockedIntake,
+    dropParked: () => threadIntake.current?.drop(),
     endReply,
     hide,
     holds,
@@ -178,5 +188,6 @@ export function usePhoneThread({
     open: setOpenId,
     parked,
     replyTo,
+    threadIntake,
   };
 }

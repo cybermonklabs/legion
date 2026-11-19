@@ -8,9 +8,15 @@ import {
   quoteBodyText,
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
-import type { ComposerKind } from "./composer-model";
+import type { ComposerKind, ReplyTarget } from "./composer-model";
+import { GoneReply } from "./KeptReply";
 import type { SentDraft } from "./send-request";
-import type { OfferedDraft } from "./useKeptDrafts";
+import type { AwayDraft } from "./unsent-drafts";
+import type { KeptDrafts, OfferedDraft } from "./useKeptDrafts";
+
+/** A draft the composer keeps for a reply whose comment or message its host no longer lists
+ *  (`ListedReplies`). */
+export type GoneReplyDraft = AwayDraft & { readonly replyTo: ReplyTarget };
 
 /** Each kind as an offered draft names the one it was written as, beside a compose of another. */
 const KIND_WORDS: Record<ComposerKind, string> = {
@@ -42,7 +48,7 @@ export function DraftOffer({
 }: {
   readonly body: string;
   readonly drop: OfferPress;
-  readonly lead: string;
+  readonly lead: ReactNode;
   readonly note?: string;
   readonly replacement?: string;
   readonly take?: OfferPress;
@@ -92,28 +98,40 @@ export function DraftOffer({
 
 /**
  * What a composer offers beside its field that the field does not hold (`useKeptDrafts`): an
- * edit written over a body the comment no longer holds (`changed`), and a draft a margin compose
- * kept for other words of its document (`offered`). Each waits with the words that say why, and
- * with the reader's presses for it: one takes it into the field, where the composer can send it,
- * and the other drops it. Nothing is saved or sent meanwhile.
+ * edit written over a body the comment no longer holds (`changed`), a draft a margin compose
+ * kept for other words of its document (`offered`), and each reply it keeps whose comment or
+ * message its host no longer lists (`gone`). Each waits with the words that say why, and with the
+ * reader's presses for it: one takes it into the field, where the composer can send it, and the
+ * other drops it. Nothing is saved or sent meanwhile.
  */
 export function KeptDraftOffers({
   changed,
+  gone,
+  goneTakes,
   kind,
   offered,
   onDiscardChanged,
+  onDropGone,
   onDropOffered,
   onTakeChanged,
+  onTakeGone,
   onTakeOffered,
 }: {
   readonly changed: SentDraft | undefined;
+  readonly gone: readonly GoneReplyDraft[];
+  /** Where Use it here can put a draft of `gone` (`KeptDrafts.awayTakes`). */
+  readonly goneTakes: KeptDrafts["awayTakes"];
   /** The kind the composer writes now, which an offered draft names its own beside. */
   readonly kind: ComposerKind;
   readonly offered: OfferedDraft | undefined;
   /** Discard my edit: the composer's Discard, which drops the draft the reader wrote there. */
   readonly onDiscardChanged: () => void;
+  /** Discard my draft for a draft of `gone`. */
+  readonly onDropGone: (away: GoneReplyDraft) => void;
   readonly onDropOffered: () => void;
   readonly onTakeChanged: () => void;
+  /** Use it here for a draft of `gone`, drawn while `goneTakes` says `"here"`. */
+  readonly onTakeGone: (away: GoneReplyDraft) => void;
   /** Use my draft, which a compose that could not send the draft - a kind its closed issue
    *  refuses - leaves out, so the offer waits until the reader drops it. */
   readonly onTakeOffered: (() => void) | undefined;
@@ -152,6 +170,31 @@ export function KeptDraftOffers({
           }
         />
       )}
+      {/* A reply kept for a comment or message the host no longer lists: the Reply its kept line
+          would name is gone with it, so the reply itself waits here, with the words that say whose
+          comment or message it answered, and Discard my draft. At the owner's own address, Use it
+          here puts it in the field as a message that answers none, once nothing of the field's
+          own is there to be written over, and the words say when it waits for that. */}
+      {gone.map((away) => (
+        <DraftOffer
+          body={away.draft.body}
+          drop={{ label: "Discard my draft", press: () => onDropGone(away) }}
+          key={away.replyTo.id}
+          lead={
+            <GoneReply
+              actor={away.replyTo.actor}
+              parentKind={away.replyTo.parentKind}
+              waits={goneTakes === "once empty"}
+            />
+          }
+          replacement={away.draft.replacement}
+          take={
+            goneTakes === "here"
+              ? { label: "Use it here", press: () => onTakeGone(away) }
+              : undefined
+          }
+        />
+      ))}
     </>
   );
 }
