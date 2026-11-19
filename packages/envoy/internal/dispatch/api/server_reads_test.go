@@ -112,11 +112,6 @@ var serverReads = map[string]string{
 	"event_stream_relay.go:page": "the relay reads one page of the event log for every subscriber at once, which each live socket " +
 		"gates by its own viewer (eventReadableSQL) where it sends an event on, and reads again as its viewer where that viewer " +
 		"does not see every object (readerEvents)",
-	"repo_projects.go:putRepoProject": "a mapping is keyed by its repository, so the PUT reads the mapping it would overwrite " +
-		"whatever its project, to refuse one of a project the caller cannot see in the lane refusal's hidden form " +
-		"(refuseHiddenMapping) rather than overwrite it",
-	"repo_projects.go:seedRepoProject": "the boot seed writes the deployment's own mappings, for no caller, and must find every " +
-		"mapping a repository already holds, whatever its project, to leave it as it stands",
 	"delivery_sweep.go:resumeOwedDelivery": "the delivery sweep resends an owed attempt of a comment or a message a writer already " +
 		"wrote, as that write's own send would, to the one session the attempt names; no caller reads what it loads",
 	"delivery_sweep.go:settleSupersededMention": "the delivery sweep settles an owed mention attempt of a comment a writer already " +

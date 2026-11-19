@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -86,14 +85,6 @@ type putRepoProjectInput struct {
 // repository, one naming a repository that is itself renamed, and one on a repository another
 // mapping is already renamed to are each refused (400 INVALID_REPO_PROJECT), so the canonical
 // name of a repository is reached in one step and no cycle exists (refs.CanonicalRepo).
-//
-// The mapping is a row of its project's. A target project the caller cannot see is answered as
-// a key no project holds, and a repository mapped to such a project is neither moved nor named
-// (refuseHiddenMapping). A mapping whose GitHub subject lane, for its name or its renamed_to, is
-// also a lane of another project's mapping, where either project is private, is refused 409
-// REPOSITORY_LANE_SHARED (refuseSharedLane). A write into a private project writes the project's
-// private-projects record through its transaction as its last step (ensureMappedPrivate), and a
-// refused record refuses the write, 409 PRIVATE_PROJECTS_UNAVAILABLE.
 func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	repo, err := repoProjectPath(r)
 	if err != nil {
@@ -119,14 +110,8 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The caller's viewer names every project it sees, so a key no project holds and a project
-	// the caller cannot see are one answer: 404 NOT_FOUND, as a read of an unknown key answers.
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
-	if !viewerSees(who.Viewer, input.Project) {
-		s.writeHandlerError(w, pgx.ErrNoRows)
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", input.Project).Scan(new(string)); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	actorJSON, err := encodeJSON(actor)
@@ -141,12 +126,8 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, everyReader, repo, actor, input.Project)
+	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor, input.Project)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refuseHiddenMapping(who.Viewer, repo, previous); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -164,7 +145,7 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 			renamedTo = previous.RenamedTo
 		}
 	case renamedTo != nil:
-		if err := refuseRepoRenameChain(r.Context(), tx, who.Viewer, repo, *renamedTo); err != nil {
+		if err := refuseRepoRenameChain(r.Context(), tx, repo, *renamedTo); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -216,14 +197,6 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !appendMappingEvent(mapping, false) {
 		return
 	}
-	if err := refuseSharedLane(r.Context(), tx, who.Viewer, func(row repoProjectRow) bool { return row.repo == repo }); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := ensureMappedPrivate(r.Context(), tx, s.deps.BusProjects, input.Project); err != nil {
-		s.writeAccessError(w, err)
-		return
-	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -236,11 +209,6 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // repository is any owner/name and needs no mapping, so an issue that names this repository
 // keeps it and still resolves to it. An issue that names none resolves, as before, through its
 // parent chain and then its project's default, which is gone where this mapping was that default.
-// A mapping of a project the caller cannot see answers 204, as a repository no mapping holds
-// does, and is not removed: lockRepoProjectWrite reads the mapping as the caller, so it finds
-// none, and hiddenMapping holds the answer to that again. The removal adds no lane, and it leaves
-// a private project's private-projects record naming the repository until the record's writer
-// (K7) rewrites it from the committed rows.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -255,22 +223,18 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, who, repo, actor)
+	previous, err := lockRepoProjectWrite(r.Context(), tx, s.deps.Events, repo, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if previous == nil || hiddenMapping(who.Viewer, previous) {
+	if previous == nil {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -307,24 +271,16 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //     change under it. No issue write takes a lock on this row: an issue names any owner/name as
 //     its repository, mapped or not, so nothing an issue write does depends on this row.
 //
-// The mapping is read as reader reads it. The DELETE reads it as its caller, so a mapping of a
-// project the caller cannot see is a repository no mapping holds: it is neither read past its
-// visibility nor locked, and the DELETE answers it as one. The PUT and the boot seed read it as the
-// server (everyReader), since a mapping is keyed by its repository and a write over a hidden one
-// must find it to refuse it (refuseHiddenMapping) rather than overwrite it.
-//
 // Every writer of a mapping goes through here: the PUT, the DELETE and the boot seed
 // (SeedRepoProjects).
-func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, reader model.Actor, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
+func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker, repo string, actor model.Actor, projects ...string) (*model.RepoProject, error) {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-repo-project'), hashtext($1))
 	`, repo); err != nil {
 		return nil, fmt.Errorf("lock repository mapping %s: %w", repo, err)
 	}
-	viewer := refs.VisibilityArg(reader)
 	var current string
-	err := tx.QueryRow(ctx, `select project from repo_projects where repo = $1 and `+access.ProjectClause("project", "$2"),
-		repo, viewer).Scan(&current)
+	err := tx.QueryRow(ctx, `select project from repo_projects where repo = $1`, repo).Scan(&current)
 	switch {
 	case err == nil:
 		projects = append(projects, current)
@@ -342,8 +298,8 @@ func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker,
 		return nil, err
 	}
 	mapping, err := scanRepoProject(tx.QueryRow(ctx, `
-		select `+repoProjectColumns+` from repo_projects where repo = $1 and `+access.ProjectClause("project", "$2")+` for update
-	`, repo, viewer))
+		select `+repoProjectColumns+` from repo_projects where repo = $1 for update
+	`, repo))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -361,14 +317,7 @@ func lockRepoProjectWrite(ctx context.Context, tx pgx.Tx, broker *events.Broker,
 // deleted:false, as the PUT's does, actor the environment session; a repository already mapped, in
 // the seeded project or another, gets no write and no event. A project that does not exist refuses
 // the seed, naming the repository and the project.
-//
-// A mapping the PUT would refuse for its GitHub subject lane (refuseSharedLane), and one into a
-// private project whose private-projects record busProjects cannot write (ensureMappedPrivate; a
-// nil busProjects is a deployment with no bus), is left out: that entry is rolled back, an ERROR
-// line names it and why, and the seed goes on, so no one project's condition stops the boot of
-// every project. Left unmapped, the repository's events stay on a lane the private project's
-// record already holds, and the next boot seeds it again.
-func SeedRepoProjects(ctx context.Context, database *store.Store, broker *events.Broker, busProjects BusProjects, raw string) error {
+func SeedRepoProjects(ctx context.Context, database *store.Store, broker *events.Broker, raw string) error {
 	mappings, err := ParseRepoProjects(raw)
 	if err != nil {
 		return err
@@ -379,26 +328,14 @@ func SeedRepoProjects(ctx context.Context, database *store.Store, broker *events
 	}
 	slices.Sort(repos)
 	for _, repo := range repos {
-		err := seedRepoProject(ctx, database, broker, busProjects, repo, mappings[repo])
-		if seedRefused(err) {
-			slog.Error("dispatch: seed repository project: left out", "repo", repo, "project", mappings[repo], "error", err)
-			continue
-		}
-		if err != nil {
+		if err := seedRepoProject(ctx, database, broker, repo, mappings[repo]); err != nil {
 			return fmt.Errorf("seed repository project %q: %w", repo, err)
 		}
 	}
 	return nil
 }
 
-// seedRefused reports whether err is a refusal that leaves one seeded entry out rather than
-// stopping the boot: the lane refusal, or a private-projects record that could not be written.
-func seedRefused(err error) bool {
-	var refusal *apiError
-	return errors.Is(err, errPrivateProjectsUnavailable) || errors.As(err, &refusal) && refusal.code == codeRepositoryLaneShared
-}
-
-func seedRepoProject(ctx context.Context, database *store.Store, broker *events.Broker, busProjects BusProjects, repo, project string) error {
+func seedRepoProject(ctx context.Context, database *store.Store, broker *events.Broker, repo, project string) error {
 	actor := model.Actor{Kind: "session", ID: "environment"}
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
@@ -416,7 +353,7 @@ func seedRepoProject(ctx context.Context, database *store.Store, broker *events.
 	if !exists {
 		return fmt.Errorf("project %s does not exist", project)
 	}
-	previous, err := lockRepoProjectWrite(ctx, tx, broker, everyReader, repo, actor, project)
+	previous, err := lockRepoProjectWrite(ctx, tx, broker, repo, actor, project)
 	if err != nil || previous != nil {
 		return err
 	}
@@ -429,12 +366,6 @@ func seedRepoProject(ctx context.Context, database *store.Store, broker *events.
 	}
 	event, err := broker.Append(ctx, tx, repoProjectEvent(mapping, actor, false))
 	if err != nil {
-		return err
-	}
-	if err := refuseSharedLane(ctx, tx, nil, func(row repoProjectRow) bool { return row.repo == repo }); err != nil {
-		return err
-	}
-	if err := ensureMappedPrivate(ctx, tx, busProjects, project); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -503,27 +434,19 @@ func parseRepoRename(repo string, raw *string) (*string, error) {
 // without case as every comparison of a repository is, since the column's own check refuses only
 // a rename to the identical spelling.
 //
-// The rule reads every mapping, whatever its project, since a chain through a project the caller
-// cannot see is a chain all the same. A refusal of a mapping of such a project names neither its
-// repositories nor the project: it is the lane refusal's hidden form for the repository the caller
-// named (hiddenLaneError), as a PUT over a mapping the caller cannot see is (refuseHiddenMapping).
-//
 // It takes one lock over the whole graph first, since the rows it must hold still are not this
 // mapping's own: the writer already holds its own mapping's locks by here
 // (lockRepoProjectWrite) and takes no other mapping's, so this lock is always the last one
 // taken and two renames cannot wait on each other.
-func refuseRepoRenameChain(ctx context.Context, tx pgx.Tx, viewer *model.Viewer, repo, renamedTo string) error {
+func refuseRepoRenameChain(ctx context.Context, tx pgx.Tx, repo, renamedTo string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-repo-rename'), 0)`); err != nil {
 		return fmt.Errorf("lock the repository renames: %w", err)
 	}
-	var pointedAt, pointedProject string
+	var pointedAt string
 	switch err := tx.QueryRow(ctx, `
-		select repo, project from repo_projects where lower(renamed_to) = lower($1) limit 1
-	`, repo).Scan(&pointedAt, &pointedProject); {
+		select repo from repo_projects where lower(renamed_to) = lower($1) limit 1
+	`, repo).Scan(&pointedAt); {
 	case err == nil:
-		if !viewerSees(viewer, pointedProject) {
-			return hiddenLaneError(repoLanes(repo, nil)[0])
-		}
 		return errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT",
 			"%s is what %s was renamed to, so it cannot be renamed to %s as well; point %s at the new name instead",
 			repo, pointedAt, renamedTo, pointedAt)
@@ -536,14 +459,6 @@ func refuseRepoRenameChain(ctx context.Context, tx pgx.Tx, viewer *model.Viewer,
 	}
 	if strings.EqualFold(onwards, renamedTo) {
 		return nil
-	}
-	var renamedProject string
-	if err := tx.QueryRow(ctx, `select project from repo_projects where lower(repo) = lower($1) limit 1`,
-		renamedTo).Scan(&renamedProject); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
-	if renamedProject != "" && !viewerSees(viewer, renamedProject) {
-		return hiddenLaneError(repoLanes(renamedTo, nil)[0])
 	}
 	return errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT",
 		"%s was itself renamed to %s, so %s cannot be renamed to it; name %s instead", renamedTo, onwards, repo, onwards)

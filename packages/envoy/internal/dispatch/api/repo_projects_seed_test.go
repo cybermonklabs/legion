@@ -75,7 +75,7 @@ func TestSeedRepoProjectsAnnouncesWhatItAddsAndNothingElse(t *testing.T) {
 	ctx := context.Background()
 	seed := func() {
 		t.Helper()
-		if err := SeedRepoProjects(ctx, database, events.NewBroker(), nil, "acme/new=CORE"); err != nil {
+		if err := SeedRepoProjects(ctx, database, events.NewBroker(), "acme/new=CORE"); err != nil {
 			t.Fatalf("seed acme/new=CORE: %v", err)
 		}
 	}
@@ -120,7 +120,7 @@ func TestSeedRepoProjectsRacingAPutOfTheSameRepositoryWaitsForIt(t *testing.T) {
 	put := putMappingAsync(t, handler, "acme/new", map[string]any{"project": "OTHER", "default": true})
 	awaitLockWaiters(t, database, 1)
 	seeded := make(chan error, 1)
-	go func() { seeded <- SeedRepoProjects(ctx, database, events.NewBroker(), nil, "acme/new=CORE") }()
+	go func() { seeded <- SeedRepoProjects(ctx, database, events.NewBroker(), "acme/new=CORE") }()
 	deadline := time.Now().Add(10 * time.Second)
 	for lockWaiters(t, database) < 2 {
 		select {
@@ -173,7 +173,7 @@ func TestSeedRepoProjectsAddsMissingRowsWithoutOverwritingSettings(t *testing.T)
 		t.Fatalf("create dashboard mapping: %v", err)
 	}
 
-	if err := SeedRepoProjects(ctx, database, events.NewBroker(), nil, "Seed/Repo.git=APP,dashboard/repo=APP"); err != nil {
+	if err := SeedRepoProjects(ctx, database, events.NewBroker(), "Seed/Repo.git=APP,dashboard/repo=APP"); err != nil {
 		t.Fatalf("seed repository projects: %v", err)
 	}
 
@@ -200,32 +200,8 @@ func TestSeedRepoProjectsAddsMissingRowsWithoutOverwritingSettings(t *testing.T)
 
 func TestSeedRepoProjectsRejectsMissingProject(t *testing.T) {
 	database := storetest.Open(t)
-	err := SeedRepoProjects(context.Background(), database, events.NewBroker(), nil, "missing/repo=MISSING")
+	err := SeedRepoProjects(context.Background(), database, events.NewBroker(), "missing/repo=MISSING")
 	if err == nil || !strings.Contains(err.Error(), `seed repository project "missing/repo": project MISSING does not exist`) {
 		t.Fatalf("seed missing project: got %v", err)
-	}
-}
-
-// TestTheSeedRefusesALaneSharedWithAPrivateProject: a seeded mapping whose repository is on the
-// GitHub subject lane of a private project's mapping is left out, logged at ERROR naming it and
-// the lane, and the seed goes on to its next entry and returns nil: no one project's condition
-// stops the boot of every project.
-func TestTheSeedRefusesALaneSharedWithAPrivateProject(t *testing.T) {
-	bus := &recordingBus{}
-	handler, database := newLaneServer(t, bus)
-	mapRepo(t, handler, "alice", "acme/a_b", map[string]any{"project": "PRIV"})
-	makePrivate(t, database, "PRIV")
-	logged := captureLog(t)
-	if err := SeedRepoProjects(context.Background(), database, events.NewBroker(), bus, "acme/a.b=PUB,acme/c=PUB"); err != nil {
-		t.Fatalf("seed acme/a.b=PUB,acme/c=PUB beside PRIV's acme/a_b: %v, want the entry left out and the seed gone on", err)
-	}
-	if project := mappedTo(t, database, "acme/a.b"); project != "" {
-		t.Errorf("the seed mapped acme/a.b to %s, on the lane of PRIV's acme/a_b, want it left out", project)
-	}
-	if project := mappedTo(t, database, "acme/c"); project != "PUB" {
-		t.Errorf("the seed mapped acme/c to %q after the refused entry, want PUB", project)
-	}
-	if line := logged.Lines("repo=acme/a.b"); !strings.Contains(line, "level=ERROR") || !strings.Contains(line, sharedLane) {
-		t.Errorf("the seed logged %q for acme/a.b, want an ERROR line naming it and the lane %s", line, sharedLane)
 	}
 }

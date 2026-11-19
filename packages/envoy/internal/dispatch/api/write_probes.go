@@ -1,11 +1,11 @@
 package api
 
-// writeProbe is how a driver calls one write row whose pattern names an object ({key}, {id},
-// {session_id}, or a mapping's {owner}/{repo}): the object each wildcard is filled with (a Probe,
-// as a GET row's), and the JSON body sent with every fill, "" for none. The body is one the row
-// takes as far as the read of the object its path names, from a person at a browser and from a
-// personal token alike, so a call naming an object nobody holds is answered as missing rather
-// than refused for its body (TestNoWriteReachesAHiddenObject holds every row to that).
+// writeProbe is how a driver calls one write row whose pattern names an object ({key}, {id} or
+// {session_id}): the object each wildcard is filled with (a Probe, as a GET row's), and the JSON
+// body sent with every fill, "" for none. The body is one the row takes as far as the read of the
+// object its path names, from a person at a browser and from a personal token alike, so a call
+// naming an object nobody holds is answered as missing rather than refused for its body
+// (TestNoWriteReachesAHiddenObject holds every row to that).
 type writeProbe struct {
 	Probe readProbe
 	Body  string
@@ -29,11 +29,9 @@ const (
 	probeCredentialGrant   probeObject = "credential-grant"   // a credential grant's id at the secrets broker
 	probeMachineLogin      probeObject = "machine-login"      // a machine login's id at the secrets broker
 	probeSignin            probeObject = "signin"             // a sign-in's id at the secrets broker
-	// probeMappedRepository is the name of a repository a project's mapping holds, the {repo} of
-	// a mapping write. Its missing side is a name on the same GitHub subject lane that no mapping
-	// holds, as acme/p.x is beside acme/p_x: a mapping write answers a project's mapping the
-	// caller cannot see as it answers a neighbour on its lane (refuseHiddenMapping), since a PUT
-	// of a repository no mapping holds is a write, not a miss.
+	// probeMappedRepository is the name of a repository a project's mapping holds, which an
+	// issue's external reference names (bodyReferences). Its missing side is a name no mapping
+	// holds.
 	probeMappedRepository probeObject = "mapped-repository"
 )
 
@@ -45,7 +43,6 @@ var (
 	byIssueSlug    = readProbe{"key": probeIssue, "slug": probeDocumentSlug}
 	byProjectSlug  = readProbe{"key": probeProject, "slug": probeDocumentSlug}
 	byArchitecture = readProbe{"key": probeProject, "owner": probeRepositoryOwner, "repo": probeRepositoryName}
-	byMapping      = readProbe{"owner": probeRepositoryOwner, "repo": probeMappedRepository}
 )
 
 // writeProbes is how every write row whose pattern names an object is called, by "<method>
@@ -157,10 +154,6 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/credential-grants/{id}/revoke":    {readProbe{"id": probeCredentialGrant}, ""},
 	"POST /api/v1/machine-logins/{id}/revoke":       {readProbe{"id": probeMachineLogin}, ""},
 	"POST /api/v1/signins/{id}/revoke":              {readProbe{"id": probeSignin}, ""},
-	// A repository mapping, by the repository it maps. The PUT's body names PUB, a project every
-	// caller the walk compares sees, so the write reaches its read of the mapping.
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}":    {byMapping, `{` + probeActor + `,"project":"PUB"}`},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {byMapping, `{` + probeActor + `}`},
 }
 
 // noProjectWrite is a write row whose pattern names an object that belongs to no project: why it
@@ -176,6 +169,8 @@ type noProjectWrite struct {
 // is scopeDeployment, which refuses every caller that is not open, and the acceptance driver holds
 // each row to that refusal for every such caller (RouteProbe.NoProject).
 var noProjectWrites = map[string]noProjectWrite{
-	"PUT /api/v1/access-groups/{name}":    {"an access group is the deployment's, which no project owns", `{"members":[]}`},
-	"DELETE /api/v1/access-groups/{name}": {"an access group is the deployment's, which no project owns", ""},
+	"PUT /api/v1/access-groups/{name}":                     {"an access group is the deployment's, which no project owns", `{"members":[]}`},
+	"DELETE /api/v1/access-groups/{name}":                  {"an access group is the deployment's, which no project owns", ""},
+	"PUT /api/v1/settings/repo-projects/{owner}/{repo}":    {"a repository mapping is the deployment's, keyed by a repository no project owns", `{"project":"PUB"}`},
+	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {"a repository mapping is the deployment's, keyed by a repository no project owns", ""},
 }

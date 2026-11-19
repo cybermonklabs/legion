@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestNoWriteReachesAHiddenObject walks every write row whose pattern names an object ({key}, {id},
-// {session_id}, or a mapping's {repo}), whatever its write class, on verification v16's seed
+// TestNoWriteReachesAHiddenObject walks every write row whose pattern names an object ({key}, {id}
+// or {session_id}), whatever its write class, on verification v16's seed
 // (seedPrivateProject). Each row is called twice as one caller: once naming PRIV's object of each
 // kind its Probe names, and once naming an object nobody holds. The two answers must be the same
 // status and the same bytes (the second's ids written as the first's), and neither call may change
@@ -85,23 +85,6 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 				path, removed.Code, strings.TrimSpace(removed.Body.String()))
 		}
 	}
-
-	// The {owner}/{repo} rows, as alice, with PRIV mapping acme/p_x: a mapping of a project she
-	// cannot see is neither removed, moved nor named, and a target project she cannot see is
-	// answered as a key no project holds. Each pair answers alike and writes nothing.
-	const mappings = "/api/v1/settings/repo-projects/"
-	for _, pair := range []struct {
-		name, method, hiddenPath, missingPath string
-		hiddenBody, missingBody               any
-	}{
-		{"DELETE a mapping of PRIV's", http.MethodDelete, mappings + "acme/p_x", mappings + "acme/nobody", nil, nil},
-		{"PUT over a mapping of PRIV's", http.MethodPut, mappings + "acme/p_x", mappings + "acme/p.x",
-			map[string]string{"project": seedPublic}, map[string]string{"project": seedPublic}},
-		{"PUT into PRIV", http.MethodPut, mappings + "acme/new", mappings + "acme/new",
-			map[string]string{"project": seedPrivate}, map[string]string{"project": "NOPE"}},
-	} {
-		walk.callPair(t, callerAlice, pair.name, pair.method, pair.hiddenPath, pair.missingPath, pair.hiddenBody, pair.missingBody, nil, false)
-	}
 }
 
 // bodyReferences is every field of a write's body that names an object of a project, with a call
@@ -109,8 +92,8 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 // conversation), and the body with %s where the named object goes. accepted is a row that takes an
 // object nobody holds rather than refusing it: the design gates store a document's id they do not
 // read, so both calls write, and must write the same tables. An external reference names a
-// repository PRIV maps, acme/p_x, beside acme/p.x on its lane, which no mapping holds: a mapping
-// of a project the caller cannot see answers as no mapping.
+// repository PRIV maps, acme/p_x, or acme/p.x, which no mapping holds: a mapping of a project the
+// caller cannot see answers as no mapping.
 var bodyReferences = []struct {
 	row, field, path string
 	object           probeObject
@@ -171,10 +154,7 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 // keep), to alice and to her token that lists PUB. A wait may not close a ring, so a wait that
 // closes one through PRIV's issue is refused naming only the issue written, and a document is
 // removed only while nothing links to it, so a removal of one only PRIV's comment cites is refused
-// naming nothing that cites it. A repository is renamed one step at most, so alice's rename
-// through PRIV's rename is refused as a mapping on a lane a project she cannot see holds
-// (hiddenLaneError), naming neither of PRIV's repositories; the mappings are the deployment's,
-// which her token that lists PUB may not write at all.
+// naming nothing that cites it.
 func TestARefusalOfAHiddenObjectNamesNone(t *testing.T) {
 	walk := seedHiddenWrites(t)
 	both := []privateCaller{callerAlice, callerAlicePubToken}
@@ -217,12 +197,6 @@ func TestARefusalOfAHiddenObjectNamesNone(t *testing.T) {
 		{"a removal of a document only PRIV's comment cites", http.MethodDelete, "/api/v1/artifacts/" + cited.ID,
 			map[string]any{}, both, nil, http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED",
 			"artifact " + cited.Slug + " (cited.md) is not untouched: something in Dispatch links to it; a document is removed only while it holds nothing"},
-		{"a rename of what PRIV's repository was renamed to", http.MethodPut, "/api/v1/settings/repo-projects/acme/p_y",
-			map[string]any{"project": seedPublic, "renamed_to": "acme/w_z"}, []privateCaller{callerAlice}, []string{"p_x"},
-			http.StatusConflict, codeRepositoryLaneShared, hiddenLaneError(repoLanes("acme/p_y", nil)[0]).Error()},
-		{"a rename to PRIV's renamed repository", http.MethodPut, "/api/v1/settings/repo-projects/acme/w_y",
-			map[string]any{"project": seedPublic, "renamed_to": "acme/p_x"}, []privateCaller{callerAlice}, []string{"p_y"},
-			http.StatusConflict, codeRepositoryLaneShared, hiddenLaneError(repoLanes("acme/p_x", nil)[0]).Error()},
 	} {
 		for _, caller := range refusal.callers {
 			before := walk.tableDigests(t)
@@ -537,10 +511,6 @@ var missingAnswers = map[string]struct {
 		"un-snoozing an ask the caller never snoozed leaves the state asked for, whatever the id names (idRoutes: notFoundNone)"},
 	"PUT /api/v1/me/threads/{id}/read": {http.StatusNoContent, "",
 		"the caller's own read mark, kept under any thread id and reading no message (idRoutes)"},
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {http.StatusConflict, codeRepositoryLaneShared,
-		"a PUT over a mapping of a project the caller cannot see answers as a PUT of a neighbour on its GitHub subject lane, the lane refusal's hidden form (refuseHiddenMapping)"},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {http.StatusNoContent, "",
-		"removing a mapping of a project the caller cannot see answers as removing one no repository has, writing nothing (refuseHiddenMapping)"},
 	"POST /api/v1/issues/{key}/results": {http.StatusBadRequest, "UNKNOWN_CHECK",
 		"a result names a check of its issue's Verification document, and an issue the caller cannot read holds none"},
 	"PUT /api/v1/issues/{key}/role-holders": {http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN",
@@ -560,8 +530,7 @@ var refusedAtABrowser = map[string]string{
 func objectWriteRows() []string {
 	var rows []string
 	for name := range writeClasses {
-		if strings.Contains(name, "{key}") || strings.Contains(name, "{id}") || strings.Contains(name, "{session_id}") ||
-			strings.Contains(name, "{repo}") {
+		if strings.Contains(name, "{key}") || strings.Contains(name, "{id}") || strings.Contains(name, "{session_id}") {
 			rows = append(rows, name)
 		}
 	}
@@ -624,16 +593,15 @@ func writeProbeProblems(rows []string) []string {
 }
 
 // hiddenFrom reports whether the walk names a hidden object of kind in place of one nobody holds,
-// for an open caller or not: an object of a project, a repository's mapping among them, is hidden
-// from every caller of the walk, a personal token is someone else's, and a row of the deployment
-// and a session that acted in PUB alone are hidden from a caller that is not open. Every other
-// kind is part of an object the path already names - a document's slug, a version, a block, an
-// attempt, a phase, a person or group on a list, a project's repository, a pause point - and is
-// PRIV's own in both calls.
+// for an open caller or not: an object of a project is hidden from every caller of the walk, a
+// personal token is someone else's, and a row of the deployment and a session that acted in PUB
+// alone are hidden from a caller that is not open. Every other kind is part of an object the path
+// already names - a document's slug, a version, a block, an attempt, a phase, a person or group on
+// a list, a repository, a pause point - and is PRIV's own in both calls.
 func hiddenFrom(object probeObject, open bool) bool {
 	switch object {
 	case probeProject, probeIssue, probeDocument, probeAsk, probeComment, probeMessage, probeThread,
-		probeResult, probeAgentToken, probeMappedRepository:
+		probeResult, probeAgentToken:
 		return true
 	case probeSession, probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant,
 		probeMachineLogin, probeSignin:
@@ -740,16 +708,6 @@ func volatileStatement(statement string) bool {
 	return strings.HasPrefix(statement, "update agent_tokens set last_used_at = now()")
 }
 
-// otherWork names each call whose hidden object is answered as an object nobody holds by a path
-// that must read the hidden row to answer at all, with why: callPair holds it to the same answer
-// and no write, and not to the same statements.
-var otherWork = map[string]string{
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": "a mapping is keyed by its repository, so a PUT over a mapping of a " +
-		"project the caller cannot see must find that row to refuse it rather than take the repository as unmapped and " +
-		"overwrite it; its missing side is a neighbour on its lane, refused by the lane check after the write (missingAnswers)",
-	"PUT over a mapping of PRIV's": "the walk's own call of the PUT row above (otherWork's first entry)",
-}
-
 // walkListener is a fake Envoy listener holding session s1 live and subscribed to PRIV's issue and
 // project document, so a write that removes a subscriber reaches the removal. It records every
 // request it is sent in calls.
@@ -796,8 +754,8 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 // seedHiddenWrites stands up verification v16's seed and writes, as carol, PRIV's object of every
 // kind a write row names, through the routes. The seed's store is traced and its listener records
 // its calls, so a pair of calls can be held to the same work (callPair). PRIV's issue is claimed by
-// s1 and links privateHeldURL; PRIV maps acme/p_x, which it renamed to acme/p_y, and PUB maps
-// acme/w_pub, whose issue 9 privateHeldURL is.
+// s1 and links privateHeldURL; PRIV maps acme/p_x, and PUB maps acme/w_pub, whose issue 9
+// privateHeldURL is.
 func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	t.Helper()
 	topics := []string{}
@@ -845,9 +803,9 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
 		"name": "PRIV's sessions", "sessions": []string{"s1"},
 	}))
-	// A repository PRIV maps, which a mapping write's {repo} names, renamed to acme/p_y; and one
-	// PUB maps, an issue of which PRIV's issue links (privateHeldURL).
-	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate, "renamed_to": "acme/p_y"})
+	// A repository PRIV maps, which an issue's external reference names; and one PUB maps, an
+	// issue of which PRIV's issue links (privateHeldURL).
+	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate})
 	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/w_pub", map[string]any{"project": seedPublic})
 	asCarol(http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"external_links": []map[string]string{{"url": privateHeldURL}}})
 	// s1, live at the walk's listener, holds PRIV's issue.
@@ -906,7 +864,7 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeCredentialGrant:   nobody(uuid.NewString()),
 		probeMachineLogin:      nobody(uuid.NewString()),
 		probeSignin:            nobody(uuid.NewString()),
-		// acme/p.x is on acme/p_x's GitHub subject lane, and no mapping holds it.
+		// No mapping holds acme/p.x.
 		probeMappedRepository: {hidden: "p_x", missing: "p.x"},
 	}}
 	rows, err := seed.database.Pool.Query(context.Background(), `
@@ -1065,7 +1023,7 @@ func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, meth
 		t.Errorf("%s as %s: the call naming the hidden object asked the listener %v, and the call naming nothing %v",
 			name, caller, hiddenCalls, calls)
 	}
-	if statements := rewritten(missingStatements, written); !writes && otherWork[name] == "" && !slices.Equal(hiddenStatements, statements) {
+	if statements := rewritten(missingStatements, written); !writes && !slices.Equal(hiddenStatements, statements) {
 		t.Errorf("%s as %s: the call naming the hidden object did other work than the call naming nothing, %s",
 			name, caller, firstDifference(hiddenStatements, statements))
 	}

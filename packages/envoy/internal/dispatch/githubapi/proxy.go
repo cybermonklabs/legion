@@ -24,10 +24,23 @@ const Prefix = "/api/github/rest/"
 
 // readable are the GitHub API paths the web app reads, and the only ones the proxy forwards: a
 // pull request, an issue (which also answers for a pull request), the check runs of a commit, and
-// the workflow runs (`actions/runs`, group 3) whose query names one commit, held to
-// workflowRunsQuery. The App can read more of a repository than that, and none of the rest is
-// shown anywhere.
-var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|(actions/runs))$`)
+// the workflow runs whose query names one commit, held to workflowRunsQuery. The App can read more
+// of a repository than that, and none of the rest is shown anywhere.
+var readable = regexp.MustCompile(`^repos/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pulls/[0-9]+|issues/[0-9]+|commits/[0-9A-Fa-f]{7,64}/check-runs|actions/runs)$`)
+
+// workflowRunsPath ends every workflow-runs read readable takes, and no other path it takes.
+const workflowRunsPath = "/actions/runs"
+
+// Repository answers the repository a path the proxy reads names (the GitHub API path, as it
+// follows Prefix): its owner and name as the path spells them, and ok false for a path the web app
+// does not read (readable) or one whose owner or name is `.` or `..`.
+func Repository(path string) (owner, repo string, ok bool) {
+	match := readable.FindStringSubmatch(path)
+	if match == nil || match[1] == "." || match[1] == ".." || match[2] == "." || match[2] == ".." {
+		return "", "", false
+	}
+	return match[1], match[2], true
+}
 
 // workflowRunsQuery is each parameter a workflow-runs read may carry, as sent: the commit's full
 // sha and the page. The read must name head_sha, and no parameter may repeat.
@@ -97,13 +110,12 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, Prefix)
-	match := readable.FindStringSubmatch(path)
-	if match == nil || match[1] == "." || match[1] == ".." || match[2] == "." || match[2] == ".." ||
-		(match[3] != "" && !workflowRunsOfOneCommit(r.URL.RawQuery)) {
+	owner, repo, ok := Repository(path)
+	runsRead := strings.HasSuffix(path, workflowRunsPath)
+	if !ok || (runsRead && !workflowRunsOfOneCommit(r.URL.RawQuery)) {
 		api.WriteJSON(w, http.StatusNotFound, map[string]string{"error": "the GitHub proxy reads a pull request, an issue, a commit's check runs or a commit's workflow runs only", "code": "GITHUB_PATH_REFUSED"})
 		return
 	}
-	owner, repo := match[1], match[2]
 	token, err := client.RepositoryToken(r.Context(), owner, repo)
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
@@ -132,7 +144,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		target += "?" + r.URL.RawQuery
 	}
 	read := client.Read
-	if match[3] != "" {
+	if runsRead {
 		read = func(ctx context.Context, token, path string) ([]byte, int, http.Header, error) {
 			return client.ReadWithin(ctx, token, path, workflowRunsResponseLimit)
 		}
@@ -156,7 +168,7 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		rateLimited(w, limited)
 		return
 	}
-	if match[3] != "" && status == http.StatusOK {
+	if runsRead && status == http.StatusOK {
 		var runs workflowRuns
 		if err := json.Unmarshal(body, &runs); err != nil {
 			slog.Warn("dispatch: GitHub proxy could not decode the workflow runs", "path", target, "error", err)

@@ -4024,6 +4024,8 @@ Each item below names a path with its method and identity, then its purpose.
   and a repository the App is not installed on, or no App key, `503 GITHUB_TOKEN_UNAVAILABLE`.
   A GitHub rate limit is `503 GITHUB_RATE_LIMITED` with `Retry-After` the whole seconds GitHub asked for (at least one), never `502 GITHUB_UPSTREAM` or GitHub's own `403`:
   GitHub's answer to the token mint or to the read, or a limit any process already met under the App or the installation, when GitHub is not asked at all (Running more than one process, above).
+  A person reads a repository only when an issue the person sees resolves to it (its own repository, its nearest parent's, else its project's default, whether it is open or done), or when the person is an open viewer and no issue of a project the person does not see resolves to it (`refs.RepositoryClause`);
+  every other repository answers, step for step, what one the App is not installed on answers, and GitHub is not read for it: no App key still answers that, and a rate limit still answers the rate limit.
 
 - `/healthz` (GET; none)
 
@@ -4282,17 +4284,6 @@ Each item below names a path with its method and identity, then its purpose.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
-  A GitHub subject spells `.`, whitespace, `*` and `>` in a repository's owner or name as `_`, so `acme/a.b` and `acme/a_b` publish on one lane, `notifications.github.acme.a_b`.
-  A PUT whose lane, for the repository or its `renamed_to` and compared without case, is also a lane of another project's mapping, where either project is private, is `409 REPOSITORY_LANE_SHARED`;
-  the answer names the other project and its repository only to a caller who sees that project.
-  A target project the caller cannot see is answered as an unknown project (`404 NOT_FOUND`).
-  A mapping of a project the caller cannot see is neither moved nor named:
-  a PUT over it answers the lane refusal's hidden form, which names the lane alone, and a DELETE answers `204` and removes nothing.
-  A PUT into a private project writes that project's key in the hub's `envoy_private_projects` bucket through its own transaction, as its last step before the commit, and is `409 PRIVATE_PROJECTS_UNAVAILABLE`, with nothing changed, while the hub does not take it;
-  this build has no writer of that bucket, so every PUT into a private project is that `409`.
-  The route adds names to the key and never removes one:
-  a move out of the project, a DELETE and a `renamed_to` change leave the old name there, the closed direction, for the bucket's writer to rewrite from the committed rows once a build carries it.
-  The boot seed of `DISPATCH_REPO_PROJECTS` leaves out an entry either refusal would refuse, logs it at ERROR naming the lane or the bucket, and goes on to the next entry and the boot.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
 
 - `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
@@ -4314,7 +4305,7 @@ Each item below names a path with its method and identity, then its purpose.
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
-  A repository the caller may not see — one mapped to no project it sees, or one no project maps for a restricted member or a credential that lists projects — answers what one the App is not installed on answers.
+  Every caller reads the same answer, whatever projects it sees: a repository's name is no project's content.
   The Legion daemon asks it for every repository it serves, for `legion state`.
 
 - `/api/v1/ci-reconcile/passes` (GET; cookie, trusted header, or bearer)
