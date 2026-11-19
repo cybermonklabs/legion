@@ -404,6 +404,49 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 	}
 }
 
+// A line the launcher quotes is cut to its first 80 runes (shimwire.Decode's refusal of a line
+// that is no frame) before the URL rule reads it. When that cut falls inside a URL's userinfo,
+// before its "@", the rule finds no userinfo in what is left and keeps the start of the user name
+// and the password as the URL's host. The launcher writes no part of either.
+func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// The user name and the password go into the URL as the other tests of this package build one,
+	// so the pre-push leak check reads no credential in the source. The line's first 80 runes end
+	// inside the password, before the "@".
+	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"
+	connect := notADaemon(t, strings.Replace("moved to https://d.example/launch", "://", "://"+user+":"+pass+"@", 1))
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr syncBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, []string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s",
+			"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()}, &stdout, &stderr)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), "launcher: daemon connection:") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the launcher logged %q, want its failed daemon connection", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the launcher did not exit")
+	}
+	logged := stdout.String() + stderr.String()
+	for _, credential := range []string{user, pass[:12]} {
+		if strings.Contains(logged, credential) {
+			t.Errorf("the launcher wrote %q, which holds %q", logged, credential)
+		}
+	}
+}
+
 // notADaemon is a far side at a launcher's --connect that is no daemon: it answers every hello
 // with answer, a line that is no frame, and hangs up. It answers the tcp:// address to dial.
 func notADaemon(t *testing.T, answer string) string {
