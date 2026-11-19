@@ -64,14 +64,15 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Six entries take no owner lock - four exceptions, since cmd/dispatch-seed's three loaders share
-// one - and each says why. Everything else on the list holds the item's owner, which is what
-// makes the advisory lock at refs.LockItemOwner enough: those that take it in a transaction they
-// open are rows of the lock table, which proves it by holding it (item_row_owner_lock_test.go),
-// and those that write inside a transaction their caller opened rest on the lock that caller
-// took, which no test here or there drives; the gap map (itemRowLockNoRow) names each with why,
-// and TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That
-// any of them still takes or holds it is read off no entry here.
+// Nine entries take no owner lock - five exceptions, since cmd/dispatch-seed's three loaders share
+// one and the boot rename pass's three statement builders share another - and each says why.
+// Everything else on the list holds the item's owner, which is what makes the advisory lock at
+// refs.LockItemOwner enough: those that take it in a transaction they open are rows of the lock
+// table, which proves it by holding it (item_row_owner_lock_test.go), and those that write inside
+// a transaction their caller opened rest on the lock that caller took, which no test here or there
+// drives; the gap map (itemRowLockNoRow) names each with why, and
+// TestTheLockTablePlacesEveryWriterTheCensusNames keeps every entry in one of the two. That any of
+// them still takes or holds it is read off no entry here.
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
@@ -180,6 +181,11 @@ var itemRowWriters = map[string]map[string]string{
 		"queueStamp": "the source's owner lock, which every caller holds before its write phase; " +
 			"its tables are refs and the item block-ref tables, no item row",
 	},
+	"internal/dispatch/store/repo_rename_pass.go": {
+		"collisions": repoRenamePassException,
+		"nameWrite":  repoRenamePassException,
+		"urlWrite":   repoRenamePassException,
+	},
 }
 
 // seedLoaderException is why the seed's three loaders are on the census with no lock, written so
@@ -195,6 +201,20 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 	"there is no other writer for a lock to serialise it against; pointed at a database a " +
 	"server serves it would take the owner lock like every serving writer"
 
+// repoRenamePassException is why the boot rename pass's three statement builders are on the
+// census with no lock. They build the statements of store.RewriteRenamedRepositories from a table
+// name, which is the shape this scan cannot read (unspelledTableWrites), and every table they are
+// given holds one of the stored repository fields repoRenameLines lists, none of them an item
+// row: the pass writes no comment, message or ask and no block-state row of one, so there is no
+// owner lock for it to take. The only advisory lock it takes is its own, one line at a time
+// (repoRenameLockNamespace), and cmd/dispatch runs it once at boot, before the process serves.
+const repoRenamePassException = "none, and none to take: these build the statements of the boot " +
+	"rename pass (store.RewriteRenamedRepositories), whose tables are those of the stored " +
+	"repository fields repoRenameLines lists - issues, projects, issue_external_links, " +
+	"pull_request_heads, branch_commits, the delivery_* tables (delivery_settings among them), " +
+	"architecture_sources and ci_reconcile_passes - no item row. It runs once at boot, before " +
+	"the process serves (cmd/dispatch's renameRepositories boot task)"
+
 // TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the names half of the invariant the
 // advisory owner lock rests on: every writer of a comment, a message, an ask or one of their
 // block-state rows takes that item's owner lock (itemOwnerLockRule), and this half is that every
@@ -207,7 +227,7 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the six entries here that take no
+// does not drive (itemRowLockNoRow names each with why), and the nine entries here that take no
 // owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
@@ -361,6 +381,11 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"RebuildAll": itemRowNoOwnerLock,
 		// The drain's settle runs under the owner lock the drain took for the row it settles.
 		"settleOwedStatement": itemRowCallersTransaction,
+	},
+	"internal/dispatch/store/repo_rename_pass.go": {
+		"collisions": itemRowNoOwnerLock,
+		"nameWrite":  itemRowNoOwnerLock,
+		"urlWrite":   itemRowNoOwnerLock,
 	},
 }
 
