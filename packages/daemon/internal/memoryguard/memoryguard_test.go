@@ -6790,3 +6790,56 @@ func TestMemoryGuardReadsOnThroughTheHeldNewProcessesNoReadAtTheMarkReached(t *t
 		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
 	}
 }
+
+// The read-on after the first kill of an urgent reading at the mark reads the held processes new
+// to the stay with memory of their own before the held forks that ranked at nothing at their band
+// read, as the decision's reads do, so the forks' reads do not spend the interval before a grower
+// is read (INFRA-3531 R1 of spec versions 38 and 43). As in
+// TestMemoryGuardReadsOnThroughTheHeldNewProcessesNoReadAtTheMarkReached, six growers, pids 800
+// to 805, are read once at the band's last reading at 8 MiB of their own, and so are three newer
+// sleeping forks of pid 700, pids 806 to 808, which run its program and report its block. The
+// reading at the mark, 92.53%, spends 50 ms before the guard reads anything, and every smaps read
+// at it takes 22 ms, those of the read-on too. The reads again read pid 700, grown in the band,
+// and pid 805, and end pid 805, 94 ms after the reading; the read-on reads pid 804, begun before
+// one interval, and ends it. A read-on that read the forks first read pid 808 there and ended no
+// grower beside pid 805.
+func TestMemoryGuardReadsOnTheHeldNewProcessesBeforeTheHeldForks(t *testing.T) {
+	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock - 40*mib}
+	pod.add(agent(podLimit/4), parent)
+	pod.setAnon(at(7600))
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	stall, perRead := slowMark(h)
+	h.run()
+	growers := make([]*fakeProcess, 6)
+	for i, r := range []uint64{8000, 8400, 8440} {
+		if i == 0 {
+			pod.resize(&parent, latepoolBlock)
+		}
+		if i == 2 {
+			for j := range growers {
+				growers[j] = &fakeProcess{pid: 800 + j, ppid: 700, start: uint64(6000 + j), exe: "/usr/bin/python3.13", args: growArgs, anon: 8 * mib}
+				pod.add(*growers[j])
+			}
+			for j := range 3 {
+				pod.add(fakeProcess{pid: 806 + j, ppid: 700, start: uint64(6100 + j), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+			}
+		}
+		pod.setAnon(at(r))
+		h.tick()
+	}
+	h.requireKilled()
+	for j, g := range growers {
+		pod.resize(g, uint64(72+j)*mib)
+	}
+	pod.setAnon(at(9253))
+	stall.Store(int64(50 * time.Millisecond))
+	perRead.Store(int64(22 * time.Millisecond))
+	h.tick()
+	want := []endedChoice{{805, "grew", "reread", 0}, {804, "urgent", "reread", 0}}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("at the urgent reading at the mark the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+	}
+}
