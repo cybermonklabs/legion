@@ -2903,6 +2903,39 @@ func TestMemoryGuardEndsAtAnUrgentReadingWhereEveryProcessIsNewTheFirstAndTheWin
 	}
 }
 
+// Where every process the guard may end is new to the stay, an urgent reading at the mark adds
+// the window's growers alone beside its first kill, also where the reads at the mark reach only
+// some of them in their half interval (INFRA-3531 R1 of spec version 42). The band holds one
+// reading, 3400 MiB, after one below it, so pids 300 to 303, flat at 300 to 330 MiB, each have
+// one read and are new to the stay. At the reading at the mark, 3800 MiB, each smaps read takes
+// 30 ms, so the reads at the mark reach two of them before the half interval passes. The two they
+// did not reach rank by their held sizes as not new for the order (settleNew), and they are no
+// history of the stay: the guard ends one process at that reading, and none for urgency. A guard
+// that read whether the stay has history after those reads ended pid 303 and, by the urgent rule,
+// pid 302 too.
+func TestMemoryGuardEndsOneProcessAtAnUrgentReadingWhereEveryProcessIsNewThoughTheReadsAtTheMarkReachOnlySome(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(agent(2*gib),
+		fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "a.py"}, anon: 300 * mib},
+		fakeProcess{pid: 301, ppid: 100, start: 3010, args: []string{"python3", "b.py"}, anon: 310 * mib},
+		fakeProcess{pid: 302, ppid: 100, start: 3020, args: []string{"python3", "c.py"}, anon: 320 * mib},
+		fakeProcess{pid: 303, ppid: 100, start: 3030, args: []string{"python3", "d.py"}, anon: 330 * mib})
+	pod.setAnon(3000 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	_, perRead := slowMark(h)
+	h.run()
+	pod.setAnon(3400 * mib)
+	h.tick()
+	h.requireKilled()
+	perRead.Store(int64(30 * time.Millisecond))
+	pod.setAnon(3800 * mib)
+	h.tick()
+	if got := endedChoices(h); len(got) != 1 {
+		t.Fatalf("at the urgent reading at the mark where every process is new the guard ended %+v, want one process; the log:\n%s", got, strings.Join(h.log.all(), "\n"))
+	}
+}
+
 // The shared-page probe: a parent holds a block of 800 MiB, and three children it forked only
 // sleep, each reporting the block as its own, as a forked process does under gVisor, beside a
 // separate grower smaller than the block. By size alone the newest child would end first, and its
