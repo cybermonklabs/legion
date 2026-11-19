@@ -59,7 +59,7 @@ export function useIssueComponents(
   const mutation = useKeyedWrite({
     // A read of the issue or the tree asked while the save is out waits for its answer: Dispatch
     // can answer it before it takes the save, with the components from before the press.
-    holds: () => [detailKey, treeKey],
+    holds: () => ({ keys: [detailKey, treeKey] }),
     // The components line says why a save was refused, beside the picker it came from.
     inline: true,
     label: () => `Components of ${issue.key}`,

@@ -1,7 +1,7 @@
-import type { QueryKey } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, type WriteBounds } from "../../api/client";
+import type { ReadHold } from "../../api/query-client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -39,7 +39,7 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
 interface CommentActionQueueOptions<TContext> {
   /** The queries `onMutate`'s optimistic value stands in, whose reads wait for the action's
    *  answer (`KeyedWriteOptions.holds`). */
-  holds?(input: CommentActionInput): readonly QueryKey[];
+  holds?(input: CommentActionInput): ReadHold;
   onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
   onMutate?(input: CommentActionInput): TContext | Promise<TContext>;
   /** The server took `input`; the next queued action starts after this. */

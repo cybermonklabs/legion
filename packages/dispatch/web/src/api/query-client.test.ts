@@ -4,12 +4,14 @@ import { QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
 import {
   DispatchQueryClient,
+  hearLiveEvent,
   holdBackReads,
   QUERY_RETRY_DELAY_MS,
   queryRetry,
   queryRetryDelay,
   replaceQueryData,
 } from "./query-client";
+import type { DispatchEvent } from "./types";
 
 /**
  * A server for one read whose every request is answered by the test: `answer()` lands the oldest
@@ -183,8 +185,8 @@ test("a read asked while a write holds its query asks only once the hold ends", 
     await settle();
     expect(queryClient.getQueryData<string>(["issues", "pinned"])).toBe("before");
 
-    // The hold names a prefix of the query's key, as a filter does.
-    const release = holdBackReads(queryClient, [["issues"]]);
+    // The hold names the query by its exact key.
+    const release = holdBackReads(queryClient, { keys: [["issues", "pinned"]] });
     queryClient.setQueryData(["issues", "pinned"], "optimistic");
     void queryClient.invalidateQueries({ queryKey: ["issues", "pinned"] });
     await settle();
@@ -225,8 +227,8 @@ test("a hold keeps back only the reads it names, and each until the last hold on
     state.answer();
     await settle();
 
-    const first = holdBackReads(queryClient, [["user-state"]]);
-    const second = holdBackReads(queryClient, [["user-state"], ["inbox", "elsewhere"]]);
+    const first = holdBackReads(queryClient, { keys: [["user-state"]] });
+    const second = holdBackReads(queryClient, { keys: [["user-state"], ["inbox", "elsewhere"]] });
     void queryClient.invalidateQueries({ queryKey: ["inbox"] });
     void queryClient.invalidateQueries({ queryKey: ["user-state"] });
     await settle();
@@ -241,6 +243,62 @@ test("a hold keeps back only the reads it names, and each until the last hold on
     expect(state.requests()).toBe(2);
   } finally {
     for (const stop of unsubscribe) stop();
+  }
+});
+
+// Dispatch publishes a write's event once the write has committed, so a read asked after it
+// answers the write: the hold ends on its write's own event, and the read it held asks then, with
+// whatever anybody else changed meanwhile. Another event on the same query leaves the hold.
+test("a hold ends on its write's own live event, and on no other", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["user-agent-state"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  const event = (sessionId: string) =>
+    ({
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-11-19T00:00:00Z",
+      id: 1,
+      issue_key: null,
+      notify: false,
+      payload: { login: "alice", session_id: sessionId },
+      seq: 1,
+      type: "user_agent_state.updated",
+    }) as DispatchEvent;
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    const release = holdBackReads(queryClient, {
+      endsOn: (heard, viewer) =>
+        heard.type === "user_agent_state.updated" &&
+        heard.payload.session_id === "planner" &&
+        heard.payload.login === viewer,
+      keys: [["user-agent-state"]],
+    });
+    void queryClient.invalidateQueries({ queryKey: ["user-agent-state"] });
+    await settle();
+    hearLiveEvent(queryClient, event("reviewer"), "alice");
+    hearLiveEvent(queryClient, event("planner"), "bob");
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    server.write("the pin and another session's reply");
+    hearLiveEvent(queryClient, event("planner"), "alice");
+    await settle();
+    expect(server.requests()).toBe(2);
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["user-agent-state"])).toBe(
+      "the pin and another session's reply"
+    );
+    release();
+  } finally {
+    unsubscribe();
   }
 });
 
@@ -261,7 +319,7 @@ test("a held read the write's answer gives up is asked again once the hold ends"
     server.answer();
     await settle();
 
-    const release = holdBackReads(queryClient, [["user-state"]]);
+    const release = holdBackReads(queryClient, { keys: [["user-state"]] });
     void queryClient.invalidateQueries({ queryKey: ["user-state"] });
     await settle();
     server.write("answer and the other issue's news");
@@ -292,7 +350,7 @@ test("a plain query client lets a held read ask at once", async () => {
     queryFn: server.queryFn,
     queryKey: ["user-state"],
   });
-  const release = holdBackReads(queryClient, [["user-state"]]);
+  const release = holdBackReads(queryClient, { keys: [["user-state"]] });
   const unsubscribe = observer.subscribe(() => {});
   try {
     await settle();

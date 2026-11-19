@@ -125,7 +125,7 @@ export function writePin(
   let applied: PinStateOperation | undefined;
   // Held before the write: the read it gives up is asked again at once (`replaceQueryData`), and
   // must wait for the pin like every other.
-  const release = holdBackReads(client, [["user-state"]]);
+  const release = holdBackReads(client, { keys: [["user-state"]] });
   replaceQueryData<UserState>(client, ["user-state"], (current) => {
     const state = stateForIssue(current, issueKey);
     applied = typeof operation === "function" ? operation(state.dismissed ?? []) : operation;

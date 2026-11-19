@@ -102,7 +102,9 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
 > {
   const queryClient = useQueryClient();
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
-    holds: () => (removesRow === undefined || removesRow() ? [inboxQuery().queryKey] : []),
+    holds: () => ({
+      keys: removesRow === undefined || removesRow() ? [inboxQuery().queryKey] : [],
+    }),
     inline: true,
     label,
     write,

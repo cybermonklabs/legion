@@ -1,7 +1,6 @@
 import {
   type DefaultError,
   type MutationFunctionContext,
-  type QueryKey,
   type UseMutationOptions,
   type UseMutationResult,
   useMutation,
@@ -9,7 +8,7 @@ import {
 import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteRequest } from "../../api/client";
-import { holdBackReads } from "../../api/query-client";
+import { holdBackReads, type ReadHold } from "../../api/query-client";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
@@ -38,7 +37,7 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
    *  wait until its answer or its refusal is in (`holdBackReads`): the press's `onMutate` writes
    *  that value, and its `onSuccess` or `onError` puts the answer or the rollback in its place
    *  before the hold ends. */
-  readonly holds?: (variables: TVariables) => readonly QueryKey[];
+  readonly holds?: (variables: TVariables) => ReadHold;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:

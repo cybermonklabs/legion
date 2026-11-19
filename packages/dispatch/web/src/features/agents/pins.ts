@@ -98,7 +98,7 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   }, [queryClient]);
   const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
-    holds: () => [userAgentStateQuery().queryKey],
+    holds: () => ({ keys: [userAgentStateQuery().queryKey] }),
     label: ({ pinned, sessionId }) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
     onError: reread,

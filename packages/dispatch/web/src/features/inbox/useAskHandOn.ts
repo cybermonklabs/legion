@@ -40,7 +40,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
   // asked while the hand-on is out waits for its answer: Dispatch can answer it before it takes
   // the hand-on, with the person from before the press.
   const mutation = useKeyedWrite({
-    holds: () => [inboxKey],
+    holds: () => ({ keys: [inboxKey] }),
     write: (askedOf: string, bounds) => api.handAskTo(ask.id, askedOf, bounds),
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,

@@ -180,7 +180,7 @@ function renderHeldWrite() {
   const hook = renderHook(
     () =>
       useKeyedWrite<string, void, { previous: string | undefined }>({
-        holds: () => [["things"]],
+        holds: () => ({ keys: [["things"]] }),
         inline: true,
         label: () => "A thing",
         onError: (_error, _variables, context) => {

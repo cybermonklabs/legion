@@ -144,7 +144,7 @@ export function useMarkAllRead({
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
-    holds: () => [threadsKey, countKey],
+    holds: () => ({ keys: [threadsKey, countKey] }),
     inline: true,
     label: () => "Inbox marked read",
     onError: (_error, _input, rollback) => {

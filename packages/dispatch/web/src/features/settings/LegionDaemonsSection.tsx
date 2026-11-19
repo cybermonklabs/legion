@@ -118,7 +118,7 @@ export function LegionDaemonsSection(): ReactNode {
   // the project asked while either is out waits for its answer: Dispatch can answer it before it
   // takes the write, with the row from before the press.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
-    holds: ({ project: named }) => [daemonKey(named)],
+    holds: ({ project: named }) => ({ keys: [daemonKey(named)] }),
     write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
     inline: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
@@ -160,7 +160,7 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
-    holds: (named) => [daemonKey(named)],
+    holds: (named) => ({ keys: [daemonKey(named)] }),
     write: (named: string, bounds) => api.deleteLegionDaemon(named, bounds),
     inline: true,
     label: (named) => `${named}'s Legion daemon removed`,

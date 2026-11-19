@@ -38,7 +38,7 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   // asked while the snooze is out waits for its answer: Dispatch can answer it before it takes
   // the snooze, with the row's moment from before the press.
   const mutation = useKeyedWrite({
-    holds: () => [inboxKey],
+    holds: () => ({ keys: [inboxKey] }),
     write: (until: string | null, bounds) =>
       until === null
         ? api.unsnoozeAsk(askId, bounds)
@@ -115,7 +115,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       // id, so this is where that stays true rather than a case to handle.
       const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
-      const release = holdBackReads(queryClient, [inboxKey]);
+      const release = holdBackReads(queryClient, { keys: [inboxKey] });
       let failed: AskSnoozeFailure[];
       try {
         await queryClient.cancelQueries({ queryKey: inboxKey });

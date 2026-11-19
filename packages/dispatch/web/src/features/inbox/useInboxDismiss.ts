@@ -254,7 +254,7 @@ export function useInboxDismiss({
   const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
     // A read of either view or the count asked while the press is out waits for its answer:
     // Dispatch can answer it before it takes the press, with the rows it took out still in.
-    holds: () => [inboxKey, dismissedKey, countKey],
+    holds: () => ({ keys: [inboxKey, dismissedKey, countKey] }),
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {
