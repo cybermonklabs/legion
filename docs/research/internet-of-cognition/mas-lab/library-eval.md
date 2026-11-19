@@ -78,7 +78,7 @@ The run count is `run.n_runs`, and its default is 3 [m-eval-n-runs].
 
 The judge model is a slot on the experiment: `models.judge`, or `evaluation.model`, or a per-step `config.model` [m-eval-judge-slot].
 
-The runner it ships, `native`, hands the run to `ctl`'s `MasBenchRunner`, which executes the MAS through the mas-lab runtime [m-eval-runner-group, m-eval-runner-is-mas].
+The one runner it ships, `native`, hands the run to `ctl`'s `MasBenchRunner`, which executes the MAS through the mas-lab runtime [m-eval-runner-one, m-eval-runner-group, m-eval-runner-is-mas].
 
 ## What the stack does with the numbers
 
@@ -96,7 +96,7 @@ The scoring part could, after work [m-eval-answer].
 The running part could only through a runner of ours [m-eval-answer, m-eval-runner-group].
 
 The reason is the unit.
-The runner it ships runs a MAS that the mas-lab runtime instantiates [m-eval-runner-is-mas], and the harness takes its runner by the id an experiment names from a plugin group, `mas.lab.runners` [m-eval-runner-group].
+The one runner it ships [m-eval-runner-one] runs a MAS that the mas-lab runtime instantiates [m-eval-runner-is-mas], and the harness takes its runner by the id an experiment names from a plugin group, `mas.lab.runners` [m-eval-runner-group].
 A Legion role is an Oh My Pi session that our own rig starts from a packed plugin of a checkout [m-eval-our-rig].
 That runner has no way to start that session, so the harness could run a Legion role only through a runner of ours added to that group, which would write their trace for `eval_mce` to score [m-eval-runner-group]; without one, only the file-scoring surface, `mas-lab eval SOURCE`, is usable for us [m-eval-surfaces].
 
@@ -168,9 +168,9 @@ No continuous-integration job runs a batch [m-eval-our-rig-not-ci].
 The smallest honest version for Legion is this.
 Convert one scenario's transcripts to the mas-lab trace shape, score them with one inline prompt metric, aggregate the runs into a confidence interval, and compare two labels.
 
-The estimate is 7 engineer-days for that route [m-eval-cost].
+The estimate is about 7 engineer-days for that route [m-eval-cost].
 
-The same measurement on the rig we already have costs 2 engineer-days, because only the decision rule is missing [m-eval-cost].
+The same measurement on the rig we already have would cost, by our estimate, about 2 engineer-days, because only the decision rule is missing [m-eval-cost].
 
 The estimate rests on five counted things.
 

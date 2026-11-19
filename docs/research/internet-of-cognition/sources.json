@@ -108,6 +108,54 @@
       "sha256": "067f3ace9a370b656b7fb5d1cd71fbde761bd491e15434172526aff07ef59344"
     },
     {
+      "id": "ioc-site-docs-index",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/index.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-index.md",
+      "comment": "The home page of the documentation site at the commit the tree copy names, 8350 bytes, git blob ed2752cd64d54ab64820a3f34176c3cff65acd51. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "358de2ddc6df059f36974e5442e9194505d2e0a32b539fd25f22d2c7a292c90a"
+    },
+    {
+      "id": "ioc-site-docs-how-to-index",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/how-to/index.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-how-to-index.md",
+      "comment": "The how-to page of the documentation site at the commit the tree copy names, 4228 bytes, git blob 1d1053ed983566a641b86b1eed10289d07e548b8. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "9c8eb42569b7d1e4235521b1e20d810f29b332c07fc7ba5ac2e2ba9bf714a917"
+    },
+    {
+      "id": "ioc-site-docs-overview-architecture",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/overview/architecture.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-overview-architecture.md",
+      "comment": "The architecture page of the documentation site at the commit the tree copy names, 8850 bytes, git blob 463c719b83d33bd0eb455c3515998952af7fb0cb. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "8d67d394626368886e7dfecf228564941c3d14bc8ee0448f8af9058e2db1a08e"
+    },
+    {
+      "id": "ioc-site-docs-overview-motivation",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/overview/motivation.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-overview-motivation.md",
+      "comment": "The motivation page of the documentation site at the commit the tree copy names, 3419 bytes, git blob b06e471fe480178ff12ef653102b7e1f085eba2a. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "f5b00e3f6b71cbc5c3d376c155914819861d94ad08a0611a18253e384d41241c"
+    },
+    {
+      "id": "ioc-site-docs-publications-index",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/publications/index.md",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-docs-publications-index.md",
+      "comment": "The publications page of the documentation site at the commit the tree copy names, 699 bytes, git blob 7a94037617db5ac1017bf4330db869c3a3d79b6a. i-measure-config-absence and i-measure-travel-absence search it.",
+      "sha256": "05e4d6b020ec0af59699d84ae5d1de26651d307ddf37b92a773168fc14268111"
+    },
+    {
+      "id": "ioc-site-whitepaper",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/publications/whitepapers/cognition-protocols-concord-accord.pdf",
+      "fetched": "2026-11-19",
+      "copy": "published/ioc-site-cognition-protocols-concord-accord.pdf",
+      "comment": "The whitepaper of the documentation site, Agreeing on Purpose, Deciding Under Conflict: Two Cognitive Protocols for the Agent Cognitive Layer, 27 pages, created 2026-10-28, at the commit the tree copy names, 780170 bytes, git blob 3be75a1abca46bee94e4b67455d2bab875873c5f. It is another document than the study PDF of the cognition-protocols clone, docs/protocols/blogs/accord-concord-extended.pdf at e3c7bf10, whose sha256 is f6d491f3185cefc8f036f606fa4f552008ed2dc68a49405af9101298d39bdd30. i-measure-config-absence and i-measure-travel-absence search its text.",
+      "sha256": "e9620d834dffdb3f9871fb0ddac76965c85289a4b0008430fa84c0ceb2f587d3"
+    },
+    {
       "id": "pypi-mas-lab",
       "address": "https://pypi.org/pypi/mas-lab/json",
       "fetched": "2026-11-12",
@@ -163,7 +211,7 @@
           "sentence": "or, in a later round, the difference from its last reviewed"
         }
       ],
-      "comment": "The proof check.sh --landed runs for this page. 9d5c8220 wrote the rule, 9936020a held it against main's rewrite of merge-gate.md, and 94d75564 wrote it as it stands, that an APPROVE needs both halves run, so the page names 94d75564. The proof exits 1 against merge-gate.md of main at c95e698a9a5fe38e1673f7abcc96c6bf80cda88a, of bcc01d05cac9d7f82bc3b1df799489fed9ee64fe and of bfe1471e3b662125ed2ea103278d41bf3e5f6dd5, which are the three spellings before it. published lists the sentences this step added that check.sh --published reads in merge-gate.md on the default branch."
+      "comment": "The proof check.sh --landed runs for this page. 9d5c8220 wrote the rule, 9936020a held it against main's rewrite of merge-gate.md, 94d75564 wrote that an APPROVE needs both halves run, and caaf84f9 wrote it as it stands, admitting both pair rows reading not run for the reason they state, so the page names caaf84f9. The proof is the guard test, whose test of the combining rule holds the clause as caaf84f9 wrote it, and that test fails against merge-gate.md of main at c95e698a9a5fe38e1673f7abcc96c6bf80cda88a, of bcc01d05cac9d7f82bc3b1df799489fed9ee64fe and of bfe1471e3b662125ed2ea103278d41bf3e5f6dd5, which are the three spellings before 94d75564, and of 94d75564, whose clause ends 'or the two not run rows above', so the proof exits 1 against each. published lists the sentences this step added that check.sh --published reads in merge-gate.md on the default branch."
     }
   ]
 }

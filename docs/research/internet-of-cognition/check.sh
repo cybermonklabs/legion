@@ -127,7 +127,8 @@
 # function, live_read, in the mode's own shell before any assertion over what it reads
 # judges: the judgement and the two records under check from Dispatch, whose copies every
 # row that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
-# Dispatch API, the GitHub budget, the default branch and its fetch, the fetch of each
+# Dispatch API, the GitHub budget, GitHub's read of the private repository a row reads with
+# gh, the default branch and its fetch, the fetch of each
 # pinned clone, and the run of coordination/count.py, the walker of the count, which
 # reads the feed of the count's window, so that a read inside it that fails is that feed
 # not answering. A source that does not answer is a mode that cannot run, naming the
@@ -616,7 +617,7 @@ replay|tool|python3|runs the reader of every recorded command, the recorded pyth
 replay|tool|curl|reads the GitHub budget and runs the recorded reads of the Dispatch API and of GitHub|apt-get install curl
 replay|tool|uv|builds env.sh's python environments and runs the recorded uv commands|curl -LsSf https://astral.sh/uv/0.13.5/install.sh | sh
 replay|tool|go|runs the two recorded commands that count rows of our own table|curl -fsSL https://go.dev/dl/go1.27.3.linux-amd64.tar.gz | tar -xzC /usr/local, then PATH=/usr/local/go/bin:$PATH
-replay|tool|gh|reads the review corpus env.sh fetches and runs the two recorded gh reads|apt-get install gh, then gh auth login
+replay|tool|gh|reads the review corpus env.sh fetches, the private repository the row n-collector-keep-keys reads, and runs the five recorded gh reads|apt-get install gh, then gh auth login
 replay|tool|dispatch|reads the two records under check, the judgement and the recorded Dispatch reads|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 replay|variable|DISPATCH_URL|the address every recorded read of the Dispatch API reads, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_URL=<the Dispatch server>, which a Legion pod sets
 replay|variable|DISPATCH_TOKEN_FILE|the bearer every recorded read of the Dispatch API sends, and so does coordination/count.py's read of the feed of the count's window|export DISPATCH_TOKEN_FILE=<a file holding the Dispatch bearer>, which a Legion pod sets
@@ -1291,7 +1292,8 @@ PY
 # live_read <source> <file> <command...>; the one read of a live source the gate makes
 # itself, which every mode makes in its own shell before any assertion over what it reads
 # judges: the judgement and the records under check from Dispatch, a reference Dispatch is
-# asked to resolve, the Dispatch API, the GitHub budget and default branch, a clone's
+# asked to resolve, the Dispatch API, the GitHub budget and default branch, GitHub's read
+# of the private repository a row reads with gh (private_repository_read), a clone's
 # fetch, and the run of coordination/count.py over the feed of the count's window
 # (count_load); a recorded command's own reads are the row's (the header's live-read
 # rule). It runs the command, writes what it printed into <file>, and returns 0 when the
@@ -1636,28 +1638,28 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               203  runs the next pipeline when this one exits 0
-#   ||                                 7  runs the next pipeline when this one fails
-#   |                                441  joins the commands of a pipeline
-#   ;                                 56  ends a pipeline
+#   &&                               210  runs the next pipeline when this one exits 0
+#   ||                                 9  runs the next pipeline when this one fails
+#   |                                448  joins the commands of a pipeline
+#   ;                                 61  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
 #   2>                                23  writes the error output to a file
 #   2>&1                               6  sends the error output where the output goes
-#   {                                 26  opens a group
-#   }                                 26  closes a group
+#   {                                 28  opens a group
+#   }                                 28  closes a group
 #   (                                  2  opens a subshell
 #   )                                  2  closes a subshell
-#   for                               17  opens a for loop
-#   in                                17  comes before a for loop's words
-#   do                                17  comes before a for loop's body
-#   done                              17  closes a for loop
-#   simple command                   630  a command word and its arguments
-#   pipeline                         441  two or more commands joined by |
-#   list                             229  two or more pipelines joined by ;, &&, || or newline
-#   group                             26  { list; }, whose status is its last command's
+#   for                               19  opens a for loop
+#   in                                19  comes before a for loop's words
+#   do                                19  comes before a for loop's body
+#   done                              19  closes a for loop
+#   simple command                   638  a command word and its arguments
+#   pipeline                         448  two or more commands joined by |
+#   list                             237  two or more pipelines joined by ;, &&, || or newline
+#   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
-#   for loop                          17  for NAME in words; do list; done
+#   for loop                          19  for NAME in words; do list; done
 #   assignment before a command       29  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    12  $( ) in a word, its code admitted by this table
@@ -1667,15 +1669,15 @@ prepare_env() {
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
-#   assigns c                          3  a name the rows assign
-#   assigns f                          4  a name the rows assign
+#   assigns c                          5  a name the rows assign
+#   assigns f                          5  a name the rows assign
 #   assigns g                          1  a name the rows assign
 #   assigns m                          1  a name the rows assign
 #   assigns n                          6  a name the rows assign
 #   assigns o                          1  a name the rows assign
 #   assigns p                          5  a name the rows assign
 #   assigns r                          5  a name the rows assign
-#   program awk                       20  wrapped in a function that records its status
+#   program awk                       22  wrapped in a function that records its status
 #   program cat                       25  wrapped in a function that records its status
 #   program cd                        76  wrapped in a function that records its status
 #   program cmp                        2  wrapped in a function that records its status
@@ -1683,27 +1685,27 @@ prepare_env() {
 #   program curl                      27  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
 #   program dispatch                  76  wrapped in a function that records its status
-#   program echo                      12  wrapped in a function that records its status
-#   program gh                         4  wrapped in a function that records its status
-#   program git                      359  wrapped in a function that records its status
+#   program echo                      14  wrapped in a function that records its status
+#   program gh                         5  wrapped in a function that records its status
+#   program git                      366  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     229  wrapped in a function that records its status
-#   program jq                        61  wrapped in a function that records its status
+#   program grep                     235  wrapped in a function that records its status
+#   program jq                        63  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
-#   program python3                   36  wrapped in a function that records its status
+#   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      298  wrapped in a function that records its status
+#   program sed                      303  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
-#   program sort                      30  wrapped in a function that records its status
+#   program sort                      31  wrapped in a function that records its status
 #   program stat                       2  wrapped in a function that records its status
 #   program tail                       1  wrapped in a function that records its status
-#   program tr                        10  wrapped in a function that records its status
-#   program uniq                      16  wrapped in a function that records its status
+#   program tr                        11  wrapped in a function that records its status
+#   program uniq                      17  wrapped in a function that records its status
 #   program uv                         8  wrapped in a function that records its status
-#   program wc                        63  wrapped in a function that records its status
+#   program wc                        65  wrapped in a function that records its status
 #   program xargs                      5  wrapped in a function that records its status
 #   variable $IOC_PY                  43  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
@@ -1718,9 +1720,9 @@ prepare_env() {
 #   uv run --with                      4  uv run installs the package named into its environment
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
-#   true                               7  a command whose status is no read
-#   $NAME or ${NAME}                 429  a parameter, its name in braces or not
-#   $?                                 9  the status of the last command
+#   true                               9  a command whose status is no read
+#   $NAME or ${NAME}                 433  a parameter, its name in braces or not
+#   $?                                10  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
 #
@@ -2055,6 +2057,23 @@ github_budget() {
         cannot_run source "$(printf ' --replay now: this address has %s of its 60 unauthenticated GitHub requests left and this mode makes about 34. The budget resets at %s.' \
             "$remaining" "$(date -u -d "@$reset" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$reset")")"
     fi
+}
+
+# private_repository_read
+#
+# The row n-collector-keep-keys reads the spend collector's keep-list in
+# theorem-labs/agent-infra, a private repository, with gh at three pinned commits. A reader
+# whose gh cannot read that repository would see the row's read fail, a FAIL of
+# replay-command that is no verdict on the deliverable. So the repository is read first,
+# before the budget, and a run whose gh cannot read it stops here, naming the repository and
+# the row, rather than printing a failure nobody should act on.
+private_repository_read() {
+    local name=theorem-labs/agent-infra file="$RUN_SCRATCH/private-repository"
+    # The self-test's fixture reads no GitHub, and it sets IOC_NO_ENV as it does for env.sh.
+    [ "${IOC_NO_ENV:-0}" = 1 ] && return 0
+    live_read "GitHub's read of $name, the private repository the row n-collector-keep-keys reads with gh," "$file" gh api "repos/$name" --jq .full_name
+    [ "$(cat "$file")" = "$name" ] && return 0
+    cannot_run source " --replay: GitHub's read of $name, the private repository the row n-collector-keep-keys reads with gh, printed '$(head -c 160 "$file" | tr '\n' ' ')' where it names the repository, so gh cannot read it"
 }
 
 # unpinned_installs; prints one line per package a recorded command installs or runs with
@@ -3852,8 +3871,10 @@ mode_replay() {
     # run's scratch, which the EXIT trap removes however the run ends, and this function
     # removes it at its end too. env.sh clones the three repositories at the commits
     # sources.json pins, so nothing clones them here.
-    # The budget is read before the environment is prepared, so a run that cannot carry
-    # those commands refuses at once rather than after an install.
+    # The private repository a row reads, and then the budget, are read before the
+    # environment is prepared, so a run that cannot carry those commands refuses at once
+    # rather than after an install, and a refused repository is named whatever the budget.
+    private_repository_read
     github_budget
     # The live inputs of the assertions below, read before any of them judges and before
     # env.sh prepares anything: the two records under check, whose copies every row that

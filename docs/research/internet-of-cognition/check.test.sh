@@ -3095,6 +3095,51 @@ else
     printf 'SKIP the proof of the combining rule with its later-round half taken out: bun is missing\n'
 fi
 
+# 115. A row that reads a private repository cannot run where gh cannot read it (test round
+# 37). n-collector-keep-keys reads the spend collector's keep-list in theorem-labs/agent-infra,
+# a private repository, with gh at three pinned commits. A reader whose gh cannot read that
+# repository would see the row's read fail, a FAIL of replay-command that is no verdict on
+# the deliverable. --replay now reads the repository through live_read before the GitHub
+# budget and before env.sh builds anything (private_repository_read), so such a reader gets
+# check.sh cannot run, exit 2, naming the repository and the row. The case runs --replay over
+# this directory with a gh of the case's own first on PATH, which refuses
+# repos/theorem-labs/agent-infra with exit 1, as gh does for a repository its credential
+# cannot read, and answers nothing else; the run must end exit 2, its last line naming
+# theorem-labs/agent-infra and the row, with no FAIL line. A curl of the case's own, also first
+# on PATH, answers nothing, so a gate that read the repository after the budget, or not at
+# all, would end at the budget's read, which names neither, and never start the whole replay.
+# Both reads are the case's own plants, GitHub's, so the run's reason is read as planted when
+# it is either, and a run that ends at the budget's read fails the case rather than reading
+# as one that could not run.
+PRIVATE="$WORK/private-repository"
+mkdir -p "$PRIVATE/bin"
+cat >"$PRIVATE/bin/gh" <<'STUB'
+#!/bin/sh
+case "$*" in
+*repos/theorem-labs/agent-infra*)
+    printf 'gh: Not Found (HTTP 404)\n' >&2
+    exit 1
+    ;;
+esac
+printf 'the stub gh of case 115 answers no %s\n' "$*" >&2
+exit 1
+STUB
+cat >"$PRIVATE/bin/curl" <<'STUB'
+#!/bin/sh
+printf 'curl: (7) the stub curl of case 115 answers no %s\n' "$*" >&2
+exit 7
+STUB
+chmod +x "$PRIVATE/bin/gh" "$PRIVATE/bin/curl"
+out="$(PATH="$PRIVATE/bin:$PATH" gate_run "$HERE/check.sh" --replay)"
+private_case="--replay whose gh cannot read theorem-labs/agent-infra cannot run, exit 2, naming the repository and the row that reads it, and prints no FAIL"
+if grep -q '^FAIL' "$out/text"; then
+    case_failed "$private_case" "$(grep '^FAIL' "$out/text" | head -2 | tr '\n' ' ')"
+else
+    ending_result "$private_case" 2 \
+        "^check\\.sh cannot run --replay: GitHub's read of theorem-labs/agent-infra, the private repository the row n-collector-keep-keys reads with gh, did not answer: gh: Not Found \\(HTTP 404\\)" "$out" \
+        '^check\.sh cannot run --replay: GitHub'
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

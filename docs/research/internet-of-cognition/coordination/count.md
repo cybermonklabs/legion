@@ -165,7 +165,7 @@ Two groups of rows read zero over a denominator above zero: the three classes of
 
 ## The smallest class
 
-Coordination between an agent and a person is the smallest of the three classes in every type that has an instance, and the answers to asks have none [c-smallest-1].
+Coordination between an agent and a person is the smallest of the three classes in every type the count classes that has an instance, and the answers to asks have none [c-smallest-1].
 The smaller of the two other classes is 25.2 times its size in comments and messages, 19.6 times over all written acts, 10.6 times in asks opened, 8.4 times over document versions and 7.1 times over first versions [c-smallest-1].
 It is less than three times its size only in the replies to a message (2.0 times), the asks resolved (1.8) and the asks edited (1.1), whose 358 instances are under 3% of the 12617 instances of written acts [c-smallest-1].
 
@@ -195,7 +195,7 @@ Every handoff of those ten issues recorded inside the window was read whole thro
 2402 carry a `dispatch://` reference and 2288 carry a forty-character commit [c-handoff-sample-1].
 
 Nought of the 3143 handoffs carries a quoted span attributed to a named author [c-handoff-quote-0].
-This is a class that reads zero over a denominator above zero, and the judgement's front page must state that premise as failed: a handoff names a commit and an issue, and never carries another agent's words with the name of who wrote them [c-handoff-quote-0].
+This is a class that reads zero over a denominator above zero, and the judgement's front page must state that premise as failed: in the sample, 2288 handoffs name a commit and 2402 a `dispatch://` reference [c-handoff-sample-1], and none carries another agent's words with the name of who wrote them [c-handoff-quote-0].
 
 ## What this record cannot hold: one session's own coordination
 
@@ -261,11 +261,11 @@ Dispatch reports, at the moment of an approval, the requirements of a spec that 
 Nothing in Dispatch holds a definition of a term.
 The typed block schema has five block types, `callout`, `ask`, `requirement`, `plan_task` and `check`, and none of them defines a term [c-terms-1].
 
-The project record holds a glossary written by hand, as an ordinary document: `dispatch://INFRA-460/artifact/glossary-md`, at three versions written at or before 2026-11-16T13:00:00Z, on a standup issue [c-terms-2].
+The project record holds a glossary as an ordinary document: `dispatch://INFRA-460/artifact/glossary-md`, at three versions written at or before 2026-11-16T13:00:00Z, on a standup issue [c-terms-2].
 
 The reference graph holds no link to it from anything the project wrote.
 The backlinks to `dispatch://INFRA-460/artifact/glossary-md` written by 2026-11-16T13:00:00Z number one, a block of dispatch://INFRA-3134/artifact/judgement-md, this reading itself [c-terms-3].
-So the glossary this project wrote is cited by nothing it wrote but this reading [c-terms-3].
+So, by 2026-11-16T13:00:00Z, the glossary was cited by nothing but this reading [c-terms-3].
 
 Our own tree holds no glossary either.
 At 9542c6fb the word appears in one file, the ASD-STE100 writing skill, which tells a writer that a project glossary is allowed and notes that the dictionary it would extend is absent [c-terms-4].
