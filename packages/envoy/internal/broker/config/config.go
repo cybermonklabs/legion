@@ -519,8 +519,8 @@ type Config struct {
 	// connection of the person's pod with a service's NATS grant. It refuses a mapped account that
 	// a BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions in the name
 	// the caller gives. It refuses a mapped account that either side of a
-	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets another account take the session
-	// names the account holds, and the person's pod the other account's. It refuses a mapped
+	// BROKER_SESSION_ACCOUNT_PAIRS pair names, because a pair lets the session names the token
+	// exchange binds for the account and for the other account cross. It refuses a mapped
 	// account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would mint the
 	// person's pod a token that names a service and no person. Unset, the setting maps no account.
 	PodOperators map[string]string
@@ -1176,6 +1176,15 @@ type Account struct {
 // setting refuses naming its own entry form.
 var ErrAccountForm = errors.New("config: an account is system:serviceaccount:<namespace>:<name> or google:<service account email>")
 
+// CutNATSServiceEntry splits a BROKER_NATS_SERVICES entry, <kind>/<machine id or ->/<* or
+// ->=<account>, at its first = into the head before it and the account after it. ok is false for
+// an entry with no =. It is the one reading of an entry's account: natscallout.ParseServices
+// parses the head and holds the account to ParseAccount's form, and mappedAccountRefusal matches
+// the account against BROKER_POD_OPERATORS, so the two cannot read one entry two ways.
+func CutNATSServiceEntry(text string) (head, account string, ok bool) {
+	return strings.Cut(text, "=")
+}
+
 // ParseAccount reads account, written as a BROKER_API_ACCOUNTS entry writes one: google:<address>
 // for a Google service account, looked up by the email its identity token carries, and any other
 // a Kubernetes service account, looked up by the subject its projected token carries. It refuses,
@@ -1376,15 +1385,17 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // writes both people in record.CanonicalLogin's form. It refuses a mapped account that a
 // BROKER_NATS_SERVICES entry names, because the NATS auth service (internal/broker/natscallout)
 // would then answer a connection of the person's pod with that entry's service grant. It reads
-// each entry's account as natscallout.ParseServices does, the text after the entry's first =,
-// which that parser holds to ParseAccount's form at the boot; this package cannot import it. It
+// each entry's account with CutNATSServiceEntry, the reading natscallout.ParseServices makes too,
+// which holds the account to ParseAccount's form at the boot. It
 // refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts), because the
 // named-caller routes it reaches act on the caller's word: the approval relays take the deciding
 // person's name from the caller, so the person's pod could decide any request in any person's
 // name. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair names
 // (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
-// holds, with what each name carries: the person's pod would take a service's session names, or
-// the other account's pods the person's. It refuses a mapped account that a
+// holds. A person's pod login enrols under no session name (enroll.Service.podUnderTokenLogin),
+// so a pair moves no enrollment of it, but the session names the token exchange binds for the
+// account would cross: the other account could take the person's, and the person's pod the other
+// account's. It refuses a mapped account that a
 // BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the exchange
 // would then mint the person's pod a read-only token that names that entry's service and no
 // person.
@@ -1407,7 +1418,7 @@ func mappedAccountRefusal(cfg *Config) error {
 	}
 	natsEntries := make(map[string]string)
 	for _, text := range strings.Fields(cfg.NATS.Services) {
-		if _, account, ok := strings.Cut(text, "="); ok {
+		if _, account, ok := CutNATSServiceEntry(text); ok {
 			natsEntries[account] = text
 		}
 	}
@@ -1451,7 +1462,7 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
-			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, with their grants and pending requests, and a person's account shares no session with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
 		}
 	}
 	return nil
@@ -2286,10 +2297,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.NATS, err = loadNATSCallout(getenv, cfg.K8sOIDCIssuer); err != nil {
 		return Config{}, err
 	}
-	// BROKER_POD_OPERATORS is read after each setting it is checked against: the logins
-	// (BROKER_SERVICE_LOGINS), the services of both kinds (BROKER_SERVICES and
-	// BROKER_VM_SERVICES), the exchange's accounts (BROKER_EXCHANGE_ACCOUNTS) and the NATS auth
-	// service's (BROKER_NATS_SERVICES).
+	// BROKER_POD_OPERATORS is read after every setting mappedAccountRefusal checks it against, so
+	// a refusal added there reads a setting this function has already read.
 	if cfg.PodOperators, err = parsePodOperators("BROKER_POD_OPERATORS", getenv("BROKER_POD_OPERATORS")); err != nil {
 		return Config{}, err
 	}

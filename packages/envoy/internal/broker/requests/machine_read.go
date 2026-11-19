@@ -1136,9 +1136,10 @@ func writtenBeforeMigration13(alias string) string {
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
 // the names afresh — the denied request that tells the session why, where the list dropped it,
 // and the card the tag's own person answers, where the tag ended it.
-// An automatic grant a person's pod got as that person is passed over, and not ended, once
-// BROKER_POD_OPERATORS no longer maps the pod's account to that person. Create then asks for the
-// names afresh. The grant is reusable again when the entry comes back.
+// An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
+// longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
+// which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
+// again when the entry comes back.
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person

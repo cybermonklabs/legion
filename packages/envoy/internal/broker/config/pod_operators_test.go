@@ -185,9 +185,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				return "the NATS auth service runs, BROKER_NATS_SERVICES names " + adaAccount + ", and no other setting gives the account a role",
-					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService &&
-						len(cfg.ServicesByAccount) == 0 && len(cfg.VMServicesByAccount) == 0 && len(cfg.ExchangeAccounts) == 0
+				return "the NATS auth service runs, and BROKER_NATS_SERVICES names " + adaAccount,
+					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount) + " names it"},
 		},
@@ -201,9 +200,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 			},
 			reachable: func(cfg Config) (string, bool) {
 				caller, calls := cfg.APIAccounts[adaAccount]
-				return "BROKER_API_ACCOUNTS names " + adaAccount + " as the caller dispatch, and no other setting gives the account a role",
-					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount] == adaLoginService &&
-						len(cfg.ServicesByAccount) == 0 && len(cfg.VMServicesByAccount) == 0 && len(cfg.ExchangeAccounts) == 0 && !cfg.NATS.Enabled()
+				return "BROKER_API_ACCOUNTS names " + adaAccount + " as the caller dispatch",
+					calls && caller.Name == "dispatch" && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"BROKER_API_ACCOUNTS names it as the caller " + strconv.Quote("dispatch")},
 		},
@@ -217,9 +215,9 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				return "BROKER_EXCHANGE_READ_ACCOUNTS names " + adaAccount + " as a reader of example-reader, and no other setting gives the account a role",
+				return "BROKER_EXCHANGE_READ_ACCOUNTS names " + adaAccount + " as a reader of example-reader",
 					len(cfg.ExchangeReadAccounts) == 1 && cfg.ExchangeReadAccounts[0].Account == adaAccount && cfg.ExchangeReadAccounts[0].Service == "example-reader" &&
-						cfg.ServiceLogins[adaAccount] == adaLoginService && len(cfg.ExchangeAccounts) == 0 && len(cfg.APIAccounts) == 0
+						cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service " + strconv.Quote("example-reader")},
 		},
@@ -232,9 +230,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaAccount + " with " + adaWorker + ", and no other setting gives the account a role",
-					len(cfg.SessionAccountPairs) == 1 && strings.Join(cfg.SessionAccountPairs[0][:], "=") == adaAccount+"="+adaWorker && cfg.ServiceLogins[adaAccount] == adaLoginService &&
-						len(cfg.ServicesByAccount) == 0 && len(cfg.APIAccounts) == 0 && !cfg.NATS.Enabled()
+				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaAccount + " with " + adaWorker,
+					len(cfg.SessionAccountPairs) == 1 && cfg.SessionAccountPairs[0] == [2]string{adaAccount, adaWorker} && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaAccount+"="+adaWorker) + " names it"},
 		},
@@ -247,9 +244,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				return e
 			},
 			reachable: func(cfg Config) (string, bool) {
-				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaAccount + " with " + adaWorker + ", and no other setting gives the account a role",
-					len(cfg.SessionAccountPairs) == 1 && strings.Join(cfg.SessionAccountPairs[0][:], "=") == adaWorker+"="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService &&
-						len(cfg.ServicesByAccount) == 0 && len(cfg.APIAccounts) == 0 && !cfg.NATS.Enabled()
+				return "BROKER_SESSION_ACCOUNT_PAIRS pairs " + adaWorker + " with " + adaAccount,
+					len(cfg.SessionAccountPairs) == 1 && cfg.SessionAccountPairs[0] == [2]string{adaWorker, adaAccount} && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"the BROKER_SESSION_ACCOUNT_PAIRS pair " + strconv.Quote(adaWorker+"="+adaAccount) + " names it"},
 		},
@@ -283,7 +279,9 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 // person may have two accounts. A BROKER_EXCHANGE_ACCOUNTS entry that maps a mapped account to the
 // same person, in other letter case, is no refusal. Nor is a BROKER_SERVICES entry that binds
 // another account to another service, nor a BROKER_NATS_SERVICES entry that names another
-// account. No entry gives a nil map.
+// account, nor a BROKER_API_ACCOUNTS caller of another Kubernetes account or of a Google account,
+// nor a BROKER_SESSION_ACCOUNT_PAIRS pair of two accounts the setting does not map. No entry gives
+// a nil map.
 func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 	natsUser, natsIssuer, natsCurve, _ := natsSeeds(t)
 	e := withK8sIssuer()
@@ -294,6 +292,9 @@ func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 	e["BROKER_NATS_ISSUER_SEED_FILE"] = natsIssuer
 	e["BROKER_NATS_XKEY_SEED_FILE"] = natsCurve
 	e["BROKER_NATS_SERVICES"] = "daemon/-/*=system:serviceaccount:legion-system:legion-daemon"
+	e["BROKER_API_ACCOUNTS"] = "dispatch=system:serviceaccount:example-ns:example-dispatch listener=google:" + exampleListenerAccount
+	e["BROKER_GOOGLE_OIDC_AUDIENCE"] = "example-broker"
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = "system:serviceaccount:legion:legion-worker=system:serviceaccount:legion:example-worker"
 	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch"
 	e["BROKER_EXCHANGE_ACCOUNTS"] = adaAccount + "=EXAMPLE=Ada@Example.com"
 	e["BROKER_POD_OPERATORS"] = " " + adaPodOperator + "\n\tada@example.com=" + adaSecondAccount + " grace@example.com=" + graceAccount + " "
@@ -304,6 +305,11 @@ func TestPodOperatorsLoadsMappedAccounts(t *testing.T) {
 	want := map[string]string{adaAccount: "ada@example.com", adaSecondAccount: "ada@example.com", graceAccount: "grace@example.com"}
 	if !maps.Equal(cfg.PodOperators, want) {
 		t.Fatalf("PodOperators = %v, want %v", cfg.PodOperators, want)
+	}
+	// The other settings loaded as written, so each is beside the mapping and refuses nothing.
+	if len(cfg.APIAccounts) != 1 || len(cfg.GoogleAPIAccounts) != 1 || len(cfg.SessionAccountPairs) != 1 || !cfg.NATS.Enabled() {
+		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v, SessionAccountPairs = %v, NATS = %+v; want one Kubernetes caller, one Google caller, one pair and the NATS auth service",
+			cfg.APIAccounts, cfg.GoogleAPIAccounts, cfg.SessionAccountPairs, cfg.NATS)
 	}
 	if people, err := parsePodOperators("BROKER_POD_OPERATORS", " \n\t "); err != nil || people != nil {
 		t.Fatalf("parsePodOperators of white space alone = %v, %v; want nil and no error", people, err)
