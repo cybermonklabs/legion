@@ -727,3 +727,191 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 		t.Fatalf("the spawns pause %d owes a launch = %v, want %v", ended.Pause.ID, owed, want)
 	}
 }
+
+// The pause a wake of a claim belongs to is the pause of the claim's newest stop, whatever that
+// stop's end, where it ended `stopped` after both the issue's newest pod release and the claim's
+// last ready (StoppingPauseTx, decision 15 of dispatch://INFRA-3759). Each claim here has a stop
+// by the first pause that ended `stopped`, and some a later one: stopped again after a ready the
+// resume's launch reported, the wake is the second pause's; a later stop that the resume
+// cancelled answers no pause, since the claim's newest stop stopped nothing.
+//
+// The negative control is StoppingPauseTx reading the claim's stops oldest first: the claim
+// stopped again answers 0, since its first stop is older than its ready, and the claim whose later
+// stop was cancelled answers the first pause.
+func TestAWakesStoppingPauseIsTheClaimsNewestStop(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	base := pausedAt
+	pauseOf := func(began, ended time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := st.pool.QueryRow(ctx, `insert into project_pauses (project, began_at, by_kind, reason, ended_at, ended_by_kind, ended_by_session)
+			values ('LEGION', $1, 'operator', 'a pause of the test', $2, 'operator', '') returning id`, began, ended).Scan(&id); err != nil {
+			t.Fatalf("record a pause: %v", err)
+		}
+		return id
+	}
+	first, second := pauseOf(base, base.Add(10*time.Minute)), pauseOf(base.Add(20*time.Minute), base.Add(30*time.Minute))
+	type role struct {
+		token claim.Token
+		issue string
+	}
+	implementer := func(key string, lastReady time.Time) role {
+		t.Helper()
+		token, err := claim.NewToken("legion", key, claim.RoleImplementer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key,
+			Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle, LastReady: lastReady}); err != nil {
+			t.Fatalf("record the claim of %s: %v", key, err)
+		}
+		return role{token: token, issue: key}
+	}
+	stop := func(pause int64, of role, end PauseStopEnd, at time.Time) {
+		t.Helper()
+		if _, err := st.pool.Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
+			values ($1, 'LEGION', $2, $3, 'implementer', $4, $4, $5)`, pause, string(of.token), of.issue, at, string(end)); err != nil {
+			t.Fatalf("record pause %d's stop of %s: %v", pause, of.token, err)
+		}
+	}
+	release := func(of role, at time.Time) {
+		t.Helper()
+		if _, err := st.pool.Exec(ctx, `insert into pod_releases (project, issue, generation, roles, at) values ('legion', $1, 1, 'implementer', $2)`,
+			of.issue, at); err != nil {
+			t.Fatalf("record a release of %s's pod: %v", of.issue, err)
+		}
+	}
+
+	once := implementer("LEGION-301", time.Time{})
+	stop(first, once, PauseStopStopped, base.Add(5*time.Minute))
+	readySince := implementer("LEGION-302", base.Add(15*time.Minute))
+	stop(first, readySince, PauseStopStopped, base.Add(5*time.Minute))
+	releasedSince := implementer("LEGION-303", time.Time{})
+	stop(first, releasedSince, PauseStopStopped, base.Add(5*time.Minute))
+	release(releasedSince, base.Add(15*time.Minute))
+	stoppedAgain := implementer("LEGION-304", base.Add(15*time.Minute))
+	stop(first, stoppedAgain, PauseStopStopped, base.Add(5*time.Minute))
+	stop(second, stoppedAgain, PauseStopStopped, base.Add(25*time.Minute))
+	cancelledSince := implementer("LEGION-305", time.Time{})
+	stop(first, cancelledSince, PauseStopStopped, base.Add(5*time.Minute))
+	stop(second, cancelledSince, PauseStopCancelled, base.Add(30*time.Minute))
+
+	for _, c := range []struct {
+		name string
+		of   role
+		want int64
+	}{
+		{"stopped once", once, first},
+		{"stopped, then ready", readySince, 0},
+		{"stopped, then its pod released", releasedSince, 0},
+		{"stopped, ready, then stopped again by the second pause", stoppedAgain, second},
+		{"stopped, then a later stop of it cancelled", cancelledSince, 0},
+	} {
+		var got int64
+		inTx(t, st, func(tx pgx.Tx) error {
+			var err error
+			got, err = StoppingPauseTx(ctx, tx, "legion", c.of.issue, c.of.token)
+			return err
+		})
+		if got != c.want {
+			t.Errorf("%s: StoppingPauseTx = %d, want %d (the first pause is %d, the second %d)", c.name, got, c.want, first, second)
+		}
+	}
+}
+
+// The last pause is the newest a resume ended (LastEndedPause), and the state's one read answers
+// the open pause while one stands and that newest ended pause otherwise (OpenOrLastPauseTx). Two
+// pauses end here before a third begins, so a read of the oldest ended pause names the first.
+//
+// The negative control is either read taking the ended pauses oldest first: each answers the first
+// pause where the second is the newest.
+func TestTheLastPauseIsTheNewestTheResumeEnded(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	operator := PauseActor{Kind: PauseByOperator}
+	resume := func(at time.Time) {
+		t.Helper()
+		if _, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: at}); err != nil {
+			t.Fatalf("resume at %s: %v", at, err)
+		}
+	}
+	openOrLast := func() Pause {
+		t.Helper()
+		var got Pause
+		inTx(t, st, func(tx pgx.Tx) error {
+			p, found, err := OpenOrLastPauseTx(ctx, tx, "LEGION")
+			if err == nil && !found {
+				err = errors.New("no pause found")
+			}
+			got = p
+			return err
+		})
+		return got
+	}
+
+	first, _ := pauseLegion(t, st, pausedAt)
+	resume(pausedAt.Add(time.Hour))
+	second, _ := pauseLegion(t, st, pausedAt.Add(2*time.Hour))
+	resume(pausedAt.Add(3 * time.Hour))
+	if last, found, err := st.LastEndedPause(ctx, "LEGION"); err != nil || !found || last.ID != second.ID {
+		t.Fatalf("LastEndedPause after two resumes = %d, %t, %v; want the second pause %d (the first is %d)", last.ID, found, err, second.ID, first.ID)
+	}
+	if got := openOrLast(); got.ID != second.ID || got.EndedAt.IsZero() {
+		t.Fatalf("OpenOrLastPauseTx after two resumes = pause %d ended %s; want the second pause %d, ended (the first is %d)",
+			got.ID, got.EndedAt, second.ID, first.ID)
+	}
+	third, _ := pauseLegion(t, st, pausedAt.Add(4*time.Hour))
+	if got := openOrLast(); got.ID != third.ID || !got.EndedAt.IsZero() {
+		t.Fatalf("OpenOrLastPauseTx while the third pause stands = pause %d ended %s; want the open pause %d", got.ID, got.EndedAt, third.ID)
+	}
+}
+
+// A pause's own stop of a role is recorded on the role's newest stop row of that pause
+// (RecordPauseStoppedTx): a stop the role's takeover ended stays as it ended, the stop the gate
+// records after it is a row of its own, and a later stop the pause's suspension makes of the role
+// only adds the launch it owes to that newest row, since the role is already stopped.
+//
+// The negative control is RecordPauseStoppedTx reading the pause's stops of the role oldest
+// first: the third record finds the taken-over row, writes a third row and answers that it
+// recorded a stop, where the role's newest row already says it stopped.
+func TestAPausesStopOfARoleIsRecordedOnItsNewestStopRow(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	seedPauseClaims(t, st)
+	pause, stops := pauseLegion(t, st, pausedAt)
+	var implementer PauseStopClaim
+	for _, stop := range stops {
+		if stop.Claim == "legion-legion-legion-208-implementer" {
+			implementer = stop
+		}
+	}
+	if implementer.Claim == "" {
+		t.Fatalf("the pause asked no stop of the implementer of LEGION-208: %+v", stops)
+	}
+	if ended, err := st.EndPauseStop(ctx, pause.ID, implementer.Claim, PauseStopTakenOver, pausedAt.Add(time.Minute)); err != nil || !ended {
+		t.Fatalf("end the implementer's stop as taken over = %t, %v; want it ended", ended, err)
+	}
+	recordStop := func(at time.Time, launchOwed bool) bool {
+		t.Helper()
+		var recorded bool
+		inTx(t, st, func(tx pgx.Tx) error {
+			var err error
+			recorded, err = RecordPauseStoppedTx(ctx, tx, pause, implementer, at, launchOwed)
+			return err
+		})
+		return recorded
+	}
+	if !recordStop(pausedAt.Add(2*time.Minute), false) {
+		t.Fatalf("the stop after the takeover answered that the role was already stopped; want a stop of its own recorded")
+	}
+	if recordStop(pausedAt.Add(3*time.Minute), true) {
+		t.Fatalf("the second stop answered that it recorded a stop; want the role's newest row, which already ended stopped, to stand")
+	}
+	rows := pauseCount(t, st, `select count(*) from project_pause_stops where pause_id = $1 and claim = $2`, pause.ID, string(implementer.Claim))
+	owed := pauseCount(t, st, `select count(*) from project_pause_stops where pause_id = $1 and claim = $2
+		and ended_as = 'stopped' and launch_owed and ended_at = $3`, pause.ID, string(implementer.Claim), pausedAt.Add(2*time.Minute))
+	if rows != 2 || owed != 1 {
+		t.Fatalf("the pause's stop rows of the implementer = %d, with %d stopped at the second record owing a launch; want 2 rows, the newest owing the launch", rows, owed)
+	}
+}
