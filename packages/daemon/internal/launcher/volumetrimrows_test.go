@@ -669,22 +669,22 @@ func TestAPanicOfTheFirstEpisodesLineLeavesALaterFallARecovery(t *testing.T) {
 	}
 }
 
-// A sweep writes four lines once its outcome is settled (sweep): that its deleter could not be
-// started, that its deleter ended, that the volume could not be read at its end, and how many more
-// entries of a root it passed over than it named (passedOver.said). Each is written inside
-// contain, so a panic of it, which only the logger can raise, is dropped and counted in no row,
-// and tick still acts on that outcome: R1 has a sweep that frees less than one percent of the
-// volume start no new sweep for the next ten intervals, and a reading of the trimmer's own at or
-// below the low mark after one at or above the high mark is a recovery (episodeOf). Each subtest's
-// line panics once. In a pause's subtest the sweep frees nothing: the ten readings after it must
-// each pause, the eleventh must sweep, and both sweeps must report. In a recovery's the sweep
-// deletes and its last reading is 65%: the trimmer must be in episode 2, raised by a recovery,
-// with no report sent. Only the passed-over count and the line of a deleter that ended can follow
-// deletions that reach the low mark: a deleter that could not be started deletes nothing, and a
-// sweep whose last reading failed keeps the last one it took, which stood above the low mark or
-// the sweep would have ended there. At 3b696b83 each line's panic unwound out of the sweep, so
-// tick set no pause and the next reading swept, and read no last reading, so the fall to 65%
-// raised no recovery (INFRA-2009, round 46).
+// A sweep writes four kinds of line once its outcome is settled (sweep): that its deleter could
+// not be started, that its deleter ended, that the volume could not be read at its end, and, one
+// line for each root past the bound, how many more of its entries it passed over than it named
+// (passedOver.said). Each is written inside contain, so a panic of one, which only the logger can
+// raise, is dropped and counted in no row, and tick still acts on that outcome: R1 has a sweep
+// that frees less than one percent of the volume start no new sweep for the next ten intervals,
+// and a reading of the trimmer's own at or below the low mark after one at or above the high mark
+// is a recovery (episodeOf). Each subtest's line panics once. In a pause's subtest the sweep frees
+// nothing: the ten readings after it must each pause, the eleventh must sweep, and both sweeps
+// must report. In a recovery's the sweep deletes and its last reading is 65%: the trimmer must be
+// in episode 2, raised by a recovery, with no report sent. Only the passed-over count and the
+// line of a deleter that ended can follow deletions that reach the low mark: a deleter that could
+// not be started deletes nothing, and a sweep whose last reading failed keeps the last one it
+// took, which stood above the low mark or the sweep would have ended there. At 3b696b83 each
+// line's panic unwound out of the sweep, so tick set no pause and the next reading swept, and read
+// no last reading, so the fall to 65% raised no recovery (INFRA-2009, round 46).
 func TestASweepWhoseLinePanicsOnceItsOutcomeIsSettledStillPausesOrRecovers(t *testing.T) {
 	const fell = "the log fell over writing a line of a sweep whose outcome is settled"
 	// passOver leaves eleven links in bun's install cache, one past the ten a sweep names
