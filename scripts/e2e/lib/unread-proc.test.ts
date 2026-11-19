@@ -279,13 +279,69 @@ test("pidMaxPerNamespace takes a kernel from 6.14 on for one with a per-namespac
   });
 });
 
+const hostPidMax = () => readFileSync("/proc/sys/kernel/pid_max", "utf8").trim();
+
+type Restore = { exitCode: number; stderr: string };
+// hostPidMaxMoved answers null while the host's pid_max, read by READ, is still BEFORE. Once it has
+// moved, it writes BEFORE back through RESTORE, reads the value again and answers why the row
+// fails: the value the row left, the restore's exit status and stderr, and the value read after
+// the restore, which a restore that failed (a sudo that now asks for a password) leaves moved.
+function hostPidMaxMoved(
+  before: string,
+  read: () => string,
+  restore: (value: string) => Restore
+): string | null {
+  const after = read();
+  if (after === before) return null;
+  const put = restore(before);
+  const again = read();
+  const said = put.stderr.trim() === "" ? "" : ` saying ${JSON.stringify(put.stderr.trim())}`;
+  const left =
+    again === before
+      ? `reads ${again} again`
+      : `reads ${again}, not ${before}: put it back by hand`;
+  return `the namespace's pid_max write moved the host's pid_max from ${before} to ${after}; the restore exited ${put.exitCode}${said}, and the host's pid_max now ${left}`;
+}
+const restoreHostPidMax = (value: string): Restore => {
+  const put = Bun.spawnSync(
+    [sudo ?? "sudo", "-n", "sh", "-c", `echo ${value} >/proc/sys/kernel/pid_max`],
+    { stdout: "ignore", stderr: "pipe" }
+  );
+  return { exitCode: put.exitCode, stderr: put.stderr.toString() };
+};
+
+// The restore is the one backstop for a write that reached the host, so a restore that failed must
+// say so: it is planted here, since on a kernel that keeps pid_max per namespace no write moves it.
+test("hostPidMaxMoved answers null while the host's pid_max holds, and once it moved names the restore's exit status, its stderr and the value read again", () => {
+  const reads =
+    (...values: string[]) =>
+    () =>
+      values.shift() ?? "no read left";
+  const noRestore = () => {
+    throw new Error("a pid_max that did not move was restored");
+  };
+  expect(hostPidMaxMoved("4194304", reads("4194304"), noRestore)).toBeNull();
+  expect(
+    hostPidMaxMoved("4194304", reads("2400", "2400"), () => ({
+      exitCode: 1,
+      stderr: "sudo: a password is required\n",
+    }))
+  ).toBe(
+    `the namespace's pid_max write moved the host's pid_max from 4194304 to 2400; the restore exited 1 saying "sudo: a password is required", and the host's pid_max now reads 2400, not 4194304: put it back by hand`
+  );
+  expect(
+    hostPidMaxMoved("4194304", reads("2400", "4194304"), () => ({ exitCode: 0, stderr: "" }))
+  ).toBe(
+    "the namespace's pid_max write moved the host's pid_max from 4194304 to 2400; the restore exited 0, and the host's pid_max now reads 4194304 again"
+  );
+});
+
 // The same with a real reuse: in a pid namespace whose pid_max is 2400, a daemon the rig started
 // ends of itself, bash reaps it, and a stranger, no child of the rig's shell, is given its pid; the
 // rig's cleanup then stops the daemon's recorded pid. The stranger must be left running. The write
 // of 2400 is the namespace's own only from Linux 6.14 (pidMaxPerNamespace), so the row runs only
-// there; and the host's pid_max is read before and after it, put back by root if it ever moved, and
-// the row then fails, naming it.
-const hostPidMax = () => readFileSync("/proc/sys/kernel/pid_max", "utf8").trim();
+// there; and the host's pid_max is read before and after it, and the row fails if it ever moved
+// (hostPidMaxMoved), naming the restore's result and the value read after it.
 test.skipIf(!privileged || !namespacePidMax)(
   "in a pid namespace whose pids wrap, stop_pid of a daemon that ended leaves the stranger that took its pid running",
   () => {
@@ -331,20 +387,7 @@ unspawn "$daemon_pid"`;
       stdout = ran.stdout.toString();
       stderr = ran.stderr.toString();
     } finally {
-      const after = hostPidMax();
-      if (after !== before) {
-        Bun.spawnSync([
-          sudo ?? "sudo",
-          "-n",
-          "sh",
-          "-c",
-          `echo ${before} >/proc/sys/kernel/pid_max`,
-        ]);
-      }
-      expect(
-        { hostPidMax: after },
-        `the namespace's pid_max write set the host's to ${after}; it is put back to ${before}`
-      ).toEqual({ hostPidMax: before });
+      expect(hostPidMaxMoved(before, hostPidMax, restoreHostPidMax)).toBeNull();
     }
     expect(stderr).toBe("");
     expect(stdout).toBe("stranger alive\n");
@@ -368,7 +411,9 @@ state() { if gone "$1"; then echo gone; else echo running; fi; }`;
 // own and its pid is that group's leader: signal_group then stop_pid, the broker walkthrough rig's
 // stop, end it with what it started. A setsid in front, as the rig had, forks, since the job already
 // leads its group: the recorded pid is a setsid that exits at once, and the stop reaches neither the
-// service nor its child.
+// service nor its child. Whether that setsid has exited when start_process reads its start is the
+// machine's (on a loaded gVisor pod it often has): start_process records its start or `gone`, and
+// either way the stop reaches neither and says nothing. The next row forces the second.
 test("start_process starts a service that leads its own group, and signal_group then stop_pid end it with its child; with setsid in front they reach neither", async () => {
   const r = run(`${goneOrRunning}
 start_process svc bash -c 'sleep 300 & echo $! >"$0"; wait' "$work/child"
@@ -395,18 +440,45 @@ echo "with setsid: service $(state "$leader2"), child $(state "$child2")"`);
   );
 });
 
-// A service that has exited before start_process reads its start records none. start_process
-// still succeeds under a driver's `set -e`, so await_start, not the shell's exit, names its log.
-// proc_start answers nothing in the row, as it does for a service already gone or a zombie, since
-// how fast a service exits is the machine's.
-test("start_process of a service that is gone when its start is read succeeds, and await_start names the service's log", () => {
+// The same setsid start, forced to the shape a loaded machine gives at random: the setsid has exited
+// before start_process reads its start (proc_start answers nothing for that one read). It is
+// recorded `gone`, and signal_group and stop_pid of it send nothing and say nothing, while the
+// service and its child run on.
+test("with setsid in front and the setsid gone when start_process reads its start, signal_group then stop_pid reach neither and say nothing", async () => {
+  const r = run(`${goneOrRunning}
+eval "real_$(declare -f proc_start)"
+proc_start() { :; }
+start_process svc3 setsid bash -c 'echo $$ >"$0.leader"; sleep 300 & echo $! >"$0"; wait' "$work/child3"
+eval "$(declare -f real_proc_start | sed '1s/^real_//')"
+until_true 10 "the setsid service's child" test -s "$work/child3"
+leader3=$(<"$work/child3.leader") child3=$(<"$work/child3")
+echo "setsid's pids $leader3 $child3"
+echo "recorded: \${started_at[$svc3_pid]-none}"
+signal_group "$svc3_pid" TERM
+stop_pid "$svc3_pid"
+echo "with setsid gone at the read: service $(state "$leader3"), child $(state "$child3")"`);
+  killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
+  expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
+    "recorded: gone\nwith setsid gone at the read: service running, child running\n"
+  );
+  expect(r.err).toBe("");
+});
+
+// A service that has exited before start_process reads its start is recorded `gone`. start_process
+// still succeeds under a driver's `set -e`, so await_start, not the shell's exit, names its log,
+// and stop_pid and signal_group of it say nothing. proc_start answers nothing in the row, as it
+// does for a service already gone or a zombie, since how fast a service exits is the machine's.
+test("start_process of a service that is gone when its start is read succeeds, stop_pid and signal_group of it say nothing, and await_start names the service's log", () => {
   const r = run(`set -euo pipefail
 proc_start() { :; }
 start_process quick true
 echo "start_process returned"
+stop_pid "$quick_pid"
+signal_group "$quick_pid" TERM
+echo "stopped"
 await_start quick "$quick_pid" 5 "the quick service" false`);
   expect(r.code).toBe(1);
-  expect(r.out).toBe("start_process returned\n");
+  expect(r.out).toBe("start_process returned\nstopped\n");
   expect(r.err).toMatch(
     /^fail: the quick service: the process exited; see \S+\/logs\/quick\.log\n$/
   );
@@ -454,19 +526,23 @@ echo "cleanup, the helper itself: $(state ${stranger.pid})"`);
 });
 
 // stop_agent (envoy-session-states.sh and clean-session-stop-tmux.sh) ends an agent by its group's
-// TERM and its own stop_pid; a member of the group that outlives the TERM is the cleanup sweep's,
-// since a group is signalled only while its leader is the process recorded. Both rigs' cleanups run
-// the sweep, and the sweep ends that member: it carries the run's mark, as every agent does. The
-// sweep reads a proc root of the row's two processes (proc-root.ts's, made in the shell), so its
-// time is the row's and not the host's process count.
+// TERM and its own stop_pid; a member of the group that outlives the TERM cannot be reached
+// through the group once its leader has gone. The Envoy session-states stop_agent, which Claude
+// Code's mid-run stop calls before a `--resume` of the same session id, reads the agent's
+// descendants while it holds the agent stopped and ends each that outlives the TERM by its start.
+// The clean-session-stop one runs only in its cleanup, whose sweep ends that member: it carries the
+// run's mark, as every agent does. Both cleanups run the sweep. The sweep reads a proc root of the
+// row's two processes (proc-root.ts's, made in the shell), so its time is the row's and not the
+// host's process count.
 const states = scriptFunctions(join(e2e, "envoy-session-states.sh"));
 const cleanStop = scriptFunctions(join(e2e, "clean-session-stop-tmux.sh"));
-test("an agent's member that outlives its TERM is left by stop_agent and ended by the cleanup sweep, which both agents' rigs run", () => {
-  const r = run(`${goneOrRunning}
+// memberRig starts an agent as the rigs do (own_session, agent_pid) whose child ignores TERM, gives
+// the walks a proc root of the two, runs STOP_AGENT's stop_agent, and then THEN.
+const memberRig = (stopAgent: string, then: string) => `${goneOrRunning}
 export LEGION_E2E_RUN=$work
 ${states("own_session")}
 ${states("agent_pid")}
-${states("stop_agent")}
+${stopAgent}
 printf '%s\\n' "trap '' TERM" 'echo $$ >"$1"' 'exec sleep 300' >"$work/member.sh"
 own_session "$work/agent.pid" bash -c 'bash "$1" "$2" & wait' agent "$work/member.sh" "$work/agent.member"
 agent_pid "$work/agent.pid" agent
@@ -479,16 +555,35 @@ ln -s "/proc/$member" "$work/proc/$member"
 export proc_root=$work/proc
 stop_agent "$agent"
 until_true 10 "the agent to end" gone "$agent"
-echo "after stop_agent: member $(state "$member")"
+${then}`;
+test("the Envoy session-states stop_agent ends an agent's member that outlives its TERM, so nothing of a stopped Claude Code runs beside its resume", () => {
+  const r = run(
+    memberRig(
+      states("stop_agent"),
+      `until_true 10 "stop_agent to end the agent's member" gone "$member"
+echo "after stop_agent: member $(state "$member")"`
+    )
+  );
+  killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
+  expect(r.out.replace(/^pids .*\n/m, "")).toBe("after stop_agent: member gone\n");
+  expect(r.err).toBe("");
+});
+test("the clean-session-stop stop_agent leaves an agent's member that outlives its TERM to the cleanup sweep, and both agents' cleanups run the sweep", () => {
+  const r = run(
+    memberRig(
+      cleanStop("stop_agent"),
+      `echo "after stop_agent: member $(state "$member")"
 stop_marked_processes "$work"
 echo "sweep $?"
 until_true 10 "the member to end" gone "$member"
-echo "after the sweep: member $(state "$member")"`);
+echo "after the sweep: member $(state "$member")"`
+    )
+  );
   killed.push(...pidsIn(/^pids (.*)$/m.exec(r.out)?.[1] ?? ""));
-  expect(r.err).toBe("");
   expect(r.out.replace(/^pids .*\n/m, "")).toBe(
     "after stop_agent: member running\nsweep 0\nafter the sweep: member gone\n"
   );
+  expect(r.err).toBe("");
   for (const cleanup of [states("cleanup"), cleanStop("cleanup")]) {
     expect(cleanup).toMatch(/^\s+stop_marked_processes "\$work"/m);
   }

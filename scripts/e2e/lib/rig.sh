@@ -279,8 +279,9 @@ await_start() {
 # start_process NAME COMMAND... starts COMMAND in the background, logging to the service's log, and
 # sets <NAME>_pid to its pid, with its start time recorded (record_start, lib/process-tree.sh), so
 # stop_pid signals it only while it is still that process. A service that has already exited when
-# the start is read records none, and start_process still succeeds, so await_start, not a driver's
-# `set -e`, names its log. Monitor mode is on for the start alone,
+# the start is read, or is a zombie, is recorded `gone` (started_at), so stop_pid and signal_group
+# later send it nothing and say nothing; start_process still succeeds, so await_start, not a
+# driver's `set -e`, names its log. Monitor mode is on for the start alone,
 # so the service leads a process group of its own: stop_tree stops what it kills with SIGSTOP
 # first, and a stopped member of this shell's own process group has the kernel hang up every member
 # of that group — this shell, the command that started it and the `bun test` that started that — as
@@ -298,7 +299,7 @@ start_process() {
   "$@" </dev/null >>"$evidence/logs/$name.log" 2>&1 &
   printf -v "${name}_pid" '%s' "$!"
   set +m
-  record_start "$!" || true
+  record_start "$!" || started_at[$!]=gone
 }
 
 # run_processes prints the pid of every process of this run still alive: each that carries the run's

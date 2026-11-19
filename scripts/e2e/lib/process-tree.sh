@@ -9,8 +9,9 @@
 # `exec -a` gives argv[0] any name, so a process is told by the program the kernel records it runs
 # (/proc/<pid>/exe).
 #
-# Sourced, never run, by lib/rig.sh and by stage2-tmux-supervision.sh, which sources no rig. It
-# needs nothing of its caller's.
+# Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
+# proc_walk_complaint), and by stage2-tmux-supervision.sh, which sources no rig. It needs nothing
+# of its caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat
@@ -164,7 +165,10 @@ signalable() {
 # recorded where the shell learns it, right after its `&` (`$!`) or its own pid file: the kernel gives
 # a pid to another process only once its process has ended and been reaped, so that read meets the
 # process itself, or nothing once it has gone, unless in the moment between it ended, bash reaped it
-# and another process took the pid. A second source of this file keeps what is recorded.
+# and another process took the pid. A pid whose process had already ended, or was a zombie, when
+# its start was read holds `gone` (start_process records each service so): there is no process to
+# signal, and the pid may be anyone's by then, so stop_pid and signal_group send it nothing and say
+# nothing. A second source of this file keeps what is recorded.
 declare -gA started_at
 
 # record_start PID records PID's start time in started_at, for stop_pid to hold PID to, and fails
@@ -195,8 +199,9 @@ record_pid_file() {
 # the recorded start, so a pid whose process ended, was reaped and passed to another process since,
 # another user's or another run's, gets no signal. On this box the pid counter wraps in about seven
 # minutes, so a daemon that crashed before the cleanup leaves its pid to a stranger well within a
-# run. A pid with no recorded start is a caller's bug: it is named and left alone. It is best effort:
-# a failed cleanup must never obscure the check that failed, so it always succeeds.
+# run. A pid with no recorded start is a caller's bug: it is named and left alone. A pid recorded
+# `gone` (started_at) is left alone with no word. It is best effort: a failed cleanup must never
+# obscure the check that failed, so it always succeeds.
 stop_pid() {
   local pid=${1:-} start i
   [ -n "$pid" ] || return 0
@@ -205,6 +210,7 @@ stop_pid() {
     echo "stop_pid: no start time is recorded for pid $pid (record_start), so it was not signalled" >&2
     return 0
   }
+  [ "$start" != gone ] || return 0
   signalable "$pid" || return 0
   freeze_if "$pid" "$start" TERM || return 0
   for i in $(seq 1 50); do
@@ -219,16 +225,17 @@ stop_pid() {
 # proof recorded (record_start), only while PID is still that process: it stops the leader first
 # (freeze_if … STOP, held to the recorded start), so the leader cannot exit and leave its group id to
 # another group before the signal lands, then signals the group and thaws the leader. A leader with
-# no recorded start, or one that has gone, is left alone, and so is what is left of its group: with
-# no leader to hold to its start, nothing tells that group from another, so a signal_group after
-# stop_pid of the same leader sends nothing. A rig that must end a member that outlived its leader
-# runs the run's sweep (stop_marked_processes), as the Envoy session-states and clean-session-stop
-# cleanups do. It always succeeds.
+# no recorded start, one recorded `gone`, or one that has gone since, is left alone, and so is what
+# is left of its group: with no leader to hold to its start, nothing tells that group from another,
+# so a signal_group after stop_pid of the same leader sends nothing. A rig that must end a member
+# that outlived its leader reads the leader's descendants while it is held stopped and ends each by
+# its start (the Envoy session-states stop_agent), or runs the run's sweep (stop_marked_processes),
+# as the Envoy session-states and clean-session-stop cleanups do. It always succeeds.
 signal_group() {
   local pid=${1:-} start
   [ -n "$pid" ] || return 0
   start=${started_at[$pid]:-}
-  [ -n "$start" ] || return 0
+  [ -n "$start" ] && [ "$start" != gone ] || return 0
   signalable "$pid" || return 0
   freeze_if "$pid" "$start" STOP || return 0
   kill "-$2" -- "-$pid" 2>/dev/null || true

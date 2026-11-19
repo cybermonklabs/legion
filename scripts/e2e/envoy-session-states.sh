@@ -336,15 +336,25 @@ agent_pid() {
 # and on its command line, and carries no mark. It is continued first: a check stops an agent with
 # SIGSTOP, and a stopped process keeps a TERM pending. The agent leads a session of its own
 # (own_session), so the TERM to its group (signal_group) reaches what it started. A member that
-# outlives that TERM is left to cleanup's sweep (stop_marked_processes): a group is signalled only
-# while its leader is still the process recorded, and stop_pid has ended the leader.
+# outlives that TERM cannot be reached through its group once stop_pid has ended the leader, so
+# what the agent started is read while the agent is held stopped (proc_descendants, each with its
+# start), and each that still runs after stop_pid and still carries the run's mark is ended by that
+# start (kill_held): Claude Code's mid-run stop (claude_stop) is followed by a `--resume` of the
+# same session id, beside which nothing of the old one may run on. Cleanup's sweep
+# (stop_marked_processes) ends what a stop could not read.
 stop_agent() {
+  local started=
   [ -n "${1:-}" ] || return 0
   names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
+  if freeze_if "$1" "${started_at[$1]:-}" STOP; then
+    started=$(proc_descendants "$1" "${started_at[$1]}") || started=
+    kill -CONT "$1" 2>/dev/null || true
+  fi
   signal_group "$1" TERM
   stop_pid "$1"
+  [ -z "$started" ] || kill_held "$work" "${run_marks[@]}" <<<"$started" || true
 }
 
 cleanup() {

@@ -43,6 +43,18 @@ function goneDriver(): number {
   const gone = Bun.spawnSync(["true"]);
   return gone.pid;
 }
+// The rows read processes, not containers: refuse_leftovers asks `docker ps` for an earlier run's
+// containers first, so each row puts a docker first on PATH that lists none. It keeps the rows off
+// the host's containers, and lets them run where there is no docker at all (a Legion pod), where
+// the host's missing docker said `docker: command not found` on the stderr the rows hold empty.
+let noContainers = "";
+function dockerListingNone(): string {
+  if (noContainers === "") {
+    noContainers = mkdtempSync(join(dir, "docker-"));
+    writeFileSync(join(noContainers, "docker"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  }
+  return noContainers;
+}
 // check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
 // answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
 function check(root: string, bin = "") {
@@ -53,7 +65,10 @@ function check(root: string, bin = "") {
       `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\nrefuse_leftovers ${prefix}; echo "status $?"`,
     ],
     {
-      env: { PATH: `${bin}${bin ? ":" : ""}${process.env.PATH ?? ""}`, proc_root: root },
+      env: {
+        PATH: `${bin}${bin ? ":" : ""}${dockerListingNone()}:${process.env.PATH ?? ""}`,
+        proc_root: root,
+      },
       stdout: "pipe",
       stderr: "pipe",
     }

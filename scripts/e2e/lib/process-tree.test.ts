@@ -361,8 +361,14 @@ const noStrace = skipWithout("strace");
 const logPsPgrepPkillCalls = `mkdir -p "$scratch/bin"
 for n in ps pgrep pkill; do printf '#!/bin/sh\\necho "$0 $*" >>%s/calls\\nexit 1\\n' "$scratch" >"$scratch/bin/$n"; chmod +x "$scratch/bin/$n"; done
 PATH="$scratch/bin:$PATH"`;
-const startParentWithTwoSleeps = `(sleep 300 & sleep 301 & wait) </dev/null >/dev/null 2>&1 &
+// The tree leads a process group of its own (monitor mode for its start alone), as start_process
+// starts a service: stop_tree stops it with SIGSTOP first, and a stopped member of the shell's own
+// group has the kernel hang up the shell itself once that group counts as orphaned, which in a
+// gVisor pod it does, so the row's shell was killed there at the stop and printed nothing more.
+const startParentWithTwoSleeps = `set -m
+(sleep 300 & sleep 301 & wait) </dev/null >/dev/null 2>&1 &
 g=$!
+set +m
 started+=("$g")
 until_true 10 "two children of $g" sh -c '[ "$(cat /proc/$1/task/*/children | wc -w)" = 2 ]' sh "$g"
 kids=$(cat /proc/"$g"/task/*/children)`;

@@ -6286,7 +6286,7 @@ Each item below names a function, then what it does.
 - `start_process NAME CMD…`
 
   starts CMD in the background, appending to NAME's log, and sets `NAME_pid`, the leader of a process group of its own (monitor mode), with its start recorded (`record_start`).
-  A service that has already exited when its start is read records none, and `start_process` still succeeds, so a driver's `set -e` never ends the run there with no line saying why: `await_start` names the service's log.
+  A service that has already exited when its start is read, or is a zombie, is recorded `gone`, so `stop_pid` and `signal_group` send it nothing and say nothing, and `start_process` still succeeds, so a driver's `set -e` never ends the run there with no line saying why: `await_start` names the service's log.
   A `setsid` in front of CMD would fork, since the job already leads its group, and leave `NAME_pid` a `setsid` that exits at once; `lib/unread-proc.test.ts` holds both, and that the broker walkthrough rig (`docs/site/media/broker/rig.sh`) starts no service through one
 
 - `start_held NAME PORT_VAR FD_ENV [--env K=V]… -- CMD…`
@@ -6403,7 +6403,7 @@ The control it must pass runs there too: OLD_FORM, the command line the walk rep
 ## lib/proc-root.ts
 
 A proc root of a test's own processes, for code under test that reads `${proc_root:-/proc}`: a directory holding a link to the real `/proc/<pid>` of each process the test names (`procRootOf`), so that code reads those processes' own files and signals their real pids, and its work is the test's processes rather than the host's.
-The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers` and the parked-decision proof's `stop_agent_daemons`.
+The walks of every process read it: `procs_naming` (and so `run_processes`, `marked_processes`, the sweep and the skill-scenario rig's `run_env_pids`), `listening_holders`, `refuse_leftovers`, the parked-decision proof's `stop_agent_daemons` and `lib/role-namespaces.sh`'s `role_kill_sh`.
 A walk of the host's whole `/proc` held a row to the host's process count; on this devbox at 25,474 entries `refuse_leftovers` alone took 29 s.
 Each row of `lib/run-processes.test.ts` walks a root of the processes it started and the test process, and its first row starts a marked process outside that root, which a walk that went back to the host's `/proc` would name.
 A harness shell makes the same root for itself with one `ln -s` an entry, as `lib/unread-proc.test.ts`'s row for an agent's member that outlives its TERM does
@@ -6440,10 +6440,11 @@ A walk or a read that cannot see the processes it reads says why and fails with 
 
   `record_start` records PID's start time in `started_at`, read where the run learns the pid (right after its `&`, or from its own pid file), and fails for a pid with no live process.
   `record_pid_file` reads the pid and start a process wrote of itself before it ran (`record_pid_sh`) into VAR and `started_at`, so a read made late, in a cleanup after the process ended, still holds the pid to that process's start; the broker walkthrough rig reads its helper's pid with it.
-  `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone.
-  A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing, and a member that outlived the leader is the run's sweep's (`stop_marked_processes`), which the Envoy session-states and clean-session-stop cleanups run.
-  `lib/unread-proc.test.ts` holds both with a start that is not the process's own, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, with a daemon that ended and a stranger that took its pid.
-  That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name, and the row fails, putting the host's value back, if the host's `pid_max` ever moves across it
+  `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone, and one recorded `gone`, whose process ended before its start was read, is left alone with no word.
+  A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing.
+  The Envoy session-states `stop_agent` reads its agent's descendants while the agent is held stopped and ends each that outlives the TERM by its start (`kill_held`), since Claude Code's mid-run stop is followed by a `--resume` of the same session id; otherwise a member that outlived its leader is the run's sweep's (`stop_marked_processes`), which the Envoy session-states and clean-session-stop cleanups run.
+  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own and with a pid recorded `gone`, `stop_agent` with a member that ignores TERM, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
+  That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name; and the row fails if the host's `pid_max` ever moves across it, naming the value it read, the restore's exit status and stderr, and the value it reads after the restore
 
 - `signalable PID`
 
