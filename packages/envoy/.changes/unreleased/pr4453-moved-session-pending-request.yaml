@@ -4,7 +4,8 @@ body: |-
   `BROKER_PUBLIC_URL` that shares the database) no longer blocks its session until it expires.
   When the session asks this broker again for one of its names, the broker cancels that request
   with a detail that says the broker moved, whatever its age, also when the new ask is granted or
-  denied at once or a live grant answers it, and then applies the one-pending-request rule to what
-  is left. An ask refused before the broker writes anything cancels nothing. When a session holds
-  more than one live grant for the same names, the broker hands back the newest one, and passes
-  over a grant whose approval chain no longer verifies.
+  denied at once or a live grant answers it. For an ask that waits for a person, the
+  one-pending-request rule then applies to what is left. An ask refused before the broker writes
+  anything cancels nothing. When a session holds more than one live grant for the same names, the
+  broker hands back the newest one, and passes over a grant whose approval chain no longer
+  verifies.

@@ -910,10 +910,10 @@ type pendingRequestRow struct {
 // already holding rather than opening a second one, and the box it moved off, which holds the
 // card no longer, is refused nothing.
 // It reads each request's credential-request record beside it, so Create can tell each one
-// signed for another broker address (signedForAnotherBroker) and end it, and keep each one that
-// verifies (endSignedForAnotherBroker). The record is a left join, so a request with no record is
-// still found, as before. The order is the request's created_at and then its id, a total order,
-// so two transactions that end the same requests take their row locks in one order.
+// signed for another broker address (signedForAnotherBroker) and end it, and keep every other one
+// (endSignedForAnotherBroker). The record is a left join, so a request with no record is still
+// found. The order is the request's created_at and then its id, a total order, so two
+// transactions that end the same requests take their row locks in one order.
 // It reads every row and closes them before it returns: its caller ends requests in the same
 // transaction, and a pgx transaction runs no statement while rows of its connection are open.
 func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted []string) ([]pendingRequestRow, error) {
@@ -954,7 +954,8 @@ func sameLifetime(a, b *int) bool {
 // (record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
 // approver's list shows it and the judge was never handed it. A request with no record, a body
 // that does not parse and every other refusal (a signature, a time) answer false, so Create keeps
-// such a request and applies today's rules to it: the broker's move is the one reason it ends one.
+// such a request and applies the one-pending-request rule to it: the broker's move is the one
+// reason it ends one.
 func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
 	if p.RecordBody == nil || p.RecordCreatedAt == nil {
 		return false

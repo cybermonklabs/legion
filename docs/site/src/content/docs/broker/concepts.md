@@ -704,10 +704,11 @@ The broker evaluates every name
   `BROKER_PUBLIC_URL`, such as a broker the session's box asked before it moved to this one: no
   person and no judge here can decide it, so when its session asks this broker again for one of
   its names, the broker ends it, cancelled by the broker with a detail that says the broker moved,
-  whatever its age, and the rule then applies to what is left. That holds for an ask the broker
-  decides at once and for one a live grant answers too; an ask refused before the broker writes
-  anything (an unknown name, a lifetime over the secret's maximum, two approvers) ends nothing,
-  and a request signed for another broker address that no such ask reaches waits for its expiry.
+  whatever its age. That end holds for an ask that waits for a person, for an ask the broker
+  decides at once and for one a live grant answers, and for an ask that waits for a person the
+  rule then applies to what is left. An ask refused before the broker writes anything (an unknown
+  name, a lifetime over the secret's maximum, two approvers) ends nothing, and a request signed for
+  another broker address that no such ask reaches waits for its expiry.
   The broker's answer names the approver the record names and the request's page on the broker
   (`approve_url`), and
   `agent-secrets` prints both, so the agent can tell that person where to approve it. The record
