@@ -289,11 +289,32 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // mergedForwardOf), so a head the first merge replaced stays fenced after the head that merge
 // left conflicts in its turn and is merged forward again. The refusal names the head that merge
 // replaced, the head it left and the head the pull request stands at now, and tells the role to
-// read what the merge changed and complete again at that head; a phase that ends with a handoff
-// record is told to write it again, since a completion naming the record it already named is the
-// one the route answers as received (api/handoff.go). The fence is the merge forward's alone, not
-// every push's: a completion at the current head, at a head no merge forward replaced, or of any
-// other phase passes it. It answers false where it does not refuse.
+// read what the merge changed and complete again at that head.
+//
+// A completion that names no commit is refused the same way once a merge forward of the record's
+// stretch of work landed: the tester and the reviewer take their commit from the head their
+// handoff record names, and a record that holds no head that parses reports none
+// (packages/pi-shared/src/handoff-record.ts), so such a completion says nothing about which head
+// its work judged, as the completion route's entry fence holds of a completion behind its entry
+// (api's behindEntryClause), and the head it judged may be the one the merge replaced. That
+// refusal names the head the pull request stands at now and the head the newest merge forward
+// that landed left, whose merge the role can read, and tells the role to do the phase's work at
+// the head the pull request stands at and complete again at it.
+//
+// A phase that ends with a handoff record is told to write it again, with its `head` set to the
+// head the pull request stands at, since a completion naming the record it already named is the
+// one the route answers as received (api/handoff.go) and the commit the completion reports is the
+// head the record names.
+//
+// The fence is the merge forward's alone, not every push's: a completion at the current head, at
+// a head no merge forward replaced, naming no commit while no merge forward has landed, or of any
+// other phase passes it. handoff asks it only of a completion of the phase the issue stands in,
+// so a completion of a phase the issue has left passes it too: that completion moves nothing, and
+// its handoff is the report of the work the role did before the move, which the next phase reads
+// (leftItsPhase). The reviewer whose approval moved the issue on completes reviewing after the
+// move, at the head it reviewed, and the review a landed merge forward then asks of it is made
+// with no completion (record.MergeForwardReview), so a refusal would lose that report for good.
+// It answers false where it does not refuse.
 func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
 	switch reported {
 	case phase.Testing, phase.Reviewing, phase.Retro:
@@ -303,17 +324,29 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 	if pr == nil || pr.MergeForward == nil || commit == pr.HeadSHA {
 		return intake.Result{}, false
 	}
-	replaced, ok := mergedForwardOf(pr.MergeForward, commit)
+	again := "complete again at that head"
+	if word, _, ok := phase.Handoff(reported); ok {
+		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
+			issue.Key, word)
+	}
+	asked := pr.MergeForward
+	if commit == "" {
+		landed := asked.Landed
+		if landed == "" && len(asked.Earlier) > 0 {
+			landed = asked.Earlier[len(asked.Earlier)-1].Landed
+		}
+		if landed == "" {
+			return intake.Result{}, false
+		}
+		return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s names no head, so it says nothing about which head its work judged, and the merge of %s forward landed: pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s` if it helps, do the phase's work at head %s, then %s; this completion changed nothing",
+			role, reported, issue.Key, asked.Base, pr.Number, pr.HeadSHA, landed, pr.HeadSHA, again)), true
+	}
+	replaced, ok := mergedForwardOf(asked, commit)
 	if !ok {
 		return intake.Result{}, false
 	}
-	again := "complete again at that head"
-	if word, _, ok := phase.Handoff(reported); ok {
-		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, and complete again at that head naming it",
-			issue.Key, word)
-	}
 	return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s is at head %s, and the merge of %s forward replaced that head: pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
-		role, reported, issue.Key, replaced.Head, pr.MergeForward.Base, pr.Number, pr.HeadSHA, replaced.Landed, pr.HeadSHA, again)), true
+		role, reported, issue.Key, replaced.Head, asked.Base, pr.Number, pr.HeadSHA, replaced.Landed, pr.HeadSHA, again)), true
 }
 
 // mergedForwardOf is the merge forward of the record's stretch of work that replaced commit: the

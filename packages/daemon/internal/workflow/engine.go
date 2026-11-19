@@ -887,10 +887,18 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// A completion at the head a merge forward replaced reports code the pull request no longer
-	// stands on, and is refused before anything of it is recorded (mergedForwardRefusal).
-	if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
-		return refusal, nil
+	// A completion of the phase the issue stands in that is at the head a merge forward replaced
+	// reports code the pull request no longer stands on, and one that names no head once such a
+	// merge landed says nothing about which head it judged: each is refused before anything of it
+	// is recorded (mergedForwardRefusal). A completion of a phase the issue has left is not
+	// fenced: it moves nothing, and its handoff is the report of the work the role did before the
+	// move, which the next phase reads (leftItsPhase) and no later completion can make again,
+	// since the review a landed merge forward asks of the reviewer is made with none
+	// (record.MergeForwardReview).
+	if current {
+		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
+			return refusal, nil
+		}
 	}
 	if word, _, ok := phase.Handoff(reported); ok {
 		// A phase with a handoff ends with a Dispatch handoff record, which the route read back

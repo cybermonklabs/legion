@@ -415,10 +415,12 @@ Legion uses GitHub's own review mechanisms rather than labels:
   with a `checks-red` notice naming the phase the issue stays in. In `implementing` only the
   implementer is told.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
-  completion that names the replaced head is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made
-  again at the new head. Past review the daemon asks the reviewer to read the merge and approve
-  the new head by its SHA, or request changes, and a merger that enters `merging` while that
-  approval is owed merges the new head only once the approval is on the pull request.
+  completion of the phase the issue stands in that names the replaced head, or that names no head,
+  is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
+  phase the issue has already left is recorded as before. Past review the daemon asks the reviewer
+  to read the merge and approve the new head by its SHA, or request changes, and a merger that
+  enters `merging` while that approval is owed merges the new head only once the approval is on
+  the pull request.
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue

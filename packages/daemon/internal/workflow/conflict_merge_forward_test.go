@@ -549,10 +549,11 @@ var basePushOntoMain = intake.BasePush{Repo: "sjawhar/legion", Branch: "main", A
 // A merge forward keeps the issue in its phase, so the work a role did at the head the merge
 // replaced is work on code the pull request no longer stands on (dispatch://INFRA-4374 R1). Once
 // the merge lands, a completion of testing, reviewing or retro at the replaced head is refused
-// HANDOFF_HEAD_MERGED_FORWARD, naming the new head, and records and moves nothing; the completion
-// at the new head moves the issue as it would have: the tester's pass to reviewing, the reviewer's
-// as its round decides, retro to merging. The merger's completion moves nothing in merging, as
-// ever, and in accepting nothing moves at all.
+// HANDOFF_HEAD_MERGED_FORWARD, naming the new head, and records and moves nothing; so is one that
+// names no head, which says nothing about which head its work judged. The completion at the new
+// head moves the issue as it would have: the tester's pass to reviewing, the reviewer's as its
+// round decides, retro to merging. The merger's completion moves nothing in merging, as ever, and
+// in accepting nothing moves at all.
 func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -601,23 +602,29 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 				t.Fatalf("the record's merge forward = %+v, want head landed as %s", asked, forwardHead)
 			}
 			row, rows := entryRow(t, pool, tc.role), len(queuedRows(t, pool))
-
-			result := applyFacts(t, pool, readsAfter(4*time.Minute))("at the replaced head", tc.complete(conflictHead, "handoff-1"))
-			if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
-				t.Fatalf("the completion at the replaced head was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", code, result.Refusal)
+			refusedAt := func(id, commit string, names ...string) {
+				t.Helper()
+				result := applyFacts(t, pool, readsAfter(4*time.Minute))(id, tc.complete(commit, "handoff-1"))
+				if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
+					t.Fatalf("the completion %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", id, code, result.Refusal)
+				}
+				for _, head := range names {
+					if msg := result.Refusal.Message; !strings.Contains(msg, head) {
+						t.Fatalf("the refusal of the completion %s reads %q, want it to name %s", id, msg, head)
+					}
+				}
+				if after := entryRow(t, pool, tc.role); !reflect.DeepEqual(after, row) {
+					t.Fatalf("the completion %s took the %s's row from %+v to %+v, want nothing recorded", id, tc.role, row, after)
+				}
+				if after := len(queuedRows(t, pool)); after != rows {
+					t.Fatalf("the completion %s took the outbox from %d rows to %d, want nothing queued", id, rows, after)
+				}
+				if got := issuePhase(t, pool); got != tc.at {
+					t.Fatalf("after the refused completion %s the issue is in %s, want %s", id, got, tc.at)
+				}
 			}
-			if msg := result.Refusal.Message; !strings.Contains(msg, conflictHead) || !strings.Contains(msg, forwardHead) {
-				t.Fatalf("the refusal reads %q, want it to name the replaced head %s and the new head %s", msg, conflictHead, forwardHead)
-			}
-			if after := entryRow(t, pool, tc.role); !reflect.DeepEqual(after, row) {
-				t.Fatalf("the %s's row went from %+v to %+v, want nothing recorded", tc.role, row, after)
-			}
-			if after := len(queuedRows(t, pool)); after != rows {
-				t.Fatalf("the outbox went from %d rows to %d, want nothing queued", rows, after)
-			}
-			if got := issuePhase(t, pool); got != tc.at {
-				t.Fatalf("after the refused completion the issue is in %s, want %s", got, tc.at)
-			}
+			refusedAt("at the replaced head", conflictHead, conflictHead, forwardHead)
+			refusedAt("naming no head", "", forwardHead)
 
 			applyRefusingNothing(t, pool, readsAfter(5*time.Minute), tc.complete(forwardHead, "handoff-2"))
 			tc.moved(t, pool)
@@ -647,6 +654,39 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 		}
 		assertOutboxCount(t, pool, "supervise", 0)
 	})
+}
+
+// The merge forward's completion fence is of the phase the issue stands in (dispatch://INFRA-4374
+// R1). The reviewer's approval moves the issue on to accepting before the reviewer completes, and
+// a conflict there asks for the merge forward, which lands; the review the landing then asks of
+// the reviewer is made with no completion (record.MergeForwardReview). The reviewer's completion
+// of reviewing that arrives after it, at the head the merge replaced, is the report of the review
+// it made of that head, which the next phase reads: it is recorded on the reviewer's own row and
+// moves nothing (engine's leftItsPhase), and the issue stays in accepting.
+func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) {
+	pool := seedConflictIssue(t, phase.Accepting, "needs_review", settledGreen("lint"))
+	// The reviewer's row as its approval left it: entered, with no completion of its own, under a
+	// claim the daemon started on the issue (record.Store.RoleRun), which leftItsPhase asks for.
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1})
+	seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
+	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+	landsMergeForward(t, pool)
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != forwardHead || !asked.ReviewAsked {
+		t.Fatalf("the record's merge forward = %+v, want head landed as %s with the review asked", asked, forwardHead)
+	}
+
+	result := applyFacts(t, pool, readsAfter(4*time.Minute))("the reviewer's late completion", intake.HandoffComplete{Generation: 1,
+		Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "reviewed", Commit: conflictHead,
+		HandoffRecord: "review-1", HandoffVersion: 1})
+	if result.Refusal != nil {
+		t.Fatalf("the reviewer's late completion of reviewing at %s was refused %+v, want it recorded: the fence is of the phase the issue stands in", conflictHead, result.Refusal)
+	}
+	if row := entryRow(t, pool, claim.RoleReviewer); !row.Completed() || row.HandoffCommit != conflictHead || row.HandoffRecord != "review-1" {
+		t.Fatalf("the reviewer's row = %+v, want its completion at %s naming review-1 recorded", row, conflictHead)
+	}
+	if got := issuePhase(t, pool); got != phase.Accepting {
+		t.Fatalf("after the reviewer's late completion the issue is in %s, want accepting", got)
+	}
 }
 
 // Once a merge forward lands on an issue past its review, the approval the issue stands on is of

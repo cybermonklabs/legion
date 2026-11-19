@@ -1542,10 +1542,11 @@ so an answer that waited behind a newer one never releases a first read or clear
 forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and not to complete
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
-names both heads. A completion that names a head a merge
-forward replaced, the head an earlier merge forward replaced included, is refused
-`HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is made again at the new
-head. Past review the reviewer is asked to read the merge and approve the new head. A red check
+names both heads. A completion of the phase the issue stands in that names a head a merge
+forward replaced, the head an earlier merge forward replaced included, or that names no head once
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
+made again at the new head; a completion of a phase the issue has already left is recorded as
+before. Past review the reviewer is asked to read the merge and approve the new head. A red check
 sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
