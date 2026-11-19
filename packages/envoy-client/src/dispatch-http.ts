@@ -15,6 +15,7 @@ import type {
   ArtifactVersionText,
   AskRead,
   AskWithTrees,
+  CheckResultDryRun,
   CheckResultRecorded,
   CheckResultRetraction,
   CheckResultRetractionInput,
@@ -361,6 +362,22 @@ function reviewNoRouteRefusal(
       `would record the review at a version that build chooses, which may not be version ${version}. ` +
       `The no-route answer does not name the build; GET ${health} names the commit of the ` +
       "build that answers it, when that build was stamped with one."
+  );
+}
+
+/**
+ * What `dryRunResult` throws once the Dispatch at `baseUrl` answered no route for `route` each time
+ * it was sent: a build older than a result's dry run. The code and status are that answer's. The
+ * record's own route is never asked in its place, since a build that drops a field or a query it
+ * does not know would record the result, so the message says that nothing was recorded.
+ */
+function resultDryRunNoRouteRefusal(baseUrl: string, route: string): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
+      "time the dry run was sent: this build is older than a result's dry run, so it cannot show " +
+      "the pull-request body line before the record. Nothing was recorded."
   );
 }
 
@@ -1596,6 +1613,24 @@ export class DispatchClient {
       ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
       input
     );
+  }
+
+  /**
+   * The dry run of `recordResult`: Dispatch refuses the body as the record refuses it before it
+   * writes, and answers the pull-request body line the record would answer, recording nothing.
+   */
+  async dryRunResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultDryRun> {
+    const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "results", "dry-run"];
+    try {
+      const { payload } = await this.#jsonAnswer<CheckResultDryRun>("POST", path, input, {
+        writes: false,
+      });
+      return payload;
+    } catch (error) {
+      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
+      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
+      throw resultDryRunNoRouteRefusal(this.#baseUrl, route);
+    }
   }
 
   /** Each check of an issue's Verification document with every result recorded against it, and

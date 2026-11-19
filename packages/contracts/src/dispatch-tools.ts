@@ -1672,7 +1672,9 @@ export const dispatchToolSpecs = [
       "Record one result of one check of an issue's Verification document, or retract a result " +
       "recorded before. A record prints the pull-request body line it implies. Write that line " +
       "into the pull-request body unchanged: it is the one grammar every writer uses, and it " +
-      "carries no link to Dispatch. " +
+      "carries no link to Dispatch and no issue key, since Dispatch leaves out every word of the " +
+      "reading that holds a link or an issue key of one of its projects. --dry-run prints the " +
+      "line the record would print, and records nothing. " +
       "Name the check by its block id. Where two Verification documents in reach hold that id, " +
       "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
       "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +

@@ -111,6 +111,7 @@ GET /api/v1/issues/{key}/messages/{id} any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
+POST /api/v1/issues/{key}/results/dry-run any
 GET /api/v1/issues/{key}/role-holders any
 PUT /api/v1/issues/{key}/role-holders any
 GET /api/v1/issues/{key}/steps any
