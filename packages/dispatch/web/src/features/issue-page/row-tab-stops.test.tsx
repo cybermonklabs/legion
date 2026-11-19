@@ -451,7 +451,8 @@ test("useOutOfTabOrder with keepScrollers keeps a drawn diagram's preview in the
   }
 });
 
-// A scroller of a kind the page has no word of its own for takes the word for content.
+// A scroller of a kind the page has no word of its own for takes the word for content. Its name
+// says no direction: such a box can scroll down as well as sideways, as this one scrolls down.
 test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in the tab order, named as content", () => {
   const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
@@ -459,6 +460,10 @@ test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in 
     expect(keptState(view.container, ["[data-other]"])).toEqual([
       { label: CONTROL_LABELS.scrolls_content, role: "region", tabIndex: "0" },
     ]);
+    expect(
+      CONTROL_LABELS.scrolls_content,
+      "a box that scrolls down is named as one that scrolls sideways"
+    ).not.toContain("sideways");
   } finally {
     view.unmount();
     restore();

@@ -313,7 +313,7 @@ const KEPT_SCROLLER = "data-kept-scroller";
 
 /** The name a scroller carries while it keeps its tab stop, by what it scrolls: a code block; a
  *  table, itself or the one its wrapper holds; a drawn diagram; and anything else by the page's
- *  word for content. */
+ *  word for content, with no direction, since it can scroll down as well as sideways. */
 function scrollerName(scroller: HTMLElement): string {
   if (scroller.localName === "pre") return CONTROL_LABELS.scrolls_code;
   if (scroller.localName === "table" || scroller.querySelector(":scope > table") !== null) {
