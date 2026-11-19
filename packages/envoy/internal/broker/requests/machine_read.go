@@ -54,9 +54,10 @@ const NarrowingRefusedMessage = "broker: narrowing refused"
 // the public URL changed while it waited or when a second broker shares this database. It names
 // the record id and the reason. Every other record of the list is listed and can be decided.
 // A request whose record is signed for another broker address stays off every list here, and
-// Create ends it when its session asks this broker again for one of its names in a request that
-// would wait for a person and no older overlapping request of this broker is pending
-// (RequestEndedBrokerMovedMessage). Until then it waits for its expiry.
+// Create ends it on its session's next ask of this broker for one of its names that writes a
+// request, pending or decided at once, or that a live grant answers, whatever its age beside a
+// request of this broker (RequestEndedBrokerMovedMessage). An ask Create refuses before it writes
+// anything ends nothing, and a request that no valid ask reaches waits here for its expiry.
 const PendingLeftOutMessage = "broker: a pending request's record does not verify for this broker; it is left out of the pending list"
 
 // RequestEndedBrokerMovedMessage is logged, at INFO, once for each pending request Create ends
@@ -67,10 +68,11 @@ const PendingLeftOutMessage = "broker: a pending request's record does not verif
 // the request has committed, beside the request.cancelled grant-log line of the same end, so a
 // Create that rolls back or whose commit fails writes none. It carries request=<the ended
 // request's id>, record_id=<its credential-request record's id>, new_request=<the request the
-// session is referred to now: the one Create made, or the pending request of this broker it
-// coalesced onto or refused the ask with ErrRequestPending for> and enrollment=<the enrollment
-// that asked>, and nothing else. Each is an id, so the line holds no secret value, no token and no
-// request object.
+// session is referred to now: the one Create made, granted, denied or pending, the oldest pending
+// request of this broker it kept and coalesced onto or refused the ask with ErrRequestPending
+// for, or, for an ask a live grant answered (reuseLiveGrant), the request of that grant> and
+// enrollment=<the enrollment that asked>, and nothing else. Each is an id, so the line holds no
+// secret value, no token and no request object.
 const RequestEndedBrokerMovedMessage = "broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it"
 
 // GrantChainInvalidMessage is logged, at WARN, each time a release finds that a grant's whole
@@ -898,37 +900,38 @@ type pendingRequestRow struct {
 	RecordCreatedAt *time.Time
 }
 
-// pendingRequest returns the oldest pending request for any name sorted names shares. Create holds
-// every matching name's advisory lock before it asks, so a concurrent request cannot pass the
-// lookup and open another record for that name.
+// pendingRequests returns every pending request of the enrollment for any name sorted names
+// shares, oldest first, with its names, its lifetime and its credential-request record. Create
+// holds every requested name's advisory lock before it asks (lockPendingNames), so no other
+// Create of the enrollment can pass the lookup and open another record for one of those names,
+// and one read sees every overlapping request there is.
 // It reads the requests row's own enrollment_id, so a card that moved with its session is found
 // under the enrollment holding it now: the moved session coalesces onto the card a person is
 // already holding rather than opening a second one, and the box it moved off, which holds the
 // card no longer, is refused nothing.
-// It reads the request's credential-request record beside it, so Create can tell one signed for
-// another broker address (signedForAnotherBroker), end it and ask again, which then answers the
-// next oldest. The record is a left join, so a request with no record is still found, as before.
-func pendingRequest(ctx context.Context, q querier, enrollmentID string, sorted []string) (pendingRequestRow, error) {
+// It reads each request's credential-request record beside it, so Create can tell each one
+// signed for another broker address (signedForAnotherBroker) and end it, and keep each one that
+// verifies (endSignedForAnotherBroker). The record is a left join, so a request with no record is
+// still found, as before. The order is the request's created_at and then its id, a total order,
+// so two transactions that end the same requests take their row locks in one order.
+// It reads every row and closes them before it returns: its caller ends requests in the same
+// transaction, and a pgx transaction runs no statement while rows of its connection are open.
+func pendingRequests(ctx context.Context, q querier, enrollmentID string, sorted []string) ([]pendingRequestRow, error) {
 	rows, err := q.Query(ctx, `select r.id, r.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("r")+`,
 			cr.body, cr.created_at
 		from requests r join request_secrets s on s.request_id=r.id
 		left join credential_requests cr on cr.id = r.record_id
 		where r.enrollment_id=$1 and r.state='pending' and exists (
 			select 1 from request_secrets matching where matching.request_id=r.id and matching.name = any($2)
-		) group by r.id, r.lifetime_seconds, r.created_at, cr.id, cr.body, cr.created_at order by min(r.created_at) limit 1`, enrollmentID, sorted)
+		) group by r.id, r.lifetime_seconds, r.created_at, cr.id, cr.body, cr.created_at order by r.created_at, r.id`, enrollmentID, sorted)
 	if err != nil {
-		return pendingRequestRow{}, err
+		return nil, err
 	}
-	defer rows.Close()
-	if !rows.Next() {
-		return pendingRequestRow{}, rows.Err()
-	}
-	var pending pendingRequestRow
-	if err := rows.Scan(&pending.ID, &pending.Lifetime, &pending.Names, &pending.Legacy,
-		&pending.RecordBody, &pending.RecordCreatedAt); err != nil {
-		return pendingRequestRow{}, err
-	}
-	return pending, rows.Err()
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (pendingRequestRow, error) {
+		var p pendingRequestRow
+		err := row.Scan(&p.ID, &p.Lifetime, &p.Names, &p.Legacy, &p.RecordBody, &p.RecordCreatedAt)
+		return p, err
+	})
 }
 
 // joins answers whether a request asking for lifetime joins this pending request: the same
@@ -950,8 +953,8 @@ func sameLifetime(a, b *int) bool {
 // lists a record by (requestedIdentifiers), because its aud is not Machine.Audience
 // (record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
 // approver's list shows it and the judge was never handed it. A request with no record, a body
-// that does not parse and every other refusal (a signature, a time) answer false, so Create
-// applies today's rules to such a request: the broker's move is the one reason it ends one.
+// that does not parse and every other refusal (a signature, a time) answer false, so Create keeps
+// such a request and applies today's rules to it: the broker's move is the one reason it ends one.
 func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
 	if p.RecordBody == nil || p.RecordCreatedAt == nil {
 		return false

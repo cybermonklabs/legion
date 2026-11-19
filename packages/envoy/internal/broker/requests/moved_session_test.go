@@ -176,7 +176,7 @@ func TestSelfListsTheMovedGrantUnderTheEnrollmentThatHoldsItNow(t *testing.T) {
 }
 
 // TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot pins both halves of what a
-// moved card does: pendingRequest reads the requests row's own enrollment_id, so the moved
+// moved card does: pendingRequests reads the requests row's own enrollment_id, so the moved
 // session's next ask for the same name coalesces onto the request a person is already holding
 // rather than opening a second card, and the box it left, which holds nothing now, is refused
 // nothing and opens a card of its own. The approver's list shows each card once.
