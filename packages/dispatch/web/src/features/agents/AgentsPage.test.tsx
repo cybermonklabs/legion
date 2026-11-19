@@ -2512,8 +2512,8 @@ test("a broadcast composer labels a mode-mismatched recipient", () => {
   const [, reviewer] = agents;
   const composer = broadcastPlan(new Set([reviewer.session_id]), currentList([reviewer]), "btw");
 
-  // `packages/dispatch/AGENTS.md:36-41` and `features/conversation/delivery.ts:8-12` name this
-  // composer-facing label.
+  // `MODE_LABELS` (`features/conversation/delivery.ts`) names the mode in this composer-facing
+  // label; the server's stored diagnostic keeps the wire name.
   expect(composer.excluded[0]?.reason).toBe("does not advertise BTW");
 });
 

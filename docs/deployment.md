@@ -151,9 +151,15 @@ URL). The command's own repository counts too whenever gh resolves it, because n
 it, and for `repo set-default`, which reads every remote's network, whatever names it: `GH_REPO`
 for a command that reads it (`gh api`'s `{owner}` and `:owner` placeholders among them), and
 otherwise every `github.com` remote and `gh-resolved` setting of the working directory, read with
-gh's own URL parser, whatever the scheme. A command naming no owner, in a directory whose remotes
-name none, runs at the issue owner's. A command whose last `--help` is true, and `gh --version`
-alone, only print. It fails closed: a command it cannot read for certain (an option the leaf's
+gh's own URL parser, whatever the scheme. One working directory counts `origin` alone: one whose
+only `gh-resolved` line gh reads is `remote.origin.gh-resolved base`, on an `origin` whose fetch
+URL gh keeps as `github.com` and is not ssh, for a command of the 14 groups gh resolves through
+that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `label`, `org`, `pr`,
+`release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
+`repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
+command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
+command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
+command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
@@ -161,16 +167,34 @@ search qualifier gh or GitHub could read otherwise, a gh alias or an extension, 
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one whose repositories route to two directories (two owners' repositories, an
 option or a second repository naming one owner while gh acts on another's, a workspace whose
-remotes name two, or a repository a configured rename moved beside another of the owner it moved
-from, which run under one directory's token would answer for the other's with less than GitHub
-holds and no error; a moved repository named by both of its names is one directory), one naming
-an owner the bundle holds no directory for, one naming a repository a configured rename moved to
-an owner the bundle holds no directory for, which names the pair, every command where `PATH`'s
-first `gh` is not
+remotes name two but for the marked `origin` above, or a repository a configured rename moved
+beside another of the owner it moved from, which run under one directory's token would answer for
+the other's with less than GitHub holds and no error; a moved repository named by both of its
+names is one directory), one naming an owner the bundle holds no directory for but for the read
+below, one naming a
+repository a configured rename moved to an owner the bundle holds no directory for, which names
+the pair, every command where `PATH`'s first `gh` is not
 Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+A read that names only owners the bundle holds no directory for runs, rather than being refused,
+with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
+(`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
+`ghGraphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
+`-f query=…` and holding the words `mutation` and `subscription` nowhere, in any case and inside a
+string or a comment too, its other fields given with `-f` or with `-F` values that read no file
+and none of them with a key that holds `query`, no `-H` naming a method override or
+`Content-Length`, and no option but `-f`, `-F`, `-H`, `-q`, `-t`, `--paginate` and `--slurp`, by
+either spelling, each value in its own word), where no repository it names is one a configured
+rename moves and no `github.com` remote of the working directory was read for it.
+The GraphQL rule reads no GraphQL syntax: GitHub's lexer (graphql-ruby's `BLOCK_STRING_REGEXP`)
+ends a block string at other quotes than the GraphQL specification does, and a document runs a
+mutation or a subscription only through that word, so one that holds neither word writes nothing
+however a lexer reads it.
+An installation's token reads public data and that installation's own repositories alone, and
+GitHub answers 404 for another owner's private repository. Every other command naming such an
+owner is refused as above.
 It refuses the same way, before gh runs: `--editor`/`-e` on any command, because gh runs the
 editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
 an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
@@ -250,6 +274,10 @@ The shared clone's `credential.helper` is `!legion git-credential` with `credent
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
 names it — and nothing else.
+Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
+default-repository marker, into the clone's own configuration where that configuration holds no
+`gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,
+on the issue's repository; a marker a person set, or one a renamed remote carries, stays.
 
 In a pod, the sweep that knives runs after each write to a fork's shared ledger (`knives ledger
 sweep`) pushes this machine's own ref, `refs/knives/<machine>`, to the fork's ledger repository

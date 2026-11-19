@@ -488,9 +488,10 @@ func probeAndMint(ctx context.Context, daemonURL string, probe daemon.Controller
 // An empty `live`, or one whose every repository a role App is missing from, is never a refusal:
 // this route cannot tell a daemon with no workflow (which always serves that shape) from a
 // project with no live record, and refusing either would block the operator action that recovers
-// the project (admitting work, AGENTS.md "Handover"). It refuses only an unusable read: a body
-// without a `repositories` object (absent or null, a shape no conforming daemon serves) and a
-// `live` entry whose `repo` is not `owner/name`.
+// the project (admitting work, docs/site/src/content/docs/legion/concepts.md, "Admission and the
+// `legion` label"). It refuses only an unusable read: a body without a `repositories` object
+// (absent or null, a shape no conforming daemon serves) and a `live` entry whose `repo` is not
+// `owner/name`.
 func checkControllerRepositories(ctx context.Context, daemonURL string) error {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
