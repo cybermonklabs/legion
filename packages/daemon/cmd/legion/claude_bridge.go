@@ -20,9 +20,11 @@ const claudeBridgeUsage = "usage: legion claude-bridge -- <claude argv…>"
 // place for a phase worker whose role runs on Claude Code (`worker_backends`): Oh My Pi's RPC
 // frames on its stdin and stdout, Claude Code's stream-json to the `claude -p` after `--`
 // (internal/claudebridge). Its own lines and Claude Code's stderr go to stderr, which the pane
-// shows; its exit status is Claude Code's. SIGHUP ends it as SIGTERM does: every process of a tmux
-// pane gets it when the pane or its server goes, and the bridge's shutdown is what ends Claude
-// Code and removes its inbox.
+// shows: its own lines and its refusals through the URL rule (claudebridge.Run's log,
+// printRefusal), Claude Code's stderr as Claude Code writes it, since stderr is handed to it as
+// the file it is. Its exit status is Claude Code's. SIGHUP ends it as SIGTERM does: every process
+// of a tmux pane gets it when the pane or its server goes, and the bridge's shutdown is what ends
+// Claude Code and removes its inbox.
 func newClaudeBridgeCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "claude-bridge -- <claude argv…>",
@@ -34,6 +36,7 @@ func newClaudeBridgeCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func runClaudeBridge(ctx context.Context, cmd *cobra.Command, args []string, stdout, stderr io.Writer) int {
+	defer podLogs(stderr)()
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
 	defer stop()
 	argv, err := afterDash(cmd, args)
@@ -42,19 +45,20 @@ func runClaudeBridge(ctx context.Context, cmd *cobra.Command, args []string, std
 		cfg, err = claudebridge.Configure(argv, os.Environ())
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion claude-bridge: %v\n%s\n", err, claudeBridgeUsage)
+		printRefusal(stderr, "legion claude-bridge", err)
+		fmt.Fprintln(stderr, claudeBridgeUsage)
 		return 2
 	}
 	frames, release, err := ownDescriptor(stdout)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion claude-bridge: %v\n", err)
+		printRefusal(stderr, "legion claude-bridge", err)
 		return 1
 	}
 	defer release()
 	cfg.Stdin, cfg.Stdout, cfg.Log = os.Stdin, frames, stderr
 	code, err := claudebridge.Run(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion claude-bridge: %v\n", err)
+		printRefusal(stderr, "legion claude-bridge", err)
 		return 1
 	}
 	return code
