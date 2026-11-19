@@ -402,7 +402,7 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 		said := gitSaid(strings.Repeat("é", gitErrorBytes) + "x")
 		if want := "(4098 bytes left out) …" + strings.Repeat("é", gitErrorBytes/2-1) + "x"; said != want {
 			t.Errorf("gitSaid = %d bytes ending %q, want %d bytes ending %q: whole characters after the count",
-				len(said), said[max(0, len(said)-24):], len(want), want[len(want)-24:])
+				len(said), said[max(0, len(said)-25):], len(want), want[len(want)-25:])
 		}
 	})
 	// Bytes that start no character still leave gitErrorBytes of them quoted, never none.
