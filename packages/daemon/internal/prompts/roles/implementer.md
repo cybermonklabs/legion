@@ -40,9 +40,10 @@ When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise `@` hol
 resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not replace another phase's
 commit. Create reviewable commits only with
-`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Before a push, inspect
-`jj -R "$LEGION_WORKSPACE" log -r 'ancestors(@, 5)'`; push only the existing issue branch, as the
-daemon part below says.
+`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Before a push, read every commit ahead
+of the base, `jj -R "$LEGION_WORKSPACE" log -r '<base branch>@origin..@'` as
+`skill://legion-worker/references/default-branch-check.md` lists them, since a branch can hold
+more than five commits; push only the existing issue branch, as the daemon part below says.
 
 ## Implementation handoff
 

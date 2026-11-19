@@ -5,23 +5,3 @@ body: |-
   The `legion` tool's `request_backward_move` description says: "The architect that owns an issue
   in accepting moves it, named by `issue`, back to planning, implementing or testing." Before, it
   named implementing and testing alone.
-
-  The plugin's skills change with it. `legion-worker` says what a news task of an approved new
-  version holds, and that the merger merges nothing while the root's design gate is closed. The
-  merger reads the news of the opening before it merges. A production check of an issue with no
-  `after_merge` check records no result and names the gap, and a `pass` covers the changed path.
-  `legion-architect` says that the architect can send an issue in `accepting` back to planning,
-  and how it answers a news task. An issue whose pull request has merged never moves back, so new
-  work goes to an issue of the tree whose pull request is still open. The architect writes an
-  `after_merge` check for the production check where its `Production check` line names a role. A
-  new version of a gated document closes the gate and holds the merge, and work in flight carries
-  on. Under a `gates.design` that names `spec` and not `criteria`, a root registers its
-  Verification document as `criteria` before `spec`, and one approval of an
-  `--include-verification` request opens both steps. `legion-retro` says how retro answers a news
-  task. `legion-controller` says that a `criteria` step a root registers holds its tree too, and
-  that `gatedSteps` and the `design_gate` hold word count it.
-
-  In `legion-architect`, an approval request's `--summary` says in one to three sentences what the
-  human is approving, and nothing else: it no longer carries the reviews' results or what they do
-  not show. A measurement or test result the design rests on goes in the document the request
-  names. The line on what a surface's pictures do not show is gone.

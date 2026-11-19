@@ -18,7 +18,7 @@ var refusalDirs = []string{apiDir, approvalDir, airlockDir}
 // writerKey names a function of one package as refgen can name it with no type checker: the
 // type its receiver is declared on ("" for a function) and its name. The name alone is not
 // enough: airlockproxy declares Write, Read and Close on more than one type, which is also why
-// source.funcs, keyed by the name, refuses that package.
+// source.funcs, keyed by the name, holds those names as ambiguous and resolves none of them.
 type writerKey struct{ recv, name string }
 
 func (k writerKey) String() string {
@@ -59,7 +59,8 @@ var forwardingWrites = map[string][]writerKey{
 // checkRefusalWrites refuses a refusal its port's recorder would record without the code a
 // registered writer names: in each package of refusalDirs, outside the body of every
 // registeredWriters and forwardingWrites function, each of the forms below by which net/http
-// writes a 4xx (what it does not see is named in packages/envoy/AGENTS.md). A raw write
+// writes a 4xx. It does not see a server with no handler, a raw 4xx status line written on a
+// hijacked connection, or a 4xx a writer in another package writes. A raw write
 // (w.WriteHeader(status), or as a method expression http.ResponseWriter.WriteHeader(w, status),
 // http.Error(w, message, status), http.Redirect(w, r, url, status) or
 // http.RedirectHandler(url, status)) is refused when its status is from 400 to 499 or is one
@@ -149,7 +150,7 @@ type netRef struct {
 }
 
 // readWrites walks every declaration of src itself, rather than through source.funcs, which
-// refuses a package declaring one method name on two types.
+// resolves no name a package declares on two types.
 func readWrites(src *source) *writes {
 	w := &writes{
 		src:          src,

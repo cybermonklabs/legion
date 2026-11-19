@@ -220,8 +220,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// path writes nothing about a slot: a root keeps the row it was started with through its
 	// whole wait (record.KeepsSlot), so its resume takes no new one (admit's slotFor), and where
 	// it stands in the line is the `waitingLine` on its own state, which the projection writes
-	// (api.WaitingLineView). An architect reads the rule in
-	// skills/legion-architect/references/acceptance.md and references/design-gate.md. The members
+	// (api.WaitingLineView). An architect reads the rule in its role prompt,
+	// packages/daemon/internal/prompts/roles/architect-root.md. The members
 	// the opening releases are started by admission's own pass over this same fact, which gives
 	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
@@ -933,8 +933,8 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// This opening writes nothing about a slot: a root keeps the row it was started with
 		// through its whole wait (record.KeepsSlot), so its resume takes no new one (admit's
 		// slotFor), and where it stands in the line is the `waitingLine` on its own state,
-		// which the projection writes (api.WaitingLineView). An architect reads the rule in
-		// skills/legion-architect/references/acceptance.md and references/design-gate.md.
+		// which the projection writes (api.WaitingLineView). An architect reads the rule in its
+		// role prompt, packages/daemon/internal/prompts/roles/architect-root.md.
 		// Who approved is named on the notice, since nobody in a parked tree hears it and the
 		// decision then goes to the controller instead (the outbox's parkDecision).
 		reviewer := fact.Actor.Name()

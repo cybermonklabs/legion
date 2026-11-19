@@ -2,37 +2,6 @@ kind: Changed
 custom:
   Issue: pr3995
 body: |-
-  Merges of the base change in the plugin's skills. `legion-controller` tells no role to merge the
-  base, to fold another pull request in, or to merge once more before a slot, a restart or the
-  merge queue. Where GitHub reads a pull request `CONFLICTING`, it says so and quotes the read. In
-  `legion-worker`, a message is a reason to merge only when it names the conflict GitHub reports,
-  and a role answers any other with the rule and merges nothing. The implementer quotes
-  `gh pr view --json mergeable,mergeStateStatus` and names the condition the merge meets in its
-  forward-merge comment. The tester and the reviewer may tell the architect of a forward merge
-  that had no conflict and whose comment names no reason the rule allows. A parent's last round in
-  `legion-architect` no longer merges the default branch by rule and no longer runs a full test
-  round: the architect sends the issue back to testing, and the tester sizes that round like any
-  other. The base is merged only where GitHub reads the pull request `CONFLICTING`, or where a
-  check that needs a child's merged code fails at the head without it, and the parent signs off on
-  an approved head at which its checks pass. `legion-worker` no longer names a parent's last round
-  as a reason to merge. The `legion` tool's `sign_off` description gives the reason for its
-  `SIGNOFF_CHILD_IN_WORKFLOW` refusal as "a parent is accepted only once the work beneath it is
-  done", not that a parent's head proves its children's merged work.
-
-  On a new head, `legion-worker` has the implementer and the tester read what changed since the
-  head they last recorded or tested (`git diff`), and the reviewer read what changed since the
-  `Last reviewed commit` its task names, the head of its newest deciding review (an approval or a
-  request for changes). Each sizes its work to that change. For a merge of the base,
-  `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>`
-  lists the files the base brought in; a check those files or the resolution can reach runs again,
-  and a check the merge was made for has no pass to carry. The reviewer reviews the resolution and
-  this change's own commits since that commit, and reads the base's files only for where they meet
-  this change. A check the change cannot affect is recorded again at the new head as carried from
-  the earlier head, and is not run again; `pr-body.md` gives the command. The unchanged-diff
-  fingerprint and its section in `conflicts-and-rewrites.md` are gone, with the comparison of file
-  sets before and after a merge, and `legion-architect` no longer names them. Before, a changed
-  fingerprint meant a full test round and a new review round, and every push meant running every
-  check again. A re-review after a request for changes also checks each of its findings against the
-  new head. The reviewer names in each thermonuclear task the diff it reviews: `git diff` from that
-  commit, or, for a merge of the base, the merge's resolution and this change's own commits since
-  that commit. No pair runs when that diff touches no runtime code.
+  The `legion` tool's `sign_off` description gives the reason for its `SIGNOFF_CHILD_IN_WORKFLOW`
+  refusal as "a parent is accepted only once the work beneath it is done", not that a parent's head
+  proves its children's merged work.

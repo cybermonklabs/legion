@@ -8,11 +8,10 @@ import (
 )
 
 // A root waiting on a person gets no design-approved notice, so the architect's instructions must
-// take the resume task that says the gate is open as that wake: the skill's release rule, the
-// design gate reference, the wake routing table and the root architect's prompt each name the
-// resume's phrase. The claude-envoy plugin's copies under packages/claude-envoy/legion/ are
-// generated from these three skill files, and nothing commits that tree, so a pull request has no
-// copies to read here. (Round 2, adversarial P2-1 and outside-whole P2-1.)
+// take the resume task that says the gate is open as that wake: the wake routing table and the
+// root architect's prompt each name the resume's phrase. The claude-envoy plugin's copy under
+// packages/claude-envoy/legion/ is generated from the skill file, and nothing commits that tree,
+// so a pull request has no copy to read here.
 //
 // The phrase is read from internal/workflow's design_approved_wake_extract.txt, which that
 // package's TestTheDesignApprovedWakeExtractIsTheConstant holds to DesignApprovedWake, rather than
@@ -30,8 +29,6 @@ func TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake(t *testin
 		t.Fatalf("%s holds no phrase under its `#` header", extract)
 	}
 	for _, file := range []string{
-		"skills/legion-architect/SKILL.md",
-		"skills/legion-architect/references/design-gate.md",
 		"skills/legion-architect/references/wake-routing.md",
 		"packages/daemon/internal/prompts/roles/architect-root.md",
 	} {

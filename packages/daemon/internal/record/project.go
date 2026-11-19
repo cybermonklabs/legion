@@ -867,7 +867,8 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // issue the daemon has started that waits on one gives its row back and stands in the line for
 // one again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits), save the
 // roots that rule names as keepers. That rule reads this one first, so an issue past its review
-// waits on nothing there (blockers.waitsOf). The rule whole is root AGENTS.md's "Admission".
+// waits on nothing there (blockers.waitsOf). The rule whole is "Admission and the `legion` label"
+// in docs/site/src/content/docs/legion/concepts.md.
 //
 // The cap bounds the work in progress, and an issue whose review has passed writes no more of
 // the change: its sign-off, its retro and its merge run on no slot at all, so their starts are
@@ -918,7 +919,8 @@ func PastReview(issue Issue) bool {
 // with a root that does not linger after its close — and the issue keeps a slot where it stands
 // (KeepsSlot). An issue holds its admission slot from the moment the daemon starts it until its
 // work is past its review, until it is done or until it leaves the workflow, except while it
-// waits on another issue before that point (root AGENTS.md, "Admission"), so the cap counts the
+// waits on another issue before that point (docs/site/src/content/docs/legion/concepts.md,
+// "Admission and the `legion` label"), so the cap counts the
 // issues the daemon has started whose change is still to write, rather than the ones a worker of
 // them is running this second. Nothing of a tree that has left the workflow works until its
 // re-admission runs it again, which is why the tree's own terms are here.
