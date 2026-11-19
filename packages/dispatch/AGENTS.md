@@ -1256,30 +1256,19 @@ which is what ends the grant.
 `MachineLoginsSection.tsx` renders under the code entry on `/credentials/machine` as **Machine
 logins**: the machine logins the viewer may revoke that can still reach a secret
 (`GET /api/v1/machine-logins`, `machineLogins.ts`'s `machineLoginsQuery`, which an approval on the
-page also invalidates), the viewer's own machines' and pods' and every service's whoever approved
-it, since anyone signed in approves and revokes a service's login and a person's machine login or
-pod login is that person's alone. A person's pod login is the token login of a pod whose
-Kubernetes account the broker's `BROKER_POD_OPERATORS` maps to a person: the broker lists it to
-that person alone and names that person in the row's `person`, which is null on every other row
-(and absent from a broker older than the field, which reads the same). One row per login with its
-machine (`machineName`: `<host> (your pod)` for a row whose `person` is set, `<service> on <host>`
-for a service's login such as the Legion daemon's, else the host; the pod's row checks `person`
-first, because the broker also sets its `service`, the login service its account logs in as), its
-credential id (`credential_id`, which every
+page also invalidates), the viewer's own machines' and every service's whoever approved it, since
+anyone signed in approves and revokes a service's login and a person's machine login is that
+person's alone. One row per login with its machine (the host, or `<service> on <host>` for a
+service's login such as the Legion daemon's), its credential id (`credential_id`, which every
 enrollment the login made names, while the host is the machine's own claim, so two logins of one
-service on one host differ only there), who approved it (`approved_by`; for a token login `No one:`
-and the Kubernetes account that logged in, or for a pod's login
-`No one: BROKER_POD_OPERATORS maps <account> to you`), when it was issued and when it expires, and
-a Revoke button that asks
+service on one host differ only there), who approved it (`approved_by`), when it was issued and
+when it expires, and a Revoke button that asks
 `window.confirm` first and then POSTs `{}` to `/api/v1/machine-logins/{id}/revoke`. A login's
 sessions outlive its expiry, so the broker also lists an expired login while one of its sessions
 runs (`expired: true`), and its row reads `expired, sessions still running` under the machine. The
 confirm for a service's login says every session it started, its worker pods included, ends and the
-service needs a new login approval; the confirm for a pod's login says every session it started
-ends and that the pod logs in again with its token, under a new login, while
-`BROKER_POD_OPERATORS` maps its account to the viewer. Revoking ends the login and every session it
-enrolled, so it also invalidates the Live grants list. `e2e/machine-logins-person-pod.e2e.ts`
-drives a pod's row and a service's row in a browser.
+service needs a new login approval. Revoking ends the login and every session it enrolled, so it
+also invalidates the Live grants list.
 
 `SignInsSection.tsx` renders on `/settings` beside Live grants, under the same `null`-pending
 gate, as **Sign-ins**: the machines the viewer has signed in on with `agent-secrets login` and
@@ -2703,17 +2692,11 @@ margin ask card, open or decided, is one keyed list in the Comments tab, with `N
 item in it (the Inbox's pattern), so an answered ask moves out of the group in place, and a reply
 the reader started typing in its thread stays; the group is each card's `data-margin-section`,
 and `needsYouCards(page)` (`e2e/editor.ts`) finds the open ones.
-`e2e/fake-broker.ts` answers the broker's UI-bearer reads from fixtures a row seeds, each in the
-broker's row shape and listed for one login: `GET /v1/pending?approver=<login>` (the requests
-waiting on that login), `GET /v1/grants?approver=<login>`,
-`GET /v1/launcher-credentials?approver=<login>` (the machine logins that login may revoke, each
-row's `person` relayed as seeded, which marks a person's pod login) and
-`GET /v1/person-signins?person=<login>`. It also answers the machine-login
-page's lookup and decisions, the sign-in revoke and the broker's RFC 8414 metadata (its header
-comment lists each), and 404 to every other broker route. A row seeds them with
-`setPendingCredentialRequests`, `setCredentialGrants`, `setLauncherCredentials`,
-`setMachineLogins`, `setSignIns` and `setBrokerDeviceGrant` (`e2e/fake-broker-helpers.ts`), and
-`resetDatabase()` clears them with the rest. Only a run whose server reads the fake has one
+`e2e/fake-broker.ts` answers the broker's two UI-bearer reads, `GET /v1/pending?approver=<login>`
+(the requests seeded for that login, in the broker's row shape) and `GET /v1/grants` (always
+empty), and 404 to every other broker route. A row seeds pending requests with
+`setPendingCredentialRequests` (`e2e/fake-broker-helpers.ts`), each naming the login it waits on,
+and `resetDatabase()` clears them with the rest. Only a run whose server reads the fake has one
 (`usesFakeBroker`, `e2e/harness-broker.ts`): a deployed target, or a server the switch points at no
 broker or another, gets no fake broker from Playwright, the reset skips it, and a row that seeds one
 is skipped. A script that calls `resetDatabase()` beside a broker of its own exports the switch to
