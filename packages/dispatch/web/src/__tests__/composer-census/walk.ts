@@ -271,10 +271,100 @@ function walkFrom(
         for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1);
         return;
       }
+      // Handed to a call the census does not follow as a helper: unread, unless the call draws
+      // what it is handed as it is (`CALL_WRAPPERS`).
+      const why = handedTo(walk, current, child, comp);
+      if (why !== undefined) unreadAt(walk, current, why);
     }
     child = current;
     current = current.parent;
   }
+}
+
+/** What a composer handed to a call the census does not follow as a helper - from a package, a
+ *  value a hook returns - may be drawn inside: `CALL_WRAPPERS` names the calls that draw it as
+ *  it is. */
+interface CallWrapper {
+  /** Why the census reads the call as drawing what it is handed unchanged. */
+  readonly reason: string;
+  /** A declaration (`<module>#<name>`) whose callers would hand the call something the census
+   *  does not read: the reason holds only while no code the census reads calls it. */
+  readonly whileUncalled?: string;
+}
+
+/** Calls that draw what they are handed as it is, by `<module>#<export>` for a function a module
+ *  exports, or `<module>#<export>()` for the value such a hook returns, each with why. A composer,
+ *  or an element holding one, handed to any other call the census does not follow is unread. */
+const CALL_WRAPPERS: Readonly<Record<string, CallWrapper>> = {
+  "react-dom#createPortal": {
+    reason:
+      "draws its first argument as it is, into another DOM node; React keeps the portal in this tree, so what it draws mounts and unmounts with the call's own place",
+  },
+  "features/inbox/InboxGroups.tsx#groupItems": {
+    reason:
+      "draws what its renderRow answers for each row it is handed, once per row (rows.map), beside the band's heading and its Show more, each a direct child of the caller's list; which rows it is handed is the caller's (drawn.flatMap, which the walk reads), so a row it draws mounts and unmounts with its place in that list",
+  },
+  "features/issue-page/margin-slot.tsx#useMarginSlotFill()": {
+    reason:
+      "the page's own fill of the margin's slot, which a page registers through useFillMarginSlot: while no code the census reads registers one, the fill is undefined, SheetBody draws nothing in its place, and no composer is drawn through it",
+    whileUncalled: "features/issue-page/margin-slot.tsx#useFillMarginSlot",
+  },
+};
+
+/** The `CALL_WRAPPERS` key of a call's function: `<module>#<export>` for one a module exports,
+ *  a package's by the name it exports it under, and `<module>#<export>()` for a local holding
+ *  what such a hook returns (`const fill = useMarginSlotFill()`). Undefined for any other. */
+function callKey(program: Program, call: ts.CallExpression, comp: Comp): string | undefined {
+  const mod = modOf(program, call);
+  const exported = (name: string): string | undefined => {
+    const binding = mod.imports.get(name);
+    if (binding !== undefined && binding.from === undefined)
+      return `${binding.spec}#${binding.name}`;
+    return resolveLocal(program, mod, name);
+  };
+  const callee = call.expression;
+  if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+    const binding = mod.imports.get(callee.expression.text);
+    return binding !== undefined && binding.from === undefined
+      ? `${binding.spec}#${callee.name.text}`
+      : undefined;
+  }
+  if (!ts.isIdentifier(callee)) return undefined;
+  const found = lookup(callee, comp);
+  if (found.kind === "module") return exported(callee.text);
+  if (found.kind !== "local" || found.element !== undefined) return undefined;
+  const init = found.decl.initializer;
+  if (init === undefined || !ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) {
+    return undefined;
+  }
+  const hook = exported(init.expression.text);
+  return hook === undefined ? undefined : `${hook}()`;
+}
+
+/** Why the census cannot read `current` where the walk, coming up from `child`, finds `child`
+ *  handed to it: a call that draws what it is handed somewhere the census does not follow.
+ *  Undefined where `current` is no such call: no call, `child` no argument of it, `child` a
+ *  function (which the walk reads as drawn by the call), or a call of `CALL_WRAPPERS` whose
+ *  reason holds. */
+function handedTo(walk: Walk, current: ts.Node, child: ts.Node, comp: Comp): string | undefined {
+  if (!ts.isCallExpression(current) || !current.arguments.includes(child as ts.Expression)) {
+    return undefined;
+  }
+  if (ts.isArrowFunction(child) || ts.isFunctionExpression(child)) return undefined;
+  const callee = text(current.expression);
+  const key = callKey(walk.program, current, comp);
+  const wrapper = key === undefined ? undefined : CALL_WRAPPERS[key];
+  if (wrapper !== undefined) {
+    const callers =
+      wrapper.whileUncalled === undefined ? [] : moduleRefs(walk.program, wrapper.whileUncalled);
+    if (callers.length === 0) return undefined;
+    return `${callee}(…) is handed what holds the composer, and ${wrapper.whileUncalled} is called at ${where(callers[0])}, which hands it something the census does not read (follow it, or draw the composer through a component the census reads)`;
+  }
+  const allow =
+    key === undefined
+      ? ""
+      : `, or add ${key} to CALL_WRAPPERS in composer-census/walk.ts with why it draws what it is handed unchanged`;
+  return `${callee}(…) is handed what holds the composer, and is no function the census reads (draw it through a component or a helper the census reads${allow})`;
 }
 
 /** A helper `current` is, which the walk, coming up from `child`, follows to each place `comp`
