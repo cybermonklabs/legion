@@ -731,10 +731,14 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 
 // mergeWaitView is what an issue's review round waits on from GitHub (api.MergeWaitView), and nil
 // for a round that waits on nothing there. The rule is classify.RoundWaitsOnMergeState, the one
-// the engine reads to decide whether to read GitHub for this round (workflow's reviewRound), so
-// the view carries the object for exactly the rounds the daemon is reading for. The rule holds
-// only for an open pull request, so a record of a closed or merged one carries no wait here. It
-// never holds for a nil one, so the reads below always have a pull request.
+// the engine reads to decide whether this round waits on a read of GitHub (workflow's
+// reviewRound), so the view carries the object for exactly the rounds the daemon is reading for.
+// The daemon also reads the merge state where no round waits - a head moved, or a base pushed
+// under an issue past implementing (classify.MergeStateReadOwed) - to find a conflict with the
+// base, and those reads put no wait on the view. The rule holds only for an open pull request, so
+// a record of a closed or merged one carries no wait here, and not for a head the record holds in
+// a confirmed conflict with its base, whose approval ends the round whatever the state. It never
+// holds for a nil one, so the reads below always have a pull request.
 //
 // It reads the record alone: the head the round waits on, the state the record holds for it, when
 // that state was last read and when GitHub last moved the pull request, the fence's runs stamped

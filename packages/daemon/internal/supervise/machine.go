@@ -3832,9 +3832,9 @@ func HoldsCapability(state ClaimState) bool {
 // its session's first turn, or at a bound if no turn comes — so a claim this answers true for
 // may not answer to its name yet. The listener refuses a keep: false publish to a role no live
 // session holds with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not
-// one rule: noticeAnswered and mergeQueue each decide it for the rows they finish, and phaseEnded
-// and hookPrompt publish with keep, which the listener answers by keeping the message for the
-// role's next live holder (internal/daemon).
+// one rule: noticeAnswered, mergeQueue and the merge forward's message each decide it for the rows
+// they finish, and hookPrompt publishes with keep, which the listener answers by keeping the
+// message for the role's next live holder (internal/daemon).
 //
 // The window is bounded at both ends: the name is taken inside the session's first turn — the
 // daemon's own task starts one, on either harness — and at the first-turn bound (30 s by

@@ -743,12 +743,16 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.storeDisplayTrees(r.Context(), ask.ID, ask.Question)
 	}
 	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
-	// open request already stood as asked. A rewording is never this route's only write: the
+	// open request already stood as asked, whether or not it made its requester a follower
+	// (ask.follower_added, renewApprovalAsk). A rewording is never this route's only write: the
 	// hand-back that follows it appends an event of its own, which is published here, while the
 	// rewording's goes to the ledger and is published by Commit.
 	status := http.StatusOK
-	if len(appended) > 0 {
-		status = http.StatusCreated
+	for _, event := range appended {
+		if event.Type != "ask.follower_added" {
+			status = http.StatusCreated
+			break
+		}
 	}
 	var askAnswer *shapedAsk
 	if ask != nil {
@@ -892,9 +896,10 @@ func (s *server) openApprovalAsk(
 // document the open request did not name, first rewords it (docs.RewriteApprovalAsk, ask.edited,
 // whose event goes to the ledger, which publishes it), then handBackApprovalAsk hands it back. A
 // request already waiting on the human is left as it stands. The same summary over the same
-// documents, or none, is a retry and records nothing. Anything else is refused, since an approval
-// request carries nothing new: rewording it would rewrite the card the human is reading, with no
-// turn of theirs, and refuse an answer they had started (ASK_EDITED).
+// documents, or none, is a retry: it changes the request in nothing, and records only that a
+// session that did not follow the request follows it now (ask.follower_added). Anything else is
+// refused, since an approval request carries nothing new: rewording it would rewrite the card the
+// human is reading, with no turn of theirs, and refuse an answer they had started (ASK_EDITED).
 func (s *server) renewApprovalAsk(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -937,11 +942,34 @@ func (s *server) renewApprovalAsk(
 		}
 		appended = append(appended, handedBack)
 	}
+	// The requester follows the request. A renewal that appended no event above - an unchanged
+	// request that already waits on the human - and adds the requester as a follower records
+	// that as ask.follower_added, in this transaction, as the follower route does: a follower is a
+	// destination of the issue's later ask events, and an earlier event of the issue that now
+	// reaches it must hold a later comment's mention to it until the outbox has read the change,
+	// which a new event of the issue does (model.MentionCopyHolderSQL). Whether the follow is new
+	// is read here, in the read phase: the follower route takes the owner lock this route holds, so
+	// no other follow of this ask commits between this read and this transaction's commit.
+	follows := true
+	if len(appended) == 0 && actor.Kind == "session" && actor.ID != "" {
+		if follows, err = asks.Follows(ctx, tx, open.ID, actor.ID); err != nil {
+			return nil, err
+		}
+	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		asks.QueueFollowAuthor(b, open.ID, actor)
 		return nil
 	}); err != nil {
 		return nil, err
+	}
+	if !follows {
+		followed, err := s.queueEvent(ledger, ownerOf(open.IssueKey, open.ArtifactID).event(
+			"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
+		))
+		if err != nil {
+			return nil, err
+		}
+		appended = append(appended, followed)
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {
 		return nil, err

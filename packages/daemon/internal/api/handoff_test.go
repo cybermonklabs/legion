@@ -1491,17 +1491,17 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 	}
 }
 
-// A pull request waiting to be merged that starts conflicting with its base is sent back to the
-// implementer, which merges the base forward in the same run, with the same claim. The key the
-// route builds tells one implementing pass from the last by the pass count, so that conflict pass
-// has to open a pass of its own: otherwise a completion that wrote no new handoff names the record
-// of the pass before at the same count, takes that completion's key and is answered
-// HANDOFF_ALREADY_RECORDED, which tells the worker it was received when nothing moved. The
-// workflow sees it instead and refuses it HANDOFF_NOT_NEW, naming the record and the command that
-// writes the pass's own, whatever commit the merge pushed; the completion naming a new record
-// moves the issue on to testing. The conflict is no review, so it counts no review round; the pass
-// it counts is the one the key is built on.
-func TestAConflictPassesCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
+// A pull request waiting to be merged that the merger sends back to the implementer with its own
+// backward move is worked again in the same run, with the same claim. The key the route builds
+// tells one implementing pass from the last by the pass count, so that move back has to open a
+// pass of its own: otherwise a completion that wrote no new handoff names the record of the pass
+// before at the same count, takes that completion's key and is answered HANDOFF_ALREADY_RECORDED,
+// which tells the worker it was received when nothing moved. The workflow sees it instead and
+// refuses it HANDOFF_NOT_NEW, naming the record and the command that writes the pass's own,
+// whatever commit the fix pushed; the completion naming a new record moves the issue on to
+// testing. The move back is no review, so it counts no review round; the pass it counts is the one
+// the key is built on.
+func TestAMoveBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newHarness(t)
 	records := record.NewStore()
@@ -1546,15 +1546,14 @@ func TestAConflictPassesCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) 
 	// Testing, review and retro pass; the issue stands in merging.
 	issue.Phase, issue.Status = phase.Merging, "retro"
 	h.recordIssue(issue)
-	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "github", "mergeability-conflicting", intake.PullRequestMergeability{
-		Repo: "acme/widgets", Number: 42, Base: "main", HeadSHA: "head", Mergeable: record.MergeabilityConflicting,
-	}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the conflicting read = %+v, %v", result.Refusal, err)
+	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "api", "merger-move-back", intake.BackwardMove{Issue: "LEGION-208",
+		Requester: claim.RoleMerger, To: phase.Implementing, Reason: "the head drops the migration"}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the merger's move back = %+v, %v", result.Refusal, err)
 	}
 	if got := phaseNow(); got != phase.Implementing {
-		t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
+		t.Fatalf("after the merger's move back the issue is in %s, want implementing", got)
 	}
-	// The implementer takes the conflict pass's task, a task of the run it already serves.
+	// The implementer takes the move back's task, a task of the run it already serves.
 	machine, ok := h.supervisor.Machine(implementer.token)
 	if !ok {
 		t.Fatal("no machine for the implementer")
@@ -1562,25 +1561,25 @@ func TestAConflictPassesCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) 
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: implementer.token}); err != nil {
 		t.Fatalf("end the first pass's turn: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: implementer.token, Task: "merge main forward", ID: "outbox:conflict", Generation: 1}); err != nil {
-		t.Fatalf("deliver the conflict pass's task: %v", err)
+	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: implementer.token, Task: "put the migration back", ID: "outbox:move-back", Generation: 1}); err != nil {
+		t.Fatalf("deliver the move back's task: %v", err)
 	}
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token, DeliveryID: "outbox:conflict"}); err != nil {
-		t.Fatalf("start the conflict pass's turn: %v", err)
+	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token, DeliveryID: "outbox:move-back"}); err != nil {
+		t.Fatalf("start the move back's turn: %v", err)
 	}
 
-	// It merges main forward, pushes, and completes without writing a new handoff: the newest
-	// record of the phase is still the first pass's.
-	if message := refused(t, complete("merged", first, 1), http.StatusConflict, "HANDOFF_NOT_NEW"); !strings.Contains(message,
+	// It fixes the head, pushes, and completes without writing a new handoff: the newest record
+	// of the phase is still the first pass's.
+	if message := refused(t, complete("fixed", first, 1), http.StatusConflict, "HANDOFF_NOT_NEW"); !strings.Contains(message,
 		"named handoff record "+first+" for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase implement") {
 		t.Fatalf("the completion with no new handoff says %q, want it to name the record and the handoff to write", message)
 	}
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the refused completion the issue is in %s, want implementing", got)
 	}
-	// With the conflict pass's handoff written, its completion moves the issue on.
-	if recorder := complete("merged", implementer.writeHandoff("implement", 2), 2); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
-		t.Fatalf("the conflict pass's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
+	// With the move back's handoff written, its completion moves the issue on.
+	if recorder := complete("fixed", implementer.writeHandoff("implement", 2), 2); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
+		t.Fatalf("the move back's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
 	}
 }
 
