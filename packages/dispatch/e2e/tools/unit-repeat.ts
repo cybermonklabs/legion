@@ -776,8 +776,8 @@ export function markdown(report: Report): string {
       ...fenced(row.message, "text"),
       "",
       "To run its file again in the order it failed in, run this from `packages/dispatch`. A",
-      "failure that came from the lane's load can pass there: packages/dispatch/AGENTS.md",
-      '("## Commands") says what it needs.',
+      "failure that came from the lane's load can pass there: docs/testing.md (\"A Dispatch unit",
+      'test runs in random order") says what it needs.',
       "",
       ...fenced(row.reproduce, "sh"),
       ""

@@ -8,8 +8,8 @@
 # subdirectory of this package.
 #
 # Each lane prints its own ` --seed=<n>` in its summary. A failure that came from the order is
-# reproduced with its file alone and that seed, as packages/dispatch/AGENTS.md ("## Commands")
-# says; it also says what a failure that came from the lane's load needs.
+# reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs in
+# random order") says; it also says what a failure that came from the lane's load needs.
 #
 # This file holds no preload. Commit b7a20b11c4 (pull request #2884) deleted an earlier
 # packages/dispatch/bunfig.toml so that the e2e lane loads no preload.

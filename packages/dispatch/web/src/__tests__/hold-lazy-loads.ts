@@ -36,9 +36,9 @@
  *
  * Reading a failure. A row that fails here and passes under `test:web` with the same seed reads
  * text or a part a lazily loaded module renders before it waits for it: it waits with a `findBy*`
- * query or `warmMarkdownRenderer()`, as packages/dispatch/AGENTS.md ("## Commands") says. A row
- * that does wait and still fails here ran out its wait behind a chain of holds, one lazy module
- * loading the next: a smaller `DISPATCH_COLD_HOLD_MS` tells the two apart.
+ * query or `warmMarkdownRenderer()`, as docs/testing.md ("A Dispatch unit test runs in random
+ * order") says. A row that does wait and still fails here ran out its wait behind a chain of
+ * holds, one lazy module loading the next: a smaller `DISPATCH_COLD_HOLD_MS` tells the two apart.
  */
 
 import { beforeAll } from "bun:test";

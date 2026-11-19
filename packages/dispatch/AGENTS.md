@@ -1679,16 +1679,13 @@ bun run check:classes
 bun run typecheck
 bun run lint
 bun run test
-bun run test:harness e2e/__tests__
-bun run test:web:cold web/src/<file> --seed=<n>
-bun run test:repeat --lane <web|web-cold|harness> --out <dir>
 bun run dispatch:local
 ```
 
 `bun run test` runs the suite in two halves, because only the web half wants a DOM:
 `bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
-`web/src/__tests__/setup.ts`, and then `bun run test:harness e2e/__tests__`, which preloads
-neither and runs as the node processes those harness tests are.
+`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
+as the node processes those harness tests are.
 The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
 DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
 global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds
@@ -1698,69 +1695,16 @@ ahead of a relative one written above it.
 To run one file, `bun run test:web web/src/path/to/file.test.tsx`: a bare `bun test <file>` loads
 no preload and fails with no DOM.
 
-The suite runs in random order, which this package's `bunfig.toml` sets.
-Bun reads that file from the working directory only, not from a parent directory, and
-`bun run <script>` runs in this package's directory.
-So the file reaches `bun run test`, `test:web`, `test:web:cold`, `test:harness` and `test:repeat`
-from any directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run.
-It also reaches a `bun test <file>` started in this package, but not one started from the
-repository root or from a subdirectory.
-Each lane prints its own ` --seed=<n>` in its summary.
-To reproduce a failing row, run its file alone with that seed:
-`bun run test:web web/src/<file> --seed=<n>`,
-`bun run test:web:cold web/src/<file> --seed=<n>` for a row of the web-cold lane, or
-`bun run test:harness e2e/__tests__/<file> --seed=<n>`, with `--rerun-each=<k>` added for a row
-that first failed on run k, which the report of `bun run test:repeat` names.
-This works because the order of the tests in a file depends only on the seed and on that file,
-not on the other files of the run.
-That repeats the order of the file's tests, and so a failure that came from that order.
-A row that failed from the lane's load, such as one that times a real process, or from another
-file that ran beside it, need not fail when its file runs alone: repeat it with the files that
-ran beside it, or under the same load.
-No flag of `bun test` turns random order off: `--randomize=false` is refused, and
-`--no-randomize` still shuffles.
-A `bun test` started as `bun --config=<file> test …` reads that file in place of this package's
-`bunfig.toml`, so with a file that does not set `randomize` it runs in file order: use that to
-read a failure, never to make a row pass.
-A row is never pinned to an order or skipped to make it pass.
-It is fixed at its cause.
-Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
-from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
-`bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
-one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
-a report of the rows that failed.
-`.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
-`bun run test:web:cold` is `bun run test:web` with `web/src/__tests__/hold-lazy-loads.ts` added
-last to its preloads.
-That file registers its plugin in its `beforeAll`, where the test file's rows begin, and a plugin
-sees only the loads made after it is registered.
-It holds back each load, once the test file's rows have begun, of every script module that the
-sources of `web/src`, tests aside, load with `import("<literal>")`, `lazy()` pages and the Markdown
-engine among them, for `DISPATCH_COLD_HOLD_MS` milliseconds of real time, 1000 when unset: every
-row that runs while such a module is held finds it unloaded, not only the row that random order
-puts first in its file.
-A load written another way, such as an `import()` of a computed specifier, and a style sheet are
-not held (the head of `hold-lazy-loads.ts` says how it lists them).
-A module a test file imports itself is loaded before its rows begin, unheld, since no row can find
-it unloaded; a lazy load the file's own `beforeAll` starts is held.
-Run a file under it when a row of it reads lazily rendered text:
-`bun run test:web:cold web/src/<file> --seed=<n>`.
-A row that fails there and passes under `test:web` reads before it waits; a row that waits and
-still fails there ran out its wait behind a chain of holds, one lazy module loading the next, which
-a smaller `DISPATCH_COLD_HOLD_MS` tells apart.
-The weekly workflow runs it as the `web-cold` lane with `--reruns 1`: a rerun of a file keeps the
-modules its first run loaded, so only the first run is cold.
-
 Every request a unit test makes is answered by something the test set up or it fails that test,
 reads included.
 `web/src/__tests__/network.ts` is MSW (`defineNetwork` over the `fetch/web` and
 `XMLHttpRequest/web` interceptors, which are the ones that reach this runtime), and both
 transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
 through — has a `Fetch` of its own rather than `globalThis.fetch`.
-A request no handler answers is errored and recorded with its method and path; the preload's last
-`afterEach`, at the end of `setup.ts` with the act check, fails the test with what was recorded,
-and its one `afterAll`, beside it, fails the file, so a read the page swallowed in a `catch`, and
-a write still retrying after a file's last test, are reported all the same.
+A request no handler answers is errored and recorded with its method and path; the preload's
+last `afterEach` fails the test with what was recorded, and its one `afterAll` fails the file,
+both at the end of `setup.ts` with the act check, so a read the page swallowed in a
+`catch`, and a write still retrying after a file's last test, are reported all the same.
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
 `/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
@@ -1787,27 +1731,6 @@ that made it, and a write it left out would go on retrying, once that test's spi
 into the tests and files after it, which one process running every file reports as failures of
 whichever test is running then.
 
-A spy or a stub on a DOM method goes on the prototype that owns it, which `Object.hasOwn` tells
-(happy-dom's `Element.prototype`, not `HTMLElement.prototype`, owns `getBoundingClientRect`,
-`scrollTo` and `scrollIntoView`), because a restore — Bun's `mockRestore` or an assignment —
-leaves an own copy on a prototype that only inherited the method, and that copy shadows every
-later spy on the owner.
-A `localStorage` method is replaced on the storage itself, as `onLocalStorage` in
-`features/project/IssuesTable.test.tsx` does, never on `Storage.prototype`, because happy-dom
-copies the prototype's method onto the storage the first time it is read, and a spy on the
-prototype after that never reaches it.
-A row that reads a Markdown body or a lazily loaded part in the commit that mounts it first waits
-for it (`warmMarkdownRenderer()` from `features/refs/markdown-engine.ts`, or a `findBy*` query),
-because the earlier row that loaded it may run after it in random order.
-A lazily loaded part is anything that renders from a module `import()` or `lazy()` loads: every
-such module, not the Markdown engine alone, and `test:web:cold` holds each one its sources load
-with `import("<literal>")` once a file's rows begin.
-A test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
-imports that module at its top: a load a row starts and ends before it arrives can land between
-two `act` scopes of that row or in a later row, where React reports a suspended resource outside
-`act` (`app-sign-out.test.tsx`, `app.test.tsx`, `__tests__/responsive-shell.test.tsx` and
-`features/agents/AgentsPage.test.tsx` do).
-
 The preload's act rule fails a row in which React printed one of its five act messages: an update
 outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component
 suspended inside an `act` left unawaited, or an update inside `act` while the act environment is
@@ -1824,11 +1747,8 @@ charged to the next row or to the file rather than to the row that printed it, a
 above the last block of `web/src/__tests__/setup.ts`.
 `__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
 the six `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
-its row; four draw React's act messages, `act-rule-quiet-restore.fixture.tsx` proves that the
-preload puts back a spy of `quietConsoleError()` that a row leaves in place, and
-`act-rule-final-hook.fixture.tsx` proves that a row the network report and the act check both fail
-fails with one report naming both, and that every reset and restore of the preload still runs
-after it, so the next row starts with nothing that row left.
+its row; four draw React's act messages, and two prove what the preload puts back after a row
+(`docs/testing.md`, "A Dispatch unit test runs in random order").
 The failure names each message's kind, its component when React names one, and up to three
 frames when the stack holds them, the test's own first (a `*.test.*` file or one under
 `web/src/__tests__/`) and then the product code under `web/src/`, as
@@ -1850,9 +1770,9 @@ after that wait, outside `act`.
 Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
 `quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
 puts `console.error` back after the row, and still records each act message, so the rule still
-fails the row; after a row in which one of the row's own `afterEach` hooks throws, which runs
-before the preload's restore, `console.error` comes back only when the next row starts, and when
-that row is a file's last, it stays quiet through that file's `afterAll`, yet the
+fails the row; after a row in which one of the row's own `afterEach` hooks throws, `console.error`
+comes back only when the next row
+starts, and when that row is a file's last, it stays quiet through that file's `afterAll`, yet the
 act messages are still recorded, so the file still fails; any other replacement of
 `console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the
 message before the rule reads it.
@@ -2858,9 +2778,7 @@ after it runs, and a `ROLLBACK` leaves the session usable for the next caller. A
 while another holds that session runs as a psql of its own, so two calls still reach the database
 at once. `sqlAt` runs one psql against a URL it is given, and kills it when an `AbortSignal` it is
 passed fires, which `e2e/local-instance.ts` uses to create its database through the server's
-`postgres` one. `dropDatabase` drops a database a test made there: it ends the login's own
-sessions on it, then drops it without FORCE, since FORCE refuses a login that is not a superuser,
-as CI's is not, while an autovacuum worker is attached.
+`postgres` one.
 
 That reset is also the one rig failure that presents as a code failure. A transaction that holds
 one of the emptied tables for 5 s, such as a session left idle in a transaction, a long query, or
