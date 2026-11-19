@@ -19,10 +19,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The sender claim model's search (TestTheMentionSenderClaimModel,
-// comment_mention_claim_model_test.go holds the model itself): the key a run's state is known by,
-// the breadth-first walk of every state a variant reaches, each run replayed in a bubble of its
-// own, and the test that runs the sender as built and its control.
+// The sender claim model's search (TestTheMentionSenderClaimModel; comment_mention_claim_model_test.go
+// and the run, steps and checks files beside it hold the model itself): the key a run's state is
+// known by, the breadth-first walk of every state a variant reaches, each run replayed in a bubble
+// of its own, and the test that runs the sender as built and its control.
 
 // key is the run's state as the search keys on it: every claim in play named by its order among
 // them and its age up to a lease and a slot, then the model's rows, the sender's goroutines in the

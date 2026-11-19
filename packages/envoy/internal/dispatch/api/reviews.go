@@ -896,9 +896,10 @@ func (s *server) openApprovalAsk(
 // document the open request did not name, first rewords it (docs.RewriteApprovalAsk, ask.edited,
 // whose event goes to the ledger, which publishes it), then handBackApprovalAsk hands it back. A
 // request already waiting on the human is left as it stands. The same summary over the same
-// documents, or none, is a retry and records nothing. Anything else is refused, since an approval
-// request carries nothing new: rewording it would rewrite the card the human is reading, with no
-// turn of theirs, and refuse an answer they had started (ASK_EDITED).
+// documents, or none, is a retry: it changes the request in nothing, and records only that a
+// session that did not follow the request follows it now (ask.follower_added). Anything else is
+// refused, since an approval request carries nothing new: rewording it would rewrite the card the
+// human is reading, with no turn of theirs, and refuse an answer they had started (ASK_EDITED).
 func (s *server) renewApprovalAsk(
 	ctx context.Context,
 	tx pgx.Tx,
