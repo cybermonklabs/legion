@@ -67,7 +67,7 @@
  * `draft-matrix.docked.coverage.ts`, which holds each census item this file answers for to a test
  * above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -98,8 +98,15 @@ import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { Actor, Message } from "../../api/types";
 import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { ReplyTarget } from "./composer-model";
 import type { SentRequest } from "./send-request";
+
+// The composer draws a message's text, the quote of the message it answers among it, through the
+// Markdown engine, a module loaded on first use (`markdown-engine.ts`). A cell reads what the
+// composer quotes in the commit after its press, which a first load of the engine can come after,
+// so the engine is loaded before the rows begin.
+beforeAll(warmMarkdownRenderer);
 
 const HOST = "docked composer";
 

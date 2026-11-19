@@ -1,4 +1,4 @@
-import { expect, jest, mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, mock, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the pastes below carry a file, which user-event has no form for
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,6 +8,7 @@ import { stopTheLateWrite, untilAttempted } from "../../__tests__/stop-late-writ
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { answerDraft, setAnswerDraft } from "./answer-drafts";
@@ -24,6 +25,11 @@ import {
 // and what that Retry is of once a host draws the same card for another ask.
 
 installAskCardApiMocks();
+// The card draws a question's text and its options through the Markdown engine, a module loaded
+// on first use (`markdown-engine.ts`). Most rows here hold the clock before they find an option,
+// and a find on a held clock spends its wait in moments of that clock, which a load on the real
+// one does not keep pace with. So the engine is loaded before the rows begin.
+beforeAll(warmMarkdownRenderer);
 
 // A hand-on is a `PUT` of whom the ask waits on. One the reader stopped may have been made, so
 // the card neither says it failed nor shows the stopped write's own words, which are a

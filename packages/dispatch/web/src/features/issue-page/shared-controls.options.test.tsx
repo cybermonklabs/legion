@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -81,6 +81,7 @@ import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
@@ -126,6 +127,12 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
  * Each case draws the controls through `draw` (`shared-controls-fixture.tsx`), every read answered
  * by a stub on `api` below.
  */
+
+// An Inbox row's card draws a question's text and its options through the Markdown engine, a
+// module loaded on first use (`markdown-engine.ts`). A row that holds the clock before it presses
+// an option spends its wait in moments of that clock, which a load on the real one does not keep
+// pace with, so the engine is loaded before the rows begin.
+beforeAll(warmMarkdownRenderer);
 
 function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };

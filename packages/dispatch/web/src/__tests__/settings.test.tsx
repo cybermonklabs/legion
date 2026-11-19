@@ -121,7 +121,12 @@ test("human users manage repository project mappings from the settings route", a
     );
 
     expect(await screen.findByRole("heading", { name: "Repositories → Projects" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+    // The sidebar draws its links only once its inbox, pinned issues and projects have answered
+    // (`Sidebar.tsx`), which the page's heading above does not wait for, so the link is waited for.
+    expect(await screen.findByRole("link", { name: "Settings" })).toHaveAttribute(
+      "href",
+      "/settings"
+    );
     // The heading above is the section's, which renders before its mapping list: the rows arrive
     // with a read of their own, and reading them synchronously finds the table still saying
     // "Loading…" on a pod whose cores are busy.

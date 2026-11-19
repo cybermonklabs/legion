@@ -80,6 +80,10 @@ import { composerNameOf } from "./features/conversation/useKeptDrafts";
 import { threadReplySendKey } from "./features/conversation/usePhoneThread";
 import { issue } from "./features/margin/margin-fixture";
 import { buildIssuePath } from "./features/refs/routes";
+// The Agents page is a lazy page (`app.tsx`) that the rows reach on a held clock, whose waits
+// spend moments of that clock, which a load on the real one does not keep pace with. So the page
+// is loaded here, with the test file, and no row waits for its load.
+import "./features/agents/AgentsPage";
 
 /** When the page's first sign-in check answers, on the held clock. It is later than every wait
  *  before bob types moves that clock (a `findBy` moves it 50 ms a step), and within the 10 s a
