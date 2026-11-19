@@ -20690,6 +20690,162 @@ console.log(JSON.stringify(args));
     });
   });
 
+  /** A session for the relay-loss rows: its notices in all three places, and its heartbeat. */
+  async function relayLossSession(id: string, query: string) {
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    const notifications: string[] = [];
+    const intervals: { readonly callback: () => void; readonly intervalMs: number }[] = [];
+    const context: SessionContext = {
+      ...sessionContext(id),
+      setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    };
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const written = (word: string) =>
+      fixture.entries
+        .map((entry) => ("data" in entry ? entry.data : undefined))
+        .map((data) =>
+          typeof data === "object" &&
+          data !== null &&
+          "content" in data &&
+          typeof data.content === "string"
+            ? data.content
+            : ""
+        )
+        .filter((content) => content.includes(word));
+    return {
+      fixture,
+      /** The outage as told in the log, the UI and the transcript. */
+      outage: () => ({
+        logged: warnings.filter((m) => m.includes("this session receives nothing")),
+        shown: notifications.filter((m) => m.includes("inbound messages are unavailable")),
+        written: written("Envoy inbound unavailable"),
+      }),
+      restored: () => ({
+        logged: warnings.filter((m) => m.includes("this session receives again")),
+        shown: notifications.filter((m) => m.includes("inbound messages reach this session again")),
+        written: written("Envoy inbound restored"),
+      }),
+      heartbeat: () => {
+        for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
+      },
+      follow: async (topic: string) => {
+        const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+        if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
+        return String((await subscribe.execute("", { topics: [topic] })).details.registrationError);
+      },
+      stop: async () => {
+        stopSink();
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+      },
+    };
+  }
+
+  test("a registration sent right after the connection closed names the close", async () => {
+    // nats.js ends each subscription of a connection it closes with no error of its own, and the
+    // relay's own redial has not failed yet: the close is the only reason there is.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_closed";
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "relay-closed-reason");
+      const parked = Promise.withResolvers<void>();
+      try {
+        expect(natsState.controls.get(deliverSubject(id))?.active()).toBe(true);
+        // Every dial from now on waits, so the relay's own redial never ends during the row.
+        natsState.heldConnect = parked.promise;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(deliverSubject(id))?.end();
+        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
+        const reason = "because its NATS connection failed: the NATS connection closed";
+        expect(await session.follow("team.relay-closed")).toContain(reason);
+        for (const part of Object.values(session.outage())) {
+          expect(part).toHaveLength(1);
+          expect(part[0]).toContain(reason);
+        }
+      } finally {
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await session.stop();
+      }
+    });
+  });
+
+  test("a relay subscription that ends with its own error names that error, and the next heartbeat opens it again", async () => {
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_relay_errored";
+    const relay = deliverSubject(id);
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "relay-own-error");
+      try {
+        const first = natsState.controls.get(relay);
+        // The connection stays up; the relay's own resubscribe is refused, and waits 15 s.
+        natsState.failSubscribes = 1;
+        first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
+        await until(() => natsState.failSubscribes === 0, "the relay's own resubscribe");
+        const reason = "because its NATS connection failed: DISCONNECT";
+        expect(await session.follow("team.relay-errored")).toContain(reason);
+        for (const part of Object.values(session.outage())) {
+          expect(part).toHaveLength(1);
+          expect(part[0]).toContain(reason);
+        }
+        session.heartbeat();
+        await until(
+          () => natsState.controls.get(relay) !== first && natsState.controls.get(relay)?.active() === true,
+          "the heartbeat's open of the relay subject"
+        );
+        await until(() => session.restored().written.length === 1, "the restored notice");
+        for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
+        expect(natsState.connectedNames).toHaveLength(1);
+      } finally {
+        await session.stop();
+      }
+    });
+  });
+
+  test("two opens of the live view's control subject that race each other take it once", async () => {
+    // The control subject's own resubscribe and the heartbeat's pass both dial a closed
+    // connection; whichever lands second takes nothing.
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    const id = "ses_control_race";
+    const control = `agentstream.${id}.control`;
+    await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
+      const session = await relayLossSession(id, "control-open-race");
+      const parked = Promise.withResolvers<void>();
+      try {
+        natsState.heldConnect = parked.promise;
+        await natsState.connections[0]?.close();
+        natsState.controls.get(control)?.end();
+        await until(() => natsState.connectedNames.length === 2, "the control subject's own dial");
+        session.heartbeat();
+        await until(() => natsState.connectedNames.length === 3, "the heartbeat's dial");
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await until(
+          () => (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active()),
+          "the control subject opened again"
+        );
+        await settle();
+        // The first subscription ended with its connection; the stand-in still calls an ended
+        // subscription active, so only those taken after it are counted.
+        const live = (natsState.controlsByTopic.get(control) ?? []).slice(1).filter((c) => c.active());
+        expect(live).toHaveLength(1);
+      } finally {
+        natsState.heldConnect = undefined;
+        parked.resolve();
+        await session.stop();
+      }
+    });
+  });
+
   test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
     await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});

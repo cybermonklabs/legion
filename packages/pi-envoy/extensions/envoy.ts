@@ -389,6 +389,8 @@ function listenerRoleName(role: string): string {
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
+/** Why the session's relay subject went when nats.js closed its connection and named no error. */
+const RELAY_CONNECTION_CLOSED = "the NATS connection closed";
 /** How long a delivery waits for the pictures it embeds before it goes out as text alone. */
 const DELIVERY_PICTURES_TIMEOUT_MS = 20_000;
 /** How long a delivery waits on the whole body of an item an event carried only in part before
@@ -2643,7 +2645,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     owner.subscription = subscription;
     owner.missing = undefined;
     owner.delivery.beginEpoch();
-    void pumpRelay(owner, subscription);
+    void pumpRelay(owner, subscription, connected);
     // The relay's own registration names this session's delivery subject the moment this returns,
     // and the listener publishes to it at once, so a SUB still in the out buffer costs the first
     // frames. A round trip this connection can still answer later does not fail the open, so only
@@ -2694,7 +2696,11 @@ export default function envoyExtension(hostApi: PiApi): void {
   // and queues the frame in stream order. A subscription that ends under the session (its
   // connection closed) is opened again after the resubscribe delay, on a new epoch, and
   // registered, so the listener restarts the relay at its ack floor.
-  const pumpRelay = async (owner: Relay, subscription: Subscription): Promise<void> => {
+  const pumpRelay = async (
+    owner: Relay,
+    subscription: Subscription,
+    connected: NatsConnection
+  ): Promise<void> => {
     let failure: unknown;
     try {
       for await (const message of subscription) {
@@ -2707,6 +2713,18 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (owner.subscription !== subscription) return;
     owner.subscription = undefined;
     if (failure !== undefined) owner.missing = natsFailureReason(failure);
+    else if (connected.isClosed()) {
+      // nats.js ends each subscription of a connection it closes with no error of its own, so the
+      // close is why the subject went: in the plugin's own words at once, then in the close's own
+      // error where it had one.
+      owner.missing = RELAY_CONNECTION_CLOSED;
+      void connected.closed().then((closedWith) => {
+        if (!(closedWith instanceof Error) || relay !== owner) return;
+        if (owner.subscription === undefined && owner.missing === RELAY_CONNECTION_CLOSED) {
+          owner.missing = natsFailureReason(closedWith);
+        }
+      });
+    }
     if (!shuttingDown && relay === owner) retryRelay(owner, RESUBSCRIBE_DELAY_MS);
   };
 
@@ -3029,6 +3047,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     // and the task ends, so a newer pass's control subscription is never overwritten behind its
     // back.
     const connected = await connect();
+    // Another open of this subject - the pass's, or the pump's own resubscribe - may have landed
+    // while this one dialed, or the host may have moved to another session: either way this
+    // open takes nothing, so one subscription answers each viewer.
+    if (agentStreamControlSession !== session || agentStreamControl !== undefined) return;
     const subscription = connected.subscribe(agentStreamControlSubject(session));
     agentStreamControl = subscription;
     void pumpAgentStreamControl(subscription, session);
