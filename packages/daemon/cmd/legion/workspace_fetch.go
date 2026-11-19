@@ -29,6 +29,10 @@ const defaultBranchEnv = "LEGION_DEFAULT_BRANCH"
 // fetchClock is the time the fetch's clone retries read and wait on; a test replaces it.
 var fetchClock workspace.Clock = workspace.WallClock{}
 
+// fetchBound is the fetch's workspace.FetchRequest.Bound, the time each clocked stage of the fetch
+// gets. Zero is workspace.FetchTimeout. A test makes it short, so an attempt runs out of its time.
+var fetchBound time.Duration
+
 // workspaceFetch fills the feed, the container's own directory on the issue's volume: from the
 // repository cache when one is named, presenting the token LEGION_REPOSITORY_CACHE_TOKEN_FILE
 // holds, then from GitHub the default branch, the issue's recorded default and the Legion issue
@@ -38,45 +42,47 @@ var fetchClock workspace.Clock = workspace.WallClock{}
 // on the cache never leaves the delta an expired token. It reads --repo before anything else,
 // resolves git alone, and refuses before it ever touches the feed or its own TMPDIR, where the
 // one-shot credential goes — every check (--repo, --feed, --cache-url and its token, a readable
-// provisioning token, git on PATH) runs first, so a refusal here leaves neither behind. A transfer
-// that fails transiently is run again (workspace.Fetch), each retried failure one line on stdout,
-// and the last line says where the feed came from and the bytes each source brought.
+// provisioning token, git on PATH) runs first, so a refusal here leaves neither behind. Each
+// refusal has a cause outside the issue's volume (workspace.ErrOutsideVolume), and so do the
+// failures workspace.Fetch reads as such. A transfer that fails transiently is run again
+// (workspace.Fetch), each retried failure one line on stdout, and the last line says where the
+// feed came from and the bytes each source brought.
 func workspaceFetch(ctx context.Context, repo, feed, cacheURL string, stdout io.Writer) error {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {
-		return err
+		return workspace.OutsideVolume(err)
 	}
 	if !filepath.IsAbs(feed) {
-		return fmt.Errorf("--feed must be an absolute path (got %q)", feed)
+		return workspace.OutsideVolume(fmt.Errorf("--feed must be an absolute path (got %q)", feed))
 	}
 	cacheToken := ""
 	if cacheURL != "" {
 		if parsed, err := url.Parse(cacheURL); err != nil || parsed.Scheme != "http" || parsed.Host == "" {
-			return fmt.Errorf("--cache-url must be an http:// URL (got %q)", cacheURL)
+			return workspace.OutsideVolume(fmt.Errorf("--cache-url must be an http:// URL (got %q)", cacheURL))
 		}
 		tokenFile, set := os.LookupEnv(repocache.CacheTokenFileEnv)
 		if !set {
-			return errors.New(repocache.CacheTokenFileEnv + " is not set: a repository cache needs its token")
+			return workspace.OutsideVolume(errors.New(repocache.CacheTokenFileEnv + " is not set: a repository cache needs its token"))
 		}
 		if cacheToken, err = config.ReadSecretPointer(repocache.CacheTokenFileEnv, tokenFile); err != nil {
-			return err
+			return workspace.OutsideVolume(err)
 		}
 	}
 	tokenFile, err := secretFileFromEnv(provisionTokenFileEnv)
 	if err != nil {
-		return err
+		return workspace.OutsideVolume(err)
 	}
 	token := func() (string, error) { return config.ReadSecretPointer(provisionTokenFileEnv, tokenFile) }
 	tools, err := provisioningTools("git")
 	if err != nil {
-		return err
+		return workspace.OutsideVolume(err)
 	}
 	if err := os.MkdirAll(feed, 0o700); err != nil {
 		return fmt.Errorf("create the feed directory %s: %w", feed, err)
 	}
 	report, err := workspace.Fetch(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), workspace.FetchRequest{
 		Repo: repository, Token: token, CredentialDir: os.TempDir(), Feed: feed,
-		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: fetchClock, CacheURL: cacheURL, CacheToken: cacheToken,
+		Log: func(line string) { fmt.Fprintln(stdout, "workspace-init fetch: "+line) }, Clock: fetchClock, Bound: fetchBound, CacheURL: cacheURL, CacheToken: cacheToken,
 		RecordedDefault: os.Getenv(defaultBranchEnv),
 	})
 	if err != nil {

@@ -167,6 +167,36 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 	}
 }
 
+// `cache` exits 1 for every failure, a failure from GitHub too: the fetch's exit 3 for a cause
+// outside an issue's volume (workspace.InitExitOutsideVolume) is an issue pod's alone. Here GitHub
+// answers the cache's first clone with a 403, and the cache, with no clone to serve, ends.
+func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) {
+	v := newIssueVolume(t).withRemote(t, "main")
+	attempts := v.failClones(t, "remote: Write access to repository not granted.\nfatal: unable to access 'https://github.com/acme/widgets/': The requested URL returned error: 403\n")
+	v.setenv(t)
+	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
+	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr lockedBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+	}()
+
+	select {
+	case code := <-exited:
+		if says := "The requested URL returned error: 403"; code != 1 || !strings.Contains(stderr.String(), says) {
+			t.Fatalf("cache exited %d, stderr %q; want 1 naming %q", code, stderr.String(), says)
+		}
+	case <-time.After(winitWait):
+		t.Fatalf("cache did not end after GitHub refused its first clone: stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+	if got := cloneAttempts(t, attempts); got != 1 {
+		t.Fatalf("git cloned %d times, want 1", got)
+	}
+}
+
 // `cache` serves the repository's cache until its context ends: it says where it listens, clones
 // the repository onto its root with the provisioning token handed to git as a one-shot credential
 // under its TMPDIR, answers /healthz ready at the remote's head to a request carrying no token,

@@ -52,8 +52,11 @@ func secretFileFromEnv(name string) (string, error) {
 // `provision` is the last, all the disk's work, in a container the provisioning Secret is not
 // mounted in. The controller's pod (`controller: daemon`) runs none. A repository cache's pod runs
 // `cache` as its one container, on its own volume, until it is stopped. Each one's log lines go to
-// stdout and its refusals and failures to stderr — together the init log the runtime quotes — with
-// exit 1.
+// stdout and its refusals and failures to stderr — together the init log the runtime quotes. A
+// usage error exits 2 (workspace.InitExitUsage), as for every legion command. `fetch` and
+// `provision` exit 3 (workspace.InitExitOutsideVolume) for a failure whose cause is outside the
+// issue's volume, and 1 for every other failure (issuePodInitExit). `cache` exits 1 for every
+// failure (workspaceInitExit).
 func newWorkspaceInitCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{
 		Use:    "workspace-init",
@@ -72,7 +75,7 @@ func newWorkspaceFetchCommand(stdout, stderr io.Writer) *cobra.Command {
 	feed := cmd.Flags().String("feed", "", "the pod's feed directory, the container's own (required)")
 	cacheURL := cmd.Flags().String("cache-url", os.Getenv(cacheURLEnv), "the repository cache to fill the feed from before GitHub (default $"+cacheURLEnv+", set by the runtime while the cache is ready)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
-		return workspaceInitExit(cmd, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
+		return issuePodInitExit(cmd, workspaceFetch(ctx, *repo, *feed, *cacheURL, stdout), stderr)
 	})
 	return cmd
 }
@@ -86,7 +89,7 @@ func newWorkspaceProvisionCommand(stdout, stderr io.Writer) *cobra.Command {
 	credentialHelper := cmd.Flags().String("credential-helper", "", "git credential helper written into the clone's config (required)")
 	feed := cmd.Flags().String("feed", "", "the pod's feed directory, which workspace-init fetch filled (required)")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
-		return workspaceInitExit(cmd, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
+		return issuePodInitExit(cmd, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
 	})
 	return cmd
 }
@@ -101,10 +104,23 @@ func workspaceInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 	return 1
 }
 
+// issuePodInitExit is the exit status of an issue pod's init container, `fetch` or `provision`,
+// once it has run: workspaceInitExit's, except workspace.InitExitOutsideVolume for a failure whose
+// cause is outside the issue's volume (workspace.ErrOutsideVolume). A new volume does not cure such
+// a cause, so the runtime keeps a kept volume for this exit.
+func issuePodInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
+	code := workspaceInitExit(cmd, err, stderr)
+	if code != 0 && errors.Is(err, workspace.ErrOutsideVolume) {
+		return workspace.InitExitOutsideVolume
+	}
+	return code
+}
+
 // workspaceInit validates everything before it touches the disk, --repo first, and refuses to
 // run where the provisioning token is pointed at: this is the process that runs git and jj against
-// what every agent of the issue can write. Then it removes the git locks an interrupted git or jj
-// left and provisions from the feed, an issue with no branch at defaultBranch. It makes no other
+// what every agent of the issue can write. Each refusal has a cause outside the issue's volume
+// (workspace.ErrOutsideVolume). Then it removes the git locks an interrupted git or jj left and
+// provisions from the feed, an issue with no branch at defaultBranch. It makes no other
 // directory: the disk is the pod's own and starts empty, and the workspace this provisions is the
 // only thing on it a role reads. No lock guards the clone: it is the issue's own, on the pod's own
 // disk, and no other pod mounts it. For the same reason, and because the pod's launcher container
@@ -115,33 +131,33 @@ func workspaceInitExit(cmd *cobra.Command, err error, stderr io.Writer) int {
 func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, credentialHelper, feed string, stdout io.Writer) error {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {
-		return err
+		return workspace.OutsideVolume(err)
 	}
 	if !legionclaim.IsIssueKey(issue) {
-		return fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue)
+		return workspace.OutsideVolume(fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue))
 	}
 	if !filepath.IsAbs(root) {
-		return fmt.Errorf("--root must be an absolute path (got %q)", root)
+		return workspace.OutsideVolume(fmt.Errorf("--root must be an absolute path (got %q)", root))
 	}
 	if credentialHelper == "" {
-		return fmt.Errorf("--credential-helper is required: %s", workspaceProvisionUsage)
+		return workspace.OutsideVolume(fmt.Errorf("--credential-helper is required: %s", workspaceProvisionUsage))
 	}
 	if !filepath.IsAbs(feed) {
-		return fmt.Errorf("--feed must be an absolute path (got %q)", feed)
+		return workspace.OutsideVolume(fmt.Errorf("--feed must be an absolute path (got %q)", feed))
 	}
 	if defaultBranch == "" {
-		return fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage)
+		return workspace.OutsideVolume(fmt.Errorf("--default-branch is required: %s", workspaceProvisionUsage))
 	}
 	if _, set := os.LookupEnv(provisionTokenFileEnv); set {
-		return errors.New(provisionTokenFileEnv + " is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds")
+		return workspace.OutsideVolume(errors.New(provisionTokenFileEnv + " is set: provisioning runs without the provisioning token, which `workspace-init fetch` alone holds"))
 	}
 	tools, err := provisioningTools("git", "jj")
 	if err != nil {
-		return err
+		return workspace.OutsideVolume(err)
 	}
 	located, err := workspace.Location(root, repository, issue)
 	if err != nil {
-		return err
+		return workspace.OutsideVolume(err)
 	}
 
 	log := func(line string) { fmt.Fprintln(stdout, "workspace-init: "+line) }
