@@ -1380,11 +1380,18 @@ func controllerManager() (*manager, *lockedBuffer) {
 }
 
 // serveControllerGuard runs the controller pod's guard for m, with the pid guard pids, as Run's
-// single-role branch does, until the test's end.
+// single-role branch does, until the test's end: serveControllerGuardOf a gVisor pod's zero Config.
 func serveControllerGuard(t *testing.T, m *manager, pids *pidGuard) {
 	t.Helper()
+	serveControllerGuardOf(t, Config{}, m, pids)
+}
+
+// serveControllerGuardOf runs the controller pod's memory watch of cfg (serveMemoryGuard) for m,
+// with the pid guard pids, as Run's single-role branch does, until the test's end.
+func serveControllerGuardOf(t *testing.T, cfg Config, m *manager, pids *pidGuard) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := serveMemoryGuard(ctx, Config{}, []*manager{m}, pids)
+	done := serveMemoryGuard(ctx, cfg, []*manager{m}, pids)
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -1729,16 +1736,7 @@ func TestTheControllersLauncherInAMicroVMRunsTheGuestWatch(t *testing.T) {
 		asked := askedGuest(t)
 		m, log := controllerManager()
 		pids := &pidGuard{pids: map[int]bool{ctlHeld: true}}
-		ctx, cancel := context.WithCancel(context.Background())
-		done := serveMemoryGuard(ctx, Config{MicroVM: true, StopGrace: 5 * time.Second}, []*manager{m}, pids)
-		t.Cleanup(func() {
-			cancel()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Error("the guest watch did not return after its context ended")
-			}
-		})
+		serveControllerGuardOf(t, Config{MicroVM: true, StopGrace: 5 * time.Second}, m, pids)
 		rig.started()
 		if got := guardLines(log, ""); !slices.Equal(got, []string{off}) {
 			t.Fatalf("the controller's memory guard lines are %q, want %q alone", got, off)

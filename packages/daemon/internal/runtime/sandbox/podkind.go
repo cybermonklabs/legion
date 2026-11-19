@@ -234,9 +234,8 @@ func (issuePod) initVolumes(l launch) []corev1.Volume {
 // Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
 // own path, but the shared config home, whose place gets the role's own copy of it
 // (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
-// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so (--microvm),
-// and, where the block names the metadata endpoint, is told the endpoint's pool and identity
-// provider and mounts the projected token it exchanges at WorkloadIdentityDir, under RolesDir,
+// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so
+// (microVMLauncher), the metadata endpoint's token mounted at WorkloadIdentityDir, under RolesDir,
 // where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	command := []string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name, "--roles-dir", RolesDir}
@@ -265,13 +264,9 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 		command = append(command, "--test-postgres")
 		mounts = append(mounts, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
 	}
-	if l.microVM != nil {
-		command = append(command, "--microvm")
-		if endpoint := l.microVM.Metadata; endpoint != nil {
-			command = append(command, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
-			mounts = append(mounts, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: WorkloadIdentityDir, ReadOnly: true})
-		}
-	}
+	flags, tokenMounts := microVMLauncher(l, WorkloadIdentityDir)
+	command = append(command, flags...)
+	mounts = append(mounts, tokenMounts...)
 	if r.agentSecrets != nil {
 		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
 		mounts = append(mounts, exchangeTokenMounts(r.agentSecrets)...)
@@ -286,6 +281,23 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 		Resources:       k.resources(r),
 		SecurityContext: restrictedContainer(),
 	}
+}
+
+// microVMLauncher is what a pod's launcher of either kind is told of the microVM it runs in, and
+// what it mounts for it: nothing in gVisor (l.microVM nil); --microvm in a microVM; and, where the
+// block names the metadata endpoint, the endpoint's pool and identity provider, with the
+// projected token it exchanges mounted read-only at tokenDir, the kind's own place for it.
+func microVMLauncher(l launch, tokenDir string) (flags []string, mounts []corev1.VolumeMount) {
+	if l.microVM == nil {
+		return nil, nil
+	}
+	flags = []string{"--microvm"}
+	endpoint := l.microVM.Metadata
+	if endpoint == nil {
+		return flags, nil
+	}
+	flags = append(flags, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
+	return flags, []corev1.VolumeMount{{Name: workloadIdentityTokenVolume, MountPath: tokenDir, ReadOnly: true}}
 }
 
 // mainVolumes is the role homes volume: an emptyDir on the node's disk, charged to the pod's
@@ -460,12 +472,11 @@ func (controllerPod) initContainers(*Runtime, launch) []corev1.Container { retur
 // single-role mode, with the controller's own launcher token, private directory, state directory
 // and gh volume mounted at the fixed paths it reads them at, the gh volume read-only, its key
 // directory and the broker's token when the pod enrolls, beside the pod's volume, the config home,
-// the providers and the operator's mounts. A microVM pod's launcher is told so (--microvm), and,
-// where the block names the metadata endpoint, is told the endpoint's pool and identity provider
-// and mounts the projected token it exchanges, read-only, at ControllerWorkloadIdentityDir, the
-// single-role launcher's fixed path: the pod has no role namespaces, so its agent can read the
-// token too, which gives it no identity the endpoint does not already serve it. The flags go
-// before --stop-grace, in the order an issue pod's launcher takes them.
+// the providers and the operator's mounts. A microVM pod's launcher is told so (microVMLauncher),
+// the metadata endpoint's token mounted at ControllerWorkloadIdentityDir, the single-role
+// launcher's fixed path: the pod has no role namespaces, so its agent can read the token too,
+// which gives it no identity the endpoint does not already serve it. The flags go before
+// --stop-grace, as an issue pod's launcher's do.
 func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	role := claim.RoleController
 	command := []string{
@@ -480,13 +491,9 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 		{Name: configVolume, MountPath: xdgConfigHome},
 		{Name: roleVolume(ghVolume, role), MountPath: GHConfigDir, ReadOnly: true},
 	}
-	if l.microVM != nil {
-		command = append(command, "--microvm")
-		if endpoint := l.microVM.Metadata; endpoint != nil {
-			command = append(command, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
-			mounts = append(mounts, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: ControllerWorkloadIdentityDir, ReadOnly: true})
-		}
-	}
+	flags, tokenMounts := microVMLauncher(l, ControllerWorkloadIdentityDir)
+	command = append(command, flags...)
+	mounts = append(mounts, tokenMounts...)
 	return corev1.Container{
 		Name:            k.container(),
 		Image:           r.image,

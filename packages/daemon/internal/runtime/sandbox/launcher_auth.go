@@ -119,14 +119,12 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 // a change of runtime.kubernetes.sandbox.type, which runs on until its next launch replaces it,
 // keeps its guard.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
-	var ack shimwire.LauncherHelloAck
+	ack := shimwire.LauncherHelloAck{KernelKills: true}
 	switch kind.(type) {
 	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
-		ack.KernelKills = true
 	case controllerPod:
 		ack.MemoryGuard = r.controllerMemoryGuard
-		ack.KernelKills = true
 	}
 	return ack
 }

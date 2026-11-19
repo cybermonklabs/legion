@@ -774,18 +774,15 @@ func (r *Runtime) labels(l launch) map[string]string { return l.kind.labels(r.pr
 
 // diskSpec is the claim of a pod's disk, wherever it is declared: ReadWriteOnce on the launch's
 // StorageClass at the operator's size (runtime.kubernetes.issue_volume), so whatever declares a
-// pod's disk takes its class from here. The class is the microVM block's for a microVM issue pod
-// (MicroVM.StorageClass) and the operator's runtime.kubernetes.storage_class for every other, the
-// controller's included in either sandbox: the controller's Sandbox owns its disk's claim
-// template, which the CRD holds immutable (replaceSupersededSandbox), so a class that followed the
-// controller's sandbox would take a new Sandbox, and with it a new volume, at every change of the
-// project's type. The controller's Sandbox declares it as the claim template it owns, an issue pod
-// as the template of its own ephemeral volume, so the two disks are provisioned alike and differ
-// only in who deletes them.
+// pod's disk takes its class from here. The class is microVMDiskClass's where it names one, a
+// microVM issue pod's, and the operator's runtime.kubernetes.storage_class for every other pod.
+// The controller's Sandbox declares it as the claim template it owns, an issue pod as the template
+// of its own ephemeral volume, so the two disks are provisioned alike and differ only in who
+// deletes them.
 func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 	storageClass := r.storageClass
-	if _, issue := l.kind.(issuePod); issue && l.microVM != nil {
-		storageClass = l.microVM.StorageClass
+	if class := microVMDiskClass(l.kind, l.microVM); class != "" {
+		storageClass = class
 	}
 	return corev1.PersistentVolumeClaimSpec{
 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -794,6 +791,20 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 			Requests: corev1.ResourceList{corev1.ResourceStorage: r.volumeSize},
 		},
 	}
+}
+
+// microVMDiskClass is the class the microVM block gives the disk of a pod of kind running in
+// microVM (nil in gVisor): the block's own for an issue pod (MicroVM.StorageClass, which New
+// refuses empty while an issue pod may run in a microVM), and "" for the controller's, whose disk
+// stays on runtime.kubernetes.storage_class in either sandbox: the CRD holds its Sandbox's claim
+// template immutable (replaceSupersededSandbox), so a class that followed the sandbox would take a
+// new Sandbox, and a new volume, at every change of the project's type. The disk (diskSpec) and
+// the shape that records it (podShape) both read it.
+func microVMDiskClass(kind podKind, microVM *MicroVM) string {
+	if _, issue := kind.(issuePod); issue && microVM != nil {
+		return microVM.StorageClass
+	}
+	return ""
 }
 
 // sandboxManifest is the Sandbox a relaunch creates when none exists: Suspended, so no pod starts

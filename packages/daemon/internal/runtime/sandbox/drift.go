@@ -117,7 +117,7 @@ type sandboxMetadataShape struct {
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
 // operator's volumes and mounts, the size of the pod's disk, and, for a pod that runs in a
 // microVM, where that microVM runs (microVM, launch.microVM; nil for a gVisor pod, which records
-// no sandbox), its disk's class an issue pod's alone (sandboxShape). An encoding failure is
+// no sandbox), its disk's class an issue pod's alone (microVMDiskClass). An encoding failure is
 // unreachable — every field is an API object or a string — and is logged and recorded as no
 // shape, compared by image alone.
 //
@@ -128,10 +128,7 @@ type sandboxMetadataShape struct {
 func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	var where *sandboxShape
 	if microVM != nil {
-		where = &sandboxShape{RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass}
-		if _, issue := kind.(issuePod); issue {
-			where.StorageClass = microVM.StorageClass
-		}
+		where = &sandboxShape{RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVMDiskClass(kind, microVM)}
 		if endpoint := microVM.Metadata; endpoint != nil {
 			where.Metadata = &sandboxMetadataShape{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}

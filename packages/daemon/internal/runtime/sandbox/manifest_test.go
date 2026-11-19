@@ -2765,21 +2765,17 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 		t.Fatalf("the microvm block %+v names the storage class %s or no metadata endpoint, so this test proves nothing", block, storageClass)
 	}
 	issue := rootSpec(t)
-	// encoded is the controller's Sandbox as a launch leaves it running, and its pod template, each
+	// encoded is the controller's Sandbox as a launch leaves it running, its pod template among it,
 	// as the API server is sent it.
-	encoded := func(r *Runtime) (manifest, template []byte) {
+	encoded := func(r *Runtime) []byte {
 		t.Helper()
 		sent, err := json.Marshal(manifestOf(t, r, controllerSpec(t)))
 		if err != nil {
 			t.Fatal(err)
 		}
-		pod, err := json.Marshal(r.podTemplate(launchOf(t, r, controllerSpec(t))))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return sent, pod
+		return sent
 	}
-	plainSandbox, plainTemplate := encoded(sandboxRuntime(t, SandboxConfig{}, scheduling))
+	plainSandbox := encoded(sandboxRuntime(t, SandboxConfig{}, scheduling))
 	for _, tc := range []struct {
 		config  string
 		sandbox SandboxConfig
@@ -2892,14 +2888,8 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 				if !reflect.DeepEqual(record.Sandbox, want) {
 					t.Errorf("the controller's recorded sandbox is %v, want exactly %v", record.Sandbox, want)
 				}
-			} else {
-				sent, template := encoded(r)
-				if !bytes.Equal(sent, plainSandbox) {
-					t.Errorf("the controller's Sandbox is\n%s\nwant the one a project with no sandbox block renders, byte for byte\n%s", sent, plainSandbox)
-				}
-				if !bytes.Equal(template, plainTemplate) {
-					t.Errorf("the controller's pod template is\n%s\nwant the one a project with no sandbox block renders, byte for byte\n%s", template, plainTemplate)
-				}
+			} else if sent := encoded(r); !bytes.Equal(sent, plainSandbox) {
+				t.Errorf("the controller's Sandbox is\n%s\nwant the one a project with no sandbox block renders, byte for byte\n%s", sent, plainSandbox)
 			}
 			for _, pod := range pods {
 				if pod.kind != "cache" && pod.kind != "probe" {
@@ -2932,7 +2922,7 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 // sortedPairs is m as `key=value` entries in key order, comma-joined.
 func sortedPairs(m map[string]string) string {
 	pairs := make([]string, 0, len(m))
-	for _, key := range slices.Sorted(maps.Keys(m)) {
+	for _, key := range sortedKeys(m) {
 		pairs = append(pairs, key+"="+m[key])
 	}
 	return strings.Join(pairs, ",")

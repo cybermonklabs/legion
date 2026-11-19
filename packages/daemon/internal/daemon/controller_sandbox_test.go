@@ -270,9 +270,8 @@ func controllerSandboxMove(t *testing.T, from, to controllerSandboxSetting, rout
 // cluster's pods, and the worker stream and API addresses its pods are handed. Each boot builds a
 // daemon over these from the configuration the rig holds when it boots.
 type controllerSandboxRig struct {
-	t    *testing.T
-	cfg  config.Config
-	pool *store.Pool
+	t   *testing.T
+	cfg config.Config
 	// token is the controller's claim, and name its Sandbox's and its pod's.
 	token claim.Token
 	name  string
@@ -302,9 +301,12 @@ type controllerSandboxRig struct {
 // The worker stream listens on a port of the rig's own rather than one the kernel picks at each
 // bind (testConfig's 0): a pod's launcher dials the stream named in its command for the pod's
 // life, so the second boot must listen where the first pod dials, as a deployment's fixed
-// worker_stream_port does. The probe interval is a second, so the runtime's sweep of every
-// watched claim, which a boot's re-adoption is held against (controllerSandboxSettled), runs
-// several times inside the test's own window.
+// worker_stream_port does. That port is found free and given back (idleRigFreePort), so another
+// process could take it before the daemon binds it, which fails the boot loudly rather than
+// passing it: the stream binds inside the daemon (stream.Listen), past the reach of heldListen.
+// The probe interval is a second, so the runtime's sweep of every watched claim, which a boot's
+// re-adoption is held against (controllerSandboxSettled), runs several times inside the test's
+// own window.
 func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *controllerSandboxRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -317,7 +319,7 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
-	cfg.WorkerStreamPort = controllerSandboxStreamPort(t)
+	cfg.WorkerStreamPort = idleRigFreePort(t)
 	cfg.ProbeInterval = time.Second
 	cfg.Runtime = kubernetesConfig(t, kube.url).Runtime
 	k := cfg.Runtime.Kubernetes
@@ -337,7 +339,7 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	// The tools directory holds the stand-ins and each generation's run and die files; the
 	// longest of those is a die file of a generation number at its widest.
 	tools := testtmp.Dir(t, "die-18446744073709551615")
-	r := &controllerSandboxRig{t: t, cfg: cfg, pool: pool, token: token, name: sandbox.SandboxName(token), project: project,
+	r := &controllerSandboxRig{t: t, cfg: cfg, token: token, name: sandbox.SandboxName(token), project: project,
 		kube: kube, legion: controllerSandboxLegionTool(t, tools), agent: idleRigAgentTool(t, tools), logs: &syncBuffer{}}
 	r.pods = newControllerSandboxPods(t, kube, tools, cfg.DaemonURL, pool, k.SessionStore.Database,
 		func(context.Context, string) (sessionproxy.Dialer, error) {
@@ -350,48 +352,6 @@ func newControllerSandboxRig(t *testing.T, first controllerSandboxSetting) *cont
 	// the shutdown's own lines.
 	t.Cleanup(r.printLogsOnFailure)
 	return r
-}
-
-// controllerSandboxStreamPort is a loopback port free when it is asked for, which the rig's
-// worker stream binds at every boot. It is found free and closed again, so another process could
-// take it before the daemon binds it, which fails the boot loudly rather than passing it: the
-// stream binds inside the daemon (stream.Listen), past the reach of heldListen.
-func controllerSandboxStreamPort(t *testing.T) int {
-	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find a free port for the worker stream: %v", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatalf("free the worker stream's port: %v", err)
-	}
-	return port
-}
-
-// controllerSandboxHoldPort holds the loopback port again for the next daemon to take
-// (heldListen), as holdPortOn holds a free one. The API port is kept across the boot rather than
-// rebound (rebindHeldPorts): the daemon's URL is an address every generation is handed and the
-// Sandbox records (sandbox's handedAddresses), and a boot that moved it would have the
-// controller's next launch replace its pod for the moved address whatever its shape.
-func controllerSandboxHoldPort(t *testing.T, port int) {
-	t.Helper()
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		t.Fatalf("hold the daemon's API port %s again for its next boot: %v", address, err)
-	}
-	heldPorts.Lock()
-	heldPorts.byAddress[address] = listener
-	heldPorts.Unlock()
-	t.Cleanup(func() {
-		heldPorts.Lock()
-		if heldPorts.byAddress[address] == listener {
-			delete(heldPorts.byAddress, address)
-		}
-		heldPorts.Unlock()
-		_ = listener.Close()
-	})
 }
 
 // boot runs the daemon on the rig's configuration as it stands, returning once it answers
@@ -411,14 +371,18 @@ func (r *controllerSandboxRig) boot() {
 }
 
 // restart stops the daemon and boots it again on to's sandbox block, over the same database,
-// worker stream port and API port.
+// worker stream port and API port. The API port is held again for the next daemon to take
+// (holdPortAt, heldListen) rather than rebound (rebindHeldPorts): the daemon's URL is an address
+// every generation is handed and the Sandbox records (sandbox's handedAddresses), and a boot that
+// moved it would have the controller's next launch replace its pod for the moved address whatever
+// its shape.
 func (r *controllerSandboxRig) restart(to controllerSandboxSetting) {
 	r.t.Helper()
 	r.d.stop()
 	k := *r.cfg.Runtime.Kubernetes
 	k.Sandbox = to.sandbox
 	r.cfg.Runtime.Kubernetes = &k
-	controllerSandboxHoldPort(r.t, r.cfg.Port)
+	holdPortAt(r.t, "127.0.0.1", r.cfg.Port)
 	r.boot()
 }
 
@@ -718,8 +682,8 @@ func (r *controllerSandboxRig) logPod(setting, at string, pod controllerSandboxP
 		shape = string(member)
 	}
 	r.t.Logf("sandbox-pod config=%s pod=controller uid=%s runtimeClassName=%s nodeSelector=%s tolerations=%s labels=%s launcher=%s shape=%s at=%s",
-		setting, pod.uid, controllerSandboxRuntimeClass(spec), controllerSandboxPairs(spec.NodeSelector), strings.Join(tolerations, ","),
-		controllerSandboxPairs(pod.pod.Labels), flag, shape, at)
+		setting, pod.uid, controllerSandboxRuntimeClass(spec), strings.Join(environPairs(spec.NodeSelector), ","), strings.Join(tolerations, ","),
+		strings.Join(environPairs(pod.pod.Labels), ","), flag, shape, at)
 }
 
 // controllerSandboxRuntimeClass is the pod's RuntimeClass, "(none)" where it names none.
@@ -728,15 +692,6 @@ func controllerSandboxRuntimeClass(spec corev1.PodSpec) string {
 		return "(none)"
 	}
 	return *spec.RuntimeClassName
-}
-
-// controllerSandboxPairs is m as `key=value` entries in key order, comma-joined.
-func controllerSandboxPairs(m map[string]string) string {
-	pairs := make([]string, 0, len(m))
-	for _, key := range slices.Sorted(maps.Keys(m)) {
-		pairs = append(pairs, key+"="+m[key])
-	}
-	return strings.Join(pairs, ",")
 }
 
 // controllerSandboxPodSeen is the controller's pod as the fake cluster holds it, and the shape
@@ -812,7 +767,7 @@ func (a *issueSandboxAPI) controllerSandboxPodOf(name string) (controllerSandbox
 // frames — is the test's own (controllerSandboxShim), as registeredLaunch plays it for the fake
 // runtime: this binary's TestMain lets a re-entered run skip its guard, which takes out every
 // LEGION_* variable a generation is handed, and its database setup only for the idle rig's role
-// process (idleRigURLVariable), and this test changes no file but its own.
+// process (idleRigURLVariable).
 func controllerSandboxLegionTool(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "legion")
@@ -833,7 +788,6 @@ func controllerSandboxLegionTool(t *testing.T, dir string) string {
 // and the sandbox flag the daemon rendered are the ones the launcher runs with. Beside it, for
 // each generation the launcher starts, the generation's shim (controllerSandboxShim).
 type controllerSandboxPods struct {
-	t    *testing.T
 	kube *issueSandboxAPI
 	// tools holds the generations' run and die files (controllerSandboxLegionTool).
 	tools     string
@@ -854,10 +808,9 @@ type controllerSandboxPods struct {
 	shims   map[uint64]*controllerSandboxShim
 }
 
-// controllerSandboxPod is one live pod's launcher: its uid, its private directory, the context
-// that stops it, and the wait that its goroutines and its shims' have ended.
+// controllerSandboxPod is one live pod's launcher: its private directory, the context that stops
+// it, and the wait that its goroutines and its shims' have ended.
 type controllerSandboxPod struct {
-	uid    string
 	dir    string
 	cancel context.CancelFunc
 	done   sync.WaitGroup
@@ -873,7 +826,7 @@ func newControllerSandboxPods(t *testing.T, kube *issueSandboxAPI, tools, daemon
 	dial func(ctx context.Context, account string) (sessionproxy.Dialer, error),
 ) *controllerSandboxPods {
 	t.Helper()
-	p := &controllerSandboxPods{t: t, kube: kube, tools: tools, daemonURL: daemonURL, pool: pool, session: session, dial: dial,
+	p := &controllerSandboxPods{kube: kube, tools: tools, daemonURL: daemonURL, pool: pool, session: session, dial: dial,
 		logs: &syncBuffer{}, dirRoot: testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName)),
 		running: map[string]*controllerSandboxPod{}, shims: map[uint64]*controllerSandboxShim{}}
 	t.Cleanup(p.stopAll)
@@ -895,7 +848,7 @@ func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]strin
 		return
 	}
 	command := seen.command()
-	connect, _ := controllerSandboxFlag(command, "--connect")
+	connect := controllerSandboxFlag(command, "--connect")
 	token := roles[string(claim.RoleController)]
 	if connect == "" || token == "" {
 		p.logf("the pod %s/%s names no stream (%q) or holds no controller launcher token (%t): %q", pod, uid, connect, token != "", command)
@@ -914,7 +867,7 @@ func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]strin
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	processes := &controllerSandboxPod{uid: uid, dir: dir, cancel: cancel}
+	processes := &controllerSandboxPod{dir: dir, cancel: cancel}
 	p.running[pod] = processes
 	microVM := slices.Contains(command, controllerSandboxMicroVMFlag)
 	p.started = append(p.started, controllerSandboxLaunch{uid: uid, microVM: microVM})
@@ -937,13 +890,13 @@ func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]strin
 	}()
 }
 
-// controllerSandboxFlag is the value after flag in command, and whether command names it.
-func controllerSandboxFlag(command []string, flag string) (string, bool) {
+// controllerSandboxFlag is the value after flag in command, "" where command names none.
+func controllerSandboxFlag(command []string, flag string) string {
 	i := slices.Index(command, flag)
 	if i < 0 || i+1 >= len(command) {
-		return "", false
+		return ""
 	}
-	return command[i+1], true
+	return command[i+1]
 }
 
 // watchGenerations gives each generation the pod's launcher starts a shim, once that
@@ -1237,9 +1190,10 @@ func (s *controllerSandboxShim) connect() error {
 
 // register registers the generation's agent and reports it ready. A registration the daemon
 // refuses because its machine has not recorded the launch's process yet is asked again, as a
-// shim whose hello came before the launch returned would find it; the session's row is written
-// first, as Oh My Pi writes its session before its plugin registers, so the daemon's relaunch
-// resumes a session the table holds (internal/launcher's sessionWritten).
+// shim whose hello came before the launch returned would find it, until the shim has ended, so a
+// pod's removal, which waits for its shims (podGone), does not wait out the retries; the session's
+// row is written first, as Oh My Pi writes its session before its plugin registers, so the
+// daemon's relaunch resumes a session the table holds (internal/launcher's sessionWritten).
 func (s *controllerSandboxShim) register() error {
 	if _, err := s.pods.pool.Exec(context.Background(),
 		`insert into omp_session_files (path, mtime_ms) values ($1, $2)
@@ -1261,6 +1215,9 @@ func (s *controllerSandboxShim) register() error {
 			return fmt.Errorf("register generation %d: %d %v", s.generation, status, err)
 		}
 		time.Sleep(200 * time.Millisecond)
+		if s.isEnded() {
+			return fmt.Errorf("register generation %d: the shim has ended: %d %v", s.generation, status, err)
+		}
 	}
 	status, err := s.post("/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: registration.ClaimToken, SessionID: controllerSandboxSession, Secret: registration.Secret, Generation: s.generation,

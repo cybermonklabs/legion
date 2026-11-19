@@ -153,10 +153,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// listens (metadataEnv), as the roles form's below. Its lines are the role's own
 		// (manager.logf), since this form has no roles log, and its server is waited on before
 		// Run returns, as the memory watch is.
-		var metadata <-chan struct{}
-		if cfg.Metadata != nil {
-			metadata, managers[0].metadataAddress = serveMetadata(ctx, cfg, managers[0].logf)
-		}
+		metadata := serveMetadataFor(ctx, cfg, managers, managers[0].logf)
 		err := managers[0].serveUntil(ctx, address)
 		if metadata != nil {
 			<-metadata
@@ -182,14 +179,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// The pod-local metadata endpoint, before any role starts: a role's first Google client finds
 	// it listening, and a role is told its address only once it listens (metadataEnv). Its server
 	// is waited on with the roles below, as the test database's ticker is.
-	var metadata <-chan struct{}
-	if cfg.Metadata != nil {
-		var served string
-		metadata, served = serveMetadata(ctx, cfg, managers[0].log.linef)
-		for _, m := range managers {
-			m.metadataAddress = served
-		}
-	}
+	metadata := serveMetadataFor(ctx, cfg, managers, managers[0].log.linef)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -215,6 +205,21 @@ func Run(ctx context.Context, cfg Config) error {
 	<-memory
 	<-locks
 	return ctx.Err()
+}
+
+// serveMetadataFor starts the pod-local metadata endpoint where cfg asks for it (serveMetadata),
+// with its lines written through logf, and tells each of managers the address it serves at, which
+// every generation they start is told (metadataEnv). It answers the channel serveMetadata does, nil
+// where cfg asks for no endpoint.
+func serveMetadataFor(ctx context.Context, cfg Config, managers []*manager, logf func(string, ...any)) <-chan struct{} {
+	if cfg.Metadata == nil {
+		return nil
+	}
+	metadata, address := serveMetadata(ctx, cfg, logf)
+	for _, m := range managers {
+		m.metadataAddress = address
+	}
+	return metadata
 }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
