@@ -14,13 +14,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// PutClaimActivity writes the five activity columns of token's claim row and nothing else: what
-// that claim's session last reported of what it is doing. The report is no part of
-// the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
-// claim does not carry it — so one write of the whole row would erase every report sent since
-// that machine read its claim; the claim's own writes carry no report and leave these columns
-// alone but for a launch's, which clears them (putClaim), and the idle rule reads them through
-// its own view (IdleClaim).
+// PutClaimActivity writes the activity columns of token's claim row (activity_at,
+// activity_sent_at, activity_sent_generation, activity_background, activity_kinds and
+// activity_next_reminder_at) and its updated_at, and nothing else: what that claim's session last
+// reported of what it is doing. The report is no part of the claim's machine state — it arrives
+// between a machine's writes, and the machine's in-memory claim does not carry it — so one write of
+// the whole row would erase every report sent since that machine read its claim; the claim's own
+// writes carry no report and leave these columns alone but for a launch's, which clears all of them
+// but activity_sent_generation (putClaim), and the idle rule reads them through its own view
+// (IdleClaim).
 //
 // It writes only onto the launch the report belongs to, generation: a report of the claim's
 // earlier launch — a dead process's, authenticated just before the relaunch — is never written
@@ -115,7 +117,7 @@ const reportOvertakenWithin = 5 * time.Minute
 // (PutClaimActivity's columns, the phase reminder aside), and whether it holds one: what a
 // machine reads of the process it is letting go, which its own claim carries only as the machine
 // read it at boot (supervise.Deps.ClaimActivity, the machine's recordEnd). It is read before the
-// launch's own write, which clears the four columns as it moves the generation (putClaim).
+// launch's own write, which clears the report as it moves the generation (putClaim).
 //
 // Only a report of that launch is answered. The columns hold the report of the launch the row
 // records and of no other — a report is written onto the launch it was authenticated for alone
