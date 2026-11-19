@@ -1282,8 +1282,8 @@ const NAMING_ELSEWHERE = [
 // change under the parent, reads the child's names again, where the parent's new title, and an
 // older server's update that names none of its changes, does. A new comment is a new address,
 // which the tree reads under a key of its own, a person's edit of a document is the notice after
-// the versions that already refreshed them, and an issue's write that leaves its title alone
-// renames nothing.
+// the versions that already refreshed them, and an issue's write that leaves its title alone and
+// a follower joining an ask rename nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
@@ -1312,6 +1312,7 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
     feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
     feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
     feedEvent("issue.updated", { changed: ["status"] }),
+    feedEvent("ask.follower_added", { ask_id: "ask-1", session_id: "s1" }),
   ];
   for (const event of editsNoWords) {
     expect(refreshedNames(event, [...NAMING_KEY, ...NAMING_ISSUE]), event.type).toEqual([]);
