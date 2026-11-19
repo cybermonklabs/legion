@@ -34,7 +34,11 @@ test("a frame without a dedupe key or an event id is never a repeat", () => {
 // another publish under the copy's key, which is a new message.
 test("a takeover's copy of a message the host already showed is a repeat by its event id, under its own key", () => {
   const dedupe = createDeliveryDedupe();
-  const original = { event_id: "evt-role-1", source: "agent", dedupe_key: "publish.notifications.role.reviewer.k1" };
+  const original = {
+    event_id: "evt-role-1",
+    source: "agent",
+    dedupe_key: "publish.notifications.role.reviewer.k1",
+  };
   const copy = { ...original, dedupe_key: `${original.dedupe_key}:frame:41` };
 
   expect(dedupe.claim(original)).toBeDefined();
