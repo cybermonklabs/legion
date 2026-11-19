@@ -867,7 +867,7 @@ the model reads: the result, one `- picture: <path>` line per image (written und
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
 on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error. A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
-Under Claude Code the whole output is at most 25,000 UTF-16 code units: the result text is cut to
+Under Claude Code the whole output is at most 25,000 UTF-16 code units and its closing newline: the result text is cut to
 fit, the full text written to a file the output names, and the picture lines and follow notice kept.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
