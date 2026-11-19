@@ -4565,6 +4565,29 @@ A read-only broker token carries no project either, but none of the three checks
   A head-gated listener run after a rollback decodes a stamped record, ignoring the field, and its own writes drop it.
   Seven days after the last head-gated listener stops, no record without a schema remains.
 
+- The summary loop names each commit it does not settle, once that commit's record has had no event for 10 minutes (`heldAfter`), in one JSON line, `checks held a head`:
+  a record that is not ready to settle (a check not completed, a suite not completed, no check at all, no check with a run id, or an overflowed record), and a record without a schema that the loop holds back (above).
+  Ten minutes is the daemon's default idle release of an issue pod (`runtime.kubernetes.idle_release`), so a held head is named before its worker's pod goes.
+  The line is WARN where the record holds a check and every check has completed, and INFO otherwise, which a long job and a lost completion both give.
+  Its fields name the head and what holds it, read from the record itself:
+  `owner`, `repo`, `number` and `sha`;
+  `generation`, the record's state version;
+  `checks`, how many checks the record holds;
+  `every_check_finished`, true where the line is WARN;
+  `running`, each check that has not completed as `<name>:<status>`, sorted, at most the first 20, and `running_count`, how many there are;
+  `suites`, each suite that is not completed as `<id> app=<App id> status=<status> runs=<count>`, sorted by id, with `<count>` the `latest_check_runs_count` GitHub's `check_suite` webhook gave for it, or `unknown` where the webhook gave none or the suite was recorded before the listener kept the count (`Suite.RunCount`);
+  `overflowed`, true where the record is marked overflowed (it passed `maxRecordBytes` or `maxSettlementBytes`, or NATS refused its settlement, below);
+  `no_run_id`, true where no check has a run id;
+  `legacy`, true where the record has no `schema`;
+  and `claimed`, true where the record holds a settlement claim.
+  The loop logs the line again only when the record's snapshot (`State.Hash`) or the hold the line names changes, and never before the record has had 10 quiet minutes, so a record held for days writes one line.
+  It forgets what it logged of a record that settles or leaves the cache, and of every record when the cache is emptied for a recreated bucket or the listener restarts, so a record still held is named once more after that.
+
+- Each settlement the summary loop publishes logs one INFO line, `checks settlement published`, after the bus accepts it, with `owner`, `repo`, `number` and `sha`, the settlement's `generation` and `snapshot` as its payload carries them, and `superseded`, true where the record published a settlement before (the payload's `superseded_settlement`).
+  A publish the bus refuses or that fails logs `checks settlement refused` or `checks publish failed` instead.
+  So a head the listener never settled has its `checks held a head` line, and a settlement that left the listener has this one.
+  The Legion daemon names each checks settlement it drops without applying it (a redelivery of one it applied is no drop) in one line that begins `intake: a checks settlement` or `workflow: a checks settlement` and carries the same head (`sha` on the decoder's line, `head` on the others), `generation` and `snapshot`, so the two logs show where one settlement stopped.
+
 - The `ENVOY_NOTIFICATIONS` duplicate window is 72 hours, equal to the stream's age.
   Startup reconciles both with `UpdateStream`, so a Dispatch outbox retry after a post-publish crash cannot create another retained message while the original remains available.
   The byte limit (`ENVOY_STREAM_MAX_BYTES`) never shortens that:
@@ -5882,6 +5905,9 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   Check settlement is at-least-once: a settlement can be followed by a `superseded_settlement: "true"` payload.
   Every settlement carries its attempt set `check_runs` — the latest GitHub check-run id per check name, sorted by name
   — plus the listener's `generation` (the record's state version, which rises with every write that changes the record's snapshot, once per write however many observations that write folds in) and `snapshot` (the record's hash).
+  Each `check_runs` entry also carries `conclusion`, GitHub's own word for that run (`success`, `skipped`, `timed_out`, or a word GitHub adds later), passed on as GitHub gave it and left out where the record holds none:
+  consumers show a check by it, and order and decide by the ids and the groups, so a word a consumer does not know changes nothing they decide;
+  a check in the `skipped` group ran nothing on that commit.
   Consumers order settlements of one commit by the attempt set, compared per shared name:
   no id lower and some id higher (or a new name
   — a new name counts as higher) is newer;

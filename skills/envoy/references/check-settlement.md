@@ -5,7 +5,9 @@ Read this when you write or review code that consumes `pr.<n>.checks` settlement
 ## What a settlement carries
 
 - A commit can settle more than once. A later settlement can carry `superseded_settlement: "true"`, and an exact copy can arrive, because delivery is at-least-once.
-- `check_runs`, the attempt set: the latest GitHub check-run id per check name, sorted by name.
+- `check_runs`, the attempt set: the latest GitHub check-run id per check name, sorted by name. Each entry is `{name, id, conclusion}`.
+- `conclusion`: GitHub's own word for that run (`success`, `skipped`, `neutral`, `timed_out` and the rest), passed on as GitHub gave it, a word GitHub adds later included. It is absent where the listener's record holds no word for the run, and from every entry a listener of an earlier release sends. It takes no part in ordering. Show a check by its word, and decide by the status groups, not by the word. The listener does not check the word's form: the Legion daemon keeps only a word of the form `^[a-z_]{1,32}$` (`conclusionWord`, `packages/daemon/internal/intake/decode.go`) and names a run with any other word by the conclusion the status groups give it.
+- The status groups `failed`, `running`, `passed`, `queued`, `cancelled` and `skipped`, each `{count, checks}`, put every check in one group by the listener's rule, so a word you do not know still lands in one group: a completed run with a word the listener does not know is in `failed`. `skipped` names each check whose run GitHub concluded `skipped`: that check ran nothing on the commit.
 - `generation`: the listener record's state version. `snapshot`: the record's hash.
 - A head publishes only when at least one check has a positive run id. Legacy checks without one appear in the status groups and the failing names, never in `check_runs`.
 
