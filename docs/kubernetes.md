@@ -93,7 +93,7 @@ It carries:
   The pod holds no credential for that repository and reads no repository mapping.
   A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
   A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
-  The tag an install recorded is read, by the launcher as it replaces an install and by each role's shim, without following a link or waiting on a fifo, and a tag file that is no regular file, or is larger than 256 bytes, is read as no install of the pin, which the next install replaces (`installedTag`, `internal/leakguard/install.go`).
+  The tag file is read without following a link or waiting on a fifo, and one that is no regular file or is past 256 bytes is read as no install of the pin (`installedTag`).
   A start whose check could not be installed is never sent, and is charged as a launch failure.
   The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
   The daemon and the image pins move together, and a rollback of one is a rollback of the other:
