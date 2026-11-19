@@ -307,6 +307,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a
 		// status write.
 		OutboxKindStepRecord: "",
+		// A plan record writes Dispatch the plan one run of an issue carries out (main's plan
+		// ratings, contract 168) and starts no turn, so the pause lets it run as a step record.
+		OutboxKindPlanRecord: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
