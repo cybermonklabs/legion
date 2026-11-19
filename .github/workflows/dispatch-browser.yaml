@@ -1114,8 +1114,9 @@ jobs:
   multiprocess:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The budgets below, this one and the three on steps, are measured: GitHub's jobs API over
-    # the 397 of the newest 400 ci.yaml runs that could be read, created between
+    # The budgets of the install, dashboard and sign-in steps below, and the job's from them, are
+    # measured (the connections step's is the floor, as the end of this comment says): GitHub's
+    # jobs API over the 397 of the newest 400 ci.yaml runs that could be read, created between
     # 2026-11-05T04:52:45Z and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12
     # push), over the 335 jobs of this name that concluded success. That window is before
     # cybermonklabs/legion#2771 took ci.yaml's push trigger away, which is why it holds push runs
@@ -1135,11 +1136,12 @@ jobs:
     # The job budget is the sum of its step budgets plus the measured maximum of every step
     # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min, until the job's Postgres moved
     # from a `services:` container to the harness's own (this job's head says why). That added
-    # two steps: the image's pull, which has no budget and counts at the 120 s the visual job's
-    # pull of the same digest is bounded at, and the connections read, which takes the
-    # two-minute floor until runs of it are measured. 4 + 4 + 2 + 2 min plus 135 s and 120 s =
-    # 16 min 15 s -> 17 min. With budgets on the steps, the `if: failure()` upload below still
-    # runs, which a cancelled job skips.
+    # two steps: the image's pull, which has no budget and counts at the 120 s the visual job
+    # counts its pull of the same digest at (the time a browser step spent before its stack's
+    # first output on the run that found the need; the pull took 13 s in run 44480885813), and the
+    # connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
+    # 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. With budgets on the steps, the
+    # `if: failure()` upload below still runs, which a cancelled job skips.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,

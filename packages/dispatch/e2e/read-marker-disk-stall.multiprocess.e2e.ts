@@ -1,7 +1,14 @@
-import { setTimeout as sleep } from "node:timers/promises";
+import { existsSync } from "node:fs";
 
 import { createIssue, createProject } from "./api";
-import { diskStallDir, diskStallVariable, endStall, stallDisk, stallLoaded } from "./disk-stall";
+import {
+  diskStallDir,
+  diskStallVariable,
+  endStall,
+  stallDisk,
+  stallEnvironment,
+  stallLoaded,
+} from "./disk-stall";
 import { connectedDot, documentEditor } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
@@ -18,17 +25,17 @@ import { asUser } from "./users";
  * long as the disk is silent. Merge-group run 44456291758 failed so, its next row's reset naming
  * `insert into user_document_reads ... (RowExclusiveLock, active)`.
  *
- * This row stalls the disk from the moment the page sends that write until the reset after it
- * has returned, for a minute at most, and requires the reset to empty the table all the same:
- * true only of a database whose commits do not wait for the disk, as the harness's own Postgres
- * does not (e2e/harness-postgres.ts). It needs a Postgres that can be stalled, which
- * `DISPATCH_E2E_PG_STALL_DIR` names (e2e/disk-stall.ts), and is skipped without one.
+ * This row stalls the disk as the page sends that write, and keeps it stalled until the row ends:
+ * only the cleanup lets it go, so a reset that waits for the disk to answer waits out the row's
+ * own timeout and fails. Before the page closes, the write has reached the database: either its
+ * answer came, or a backend is committing it and waits on the disk. The reset must then empty the
+ * table with the disk still silent, true only of a database whose commits do not wait for the
+ * disk, as the harness's own Postgres does not (e2e/harness-postgres.ts). It needs a Postgres
+ * that can be stalled, which `DISPATCH_E2E_PG_STALL_DIR` names (e2e/disk-stall.ts), and is
+ * skipped without one.
  */
 
 const stallDir = diskStallDir();
-
-/** The longest the row keeps the disk silent, whatever the reset does. */
-const stallBoundMs = 60_000;
 
 const readMarkPath = /^\/api\/v1\/me\/documents\/[^/]+\/read$/;
 
@@ -42,6 +49,28 @@ async function statementsInFlight(): Promise<number> {
   );
 }
 
+/** How many backends are committing a read mark and waiting for the disk to take it: the one
+ *  flushing the WAL waits in `IO:WalSync`, and a commit behind it waits for its turn in
+ *  `LWLock:WALWrite`, as a read mark that reaches the server after another write began its flush
+ *  does. A commit in either wait takes no cancel. */
+async function readMarksWaitingOnTheDisk(): Promise<number> {
+  return Number(
+    await sql(
+      `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+         AND state = 'active'
+         AND ((wait_event_type = 'IO' AND wait_event = 'WalSync')
+           OR (wait_event_type = 'LWLock' AND wait_event = 'WALWrite'))
+         AND position('insert into user_document_reads' in query) > 0`
+    )
+  );
+}
+
+// The stall's one release, whatever ended the row: a timeout abandons the row's body, and the
+// hook still runs.
+test.afterEach(() => {
+  if (stallDir !== undefined) endStall(stallDir);
+});
+
 test("a read marker whose page closed while the database's disk did not answer holds nothing the next reset empties", async ({
   browser,
 }) => {
@@ -50,7 +79,7 @@ test("a read marker whose page closed while the database's disk did not answer h
     `${diskStallVariable} is unset, so this run's Postgres cannot be made to stop answering (e2e/disk-stall.ts)`
   );
   if (stallDir === undefined) return;
-  test.setTimeout(2 * stallBoundMs);
+  test.setTimeout(120_000);
   // The control: a run that names a stall directory its Postgres never loaded would stall
   // nothing and pass whatever the database does.
   expect(
@@ -66,7 +95,6 @@ test("a read marker whose page closed while the database's disk did not answer h
   });
 
   const context = await asUser(browser, "alice");
-  const bound = setTimeout(() => endStall(stallDir), stallBoundMs);
   try {
     const page = await context.newPage();
     const isReadMark = (method: string, url: string): boolean =>
@@ -93,8 +121,12 @@ test("a read marker whose page closed while the database's disk did not answer h
       holding = true;
       held.resolve(route);
     });
-    const answered = page
+    let answer: number | undefined;
+    void page
       .waitForResponse((response) => isReadMark(response.request().method(), response.url()))
+      .then((response) => {
+        answer = response.status();
+      })
       .catch(() => undefined);
     await page.reload();
     await expect(documentEditor(page)).toContainText("Read while the disk is silent.");
@@ -112,15 +144,35 @@ test("a read marker whose page closed while the database's disk did not answer h
       .toBeGreaterThanOrEqual(3);
     stallDisk(stallDir);
     await (await held.promise).continue();
-    // A second for the answer, which a database whose commit waits for the disk never sends;
-    // then the row ends and its page goes, as every row's does.
-    await Promise.race([answered, sleep(1_000)]);
+
+    // The write has reached the database before its page goes: it was answered, which a
+    // database whose commits wait for the disk cannot do now, or a backend is committing it and
+    // waits on the silent disk. A mark the page dropped before it reached the server, which is
+    // nothing the reset has to wait out, is neither, and fails here.
+    await expect
+      .poll(
+        async () => {
+          if (answer !== undefined) return `answered ${answer}`;
+          return (await readMarksWaitingOnTheDisk()) > 0 ? "committing on the silent disk" : "";
+        },
+        {
+          intervals: [100],
+          message:
+            "the read mark reached the database: answered 200, or its commit waits on the disk",
+        }
+      )
+      .toMatch(/^(answered 200|committing on the silent disk)$/);
+    // Then the row ends and its page goes, as every row's does.
     await context.close();
 
-    // The next row's reset, with the disk still silent.
+    // The next row's reset, with the disk still silent. A reset that needs the disk waits on it
+    // until the row's timeout; only the cleanup ends the stall.
     await resetDatabase();
+    expect(
+      existsSync(stallEnvironment(stallDir).PG_STALL_FILE),
+      "the disk was still stalled when the reset returned"
+    ).toBe(true);
   } finally {
-    clearTimeout(bound);
     endStall(stallDir);
     await context.close();
   }

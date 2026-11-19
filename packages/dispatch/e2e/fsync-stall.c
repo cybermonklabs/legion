@@ -5,8 +5,10 @@
  * record waits in fdatasync with its interrupts held, so it neither takes a cancel nor lets go of
  * its locks until the disk answers. Nothing else the server does changes.
  *
- * The calls are made with syscall(2) rather than found with dlsym, so the library needs no glibc
- * symbol newer than 2.2.5 and loads into an image whose glibc is older than the compiler's. */
+ * The calls are made with syscall(2) rather than found with dlsym, so the library takes from
+ * glibc only getenv, access, nanosleep and syscall, at GLIBC_2.2.5 on x86-64, and the stack
+ * protector's __stack_chk_fail, at GLIBC_2.4 (`objdump -T fsync-stall.so` lists them), and loads
+ * into an image whose glibc is older than the compiler's. */
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <sys/syscall.h>

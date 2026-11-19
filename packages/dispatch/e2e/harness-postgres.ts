@@ -5,10 +5,11 @@
  *  and hands it to that stack's Dispatch servers and psql as `DATABASE_URL`.
  *
  *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names: a
- *    developer's path on a machine with Docker and no Postgres binaries, and the `visual` job's
- *    of `.github/workflows/dispatch-browser.yaml`, which runs on the runner with only its
- *    Playwright command in a container, so the binaries of an image it does not run in are no
- *    route for it.
+ *    developer's path on a machine with Docker and no Postgres binaries, and the path of every
+ *    CI job that runs the suite on the runner rather than in the browser image - the `visual`,
+ *    `multiprocess` and `embedder` jobs of `.github/workflows/dispatch-browser.yaml` and the
+ *    browser half of `.github/workflows/ci-job-dispatch-two-builds.yaml` - since the binaries of
+ *    an image a job does not run in are no route for it.
  *  - `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is the `shard`
  *    and `alone` jobs' path and an issue pod's: those two jobs of that workflow run in a
  *    container that carries PostgreSQL 18 with `vector`, where there are Postgres binaries and
@@ -72,12 +73,14 @@ const superuserReserved = 3;
  *  a room, a lease or a socket, and nothing in that failure names the cause. The first stack
  *  that starts reads it, once per run.
  *
- *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every job of
- *  `.github/workflows/dispatch-browser.yaml` that starts stacks here sets it from a step that
- *  runs `connectionsArgs` before its browser step: the `shard` and `alone` jobs run in a
- *  container with no Go, so their `binaries` job runs it, and the `visual` job runs it in a step
- *  of its own, outside its browser step's budget. Unset, which is a developer's or an issue
- *  pod's run, where Go is installed, the harness runs `go` with `connectionsArgs` itself. */
+ *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every CI job that starts stacks here
+ *  sets it from a step that runs `connectionsArgs` before its browser step: the `shard` and
+ *  `alone` jobs of `.github/workflows/dispatch-browser.yaml` run in a container with no Go, so
+ *  their `binaries` job runs it, and the `visual`, `multiprocess` and `embedder` jobs of that
+ *  file and the `dispatch-two-builds` job of `.github/workflows/ci-job-dispatch-two-builds.yaml`
+ *  each run it in a step of their own, outside their browser steps' budgets. Unset, which is a
+ *  developer's or an issue pod's run, where Go is installed, the harness runs `go` with
+ *  `connectionsArgs` itself. */
 let maxConnections: Promise<number> | undefined;
 async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
   const given = env[pgConnectionsVariable];
@@ -175,7 +178,11 @@ export interface StackDatabase {
   readonly url: string;
   /** The port it serves on, which the harness logs and no other stack shares. */
   readonly port: number;
-  stop(): Promise<void>;
+  /** Stops the server. `keepLog` is a run the pool keeps its logs for, a failed one: the image
+   *  provider then prints the container's whole log on stderr before the container goes, since
+   *  it is the one record of what that server said, where the binaries provider's log is a file
+   *  under the run's directory (`postgres.log`), which the pool keeps or loses with the rest. */
+  stop(keepLog: boolean): Promise<void>;
 }
 
 /** The provider a run starts every stack's Postgres from. */
@@ -409,11 +416,14 @@ function binariesProvider(
   };
 }
 
-/** The container's own last lines, for a refusal that would otherwise say only that nothing
- *  answered: a server that exits at once leaves its reason there and nowhere else. */
-async function containerLog(container: string): Promise<string> {
+/** The container's own lines, the last 20 for a refusal that would otherwise say only that
+ *  nothing answered (a server that exits at once leaves its reason there and nowhere else), or
+ *  all of them for a failed run's record (`StackDatabase.stop`). */
+async function containerLog(container: string, tail: "20" | "all" = "20"): Promise<string> {
   try {
-    const { stdout, stderr } = await execFileAsync("docker", ["logs", "--tail", "20", container]);
+    const { stdout, stderr } = await execFileAsync("docker", ["logs", "--tail", tail, container], {
+      maxBuffer: 64 * 1024 * 1024,
+    });
     const lines = `${stdout}${stderr}`.trim();
     return lines === "" ? "it logged nothing" : lines;
   } catch (error) {
@@ -511,7 +521,16 @@ function imageProvider(
           return {
             port,
             url,
-            stop: async () => {
+            stop: async (keepLog) => {
+              // The log of a `services:` container, which GitHub printed at the end of the job,
+              // is what merge-group run 44456291758's failure was read from; a stack's
+              // container goes with its run, so a failed run prints it here first.
+              if (keepLog) {
+                console.error(
+                  `e2e/harness-postgres.ts: ${what} (container ${container}) logged:\n` +
+                    (await containerLog(container, "all"))
+                );
+              }
               await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
             },
           };

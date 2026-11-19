@@ -286,7 +286,7 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
         stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
       } catch (error) {
-        await database?.stop();
+        await database?.stop(true);
         throw error;
       }
     };
@@ -340,7 +340,7 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
 export async function stopStacks(keepLogs: boolean): Promise<void> {
   stopped = true;
   await Promise.allSettled(stacks.map((stack) => stack.harness.stop()));
-  await Promise.allSettled(stacks.map((stack) => stack.database?.stop()));
+  await Promise.allSettled(stacks.map((stack) => stack.database?.stop(keepLogs)));
   clearRunDir(keepLogs);
   stacks.length = 0;
   stopped = false;
