@@ -211,6 +211,35 @@ CONTROLS = [
      'export const f = (s: string) => `${plural(s.length, "character")} left`;\n'
      'export const g = (t: string) => {\n  const word = t.length === 1 ? "character" : "characters";\n  return `${t.length} ${word} left`;\n};\n',
      ["instance | .length counts", "instance | .length counts"]),
+    ("a count of the text the message quotes is that text's length in each unit", "packages/envoy-client/src/quoted.ts",
+     'export const dash = (flag: string) => `${flag} - sends the one character "-".`;\n', ["quoted text"]),
+    ("a quoted text past ASCII passes nothing, and its count is judged by its counter",
+     "packages/envoy/internal/planted/quoted.go",
+     'package planted\n\nfunc q(s string) error {\n\tif len(s) != 1 {\n'
+     '\t\treturn fmt.Errorf("want the one character \\"é\\"")\n\t}\n\treturn nil\n}\n',
+     ["instance | len() counts bytes"]),
+    ("a count of the text prose quotes is that text's length in each unit; one past ASCII, or of another length, fires",
+     "docs/planted/quoted.md",
+     "It records the one character `-` as its evidence.\n\nIt records the one character `é` as its evidence.\n\n"
+     "It records the two characters `-` as its evidence.\n",
+     ["quoted text", "instance", "instance"]),
+    ("a bound is judged by its own comparison, a name holding its number included, not by a len() beside it in the if",
+     "packages/envoy/internal/planted/own.go",
+     'package planted\n\nfunc o(s, b string) error {\n\tif utf8.RuneCountInString(s) > 40 || len(b) > 100 {\n'
+     '\t\treturn fmt.Errorf("a name is at most 40 characters")\n\t}\n'
+     '\tif s != b || len(s) != len(b) {\n\t\treturn fmt.Errorf("want b with one character changed")\n\t}\n'
+     '\tconst most = 40\n\tif utf8.RuneCountInString(b) > most {\n\t\treturn fmt.Errorf("b is at most 40 characters")\n\t}\n'
+     '\treturn nil\n}\n',
+     ["code points", "instance | cannot judge: a bound, and no comparison of its condition holds it", "code points"]),
+    ("a constant named as the count is judged by each comparison of it", "packages/envoy-client/src/note.ts",
+     "const NOTE_MAX = 280;\nexport const fits = (t: string) => t.length <= NOTE_MAX;\n"
+     'export const rule = "a note is at most NOTE_MAX characters";\n', ["instance | .length counts"]),
+    ("a here-document's line that starts with its count is read as text", "packages/envoy/scripts/planted-heredoc.sh",
+     "#!/usr/bin/env bash\ncat <<'EOF'\n40 characters is the most a label holds\nEOF\n", ["instance | cannot judge: a bound"]),
+    ("a count in a parenthesis is of the clause before it", "docs/planted/paren.md",
+     "A name is a DNS-1035 label (a letter first, at most 63 characters).\n", ["ASCII grammar"]),
+    ("a section number is no count", "docs/planted/section.md", "## §2.3 Insecure characters\n\nSee § 4 Characters.\n", []),
+    ("a \\u0063 in markdown is no escape", "docs/planted/escape.md", "A title is at most 2000 \\u0063haracters.\n", []),
     ("an exempt site stays quiet, and fires once its comment or its reason is gone", None, None, None),
 ]
 
@@ -293,6 +322,7 @@ LEFT_OUT_CASES = [
     ("packages/daemon/cmd/legion/testdata/gh-help-walk/planted.txt", FIXTURE[0]),
     ("scripts/planted.cast", FIXTURE[0]),
     ("packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/planted.md", FIXTURE[0]),
+    ("packages/envoy/internal/dispatch/pmdoc/testdata/planted.md", FIXTURE[0]),
     ("scripts/approval-eval/fixtures/planted.md", FIXTURE[0]),
 ]
 MUST_READ = [

@@ -30,6 +30,7 @@ LEFT_OUT = [
     (re.compile(r"^packages/daemon/cmd/legion/testdata/gh-help(?:-walk)?/"), *FIXTURE),
     (re.compile(r"\.cast$"), *FIXTURE),
     (re.compile(r"^packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/"), *FIXTURE),
+    (re.compile(r"^packages/envoy/internal/dispatch/pmdoc/testdata/"), *FIXTURE),
     (re.compile(r"^scripts/approval-eval/fixtures/"), *FIXTURE),
 ]
 BINARY = "a binary: it holds a NUL byte"
