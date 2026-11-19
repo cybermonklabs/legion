@@ -189,16 +189,13 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 	if s.pool == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	recorded, err := s.records.Issue(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	return recorded, tx.Commit(ctx)
+	var recorded *record.Issue
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		recorded, err = s.records.Issue(ctx, tx, issue)
+		return err
+	})
+	return recorded, err
 }
 
 // treeMembers is every record of tree, read in one short read-only transaction: what a handler
@@ -209,16 +206,13 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 	if s.pool == nil || s.records == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	members, err := s.records.TreeIssues(ctx, tx, tree)
-	if err != nil {
-		return nil, err
-	}
-	return members, tx.Commit(ctx)
+	var members []record.Issue
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		members, err = s.records.TreeIssues(ctx, tx, tree)
+		return err
+	})
+	return members, err
 }
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
@@ -747,7 +741,7 @@ func pendingAncestor(child dispatch.Issue, byKey map[string]releasedChild, pendi
 }
 
 func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, issue string) bool {
-	if err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.DeleteReleaseRetry(r.Context(), tx, issue)
 	}); err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not clear the release retry of %s", issue))
@@ -1077,17 +1071,15 @@ func (s *server) readReleasedBefore(ctx context.Context, children []releasedChil
 	if s.pool == nil {
 		return errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for i := range children {
-		if children[i].before, err = s.records.Issue(ctx, tx, children[i].view.Key); err != nil {
-			return err
+	return store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		for i := range children {
+			var err error
+			if children[i].before, err = s.records.Issue(ctx, tx, children[i].view.Key); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit(ctx)
+		return nil
+	})
 }
 
 // releaseOrder is the wave in the request's order, except that each child comes after every child
@@ -1172,11 +1164,6 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 	if s.pool == nil {
 		return nil, nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var waitedOn []string
 	for _, child := range children {
 		waitedOn = append(waitedOn, child.view.BlockedBy...)
@@ -1184,27 +1171,30 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 	// The mirror's rows are keyed by the Dispatch project key the issues are filed under, never
 	// by the claim project token: a read with the token finds nothing wherever the two differ,
 	// which in a deployment is always (Options.Project, Options.DispatchProject).
-	rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, waitedOn)
-	if err != nil {
-		return nil, nil, err
-	}
 	started, held := []string{}, []HeldChild{}
-	for _, child := range children {
-		after, err := s.records.Issue(ctx, tx, child.view.Key)
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, waitedOn)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
-		switch {
-		case startedByRelease(child.before, after):
-			started = append(started, child.view.Key)
-		case runsPhase(after):
-		default:
-			if unfinished := blockers.UnfinishedOf(rows, child.view.BlockedBy); len(unfinished) > 0 {
-				held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
+		for _, child := range children {
+			after, err := s.records.Issue(ctx, tx, child.view.Key)
+			if err != nil {
+				return err
+			}
+			switch {
+			case startedByRelease(child.before, after):
+				started = append(started, child.view.Key)
+			case runsPhase(after):
+			default:
+				if unfinished := blockers.UnfinishedOf(rows, child.view.BlockedBy); len(unfinished) > 0 {
+					held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
+				}
 			}
 		}
-	}
-	return started, held, tx.Commit(ctx)
+		return nil
+	})
+	return started, held, err
 }
 
 // startedByRelease says whether the release started a child's first phase: its record after the
@@ -1500,15 +1490,10 @@ func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
 // one that may accept the issue. The walk reads every parent in one read-only transaction, opened
 // only when it has a parent to read.
 func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
-	var tx pgx.Tx
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
 	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
 	seen := map[string]bool{}
-	for current := &recorded; ; {
+	current := &recorded
+	for {
 		if current.Key == grant.Issue {
 			return true, nil
 		}
@@ -1516,23 +1501,33 @@ func (s *server) owns(ctx context.Context, grant credential.Grant, recorded reco
 			return byRoot, nil
 		}
 		seen[current.Key] = true
-		if tx == nil {
-			if s.pool == nil {
-				return false, errors.New("record dependencies are unavailable")
+		if s.pool == nil {
+			return false, errors.New("record dependencies are unavailable")
+		}
+		var owned bool
+		err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			for {
+				parent, err := s.records.Issue(ctx, tx, *current.Parent)
+				if err != nil {
+					return err
+				}
+				if parent == nil || parent.Tree != grant.Tree {
+					owned = byRoot
+					return nil
+				}
+				current = parent
+				if current.Key == grant.Issue {
+					owned = true
+					return nil
+				}
+				if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
+					owned = byRoot
+					return nil
+				}
+				seen[current.Key] = true
 			}
-			var err error
-			if tx, err = s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}); err != nil {
-				return false, err
-			}
-		}
-		parent, err := s.records.Issue(ctx, tx, *current.Parent)
-		if err != nil {
-			return false, err
-		}
-		if parent == nil || parent.Tree != grant.Tree {
-			return byRoot, nil
-		}
-		current = parent
+		})
+		return owned, err
 	}
 }
 

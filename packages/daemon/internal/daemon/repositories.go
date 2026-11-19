@@ -1402,7 +1402,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	var superset []ghrepo.Repository
 	if prepublished {
 		union := append(w.repositories.Accepted(), served...)
-		if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			superset, err = w.heardRepositories(ctx, tx, union)
 			return err
@@ -1430,7 +1430,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// not in it.
 	var heard []ghrepo.Repository
 	var added, removed []string
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the mapping's publication with admission: %w", err)
 		}
@@ -1456,6 +1456,16 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 		// this snapshot and the narrowing, would find its repository held, add nothing, and be
 		// narrowed out of what intake hears while the record names it.
 		w.heard.Store(&heard)
+		// The delta is this read's alone: a retry's set answers none. So its line is the commit's
+		// hook, which a reply the transaction lost does not drop, and it is written before the
+		// narrowing below, whose failure the refresher's retry repairs.
+		refusals := refusalReasons(w.repositories.Refused())
+		withoutWebhookApp := webhookGapReasons(w.repositories.WithoutWebhookApp())
+		heardNames := repositoryNames(heard)
+		store.OnCommit(ctx, func() {
+			w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
+				"refused", refusals, "withoutWebhookApp", withoutWebhookApp, "heard", heardNames)
+		})
 		return nil
 	}); err != nil {
 		return err
@@ -1487,9 +1497,6 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	// record whose own update JetStream refused (heardPending): the snapshot read that record, so
 	// the repository it names is in what was just published.
 	w.heardPending.Store(false)
-	w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
-		"refused", refusalReasons(w.repositories.Refused()), "withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()),
-		"heard", repositoryNames(heard))
 	return nil
 }
 
@@ -2585,7 +2592,7 @@ const mappingReadWait = time.Second
 func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository, error) {
 	var heard []ghrepo.Repository
 	served := w.repositories.Accepted()
-	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if heard, err = w.heardRepositories(ctx, tx, served); err != nil {
 			return err
@@ -2893,7 +2900,7 @@ func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghre
 // recordOf is key's issue record, nil when the workflow does not record it.
 func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = w.records.Issue(ctx, tx, key)
 		return err
@@ -3091,7 +3098,7 @@ func (w *workflowRuntime) prepareRecorded(issue intake.DispatchIssue, recorded *
 // from Dispatch.
 func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch.IssueSummary) (map[string]*record.Issue, ancestry, error) {
 	var issues []record.Issue
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issues, err = w.records.Issues(ctx, tx)
 		return err
@@ -3143,7 +3150,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 		return issue, nil
 	}
 	var roots []record.Issue
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		roots, err = w.records.QueuedRootsUnder(ctx, tx, issue.Key)
 		return err

@@ -167,7 +167,7 @@ func (r *outbox) writeSettlement(ctx context.Context, root string, row int64, wr
 // (record.Notice.Published), since one key is one telling however many rows publish it. A start
 // needs none: its claim records the row with the delivery (supervise.Claim.DeliveredRows).
 func (r *outbox) toldKept(ctx context.Context, root, key string) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := r.records.MarkProcessed(ctx, tx, record.KeptToldSource, key)
 		return err
 	}); err != nil {
@@ -196,7 +196,7 @@ func (r *outbox) settleTold(ctx context.Context, row record.OutboxRow, payload r
 	// copy's being the row it copies (record.Notice.Published).
 	root := row.Issue
 	_, key := payload.Published(row.ID)
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		told, err := r.records.Processed(ctx, tx, record.KeptToldSource, key)
 		if err != nil || !told {
 			return err

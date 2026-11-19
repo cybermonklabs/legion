@@ -549,7 +549,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 // still queues no second row.
 func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 	publish := record.GatedStepsPublish{Project: w.dispatchProject, Steps: w.gatedSteps}
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.records.EnqueueGatedSteps(ctx, tx, publish, time.Now().UTC())
 	}); err != nil {
 		return fmt.Errorf("queue the gated-steps publish of %s: %w", w.dispatchProject, err)
@@ -884,7 +884,7 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 // record only for a claim the workflow never made.
 func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ supervise.Delivery) (bool, error) {
 	var hears bool
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		root, err := w.records.Issue(ctx, tx, c.Tree)
 		if err != nil || root == nil {
 			hears = err == nil
@@ -1046,7 +1046,7 @@ func (w *workflowRuntime) treeClosable(ctx context.Context, c supervise.Claim) (
 // a lock of the daemon's.
 func (w *workflowRuntime) recordedIssue(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue
-	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = w.records.Issue(ctx, tx, key)
 		return err
@@ -1980,12 +1980,13 @@ func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
 // the work of the entry its phases row names, or a stalled root architect no wake has told —
 // decided over the project exactly as that pass decides it.
 func (w *workflowRuntime) owesEntryWork(ctx context.Context) (bool, error) {
-	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return w.admission.OwesEntryWork(ctx, tx)
+	var owed bool
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		owed, err = w.admission.OwesEntryWork(ctx, tx)
+		return err
+	})
+	return owed, err
 }
 
 // promoteAfterHoldClears applies one synthetic DispatchConsumerPosition fact, its event id never

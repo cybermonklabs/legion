@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The boot catch-up of the roots whose own architect runs or waits on a person (at admitted in a
@@ -199,7 +200,7 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 	}
 	var roots []catchUpRoot
 	listing, cancel := context.WithTimeout(ctx, bootTimeout)
-	err := pgx.BeginFunc(listing, w.pool, func(tx pgx.Tx) error {
+	err := store.TransactWith(listing, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := w.records.Issues(listing, tx)
 		if err != nil {
 			return err

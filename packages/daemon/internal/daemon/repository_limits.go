@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // limitedRead is a mapped repository whose default-branch read GitHub refused for its rate limit
@@ -152,7 +153,7 @@ func (w *workflowRuntime) recordedBranches(ctx context.Context) (map[string]ghbr
 	read, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	var issues []record.Issue
-	if err := pgx.BeginTxFunc(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(read, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issues, err = w.records.Issues(read, tx)
 		return err

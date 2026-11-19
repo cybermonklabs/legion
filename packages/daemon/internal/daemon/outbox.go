@@ -417,7 +417,7 @@ func (r *outbox) noteLimit(row record.OutboxRow, err error) {
 }
 
 func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
@@ -703,7 +703,7 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 
 // retryAt returns row to the outbox, due again at nextAt, with cause as its last error.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
 	}); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", row.ID, err)
@@ -1403,7 +1403,7 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 		return errors.New("role holders executor has no Dispatch client")
 	}
 	var live []record.RoleHolder
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		live, err = r.records.LiveRoleHolders(ctx, tx, payload.Issue)
 		return err
@@ -1540,7 +1540,7 @@ func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payl
 func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	var issue, root *record.Issue
 	var handover *record.Handover
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(ctx, tx, row.Issue)
 		if err != nil || issue == nil {
@@ -2748,7 +2748,7 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 			continue
 		}
 		var oldRoot *record.Issue
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			oldRoot, err = r.records.Issue(ctx, tx, held.Tree)
 			return err
@@ -2819,7 +2819,7 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 // just before the executor acts on a row.
 func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, error) {
 	var root *record.Issue
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		root, err = r.records.Issue(ctx, tx, issue.Tree)
 		return err
@@ -2844,7 +2844,7 @@ func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, e
 func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (*record.Issue, string, error) {
 	var root *record.Issue
 	waitsFor := ""
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !first {
 			return err
@@ -3107,24 +3107,41 @@ func (r *outbox) issueSandboxName(issue string) string {
 // on without it left the pod standing with its roles resumed and a copy of their work waiting
 // in the database for the issue's next pod, which would restore it over everything they pushed
 // in between.
+//
+// The hold the cancel records (store.RecordPodHold) commits in the cancel's own transaction,
+// joined to CancelIssueRelease's under its lifecycle serializer, so it is ordered with every other
+// hold record: a record written after the commit, late, would end the streak a newer pass opened.
+// A hold that cannot be recorded fails the cancel, and the row's lane runs it again. The line is
+// the commit's hook, so a cancel whose reply is lost and that the store says committed still says
+// so.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
-	// The second answer is whether the release that was cancelled suspended no role: such a
-	// release resumes nothing, so the empty set of resumed roles is the whole story rather than
-	// a release whose claims another path took over, and the line must not say that the issue's
-	// roles go on in the pod, since no role of this issue is running anywhere.
-	resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
-	if err != nil {
-		return err
-	}
-	if suspendsNoRole {
-		r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
-			"issue", issue, "hold", hold.String(), "reason", why)
-	} else {
-		r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
-			"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
-	}
-	r.recordPodHold(ctx, issue, hold)
-	return nil
+	return store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		// The second answer is whether the release that was cancelled suspended no role: such a
+		// release resumes nothing, so the empty set of resumed roles is the whole story rather
+		// than a release whose claims another path took over, and the line must not say that the
+		// issue's roles go on in the pod, since no role of this issue is running anywhere.
+		resumed, suspendsNoRole, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow)
+		if err != nil {
+			return err
+		}
+		if r.supervisor != nil && r.supervisor.store != nil {
+			// The teardown reads a hold and not the view behind it, so its holds carry no detail.
+			if err := r.supervisor.store.RecordPodHold(ctx, store.PodHold{Project: r.project, Issue: issue,
+				Reason: hold.String(), At: time.Now().UTC()}); err != nil {
+				return err
+			}
+		}
+		store.OnCommit(ctx, func() {
+			if suspendsNoRole {
+				r.log.Info("outbox: the release of an issue's pod that no role can use did not finish; the pod stands with every claim of it as it was",
+					"issue", issue, "hold", hold.String(), "reason", why)
+				return
+			}
+			r.log.Info("outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod",
+				"issue", issue, "hold", hold.String(), "reason", why, "resumed", resumed)
+		})
+		return nil
+	})
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
@@ -3333,7 +3350,7 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 // know. It is read just before the row acts, as every other fence of a row is.
 func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		gates, err = r.records.GatesOf(ctx, tx, issue.Tree)
 		return err
@@ -3478,7 +3495,7 @@ func (r *outbox) checkBound(ctx context.Context, row record.OutboxRow) error {
 // its own just before the executor acts on a row.
 func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.ProductionCheck, error) {
 	var check *record.ProductionCheck
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		check, err = r.records.ProductionCheck(ctx, tx, issue)
 		return err
@@ -3495,7 +3512,7 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 // reading a number above its own is reading a later entry of the same phase.
 func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) (int64, error) {
 	var entry int64
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := r.records.Phases(ctx, tx, issue)
 		if err != nil {
 			return err
@@ -3640,7 +3657,7 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 // transaction shape and one failure message for it.
 func (r *outbox) recordedIssue(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(ctx, tx, key)
 		return err

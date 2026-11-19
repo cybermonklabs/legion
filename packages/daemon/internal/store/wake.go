@@ -118,7 +118,7 @@ func CancelPodBackstops(ctx context.Context, tx pgx.Tx, project, issue string, r
 // backstops is the whole of what taking a released pod over leaves to do, since a wake's own
 // record is the resume the index holds (TakePodWake).
 func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, "") })
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error { return CancelPodBackstops(ctx, tx, project, issue, "") })
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
@@ -132,7 +132,7 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string)
 func (s *Store) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
 	records := &PodRecords{store: s, project: project}
 	var taken bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		taken, err = records.TakePodWake(ctx, tx, issue, role, kind, at)
 		return err
@@ -144,7 +144,7 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, role cla
 // release's own arming of backstops reads, and what a caller outside a fact transaction asks.
 func (s *Store) ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error) {
 	var claims []supervise.Claim
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		claims, err = ReleasedClaimsOf(ctx, tx, project, issue)
 		return err

@@ -413,7 +413,7 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 // issueTree is the root of the tree of issue, as recorded, and whether that tree lingers or has
 // closed. An issue that is not recorded has no tree to finish.
 func (r *outbox) issueTree(ctx context.Context, issue string) (root string, lingers bool, err error) {
-	err = pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err = store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		recorded, err := r.records.Issue(ctx, tx, issue)
 		if err != nil || recorded == nil {
 			return err
@@ -539,7 +539,7 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) error {
 	now := r.now()
 	released := []record.OutboxRow{}
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		waiting, err := r.records.WaitingNotices(ctx, tx, r.dispatchProject, now)
 		if err != nil {
 			return err

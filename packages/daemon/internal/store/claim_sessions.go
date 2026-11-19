@@ -45,7 +45,7 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 		return supervise.CompareHolds(holds[a], holds[b])
 	})
 	holders := make([]claim.Token, len(holds))
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		added := int64(0)
 		for _, i := range order {
 			h := holds[i]
@@ -88,12 +88,17 @@ func (s *Store) HoldSessions(ctx context.Context, project string, token claim.To
 // name order (supervise.Store.ClaimHolds): what an operator's release reads before it asks the
 // secrets broker which of them it still carries.
 func (s *Store) ClaimHolds(ctx context.Context, project string, token claim.Token) ([]supervise.Hold, error) {
-	rows, err := s.pool.Query(ctx, `select kind, name from claim_sessions where project = $1 and claim = $2
-		order by kind collate "C", name collate "C"`, project, string(token))
-	if err != nil {
-		return nil, fmt.Errorf("read the names %s holds: %w", token, err)
-	}
-	holds, err := pgx.CollectRows(rows, scanHold)
+	var holds []supervise.Hold
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select kind, name from claim_sessions where project = $1 and claim = $2
+			order by kind collate "C", name collate "C"`, project, string(token))
+		if err != nil {
+			return err
+		}
+		var errCollect error
+		holds, errCollect = pgx.CollectRows(rows, scanHold)
+		return errCollect
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read the names %s holds: %w", token, err)
 	}
@@ -240,7 +245,7 @@ func sortedHolds(recorders ...map[supervise.Hold][]claim.Token) []supervise.Hold
 // the order HoldSessions takes them in, so it never deadlocks with a registration.
 func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, error) {
 	held := 0
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		current, abandoned, _, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err
@@ -305,7 +310,7 @@ const conflictHoldersQuery = `select r.kind, r.name, h.claim
 // record, about 4.5 names a claim, not what the table has gathered (reviews N2 and F2 of #4220).
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		current, abandoned, unholdable, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err

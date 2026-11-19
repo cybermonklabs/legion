@@ -93,7 +93,7 @@ func (r *outbox) Run(ctx context.Context) {
 // list; a lane whose rows a lapsed lease held back is the one it is for.
 func (r *outbox) sweep(ctx context.Context) {
 	var lanes []record.LaneKey
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		lanes, err = r.records.UnfinishedLanes(ctx, tx, r.dispatchProject)
 		return err
@@ -244,7 +244,7 @@ func (r *outbox) drain(ctx context.Context, issue string, kinds []record.OutboxK
 // issue "" is every issue of the project, kinds nil every kind.
 func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) ([]record.OutboxRow, error) {
 	var rows []record.OutboxRow
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = r.records.DueRows(ctx, tx, r.dispatchProject, issue, kinds, now)
 		return err
@@ -258,7 +258,7 @@ func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.Outbo
 func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) (time.Time, bool, error) {
 	var at time.Time
 	var ok bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		at, ok, err = r.records.NextDue(ctx, tx, issue, kinds, now)
 		return err
@@ -281,7 +281,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	now := r.now().UTC()
 	var row record.OutboxRow
 	var claimed bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		row, claimed, err = r.records.ClaimRow(ctx, tx, listed.ID, now, outboxLease)
 		return err
@@ -416,7 +416,7 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow) *leaseRen
 // found nothing is reported only while the run is still on.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		held, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
 		return err
@@ -436,7 +436,7 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 // (record.Store.HeldRows): each that has waited heldWarnAfter is logged, once per run of this row.
 func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held []record.HeldRow
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		held, err = r.records.HeldRows(ctx, tx, r.dispatchProject, row.Issue, now)
 		return err

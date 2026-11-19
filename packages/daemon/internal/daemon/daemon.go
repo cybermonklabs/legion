@@ -1179,7 +1179,7 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 			return experiment.Arms{}, nil
 		}
 		var recorded map[string][]record.Assignment
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			recorded, err = records.AssignmentsFor(ctx, tx, keys)
 			return err

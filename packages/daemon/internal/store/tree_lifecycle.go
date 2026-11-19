@@ -39,7 +39,7 @@ func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree str
 func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority,
 	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
 	var lifecycle treelifecycle.Lifecycle
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		opened, err := treelifecycle.Open(ctx, tx, project, tree, authority)
 		if err != nil {
 			return err
@@ -93,7 +93,7 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	if claim.IsController(c.Role, c.Issue, c.Tree) {
 		return nil
 	}
-	return s.Tx(ctx, func(tx pgx.Tx) error {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.CheckWork(ctx, tx, c.Project, c.Tree, c.TreeEpoch); err != nil {
 			return fmt.Errorf("launch claim %s: %w", c.Token, err)
 		}
@@ -112,7 +112,7 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	var reserved bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree st
 // cleanup confirmed reserves nothing, so the operator's retry answers as the finished close it is.
 func (s *Store) ReserveOperatorTreeCleanup(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		reserved, err := treelifecycle.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityOperator)
 		if err != nil {
 			return err
@@ -224,7 +224,7 @@ type TreeReleaser interface {
 // the tree's next epoch. A caller whose reservation is no longer current releases nothing. A retry
 // after a failed release runs it again: releasing what is already gone succeeds.
 func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser TreeReleaser) error {
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.CheckReservation(ctx, tx, project, tree, epoch); err != nil {
 			return err
 		}
@@ -243,7 +243,7 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 	if err := releaser.CleanupTree(ctx, tree); err != nil {
 		return fmt.Errorf("release the resources of tree %s: %w", tree, err)
 	}
-	return s.Tx(ctx, func(tx pgx.Tx) error {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch)
 	})
 }

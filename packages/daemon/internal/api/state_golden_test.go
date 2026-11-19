@@ -1241,7 +1241,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     `firstTurnAt` is left out until something observes it;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
-//     behind it and so carries no detail at all (outbox.recordPodHold).
+//     behind it and so carries no detail at all (outbox.cancelRelease).
 func TestReleaseRecordsResponseGolden(t *testing.T) {
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{

@@ -132,16 +132,18 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 		at = received
 	}
 	var known bool
-	err := s.pool.QueryRow(ctx, `with reported as (
-		update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
-			activity_next_reminder_at = $5, updated_at = now()
-		where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
-		select exists (select 1 from claims where token = $1 and generation = $6)`,
-		// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
-		// architect's worker-background-stalled notice and the daemon's log.
-		string(token), at, a.BackgroundWork.Running,
-		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
-	).Scan(&known)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `with reported as (
+			update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
+				activity_next_reminder_at = $5, updated_at = now()
+			where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
+			select exists (select 1 from claims where token = $1 and generation = $6)`,
+			// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
+			// architect's worker-background-stalled notice and the daemon's log.
+			string(token), at, a.BackgroundWork.Running,
+			strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
+		).Scan(&known)
+	})
 	if err != nil {
 		return false, fmt.Errorf("put the activity of claim %s: %w", token, err)
 	}
@@ -183,23 +185,25 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 //     writes all six, so no field of one call is ever read beside a field of another.
 func (s *Store) PutClaimStep(ctx context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
 	var known bool
-	err := s.pool.QueryRow(ctx, `with stepped as (
-		update claims set step_at = coalesce($2, step_at),
-			turn_started_at = coalesce($3, turn_started_at),
-			step_tool = case when $5 = '' then step_tool else $4 end,
-			step_call_id = case when $5 = '' then step_call_id else $5 end,
-			step_args_bytes = case when $5 = '' then step_args_bytes else $6 end,
-			step_args_hash = case when $5 = '' then step_args_hash else $7 end,
-			step_started_at = case when $5 = '' then step_started_at else $8 end,
-			step_ended_at = case when $5 = '' then step_ended_at else $9 end,
-			updated_at = now()
-		where token = $1 and ($2::timestamptz is null or step_at is null or step_at <= $2)
-		returning token)
-		select exists (select 1 from claims where token = $1)`,
-		string(token), instant(step.At.UTC()), instant(step.TurnStartedAt.UTC()),
-		step.Tool, step.CallID, step.ArgsBytes, step.ArgsHash,
-		instant(step.StartedAt.UTC()), instant(step.EndedAt.UTC()),
-	).Scan(&known)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `with stepped as (
+			update claims set step_at = coalesce($2, step_at),
+				turn_started_at = coalesce($3, turn_started_at),
+				step_tool = case when $5 = '' then step_tool else $4 end,
+				step_call_id = case when $5 = '' then step_call_id else $5 end,
+				step_args_bytes = case when $5 = '' then step_args_bytes else $6 end,
+				step_args_hash = case when $5 = '' then step_args_hash else $7 end,
+				step_started_at = case when $5 = '' then step_started_at else $8 end,
+				step_ended_at = case when $5 = '' then step_ended_at else $9 end,
+				updated_at = now()
+			where token = $1 and ($2::timestamptz is null or step_at is null or step_at <= $2)
+			returning token)
+			select exists (select 1 from claims where token = $1)`,
+			string(token), instant(step.At.UTC()), instant(step.TurnStartedAt.UTC()),
+			step.Tool, step.CallID, step.ArgsBytes, step.ArgsHash,
+			instant(step.StartedAt.UTC()), instant(step.EndedAt.UTC()),
+		).Scan(&known)
+	})
 	if err != nil {
 		return false, fmt.Errorf("put the step of claim %s: %w", token, err)
 	}
@@ -656,7 +660,7 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
 // queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
 
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or

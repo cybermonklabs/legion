@@ -1598,8 +1598,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		// checkReport) — applies instead of being answered as one already received. Beside it, a
 		// handler leaves a fact unmarked only where the refusal's cause can clear without changing
 		// the fact's id (Result.Unspent). An unmarked refusal of any other fact would make a
-		// refused handoff apply on its next delivery, which those refusals exist to stop
-		// (dispatch://INFRA-714/spec R12).
+		// refused handoff apply on its next delivery, which those refusals exist to stop.
 		_, report := fact.(CheckReport)
 		if (report && result.Refusal != nil) || result.Unspent {
 			return record.NewStore().ForgetProcessed(ctx, tx, source, eventID)

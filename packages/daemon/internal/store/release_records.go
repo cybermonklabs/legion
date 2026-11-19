@@ -104,7 +104,7 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 		return 0, errors.New("a pod release record needs its project and issue")
 	}
 	var id int64
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
 			values ($1, $2, $3, $4, $5, $6) returning id`,
 			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
@@ -122,7 +122,10 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 // observation: a second observation of the same resume leaves the first time, which is the one
 // R5 measures.
 func (s *Store) MarkPodResumeReady(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `update pod_resumes set pod_ready_at = $2 where id = $1 and pod_ready_at is null`, id, at)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set pod_ready_at = $2 where id = $1 and pod_ready_at is null`, id, at)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stamp pod resume %d ready: %w", id, err)
 	}
@@ -132,7 +135,10 @@ func (s *Store) MarkPodResumeReady(ctx context.Context, id int64, at time.Time) 
 // MarkPodResumeFirstTurn stamps the woken role's first turn, which ends the resume R5 measures.
 // It is written once, as the pod-ready stamp is.
 func (s *Store) MarkPodResumeFirstTurn(ctx context.Context, id int64, at time.Time) error {
-	_, err := s.pool.Exec(ctx, `update pod_resumes set first_turn_at = $2 where id = $1 and first_turn_at is null`, id, at)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set first_turn_at = $2 where id = $1 and first_turn_at is null`, id, at)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stamp pod resume %d with its first turn: %w", id, err)
 	}
@@ -141,7 +147,10 @@ func (s *Store) MarkPodResumeFirstTurn(ctx context.Context, id int64, at time.Ti
 
 // MarkPodResumeStuck records a resume with no first turn ten minutes after its wake.
 func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
-	_, err := s.pool.Exec(ctx, `update pod_resumes set stuck = true where id = $1`, id)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `update pod_resumes set stuck = true where id = $1`, id)
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("mark pod resume %d stuck: %w", id, err)
 	}
@@ -229,7 +238,7 @@ func (s *Store) RecordPodHold(ctx context.Context, hold PodHold) error {
 	if hold.Project == "" || hold.Issue == "" || hold.Reason == "" {
 		return errors.New("a pod hold record needs its project, issue and reason")
 	}
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := endPodHoldStreaks(ctx, tx, hold.Project, hold.Issue, hold.Reason); err != nil {
 			return err
 		}
@@ -255,7 +264,7 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 	if project == "" || issue == "" {
 		return errors.New("ending a pod's hold streaks needs its project and issue")
 	}
-	if err := s.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return endPodHoldStreaks(ctx, tx, project, issue, "")
 	}); err != nil {
 		return fmt.Errorf("end the hold streaks of %s: %w", issue, err)

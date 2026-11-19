@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -71,45 +73,48 @@ func putCapabilityReport(ctx context.Context, db execer, report capabilities.Rep
 // process it has no way to recognise. A locator naming the claim alone — what a ready records for a
 // claim whose machine holds no process — names none, and is read as it is.
 func (s *Store) CapabilityReports(ctx context.Context) ([]capabilities.Report, error) {
-	rows, err := s.pool.Query(ctx, `select claim_token, generation, locator, measured_at, reported_at, report
-		from claim_capabilities order by claim_token`)
-	if err != nil {
-		return nil, fmt.Errorf("read capability reports: %w", err)
-	}
-	defer rows.Close()
 	var reports []capabilities.Report
-	for rows.Next() {
-		var (
-			report     capabilities.Report
-			token      string
-			generation int64
-			locator    []byte
-			document   []byte
-		)
-		if err := rows.Scan(&token, &generation, &locator, &report.MeasuredAt, &report.ReportedAt, &document); err != nil {
-			return nil, fmt.Errorf("read capability report: %w", err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select claim_token, generation, locator, measured_at, reported_at, report
+			from claim_capabilities order by claim_token`)
+		if err != nil {
+			return err
 		}
-		report.Claim, report.Generation = claim.Token(token), uint64(generation)
-		if err := json.Unmarshal(locator, &report.Locator); err != nil {
-			return nil, fmt.Errorf("read capability report of %s: decode its locator: %w", token, err)
-		}
-		if report.Locator != (runtime.Locator{Claim: report.Locator.Claim}) {
-			if err := report.Locator.Validate(); err != nil {
-				return nil, fmt.Errorf("read capability report of %s: %w", token, err)
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				report     capabilities.Report
+				token      string
+				generation int64
+				locator    []byte
+				document   []byte
+			)
+			if err := rows.Scan(&token, &generation, &locator, &report.MeasuredAt, &report.ReportedAt, &document); err != nil {
+				return fmt.Errorf("read capability report: %w", err)
 			}
+			report.Claim, report.Generation = claim.Token(token), uint64(generation)
+			if err := json.Unmarshal(locator, &report.Locator); err != nil {
+				return fmt.Errorf("read capability report of %s: decode its locator: %w", token, err)
+			}
+			if report.Locator != (runtime.Locator{Claim: report.Locator.Claim}) {
+				if err := report.Locator.Validate(); err != nil {
+					return fmt.Errorf("read capability report of %s: %w", token, err)
+				}
+			}
+			var decoded capabilityReportDocument
+			if err := json.Unmarshal(document, &decoded); err != nil {
+				return fmt.Errorf("read capability report of %s: decode its rows: %w", token, err)
+			}
+			report.ElapsedMs = decoded.ElapsedMs
+			report.Rows = make([]capabilities.Row, len(decoded.Rows))
+			for i, row := range decoded.Rows {
+				report.Rows[i] = capabilities.NewRow(capabilities.Name(row.Name), row.OK, row.Detail)
+			}
+			reports = append(reports, report)
 		}
-		var decoded capabilityReportDocument
-		if err := json.Unmarshal(document, &decoded); err != nil {
-			return nil, fmt.Errorf("read capability report of %s: decode its rows: %w", token, err)
-		}
-		report.ElapsedMs = decoded.ElapsedMs
-		report.Rows = make([]capabilities.Row, len(decoded.Rows))
-		for i, row := range decoded.Rows {
-			report.Rows[i] = capabilities.NewRow(capabilities.Name(row.Name), row.OK, row.Detail)
-		}
-		reports = append(reports, report)
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read capability reports: %w", err)
 	}
 	return reports, nil

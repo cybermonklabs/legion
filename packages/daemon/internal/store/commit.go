@@ -257,7 +257,7 @@ type outcomeUnknownError struct {
 }
 
 func (e *outcomeUnknownError) Error() string {
-	return fmt.Sprintf("%s: transaction %s: %s; %s", ErrCommitOutcomeUnknown, e.xid, e.lost, e.status)
+	return fmt.Sprintf("%v: transaction %s: %v; %v", ErrCommitOutcomeUnknown, e.xid, e.lost, e.status)
 }
 
 // Is makes the error ErrCommitOutcomeUnknown to errors.Is.

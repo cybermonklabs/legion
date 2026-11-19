@@ -49,7 +49,7 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		return false, errors.New("issue suspension requires issue, tree, both generations and its outbox row")
 	}
 	var act bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}

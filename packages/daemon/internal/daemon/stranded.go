@@ -73,7 +73,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // project's claims (ofProject); steps are the design-gate steps the deployment gates.
 func reportStranded(ctx context.Context, st *store.Store, records record.Store, project, projectToken string, steps []record.DesignStep, log *slog.Logger) {
 	var stranded []supervise.Claim
-	if err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := st.ClaimsTx(ctx, tx)
 		if err != nil {
 			return err

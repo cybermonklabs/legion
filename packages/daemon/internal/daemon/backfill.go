@@ -65,7 +65,7 @@ func backfillRepositories(ctx context.Context, pool *store.Pool, records record.
 func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if unfilled, err = records.UnfilledIssues(ctx, tx, project); err != nil {
 			return err
@@ -155,21 +155,21 @@ func fillRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 	if len(elsewhere) > 0 {
 		return fmt.Errorf("fill the repository of %s and restart", strings.Join(elsewhere, "; "))
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	// Each fill's line is a hook of the write's commit: a write whose reply is lost and that the
+	// store says committed still logs what it filled, and its retry, which selects no filled
+	// record, logs nothing twice.
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, fill := range fills {
 			if err := records.FillIssueRepository(ctx, tx, fill.key, fill.repo, fill.branch, fill.github); err != nil {
 				return err
 			}
+			store.OnCommit(ctx, func() {
+				log.Info("legion workflow backfill filled "+fill.key+" with "+fill.repo+"@"+fill.branch, "issue", fill.key, "repo", fill.repo,
+					"defaultBranch", fill.branch, "githubRepo", fill.github)
+			})
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	for _, fill := range fills {
-		log.Info("legion workflow backfill filled "+fill.key+" with "+fill.repo+"@"+fill.branch, "issue", fill.key, "repo", fill.repo,
-			"defaultBranch", fill.branch, "githubRepo", fill.github)
-	}
-	return nil
+	})
 }
 
 // issueWorkspaces is every workspace a tmux daemon provisioned for issue under stateDir, by the
@@ -239,7 +239,7 @@ func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Rep
 // is named.
 func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unnamed []record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		unnamed, err = records.UnnamedIssues(ctx, tx, project)
 		return err
@@ -262,19 +262,17 @@ func nameRepositories(ctx context.Context, pool *store.Pool, records record.Stor
 		}
 		names[issue.Key] = recordedSpelling(renames, issue.Repo, read.Name)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range unnamed {
 			if err := records.NameIssueRepository(ctx, tx, issue.Key, issue.Repo, names[issue.Key]); err != nil {
 				return err
 			}
+			name := names[issue.Key]
+			store.OnCommit(ctx, func() {
+				log.Info("legion workflow backfill named "+issue.Key+"'s repository "+issue.Repo+" as GitHub spells it, "+name,
+					"issue", issue.Key, "repo", issue.Repo, "githubRepo", name)
+			})
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	for _, issue := range unnamed {
-		log.Info("legion workflow backfill named "+issue.Key+"'s repository "+issue.Repo+" as GitHub spells it, "+names[issue.Key],
-			"issue", issue.Key, "repo", issue.Repo, "githubRepo", names[issue.Key])
-	}
-	return nil
+	})
 }

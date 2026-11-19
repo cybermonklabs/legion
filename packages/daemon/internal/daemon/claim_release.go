@@ -88,7 +88,7 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 	// The record, the tree's lifecycle and the claims the holder is judged against are read in
 	// one transaction, so they are one state of the record.
 	verdict := claimLeft
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		recorded, err := r.records.Issue(ctx, tx, row.Issue)
 		if err != nil || recorded == nil {
 			return err

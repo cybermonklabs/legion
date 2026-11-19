@@ -188,7 +188,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		return false, errors.New("an idle release needs its project and its issue")
 	}
 	var marked bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -351,7 +351,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 	}
 	var resumed []claim.Role
 	var suspendsNoRole bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}

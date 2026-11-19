@@ -201,10 +201,12 @@ func schemaVersion(ctx context.Context, db queryRower) (int, error) {
 // out; a row with no stopped_at is a boot that never shut down.
 func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (int64, error) {
 	var id int64
-	err := s.pool.QueryRow(ctx,
-		"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
-		project, at,
-	).Scan(&id)
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
+			project, at,
+		).Scan(&id)
+	})
 	if err != nil {
 		return 0, fmt.Errorf("record the boot of %s: %w", project, err)
 	}
@@ -214,11 +216,16 @@ func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (i
 // StopBoot stamps the end of one boot. An id no row carries is refused rather
 // than ignored: the caller is stamping a boot that was never recorded.
 func (s *Store) StopBoot(ctx context.Context, id int64, at time.Time) error {
-	tag, err := s.pool.Exec(ctx, "update daemon_boot set stopped_at = $2 where id = $1", id, at)
+	var found bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, "update daemon_boot set stopped_at = $2 where id = $1", id, at)
+		found = tag.RowsAffected() != 0
+		return err
+	})
 	if err != nil {
 		return fmt.Errorf("stop boot %d: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
+	if !found {
 		return fmt.Errorf("stop boot %d: no boot has that id", id)
 	}
 	return nil
