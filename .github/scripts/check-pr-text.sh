@@ -309,7 +309,9 @@ elif [ -n "$cutoff" ]; then
   # other line empty, with each issue-key-shaped word or Dispatch link that one of the diff's
   # removed lines also holds blanked as <carried>: one removed occurrence carries one added one,
   # across the diff's files in their order, so a key moved or a line re-worded around its link is
-  # not new text, and a second copy of it is.
+  # not new text, and a second copy of it is. carry.awk runs under LC_ALL=C, so it reads bytes and
+  # folds the case of ASCII letters alone, as its words and its link scheme are defined: in a UTF-8
+  # locale gawk's tolower folds a dotted capital I to an i, where rule 7's grep -i does not.
   link_scheme='dispatch'':''//'
   : > "$work/git-error"
   cat > "$work/carry.awk" <<'AWK'
@@ -380,6 +382,8 @@ BEGIN {
   for (i = 1; i <= count; i++) {
     file = stage "/" i ".patch"; started = 0
     while ((getline line < file) > 0) {
+      # A typechange's patch holds two sections; the second's header lines are no removed line.
+      if (line ~ /^diff --git /) { started = 0; continue }
       if (line ~ /^@@ /) { started = 1; continue }
       if (started && substr(line, 1, 1) == "-") scan(substr(line, 2), 1)
     }
@@ -389,6 +393,7 @@ BEGIN {
     file = stage "/" i ".patch"; out = stage "/" i ".added"; started = 0; n = 0; written = 0
     printf "" > out
     while ((getline line < file) > 0) {
+      if (line ~ /^diff --git /) { started = 0; continue }
       if (line ~ /^@@ /) {
         split(line, parts, " "); split(parts[3], plus, ",")
         n = substr(plus[1], 2) + 0; started = 1
@@ -450,11 +455,13 @@ AWK
   }
   # stage_git <from> <to> <stage>: stages the diff between two commits as git reads it, renames
   # found as GitHub finds them (-M): one whole diff, which fetches every blob at once, split at its
-  # `diff --git` headers into one patch for each entry --name-status lists, in the same order. A
-  # count that differs is refused rather than paired wrong.
+  # `diff --git` headers into sections and paired, in order, with the entries --name-status lists:
+  # one section an entry, but two for a typechange (T, a file turned into a symlink or back), whose
+  # patch is the old file removed and the new one added. A count that differs, or a split that
+  # fails, is refused rather than paired wrong.
   stage_git() {
-    local from=$1 to=$2 stage=$3 i=0 code old name file_status sections
-    rm -rf "$stage" && mkdir "$stage"
+    local from=$1 to=$2 stage=$3 i=0 s=0 take code old name file_status sections
+    rm -rf "$stage" && mkdir -p "$stage/sections"
     # A NUL byte is dropped, as the REST path drops it: git reads a file as text when its first
     # NUL comes past byte 8000, and the check's grep -I would skip a staged file that kept it.
     git -C "$history" diff --no-color --no-ext-diff -M -U0 "$from" "$to" 2> "$work/git-error" |
@@ -463,8 +470,12 @@ AWK
       return 1
     # Inside a hunk every line starts with " ", "+", "-" or "\", so a line that starts with
     # "diff --git " is a header.
-    sections=$(awk -v stage="$stage" '/^diff --git / { if (out != "") close(out); i++; out = stage "/" i ".patch" }
-      i { print > out } END { print i + 0 }' "$work/whole.patch")
+    sections=$(awk -v dir="$stage/sections" '/^diff --git / { if (out != "") close(out); i++; out = dir "/" i }
+      i { print > out } END { print i + 0 }' "$work/whole.patch") || return 1
+    if ! [[ $sections =~ ^[0-9]+$ ]]; then
+      echo "git's diff could not be split into its file sections" > "$work/git-error"
+      return 1
+    fi
     while IFS= read -r -d '' code; do
       old=''
       case $code in R* | C*) IFS= read -r -d '' old ;; esac
@@ -480,10 +491,18 @@ AWK
       printf '%s' "$file_status" > "$stage/$i.status"
       printf '%s' "$name" > "$stage/$i.path"
       printf '%s' "$old" > "$stage/$i.old"
-      [ -e "$stage/$i.patch" ] || : > "$stage/$i.patch"
+      take=1
+      [ "$code" != T ] || take=2
+      : > "$stage/$i.patch"
+      while [ "$take" -gt 0 ]; do
+        s=$((s + 1))
+        [ ! -e "$stage/sections/$s" ] || cat "$stage/sections/$s" >> "$stage/$i.patch"
+        take=$((take - 1))
+      done
     done < "$work/name-status"
-    if [ "$sections" -ne "$i" ]; then
-      echo "git's diff holds $sections file sections and its name list $i entries" > "$work/git-error"
+    if [ "$sections" -ne "$s" ]; then
+      echo "git's diff holds $sections file sections and its name list $i entries, which take $s" \
+        > "$work/git-error"
       return 1
     fi
     echo "$i" > "$stage/count"
@@ -502,7 +521,7 @@ AWK
   write_stage() {
     local stage=$1 part=$2 count i file_status name old dest
     count=$(< "$stage/count")
-    awk -v stage="$stage" -v count="$count" -v scheme="$link_scheme" -f "$work/carry.awk"
+    LC_ALL=C awk -v stage="$stage" -v count="$count" -v scheme="$link_scheme" -f "$work/carry.awk"
     for ((i = 1; i <= count; i++)); do
       file_status=$(< "$stage/$i.status")
       [ "$file_status" != removed ] || continue
@@ -511,7 +530,7 @@ AWK
       case $file_status in
         added) dest="$keyed/$part/$name" ;;
         renamed | copied)
-          if [ "$(OLD_PATH=$old NEW_PATH=$name awk -v mode=path -v scheme="$link_scheme" -f "$work/carry.awk")" = carried ]; then
+          if [ "$(OLD_PATH=$old NEW_PATH=$name LC_ALL=C awk -v mode=path -v scheme="$link_scheme" -f "$work/carry.awk")" = carried ]; then
             dest="$lines_only/$part/$name"
           else
             dest="$keyed/$part/$name"

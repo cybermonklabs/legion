@@ -432,6 +432,40 @@ mv "$work/commit.next" "$work/commit.$pr_sha"
 key_run
 check "a key after a NUL past byte 8000, read from git, fails" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/nul.md:202: $key_refused")"
+# typechange_head <big.md content>: a commit that adds docs/big.md, which GitHub answers with no
+# patch, and turns docs/link.md from a file into a symlink: git's diff gives that typechange two
+# sections and its name list one entry.
+typechange_head() {
+  write_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order"
+  key_rule_on
+  opened_at 2026-11-21T00:00:00Z
+  git_fixture "$src" checkout -q -B pr main
+  mkdir -p "$src/docs"
+  printf 'a plain file\n' > "$src/docs/link.md"
+  git_fixture "$src" add docs/link.md
+  git_fixture "$src" commit -q -m "docs: a plain file"
+  rm "$src/docs/link.md"
+  ln -s notes.md "$src/docs/link.md"
+  printf '%s\n' "$1" > "$src/docs/big.md"
+  git_fixture "$src" add docs/link.md docs/big.md
+  git_fixture "$src" commit -q -m "docs: a link and a big file"
+  pr_sha=$(git_fixture "$src" rev-parse HEAD)
+  git_fixture "$src" push -q --force "$work/remote/example/repo" HEAD:refs/pull/7/head
+  git_fixture "$src" checkout -q main
+  commits "$pr_sha" 2026-11-21T01:00:00Z "fix: keep the order"
+  commit_file "$pr_sha" added docs/big.md -
+  jq -c '.files[0].additions = 2 | .files[0].changes = 2 | .stats.total = 4' "$work/commit.$pr_sha" \
+    > "$work/commit.next"
+  mv "$work/commit.next" "$work/commit.$pr_sha"
+}
+typechange_head "$(printf 'line one\nline two')"
+key_run
+check "a commit that also turns a file into a symlink, read from git, passes clean" "$(is "$status" 0)"
+check "and nothing is UNKNOWN" "$(is "$(contains "$out" 'UNKNOWN')" false)"
+typechange_head "$(printf 'line one\nline two, as %s said' "$planted_key")"
+key_run
+check "the same commit with a key in the big file fails" "$(is "$status" 1)"
+check "names that line" "$(contains "$out" "commit:${pr_sha:0:12}:docs/big.md:2: $key_refused")"
 
 echo "case: a key or a link the same diff also removes is carried over, not new"
 # carry_commit <status> <path> <patch>: a pull request opened after the cutoff whose one commit is
@@ -485,6 +519,11 @@ check "names the added key's line" "$(contains "$out" "commit:new-sha:docs/notes
 carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-Filed as fix_%s.\n+Filed as %s.' "$planted_key" "$planted_key")"
 key_run
 check "a removed key beside a \"_\", which is a key, carries it: passes" "$(is "$status" 0)"
+carry_commit modified docs/notes.md "$(printf '@@ -2,1 +2,1 @@\n-See d\xc4\xb0spatch://example/1.\n+See %sexample/1.' "$link")"
+key_run
+check "a removed scheme spelled with a dotted capital I, which rule 7 reads as no link, carries no link: fails" \
+  "$(is "$status" 1)"
+check "names the added link's line" "$(contains "$out" 'commit:new-sha:docs/notes.md:2: holds a Dispatch link')"
 
 echo "case: a merge commit's own diff is not read, and the pull request's net diff is, once"
 # A forward merge's diff against its first parent is everything the base branch changed since the
