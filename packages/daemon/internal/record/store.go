@@ -3017,16 +3017,10 @@ func (s *Postgres) TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]Ou
 	if err != nil {
 		return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)
 	}
-	defer rows.Close()
-	closes := []OutboxRow{}
-	for rows.Next() {
-		row, err := scanOutbox(rows)
-		if err != nil {
-			return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)
-		}
-		closes = append(closes, row)
-	}
-	if err := rows.Err(); err != nil {
+	closes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OutboxRow, error) {
+		return scanOutbox(row)
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the close rows of tree %s: %w", tree, err)
 	}
 	return closes, nil

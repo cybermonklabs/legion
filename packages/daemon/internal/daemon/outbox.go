@@ -2491,7 +2491,7 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 		if tree == issue.Tree {
 			continue
 		}
-		still, err := r.stopCarried(ctx, machine, token, issue)
+		still, err := r.stopCarried(ctx, machine, issue)
 		if err != nil {
 			return err
 		}
@@ -2512,13 +2512,14 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 	return nil
 }
 
-// stopCarried suspends token's claim, as the daemon and keeping its session, while it runs a
+// stopCarried suspends machine's claim, as the daemon and keeping its session, while it runs a
 // process in a tree other than issue's, its stop bounded where that tree's close would have ended
 // the turn (carriedStopDeadline). It answers the claim as "token:state in tree T" while it still
 // runs there, and "" once it runs nothing or stands in the issue's tree. A suspension the claim
 // holds for its turn or its boot is no error: the caller waits on its backoff and asks again.
-func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, token claim.Token, issue record.Issue) (string, error) {
+func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, issue record.Issue) (string, error) {
 	held := machine.Claim()
+	token := held.Token
 	if held.Tree == issue.Tree || held.RunsNothing() {
 		return "", nil
 	}
@@ -2593,7 +2594,7 @@ func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, paylo
 	if machine.View().Claim.Tree != payload.Tree {
 		return nil
 	}
-	still, err := r.stopCarried(ctx, machine, token, issue)
+	still, err := r.stopCarried(ctx, machine, issue)
 	if err != nil {
 		return err
 	}
