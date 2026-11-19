@@ -8,7 +8,8 @@
 # the real shapes: a main that is one line of commits, as the queue lands them; a branch forked
 # from it 100 commits below both tips, past the script's first fetch depth; a branch that merged
 # main after it forked; a merge-group entry on top of main's tip; and a history that shares no
-# commit with main.
+# commit with main. One case breaks the checkout's object store once the fetch has written main's
+# ref, so git merge-base fails with 128 rather than answers.
 #
 # Run from anywhere: .github/scripts/edited-migrations-base.test.sh
 # CI runs it in ci.yaml's test job.
@@ -183,6 +184,38 @@ check "it exits 2, a check that could not be taken" "$(is "$status" 2)"
 check "it names both commits and the input" \
   "$(contains "$err" "^::error::HEAD $unrelated and main $main_tip share no commit, so this workflow_dispatch run on refs/heads/unrelated has no base to compare its migrations with; name one with -f migration-base=<commit>\$")"
 check "it prints no base" "$(is "$out" "")"
+check "it does not call that a failure of git merge-base" \
+  "$(is "$(contains "$err" 'git merge-base .* exited')" false)"
+
+echo "case: a git merge-base that fails rather than answers is named, with git's message, and not fetched past"
+dir=$(checkout feature)
+# A reference-transaction hook: when the script's first fetch has written main's ref, it points
+# a replace ref for main's tip at an object that does not exist. The fetch has already checked
+# what it received and succeeds; every later read of main's tip, git merge-base's first, fails
+# with exit 128 and `fatal: replacement <id> not found for <tip>`, as a missing or unreadable
+# object would.
+cat > "$dir/.git/hooks/reference-transaction" <<'HOOK'
+#!/bin/sh
+[ "$1" = committed ] || exit 0
+while read -r _ new ref; do
+  if [ "$ref" = refs/remotes/origin/main ]; then
+    replace=$(git rev-parse --git-path refs/replace)
+    mkdir -p "$replace"
+    echo 1111111111111111111111111111111111111111 > "$replace/$new"
+  fi
+done
+HOOK
+chmod +x "$dir/.git/hooks/reference-transaction"
+pick "$dir" workflow_dispatch refs/heads/feature "$feature" ''
+check "it exits 2, a check that could not be taken" "$(is "$status" 2)"
+check "it names git merge-base, both arguments and the code" \
+  "$(contains "$err" "^::error::git merge-base HEAD $main_tip exited 128, not 0 (a base) or 1 (no base), so this workflow_dispatch run on refs/heads/feature could not tell its base; git's message is above\$")"
+check "it prints git's own message" \
+  "$(contains "$err" "^fatal: replacement 1111111111111111111111111111111111111111 not found for $main_tip\$")"
+check "it does not call the fault a history that shares no commit" "$(is "$(contains "$err" 'share no commit')" false)"
+check "it prints no base" "$(is "$out" "")"
+check "it fetches no deeper: HEAD's history is still the first fetch's 64 commits" \
+  "$(is "$(git -C "$dir" rev-list --count HEAD)" 64)"
 
 echo "control: a push to main compares with the first parent of the commit it checked out"
 dir=$(checkout main)

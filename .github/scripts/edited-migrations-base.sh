@@ -20,7 +20,7 @@
 #     the newest commit of main the branch holds, which is what the branch lands onto. This is
 #     how a full run of a branch is started by hand (`gh workflow run ci.yaml --ref <branch>`).
 #     The script fetches the two histories deeper until git finds that commit, and exits 2 when
-#     the whole of both shares none.
+#     the whole of both shares none, or when git merge-base fails rather than answers.
 #
 # Its inputs, from the step's env and the runner's:
 #   GITHUB_EVENT_NAME  the event, as Actions sets it.
@@ -68,12 +68,24 @@ fi
 # fetch (a merge of main far down the branch, beside a merge of an older main near its tip); then
 # it is that older commit of main, which the branch holds too. The passes after the first name
 # main's tip by its sha: git sends no want for a refspec whose destination already holds the tip
-# it would fetch, and main's history would then stay 64 commits deep.
+# it would fetch, and main's history would then stay 64 commits deep. git merge-base exits 1 when
+# the two commits share no ancestor in what is fetched, and only then does the loop fetch deeper;
+# any other code is a fault (git exits 128 on a missing or unreadable object), not an answer, so
+# the script prints git's message and exits 2 naming the code.
 main=refs/remotes/origin/main
 depth=64
 git fetch --no-tags --depth="$depth" origin "$sha" "+refs/heads/main:$main" >&2
 main_sha=$(git rev-parse "$main")
-until base=$(git merge-base HEAD "$main_sha"); do
+while :; do
+  if base=$(git merge-base HEAD "$main_sha"); then
+    break
+  else
+    found=$?
+  fi
+  if [ "$found" -ne 1 ]; then
+    echo "::error::git merge-base HEAD $main_sha exited $found, not 0 (a base) or 1 (no base), so this workflow_dispatch run on $ref could not tell its base; git's message is above" >&2
+    exit 2
+  fi
   if [ "$(git rev-parse --is-shallow-repository)" = false ]; then
     echo "::error::HEAD $sha and main $main_sha share no commit, so this workflow_dispatch run on $ref has no base to compare its migrations with; name one with -f migration-base=<commit>" >&2
     exit 2
