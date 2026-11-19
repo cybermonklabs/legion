@@ -168,6 +168,17 @@ func TestSenderLimitSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("start line for 1 message a minute and 1 at once", func(t *testing.T) {
+		limit, err := parseSenderLimit(senderLimitEnv(map[string]string{rate: "1"}))
+		if err != nil {
+			t.Fatalf("refused: %v", err)
+		}
+		const want = "listener sender limit: 1 message a minute, 1 at once, for each agent session in this process"
+		if got := describeSenderLimit(limit); got != want {
+			t.Fatalf("start line %q, want %q", got, want)
+		}
+	})
+
 	t.Run("start line for no limit", func(t *testing.T) {
 		limit, err := parseSenderLimit(senderLimitEnv(nil))
 		if err != nil {

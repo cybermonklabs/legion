@@ -90,7 +90,7 @@ func describeSenderLimit(l *senderLimit) string {
 	if l == nil {
 		return "listener sender limit: none"
 	}
-	return fmt.Sprintf("listener sender limit: %d messages a minute, %d at once, for each agent session in this process", l.perMinute, l.burst)
+	return fmt.Sprintf("listener sender limit: %s a minute, %d at once, for each agent session in this process", quantity(l.perMinute, "message", "messages"), l.burst)
 }
 
 // take counts item against its sender's count at the limit's clock, and answers the charge the
