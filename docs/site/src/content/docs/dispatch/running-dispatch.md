@@ -642,6 +642,42 @@ starting together take turns, so a migration runs once. Each migration waits at 
 for a lock. When something holds the table longer, the start fails and names the migration and
 what it waited on; end the holder, or let it finish, and start again.
 
+Dispatch records each migration it applies: the name and sha256 of the file the version first
+shipped with, which a later edit of the file names in its first `-- replaces:` line, and the sha256
+of the text it applied. At every start, before it applies anything, it compares each recorded
+migration with the file of the same version in the release it runs. A migration recorded before
+this check, with no name, takes the identity the release records of the file and is never
+refused, so the first start of the release that brings the check refuses nothing. When the
+database records another file under a version, or a text of it the release's file does not name,
+as a database that ran another branch's edit does, the start fails before it applies any
+migration, and the log names the version, what the database records and what the release's file
+is. Dispatch judges every recorded migration again before each one it applies, so a start that
+finds such a row only then, because another server recorded it meanwhile, stops before that
+migration and keeps the ones it applied. A database that ran another branch's or an earlier
+commit's migration, or an edit of one, such as a test or preview database, is reset: drop it,
+create it empty, and start Dispatch, which migrates it from the first file. This includes a fresh
+preview or development database that a newer build created and an older build then starts on:
+the older build refuses it, and you reset it. It includes too a development or preview database
+whose rows recorded no name when a branch's build first started on it under this check, where that
+branch edits a migration in place and its file does not yet declare the main branch's identity of
+it in a replaces line: that start recorded the branch's own identity, not the main branch's, and
+the main branch's release refuses it. A branch whose edited file already declares the main
+branch's identity, as the pre-merge check requires, records that identity, and the main branch's
+release starts on it. A migration edited or renamed on purpose takes the
+`-- replaces: <name> sha256:<hex>` line the refusal gives, after the replaces lines it has, and the
+next start accepts the recorded row as it is. A release cannot accept a text it has never seen, so
+it refuses a database whose migration a
+later release applied from an edited text. On a production database, created once, that happens
+only on a rollback by hand to a release the database never ran: roll back only to a release it
+ran, as the auto-deployer does, which goes back to the image that was running. An edited text a
+database ran before this check is not detected: the first start records its own file. To see
+what a start would do, without changing the database, run
+`DATABASE_URL='<your database URL>' envoy-dispatch versions` with the image you mean to roll
+out, where the server would run, as you run its census. On the Kubernetes component
+(`packages/envoy/infra/README.md`, "The pods"), both run in a one-off pod of that image under the
+app's account, with the app's Cloud SQL Auth Proxy sidecar and its `DATABASE_URL`; the README
+gives the commands.
+
 Before you roll a new version out, you can see what its migrations will touch:
 
 ```sh

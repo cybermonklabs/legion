@@ -133,13 +133,7 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 			}
 			architect := newLiveClaim(t, h, root, claim.RoleArchitect)
 			recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil)
-			var failure struct{ Code, Error string }
-			if err := json.Unmarshal(recorder.Body.Bytes(), &failure); err != nil {
-				t.Fatalf("wave release = %d %q, not a failure body: %v", recorder.Code, recorder.Body, err)
-			}
-			if recorder.Code != tc.status || failure.Code != tc.code || failure.Error != tc.want {
-				t.Fatalf("wave release = %d %s %q, want %d %s %q", recorder.Code, failure.Code, failure.Error, tc.status, tc.code, tc.want)
-			}
+			refusedSaying(t, recorder, tc.status, tc.code, tc.want)
 			if recorded := recordedChild(t, h, child); recorded != nil {
 				t.Fatalf("the child's record = %#v after a failed preparation, want none", recorded)
 			}
@@ -550,7 +544,7 @@ func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testi
 		child:  {Key: child, ResolvedRepo: "acme/widgets", Title: child, Status: "todo", Parent: &parent, LastSeq: 5},
 	}
 	architect := newLiveClaim(t, h, root, claim.RoleArchitect)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil), http.StatusConflict, "CHILD_RELEASE_STALLED")
+	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{child}}, nil), http.StatusConflict, "CHILD_RELEASE_STALLED")
 	var notices int
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		return tx.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'notice' and payload->>'kind' = 'child-release-stalled'`, root).Scan(&notices)

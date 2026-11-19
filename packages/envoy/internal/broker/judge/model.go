@@ -110,16 +110,18 @@ type Model struct {
 	ID       string
 }
 
-// NewModel builds the judge's model from the broker's configured URL, model id, wire protocol
-// and token audience. Endpoint.Token is the Read method of one brokertoken.GoogleAccount for
-// that audience (D7), which caches what it reads for 30 seconds under a single flight; the
-// adapter is one line because Token is given the call's context and Read takes none. One account
-// is kept for every call the judge makes, and it is what keeps a cold read off the model's own
-// 20-second bound: Token is called once per HTTP attempt, the one retry included, and
-// internal/googleidentity carries a 10-second timeout of its own, so two uncached reads would
-// eat half of that bound.
-func NewModel(baseURL, id, protocol, audience string) Model {
-	account := brokertoken.NewGoogleAccount(audience)
+// NewModel builds the judge's model from the broker's configured URL, model id and wire protocol,
+// and account, the reader of the Google identity token the judge presents there: the metadata
+// server's for the broker's own machine identity, or the token generateIdToken mints for the
+// service account account.ServiceAccount names. Endpoint.Token is account.Read (D7), which caches
+// what it reads for 30 seconds under a single flight; the adapter is one line because Token is
+// given the call's context and Read takes none. One account is kept for every call the judge
+// makes, and it is what keeps a cold read off the model's own 20-second bound: Token is called
+// once per HTTP attempt, the one retry included, and each read carries a bound of its own —
+// internal/googleidentity's 10 seconds for the metadata server's identity token,
+// brokertoken.GoogleAccountMintTimeout for a mint — so two uncached reads would eat half of that
+// bound.
+func NewModel(baseURL, id, protocol string, account *brokertoken.GoogleAccount) Model {
 	return Model{
 		ID: id,
 		Endpoint: agentloop.Endpoint{

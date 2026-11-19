@@ -332,15 +332,36 @@ type Config struct {
 	JudgeModelProtocol string
 	// BROKER_JUDGE_MODEL_AUDIENCE: the audience of the Google identity token the broker
 	// presents to the endpoint at BROKER_JUDGE_MODEL_URL, minted for the broker's own machine
-	// identity. Required with the rest of JudgeSettings.
+	// identity, or for the service account BROKER_JUDGE_MODEL_ACCOUNT names when that is set.
+	// Required with the rest of JudgeSettings.
 	JudgeModelAudience string
+	// BROKER_JUDGE_MODEL_ACCOUNT: optional, the Google service account, by its email, whose
+	// identity token the judge presents to the endpoint at BROKER_JUDGE_MODEL_URL. With it set,
+	// the broker mints that account's token for BROKER_JUDGE_MODEL_AUDIENCE at IAM Service
+	// Account Credentials' generateIdToken, with includeEmail, spending the pod's own credential,
+	// the access token its metadata server answers; it never reads the metadata server's identity
+	// token and never falls back to it, and a mint that fails hands the request to its person with
+	// an error naming the account and the audience. Unset, the judge reads the metadata server's
+	// identity token as before. It is for a pod that runs as a bare Workload Identity principal,
+	// whose metadata server mints no identity token. The broker's principal needs
+	// roles/iam.serviceAccountOpenIdTokenCreator on that account, and the account's project needs
+	// the IAM Service Account Credentials API (iamcredentials.googleapis.com) turned on.
+	//
+	// It is not one of JudgeSettings, so the five set without it start the judge as before. Set
+	// while none of the five is, it names a judge that was never configured, and the start is
+	// refused as a half-configured judge's is. Its value is one user-managed Google service
+	// account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, held to
+	// secrets.ValidServiceAccountEmail, and a Google-managed service agent is refused, as it is in
+	// BROKER_SERVICE_ACCOUNT_SECRETS: Google's own services run as those accounts and the broker
+	// must not be able to mint their tokens. Each refusal names the setting and the value.
+	JudgeModelAccount string
 	// BROKER_JUDGE_DISPATCH_URL: the base URL of the Dispatch the judge reads an issue from, an
-	// absolute http(s) URL. It makes two GETs there — one for the issue a request's reason
-	// names, which answers that issue's key, title and status, and one for the whole markdown
-	// of the issue's spec document — and writes nothing: no ask, no comment, no status. The
-	// broker also reads one issue there for a request a Legion pod makes for a shared
-	// human-tier secret: the issue its claim names, whose assignee alone is asked to decide it
-	// in their Dispatch Inbox. Required with the rest of JudgeSettings.
+	// absolute http(s) URL. It makes GETs there — one for the issue a request's reason names,
+	// which answers that issue's key, title and status, one for the whole markdown of the issue's
+	// spec document, and one for the ask the reason cites — and writes nothing: no ask, no
+	// comment, no status. The broker also reads one issue there for a request a Legion pod makes
+	// for a shared human-tier secret: the issue its claim names, whose assignee alone is asked to
+	// decide it in their Dispatch Inbox. Required with the rest of JudgeSettings.
 	JudgeDispatchURL string
 	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for the Dispatch at BROKER_JUDGE_DISPATCH_URL. Read when the judge
@@ -448,6 +469,33 @@ type Config struct {
 	// an account's login issued stops authenticating once its entry is gone. Needs
 	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	ServiceLogins map[string]string
+	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
+	// session names, whitespace-separated <account>=<account> entries, each account
+	// system:serviceaccount:<namespace>:<name> as BROKER_SERVICES writes one, such as
+	// system:serviceaccount:example-ns:example-worker=system:serviceaccount:example-ns:example-project-worker.
+	// A session name belongs to the principal that claimed it, and a pod's principal is the
+	// account its projected token proves, so a pod moved to another account is refused the name
+	// its role holds (oauthstore.Store.BindSession). Either account of a pair takes a session name
+	// the other holds, by an enrollment or by a token exchange, and an enrollment under that name
+	// takes what the name carries: the grants, the pending requests and the withheld secrets the
+	// other account's enrollments of it hold that a login of the same account enrolled, since a
+	// pod's grants follow its account and its launcher's (enroll.carryPrincipal), so move the pods'
+	// account and keep the launcher's. A pair works both ways, so moving the pods back needs no
+	// change here. A pair does not chain: with A=B and B=C, C does not take a name A holds. A
+	// name the configuration fixes for a principal, the session an entry of
+	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
+	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An
+	// entry not of that form, a namespace's default account, an account paired with itself and a
+	// pair given twice, in either order, are refused. Each pair is held as its two accounts, in
+	// the order the setting gives them.
+	//
+	// It is for an operator moving a deployment's pods from one account to another, and it must
+	// be live on the broker before the deployment moves its pods to the new account: until then
+	// each live role's new pod is refused its own session name (403 SESSION_HELD), and the role's
+	// grants, pending requests and withheld secrets stay behind. While a pair stands, a pod of
+	// either account can claim any name the other holds, not only its own role's, so remove the
+	// pair once no live pod runs as the old account. Unset, no account is paired.
+	SessionAccountPairs [][2]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
 	K8sOIDCIssuer string
@@ -612,10 +660,11 @@ type Config struct {
 	LeaseSeconds int
 	// BROKER_SESSION_CARRY_SECONDS: how long what a session holds — its grants and its pending
 	// requests — waits on the enrollment of a box the session has left, for the next enrollment of
-	// that session name under the same principal to take it. An enrollment that ends while it
-	// holds either is left dormant instead of having them revoked (enroll.endEnrollment), and the
-	// sweep ends it for good once this long has passed since it went dormant
-	// (enroll.Service.EndCarried).
+	// that session name under the same principal, or under an account BROKER_SESSION_ACCOUNT_PAIRS
+	// pairs with it whose pod a login of the same account enrols, to take it. An enrollment that
+	// ends while it holds either is left dormant instead of having them revoked
+	// (enroll.endEnrollment), and the sweep ends it for good once this long has passed since it
+	// went dormant (enroll.Service.EndCarried).
 	//
 	// 12 hours is requests.DefaultGrantLifetime, the life the broker already gives a grant whose
 	// request named none, so the default carry never outlives the grant it carries; and it is what
@@ -700,7 +749,8 @@ var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_
 // The five settings the broker's model judge needs, each read by its own name: the endpoint it
 // calls its model at, the model's id, the audience of the identity token it presents there, the
 // Dispatch it reads an issue from, and the file holding its token for that Dispatch. The
-// protocol that endpoint speaks has a default, so it is not one of them.
+// protocol that endpoint speaks has a default, and the service account whose identity token the
+// judge presents is optional, so neither is one of them.
 const (
 	judgeModelURLSetting          = "BROKER_JUDGE_MODEL_URL"
 	judgeModelSetting             = "BROKER_JUDGE_MODEL"
@@ -708,6 +758,7 @@ const (
 	judgeDispatchURLSetting       = "BROKER_JUDGE_DISPATCH_URL"
 	judgeDispatchTokenFileSetting = "BROKER_JUDGE_DISPATCH_TOKEN_FILE"
 	judgeModelProtocolSetting     = "BROKER_JUDGE_MODEL_PROTOCOL"
+	judgeModelAccountSetting      = "BROKER_JUDGE_MODEL_ACCOUNT"
 )
 
 // JudgeSettings are those five settings, all-or-none: none of them set is a broker with no
@@ -868,6 +919,44 @@ func bindOnce(seen map[string]string, setting, account, service string) error {
 	}
 	seen[account] = service
 	return nil
+}
+
+// parseSessionAccountPairs reads setting's whitespace-separated <account>=<account> entries, the
+// pairs BROKER_SESSION_ACCOUNT_PAIRS lists, in order, each as its two ServiceAccount subjects in
+// the order the entry gives them. It refuses, naming the setting and the entry: one that is not
+// two accounts joined by one "=" (no "=", a second one, or an empty side); an account that is not
+// system:serviceaccount:<namespace>:<name>, or is a namespace's default account
+// (podAccountRefusal), since every pod of that namespace whose spec names no account runs as it
+// and so would take the names the other account holds; an account paired with itself, which
+// pairs nothing and so is a mistake in the setting, most likely the other account mistyped; and
+// a pair given twice, in either order, since a pair works both ways and the second entry says
+// nothing the first did not. An account may be in several pairs, each its own.
+func parseSessionAccountPairs(setting, value string) ([][2]string, error) {
+	var pairs [][2]string
+	// seen answers each pair given so far, keyed by its two accounts in sorted order so that
+	// A=B and B=A are one key, with the entry that gave it.
+	seen := map[[2]string]string{}
+	for _, text := range strings.Fields(value) {
+		a, b, ok := strings.Cut(text, "=")
+		if !ok || a == "" || b == "" || strings.Contains(b, "=") {
+			return nil, fmt.Errorf("%s must be <account>=<account> entries, two system:serviceaccount:<namespace>:<name> accounts joined by one =, got %q", setting, text)
+		}
+		for _, account := range []string{a, b} {
+			if err := podAccountRefusal(setting, text, account); err != nil {
+				return nil, err
+			}
+		}
+		if a == b {
+			return nil, fmt.Errorf("%s pairs an account with itself, got %q: a pair is two accounts, each taking the session names the other holds, so name two", setting, text)
+		}
+		key := [2]string{min(a, b), max(a, b)}
+		if first, twice := seen[key]; twice {
+			return nil, fmt.Errorf("%s gives the pair %q again as %q: a pair works both ways, so give it once", setting, first, text)
+		}
+		seen[key] = text
+		pairs = append(pairs, [2]string{a, b})
+	}
+	return pairs, nil
 }
 
 // parseServiceAccountSecrets reads setting's whitespace-separated <SECRET NAME>=<account email>
@@ -1158,9 +1247,9 @@ func exchangeFields(text string, want int) ([]string, bool) {
 }
 
 // podAccountRefusal refuses, naming setting and the entry text, an account no exchange entry for
-// a pod may name: one that is not system:serviceaccount:<namespace>:<name>, and a namespace's
-// default account. It answers nil for an account such an entry may name, and is to a pod's
-// account what vmAccountRefusal is to a VM's.
+// a pod, and no side of a session account pair, may name: one that is not
+// system:serviceaccount:<namespace>:<name>, and a namespace's default account. It answers nil for
+// an account such an entry may name, and is to a pod's account what vmAccountRefusal is to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
 	case !serviceAccountPattern.MatchString(account):
@@ -1595,6 +1684,7 @@ func Load(getenv func(string) string) (Config, error) {
 		JudgeModel:                strings.TrimSpace(getenv("BROKER_JUDGE_MODEL")),
 		JudgeModelProtocol:        orDefault(getenv("BROKER_JUDGE_MODEL_PROTOCOL"), "anthropic-messages"),
 		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
+		JudgeModelAccount:         strings.TrimSpace(getenv(judgeModelAccountSetting)),
 		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
 		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
 		ProjectAccessURL:          strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_URL")), "/"),
@@ -1727,7 +1817,11 @@ func Load(getenv func(string) string) (Config, error) {
 	// still counted as naming a judge, so a deployment that sets it alone is refused rather
 	// than read as one that meant no judge. On its own it configures nothing — it says which
 	// shape an endpoint that was never named speaks — and that is the same mistake as the four
-	// of five above, which the broker refuses rather than runs past.
+	// of five above, which the broker refuses rather than runs past. BROKER_JUDGE_MODEL_ACCOUNT
+	// is optional, so it is never one of the missing ones either, and it counts as naming a judge
+	// for the same reason: on its own it names whose token a judge that was never configured
+	// would present. Its refusal names it and its value in front of the five, since it is the
+	// one setting that named the judge.
 	//
 	// One value per JudgeSettings entry, read in that order, so the missing ones are named in
 	// the order every message naming them uses and one list is walked rather than two that
@@ -1740,8 +1834,11 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	switch {
-	case len(judgeMissing) == len(JudgeSettings) && getenv(judgeModelProtocolSetting) == "":
+	case len(judgeMissing) == len(JudgeSettings) && getenv(judgeModelProtocolSetting) == "" && cfg.JudgeModelAccount == "":
 		// No judge, which is every deployment until one is configured.
+	case len(judgeMissing) == len(JudgeSettings) && cfg.JudgeModelAccount != "":
+		return Config{}, fmt.Errorf("%s is set to %q, the service account whose identity token a model judge presents, and no judge is configured: the broker's model judge needs %s; missing %s",
+			judgeModelAccountSetting, cfg.JudgeModelAccount, strings.Join(JudgeSettings, ", "), strings.Join(judgeMissing, ", "))
 	case len(judgeMissing) > 0:
 		return Config{}, fmt.Errorf("the broker's model judge needs %s; missing %s",
 			strings.Join(JudgeSettings, ", "), strings.Join(judgeMissing, ", "))
@@ -1760,6 +1857,19 @@ func Load(getenv func(string) string) (Config, error) {
 		if !slices.Contains(judgeModelProtocols, cfg.JudgeModelProtocol) {
 			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
 				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
+		}
+		// The account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to
+		// (parseServiceAccountSecrets), for the same reasons: a value that is no one service
+		// account's address would boot and then hand every request the judge holds to its person
+		// on a refused mint, and a service agent is an account of Google's own that the broker
+		// must not mint for.
+		if cfg.JudgeModelAccount != "" {
+			if !secrets.ValidServiceAccountEmail(cfg.JudgeModelAccount) {
+				return Config{}, fmt.Errorf("%s must name one user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, got %q", judgeModelAccountSetting, cfg.JudgeModelAccount)
+			}
+			if googleServiceAgentPattern.MatchString(cfg.JudgeModelAccount) {
+				return Config{}, fmt.Errorf("%s names a Google-managed service agent, got %q: Google's own services run as it and the broker must not be able to mint its token; name a user-managed account of your own", judgeModelAccountSetting, cfg.JudgeModelAccount)
+			}
 		}
 	}
 	// A judge decides a request that waits for a person, and with sign-in off no request waits:
@@ -1816,6 +1926,9 @@ func Load(getenv func(string) string) (Config, error) {
 	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
 	// doc says.
 	cfg.ServiceLogins = servicesByAccount(logins)
+	if cfg.SessionAccountPairs, err = parseSessionAccountPairs("BROKER_SESSION_ACCOUNT_PAIRS", getenv("BROKER_SESSION_ACCOUNT_PAIRS")); err != nil {
+		return Config{}, err
+	}
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}
