@@ -2,10 +2,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // readTrimmed reads the file at path whole and answers its text with surrounding white space
@@ -18,16 +21,20 @@ func readTrimmed(path string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// readPodToken reads a projected pod token through readTrimmed and refuses an empty trimmed value.
-// The caller never converts a blank file into a bodyless renewal: a pod given --pod-token-file
-// either sends a token or makes no request.
+// readPodToken reads a projected pod token, the file --pod-token-file names, trimmed, and refuses
+// an empty value. Its errors name the file by that flag in place of its path: a flag meant for a
+// credential's path is where a person who pasted the credential itself puts it, so the path is
+// never printed, and the system's reason prints through redact.File, which drops it. The caller
+// never converts a blank file into a bodyless renewal: a pod given --pod-token-file either sends
+// a token or makes no request.
 func readPodToken(path string) (string, error) {
-	token, err := readTrimmed(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read the file --pod-token-file names: %w", redact.File(err))
 	}
+	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "", fmt.Errorf("pod token file %s is empty", path)
+		return "", errors.New("the token file --pod-token-file names is empty")
 	}
 	return token, nil
 }

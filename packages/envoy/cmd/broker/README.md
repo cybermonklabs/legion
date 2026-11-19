@@ -61,5 +61,7 @@ go test ./internal/broker/... ./cmd/broker/...
 ```
 
 Postgres-backed tests skip unless `BROKER_TEST_DATABASE_URL` is set;
-`packages/envoy/scripts/dev-postgres.sh` starts a local Postgres for them. `packages/envoy/AGENTS.md`
-("Secrets broker") is the contributor's guide to the code.
+`packages/envoy/scripts/dev-postgres.sh` starts a local Postgres for them. The broker's docs
+(`docs/site/src/content/docs/broker/`: `concepts.md`, `operate.md` and `guides/`) say how its
+packages, policy, enrollment and CLI work; `packages/envoy/AGENTS.md` ("Secrets broker") lists
+its packages and the build traps.

@@ -1,5 +1,5 @@
-// Package agentloop runs a model and the tools it calls: the one model loop the Legion daemon
-// and Dispatch share, and the only import of Grafana's AI SDK for Go in this repository. It is
+// Package agentloop runs a model and the tools it calls: the model loop of the secrets broker
+// (internal/broker), and the only import of Grafana's AI SDK for Go in this repository. It is
 // the engine and nothing more. It keeps no conversation store, carries no tools of its own and
 // routes nothing: a caller hands it an endpoint, a model, the messages, the tools the model may
 // call and the bounds of the run, and reads back the reply, every step and what the run cost.

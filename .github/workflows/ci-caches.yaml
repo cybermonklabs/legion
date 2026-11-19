@@ -426,11 +426,15 @@ jobs:
           echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
-      # What envoy-infra-go builds: the vet with both live-test tags, for linux and for darwin, the
-      # test binary of every package, and the natslive binaries of the three packages its live step
-      # runs. Compiled, not run: the live tests need nats-server, Postgres and container images, and
-      # the unit tests nothing a build cache keeps. The darwin vet is in the fill because, built
-      # cold, it is the step that brought envoy-infra-go near its time limit.
+      # What envoy-infra-go and the release build build: the vet with both live-test tags, for
+      # linux and for darwin, the natslive binaries of the three packages envoy-infra-go's live step
+      # runs, and the test binaries of each leg's reader. On ubuntu-24.04-arm, envoy-infra-go's unit
+      # step's race build, through the script that step runs (scripts/race-unit.sh, here in its
+      # compile mode), so the entry holds what that step links; check-ci-filters.sh holds this leg
+      # to that call and to no race build of its own. On ubuntu-24.04, release-envoy-infra.yaml's
+      # plain `go test ./...`. Compiled, not run: the live tests need nats-server, Postgres and
+      # container images, and the unit tests nothing a build cache keeps. The darwin vet is in the
+      # fill because, built cold, it is the step that brought envoy-infra-go near its time limit.
       - name: Build what envoy-infra-go builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
@@ -439,7 +443,11 @@ jobs:
           while IFS= read -r flag; do
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
-          go test -c -o /dev/null ./...
+          if [ "$RUNNER_ARCH" = ARM64 ]; then
+            scripts/race-unit.sh compile
+          else
+            go test -c -o /dev/null ./...
+          fi
           go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
         working-directory: packages/envoy/infra
 

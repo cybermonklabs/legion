@@ -355,12 +355,12 @@ listener a delivery lease, the second copy waits the listener's bind deadline
 (`durableBindDeadline`, 135 seconds) for the durable the first copy holds, then exits, and is
 restarted over and over. The rolling update's surge is the one window where two copies exist, and
 with `maxUnavailable: 0` and `maxSurge: 1` it is longer than the old pod's stop: the new pod's
-listener contends for the durable from the moment its container starts, and the old pod is sent
-SIGTERM only once the new pod is Ready. The window is therefore the new pod's time to its first
-`/healthz` answer plus the old pod's 33 seconds, its 5-second preStop wait and its 28-second
-stop, and what has to hold it is the new pod's own 135-second bind deadline, counted from its own
-start. A new pod that never becomes Ready leaves the old one serving while the new one restarts
-on its bind deadline.
+listener contends for the durable from the moment its `/v1` opens, right after which it starts
+its bind, and the old pod is sent SIGTERM only once the new pod is Ready. The contention therefore
+lasts the startup probe's lag behind that open, at most one 10-second period (below), plus the old
+pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has to hold it is the
+new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
+Ready leaves the old one serving while the new one restarts on its bind deadline.
 
 Three more objects carry that pod:
 
@@ -411,16 +411,29 @@ How `/v1` admits a caller depends on who reaches the listener:
 
 Three probes read the pod's own loopback, two routes between them:
 
-- startup, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 5 seconds,
-  24 failures allowed: two minutes for the first answer;
-- liveness, the same `curl -sS` of `/livez` every 10 seconds, 6 failures allowed. The listener
-  answers `/livez` 204 and reads no bus for it, and without `-f` curl exits 0 whatever the HTTP
-  status, so any answer keeps the container running and only a minute of no answer at all
-  restarts it;
-- readiness, `curl -fsS` of `http://127.0.0.1:9020/healthz` every 5 seconds, with a 6-second
-  timeout and 2 failures allowed. It reads the HTTP status and never the body, so a pod that
-  answers 200 (`"starting"`) while it waits for the durable is ready, and the rolling update
-  never waits for the stream.
+- startup, `/bin/sh -c` of
+  `curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '`
+  every 10 seconds, with a 6-second timeout and 60 failures allowed: ten minutes for `/v1` to
+  open, after which the kubelet restarts the container. `/v1` answers 503 `service starting`
+  until its gate opens, and a listener that requires a credential refuses it to the probe, which
+  holds none, while `/metrics` takes none. The listener writes the sample line
+  `envoy_active_interests <n>` there only once that gate is open and the interest list can be
+  served; the pattern matches that line and never the gauge's `# HELP` or `# TYPE` line, which
+  every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
+  Ready, until this one has passed, so a new pod stays out of the Service until its `/v1`
+  serves, and the rolling update keeps the old pod serving until then. `/v1` opens without
+  waiting for the durable consumer, which the old pod holds until it stops, so the gate cannot
+  wait on the old pod. The listener writes the sample this way since `legion-envoy-v29.15.0`; an
+  older listener writes it from its first answer, so there the probe passes at that answer, as
+  the `/livez` startup probe before it did;
+- liveness, `curl -sS -o /dev/null --max-time 8` of `http://127.0.0.1:9020/livez` every 10
+  seconds, 6 failures allowed. The listener answers `/livez` 204 and reads no bus for it, and
+  without `-f` curl exits 0 whatever the HTTP status, so any answer keeps the container running
+  and only a minute of no answer at all restarts it;
+- readiness, the same `curl -sS` of `/livez` every 10 seconds, 3 failures allowed, so only 30
+  seconds of no answer at all takes the pod out of the Service. Readiness and liveness are
+  status-blind, so a fault of the hub, which every pod shares, neither takes the one pod out of
+  the Service nor restarts it.
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
@@ -428,9 +441,11 @@ the listener's own stop of 28 seconds are 33 seconds together, inside the pod's 
 40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
 kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
 and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
-A hung pod holds its durable for the whole grace, so the replacement pod's time to its first
-`/healthz` answer plus that grace has to stay under the 135-second bind deadline. At 40 seconds
-the start allowance is 95 seconds.
+A hung pod holds its durable for the whole grace. The replacement's 135-second bind deadline
+(`durableBindDeadline` in `cmd/listener/durable.go`) counts from its `/v1` open, right after
+which the listener starts the bind, so what has to stay under it is the startup probe's lag
+behind that open plus the old pod's stop. At a grace of 40 seconds that lag may be up to 95
+seconds, and the probe's 10-second period keeps it at most 10.
 
 One pod has one cost: while that pod is unready or restarting, the listener's port 9020 refuses
 connections, the Tailscale Service's included. Port 4222 stays up through it, which is what the
@@ -3870,8 +3885,9 @@ credential-free session user holding `SessionPermissions`, are checked against r
 2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
 as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create; `AGENTS.md` in this
-directory says how.
+lane queue groups, and the session user's refusal of a consumer create, in
+`core/permissions_live_test.go` under the `natslive` tag; `AGENTS.md` in this directory gives the
+command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain
