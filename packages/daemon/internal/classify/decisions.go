@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -1199,15 +1200,85 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
 }
 
-// HeadConflicts says whether an open pull request's head has started conflicting with its base:
-// the daemon's last read of GitHub's mergeability found MergeabilityConflicting. The read stands
-// for whatever head GitHub last computed it on, and the daemon's own read is the only path to it,
-// so there is no older read to prefer. GitHub runs no checks at all on a conflicting head - there
-// is no merge ref to run them against - and no CI result moves an issue in any case
-// (dispatch://INFRA-714/spec R1), so a conflict is the one thing a pull request's own state still
-// moves an issue for (workflow's mergeability handler).
-func HeadConflicts(pr record.PullRequest) bool {
-	return pr.State == record.PullRequestOpen && pr.Mergeability == record.MergeabilityConflicting
+// The reasons R0 acts on a confirmed conflict for (ConflictNeedsMerge), in the words the daemon
+// records the act's reason in (record.MergeForward.Why) and logs it under.
+const (
+	ConflictMergeNext       = "merge-next"
+	ConflictRulesUnread     = "base-rules-unread"
+	ConflictRequiresCurrent = "base-requires-current"
+	ConflictCheckNotGreen   = "required-check-not-green"
+)
+
+// ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the
+// head that conflicts with its base must be merged forward now, or "" when nothing needs that yet,
+// and the conflict is recorded and nothing else is done. The reasons are read in this order, and
+// the first that holds is the answer:
+//
+//   - ConflictMergeNext: the issue stands past its review, in accepting, retro or merging, or is
+//     held from one of them (record.PastReview). Its next step is the merge, and GitHub merges no
+//     head that conflicts with its base.
+//   - ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
+//     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
+//     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
+//     refusal of rulesets to a plan that has none is no failed read: it reads as no rules
+//     (record.BaseRules).
+//   - ConflictRequiresCurrent: a ruleset of the base requires a pull request to be current with
+//     it (rules.Strict), so the head cannot merge whatever its checks say until the base is merged
+//     into it.
+//   - ConflictCheckNotGreen: a context the base requires (rules.Required) is not green on the
+//     head (GreenContexts). GitHub runs no checks on a head that conflicts with its base, so a
+//     required check that has not passed there never will: only a merge forward gives it a head to
+//     run on. A check still running reads as not green too, since the record holds a run only
+//     once the head's CI settles, and R0 acts at once rather than wait for it.
+//
+// Otherwise every check the base requires is green on the head and no rule requires the head to
+// be current: the tester and the reviewer go on at that head, and the merge forward waits for the
+// step that needs it, the issue's move past its review, where ConflictMergeNext holds.
+//
+// It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
+// and any reader of the record decide alike.
+func ConflictNeedsMerge(issue record.Issue, pr record.PullRequest, rules *record.BaseRules) string {
+	switch {
+	case record.PastReview(issue):
+		return ConflictMergeNext
+	case rules == nil || rules.Unread != "":
+		return ConflictRulesUnread
+	case rules.Strict:
+		return ConflictRequiresCurrent
+	}
+	green := GreenContexts(pr)
+	for _, required := range rules.Required {
+		if !slices.Contains(green, required) {
+			return ConflictCheckNotGreen
+		}
+	}
+	return ""
+}
+
+// GreenContexts is every context green on the pull request's current head, each once and sorted:
+// the name of each check run GitHub reported on that head that concluded succeeded (HeadRuns,
+// record.RunSucceeded), and, while a settlement stands for the head (Settled), the context of each
+// commit status the record keeps for the head (record.CommitStatus.StampedWith) whose state is
+// success. A required context is matched by its name alone, as a check run's name or a status's
+// context; GitHub's integration id is not compared. A status counts only on a settled head, since
+// the record keeps the statuses of its checked head, and a status kept for another head says
+// nothing of this one.
+func GreenContexts(pr record.PullRequest) []string {
+	var green []string
+	for _, run := range HeadRuns(pr) {
+		if run.Conclusion == record.RunSucceeded {
+			green = append(green, run.Name)
+		}
+	}
+	if Settled(pr) {
+		for _, status := range pr.Statuses {
+			if status.StampedWith(pr.HeadSHA) && status.State == record.CommitStatusSuccess {
+				green = append(green, status.Context)
+			}
+		}
+	}
+	slices.Sort(green)
+	return slices.Compact(green)
 }
 
 // ConflictRound says whether a backward move made now is a round a conflict with the base caused:

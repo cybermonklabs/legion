@@ -18,9 +18,10 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but two: the row is written from nine places — a pull request opened, reopened,
-// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review —
-// and a write site added later would otherwise have to remember the mark. Routing them through
+// it but two: the row is written from eleven places — a pull request opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
+// its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward) — and a
+// write site added later would otherwise have to remember the mark. Routing them through
 // one function is what makes forgetting it hard rather than easy.
 //
 // The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
@@ -99,6 +100,15 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 // (internal/admit's TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's settlement
 // that decides nothing). The same test holds that a merge-state read that only confirms what is
 // recorded moves no issue either.
+//
+// Two fields are left out because they are the daemon's bookkeeping of its own reads and asks, not
+// news of the pull request: the first conflicting read still waiting for its second
+// (record.PullRequest.ConflictRead) and the merge forward the daemon asked for (MergeForward). A
+// read that writes or releases the first read writes GitHub's verdict with it, which is named
+// above whenever it changed, and the confirmation writes the head the daemon holds conflicting,
+// which is named too; the ask is the daemon's own act on a conflict it already recorded, and the
+// end of a second read that decided nothing (workflow's conflictConfirmDone) is a note the daemon
+// leaves itself, as clearing BaseMoved is.
 //
 // A field added to record.PullRequest later is not news to this test until it is named here. The
 // direction that costs something is this one — an unnamed field that is news leaves a tree

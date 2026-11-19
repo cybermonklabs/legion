@@ -912,13 +912,12 @@ type PullRequest struct {
 	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
 	// when GitHub was last asked.
 	StateReadAt time.Time
-	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
-	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
-	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
-	// for the head unmergeable on the base branch's own tip (workflow's mergeQueueConflict). A read
-	// that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's answer
-	// for a head sitting in the merge queue, neither writes nor clears it. "" means no head is held
-	// conflicting.
+	// ConflictingHead is the head the daemon last judged conflicting with its base, written only
+	// when a conflict is confirmed: a second CONFLICTING read of this head and the same base branch,
+	// made at least a minute after the first read (ConflictRead below), in workflow's
+	// mergeability. A read that finds the same head mergeable clears it; a read of
+	// MergeabilityUnknown, GitHub's answer for a head sitting in the merge queue, neither writes
+	// nor clears it. "" means no head is held conflicting.
 	//
 	// A backward move made while it is non-empty and equal to HeadSHA is a conflict round, which
 	// review_round_cap does not count (PhaseRow.ConflictRounds): the implementer answers such a
@@ -1019,6 +1018,30 @@ type MergeForward struct {
 	AskedAt     time.Time   `json:"askedAt"`
 	Landed      string      `json:"landed,omitempty"`
 	ReviewAsked bool        `json:"reviewAsked,omitempty"`
+}
+
+// BaseRules is what the daemon read of the rules a pull request's base branch holds for its
+// required status checks, on a read that found the head conflicting with that base
+// (intake.PullRequestMergeability.Rules). It is what R0 decides a confirmed conflict on
+// (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge): a base that requires a check which has
+// not passed on the head, or that requires a pull request to be current with it, is a base the
+// head cannot merge into until the implementer merges it forward, and GitHub runs no check at
+// all on a head that conflicts with its base.
+//
+// Required is every required status-check context, each once and sorted: the contexts of each
+// `required_status_checks` rule the base's rulesets apply, then a classic protection rule's
+// `contexts` and `checks[].context`. Strict is whether a ruleset's rule sets
+// `strict_required_status_checks_policy`; a classic rule is read as not strict, since the answer
+// the daemon can read of it carries no such field, so its required contexts decide as a
+// ruleset's do. Unread is "" when the read answered, and otherwise why it failed (the HTTP status
+// or the error), which R0 reads as rules it cannot tell anything from. GitHub's 403 whose message
+// contains `make this repository public to enable this feature` is no failure: it is the answer
+// of a plan that holds neither rulesets nor classic protection, so it reads as no rules (Required
+// empty, Unread "").
+type BaseRules struct {
+	Required []string
+	Strict   bool
+	Unread   string
 }
 
 // HeadRun is a pull request's head run (PullRequest.Run): Anchor, the judgement before the run's

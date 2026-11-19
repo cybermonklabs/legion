@@ -81,23 +81,51 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
 }
 
+// conflictConfirmWait is how long after a first CONFLICTING read of a head the read that can
+// confirm it comes, at the least (dispatch://INFRA-4374 R2). GitHub documents that `mergeable` is
+// computed by a background job and that a client asks again "after giving the job time to
+// complete", and it documents no time for the job (https://docs.github.com/en/rest/pulls/pulls,
+// "Get a pull request"). The daemon already waits 30 seconds between reads of a head GitHub
+// answers `unknown` for (the daemon's mergeStateWait); the spec's floor of one minute is two of
+// those waits, and this is that floor. It is compared with the reads' own times, and with the
+// engine's clock where a fact carries none, so tests control it.
+const conflictConfirmWait = time.Minute
+
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
-// acts on the two things that read can say.
+// acts on a conflict only once a second read has confirmed it and the issue's next step needs a
+// head that merges.
 //
-// A head that conflicts with its base sends the issue back to implementing from whatever later
-// phase it stands in (TriggerConflict):
-// GitHub computes no merge ref for a conflicting head, so no check runs on it and no CI result
-// will ever arrive for it, and only the implementer merging the base forward clears it. It
-// decides on every read, not only a changed one, since the recorded conflict is what a read made
-// in an earlier phase left. Implementing, where the work already is, has no row for the trigger,
-// so a read there records the conflict and moves nothing (transition).
+// A head that conflicts with its base is judged in two reads (dispatch://INFRA-4374 R2). GitHub
+// computes mergeability in a background job and can answer CONFLICTING about a base it has not
+// caught up with, so the first CONFLICTING read of an open pull request's head records itself
+// (record.PullRequest.ConflictRead: the head, the base branch and the time of the read), queues the
+// read that asks GitHub again once conflictConfirmWait has passed (record.ConflictConfirm), logs
+// itself, and acts on nothing. A later CONFLICTING read of the same head and the same base branch,
+// made conflictConfirmWait or more after the first, confirms the conflict: the record holds the
+// head conflicting (ConflictingHead) from then on, drops the first read, and decides. A
+// CONFLICTING read sooner than the wait changes nothing of the first read, and one of another
+// head or another base branch is a first read of its own. The base branch is compared by name and
+// never by commit: GitHub's base.sha does not name the base it computed against, and a conflict
+// with a newer base is still a conflict. A MERGEABLE read releases the first read and logs both
+// reads. An UNKNOWN read leaves it as it is, and the second read's own row releases it once its
+// last attempt still answers UNKNOWN (conflictConfirmDone). After a release, the next CONFLICTING
+// read is a first read again.
+//
+// The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
+// base's rules for its required checks, which the confirming read carries
+// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer to merge the base
+// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
+// recorded and logged with the checks the base requires and those green on the head, and the
+// tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
+// holds conflicting decides again in the same way, since the phase the issue has reached since can
+// need what the phase before did not, and mergeForward asks nothing twice for one head.
 //
 // GitHub's own merge state for the head rides along on the same fact: it is what says whether
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
-// once the state is recorded - this read is the one that moves an approved issue to accepting, as
-// often as not. The base the read names is recorded with
+// once the state is recorded, whatever the read decided - this read is the one that moves an
+// approved issue to accepting, as often as not. The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
 // read that answers for a base push already recorded clears the push's mark, the two having been
@@ -114,10 +142,12 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // record.PullRequest.StateReadAt is written from, and it is the one thing a read that confirms
 // what is recorded still moves: the row is written for it alone. A fact that carries none - every
 // one minted by something that did not read GitHub, as a test's PullRequestMergeability is -
-// writes no stamp and erases none, so the recorded one stands as the last real read left it.
+// writes no stamp and erases none, so the recorded one stands as the last real read left it. The
+// two reads of a conflict are timed by the same read time, and by the engine's clock for a fact
+// that carries none.
 //
 // Whatever the read decides, it is also the judgement the conflict-round exemption is read from
-// (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
+// (record.PullRequest.ConflictingHead, recordRound): a confirmed conflict holds the pull request's
 // own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN read,
 // which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it is -
 // GitHub has not computed an answer, so there is nothing to record and nothing to take back. The
@@ -139,14 +169,40 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if fact.Base != "" {
 		base = fact.Base
 	}
+	readAt := fact.ReadAt
+	if readAt.IsZero() {
+		readAt = e.now()
+	}
 	prior := *pr
-	conflicting := pr.ConflictingHead
+	conflicting, first, decide := pr.ConflictingHead, pr.ConflictRead, false
 	switch fact.Mergeable {
 	case record.MergeabilityConflicting:
-		conflicting = pr.HeadSHA
+		switch {
+		case pr.State != record.PullRequestOpen:
+			// A pull request that is not open merges nothing, so its conflict is nothing to act on.
+		case conflicting == pr.HeadSHA:
+			decide = true
+		case first != nil && first.Head == pr.HeadSHA && first.Base == base:
+			if readAt.Sub(first.At) >= conflictConfirmWait {
+				conflicting, first, decide = pr.HeadSHA, nil, true
+			}
+		default:
+			first = &record.ConflictRead{Head: pr.HeadSHA, Base: base, At: readAt}
+			if err := e.enqueueAt(ctx, tx, pr.Issue, record.ConflictConfirm{Number: pr.Number, Head: pr.HeadSHA}, readAt.Add(conflictConfirmWait)); err != nil {
+				return intake.Result{}, err
+			}
+			e.logOnCommit(ctx, "workflow: a conflict read waits for a second read",
+				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "readAt", readAt)
+		}
 	case record.MergeabilityMergeable:
 		if conflicting == pr.HeadSHA {
 			conflicting = ""
+		}
+		if first != nil {
+			e.logOnCommit(ctx, "workflow: a second read did not confirm the conflict",
+				"issue", pr.Issue, "pullRequest", pr.Number, "head", first.Head, "base", first.Base,
+				"firstReadAt", first.At, "readAt", readAt, "mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
+			first = nil
 		}
 	}
 	stateReadAt := pr.StateReadAt
@@ -156,9 +212,9 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	// The last clause is the confirming read's: it answers what is already recorded, and the time
 	// it was read is the whole of what it has to say.
 	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" ||
-		pr.ConflictingHead != conflicting || !stateReadAt.Equal(pr.StateReadAt) {
-		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.StateReadAt =
-			fact.Mergeable, fact.MergeState, base, "", conflicting, stateReadAt
+		pr.ConflictingHead != conflicting || pr.ConflictRead != first || !stateReadAt.Equal(pr.StateReadAt) {
+		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.ConflictRead, pr.StateReadAt =
+			fact.Mergeable, fact.MergeState, base, "", conflicting, first, stateReadAt
 		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
@@ -167,9 +223,16 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if classify.HeadConflicts(*pr) {
-		reason := fmt.Sprintf("the head conflicts with %s: GitHub runs no checks on it; merge %s forward", base, base)
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, reason)
+	if decide {
+		if why := classify.ConflictNeedsMerge(*issue, *pr, fact.Rules); why != "" {
+			if err := e.mergeForward(ctx, tx, *issue, pr, why); err != nil {
+				return intake.Result{}, err
+			}
+		} else {
+			e.logOnCommit(ctx, "workflow: a confirmed conflict needs no merge yet",
+				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "phase", issue.Phase,
+				"required", fact.Rules.Required, "green", classify.GreenContexts(*pr))
+		}
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
 }

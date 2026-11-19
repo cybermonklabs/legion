@@ -802,6 +802,15 @@ func (PullRequestChecks) isFact() {}
 // change to it. A fact minted by anything that did not read GitHub - every test that states a
 // verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
 // none.
+//
+// Rules is what the daemon read of the base branch's rules for its required status checks
+// (record.BaseRules), which a confirmed conflict is decided on (workflow's mergeability,
+// classify.ConflictNeedsMerge). It is set only on a read whose Mergeable is
+// record.MergeabilityConflicting, since a head that merges cleanly needs no decision of that kind,
+// and nil on every other read; the reader that fills it is the daemon's, which reads the base's
+// rulesets and its classic protection beside the pull request. A CONFLICTING read that carries
+// none is a read whose rules the daemon does not know, and it is decided as rules it could not
+// read are.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -810,6 +819,7 @@ type PullRequestMergeability struct {
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
 	ReadAt     time.Time
+	Rules      *record.BaseRules
 }
 
 func (PullRequestMergeability) isFact() {}
@@ -863,6 +873,23 @@ type MergeQueueReadDone struct {
 }
 
 func (MergeQueueReadDone) isFact() {}
+
+// ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
+// finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
+// pull request Number of Issue at the row's last attempt, or, with Unread, no read of it
+// succeeded, so no second read confirmed the first read's conflict at Head and none released it.
+// The workflow then clears the first read while the record still holds it for Head (workflow's
+// conflictConfirmDone), so the next read that finds the head conflicting is a first read again. A
+// CONFLICTING or MERGEABLE answer applies PullRequestMergeability instead, as every read of the
+// pull request does.
+type ConflictConfirmDone struct {
+	Issue  string
+	Number int
+	Head   string
+	Unread bool
+}
+
+func (ConflictConfirmDone) isFact() {}
 
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
