@@ -112,6 +112,9 @@ export interface AgentStreamRunner {
   /** The effort a person's pick put in force, shown by the header at once: Claude Code reports
    *  an effort only on a request of its own, and an idle session makes none. */
   readonly pickedEffort: (effort: ModEffort) => void
+  /** The session's NATS connection closed for good and the server opened `connection` in its
+   *  place: frames go out on it from now on, and the control subject is taken on it again. */
+  readonly useConnection: (connection: ChannelConnection) => void
 }
 
 /**
@@ -132,13 +135,20 @@ export interface AgentStreamRunner {
  * publishes no settings and no commands, and its conversation stays empty.
  */
 export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner {
-  const { connection, link } = options
+  const { link } = options
+  /** The session's connection now; the server swaps in a new one when it closes for good. */
+  let connection = options.connection
   const now = options.now ?? Date.now
   const warn =
     options.warn ?? ((text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`))
   const publisher = new AgentStreamPublisher({
     now,
-    publish: (subject, payload) => connection.publish(subject, encoder.encode(payload)),
+    // A closed connection throws on a publish, and a throw here would end the read of the mod's
+    // events below for good. Its frames are dropped until the server swaps in a new connection;
+    // the ring keeps them for a replay.
+    publish: (subject, payload) => {
+      if (!connection.isClosed()) connection.publish(subject, encoder.encode(payload))
+    },
   })
   const stream = createClaudeAgentStream({
     isPane: options.isPane === true,
@@ -273,14 +283,17 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     if (subscription === taken) subscription = undefined
     if (stopped || session !== forSession) return
     const retry = setTimeout(() => {
-      if (stopped || session !== forSession) return
+      // Taken again meanwhile: by a `/clear`'s new id, or on the connection the server swapped in.
+      if (stopped || session !== forSession || subscription !== undefined) return
       subscribe()
     }, AGENT_STREAM_RESUBSCRIBE_MS)
     retry.unref()
   }
 
+  /** Takes the control subject on the connection held now. A closed one throws on a subscribe, so
+   *  the subject waits for the connection the server swaps in (`useConnection`). */
   function subscribe(): void {
-    if (stopped) return
+    if (stopped || connection.isClosed()) return
     subscription?.unsubscribe()
     const taken = connection.subscribe(agentStreamControlSubject(session))
     subscription = taken
@@ -352,6 +365,10 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
       stopped = true
       subscription?.unsubscribe()
       subscription = undefined
+    },
+    useConnection(next: ChannelConnection): void {
+      connection = next
+      subscribe()
     },
   }
 }

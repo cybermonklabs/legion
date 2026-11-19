@@ -9,7 +9,9 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
+  inboundRestoredNoticeText,
   inboundUnavailable,
+  NoRelaySubjectError,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
@@ -1164,7 +1166,10 @@ describe("one registration", () => {
       // The bare base a stored row or a transcript brings back: the listener stores it for no
       // session and warns about it, so it never goes out (INFRA-771 review).
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable((why) => told.push(why)),
+      outage: inboundUnavailable(
+        (why) => told.push(why),
+        () => told.push("restored")
+      ),
       send: (topics, delivery) => {
         sent.push({ topics, epoch: delivery.epoch });
         return Promise.resolve("registered");
@@ -1179,7 +1184,10 @@ describe("one registration", () => {
 
   test("a session holding no relay subject registers nothing and is told once", async () => {
     const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why));
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
     const sent: unknown[] = [];
     const register = () =>
       registerWithRelay({
@@ -1203,6 +1211,29 @@ describe("one registration", () => {
     ]);
   });
 
+  test("a session whose relay could not be opened says why in the refusal and in the one outage notice", async () => {
+    const told: string[] = [];
+    const refusal = await registerWithRelay({
+      relay: undefined,
+      relayMissing: "Authentication Timeout",
+      ownAgentSubject: AGENT,
+      followed: [TEAM],
+      outage: inboundUnavailable(
+        (why) => told.push(why),
+        () => told.push("restored")
+      ),
+      send: () => Promise.resolve("registered"),
+      answered: () => undefined,
+    }).catch((error: unknown) => error);
+
+    const expected =
+      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its NATS connection failed: Authentication Timeout";
+    if (!(refusal instanceof NoRelaySubjectError))
+      throw new Error(`no refusal: ${String(refusal)}`);
+    expect(refusal.message).toBe(expected);
+    expect(told).toEqual([expected]);
+  });
+
   test("a refused registration tells the session once and takes no answer", async () => {
     const relay = fakeRelay();
     const told: string[] = [];
@@ -1213,7 +1244,10 @@ describe("one registration", () => {
         relay,
         ownAgentSubject: AGENT,
         followed: [TEAM],
-        outage: inboundUnavailable((why) => told.push(why)),
+        outage: inboundUnavailable(
+          (why) => told.push(why),
+          () => told.push("restored")
+        ),
         send: () => Promise.reject(new Error("no_grant")),
         answered: (answer: string) => answers.push(answer),
       })
@@ -1221,5 +1255,39 @@ describe("one registration", () => {
 
     expect(relay.followed).toEqual([[AGENT, TEAM]]);
     expect([answers, told]).toEqual([[], ["no_grant"]]);
+  });
+
+  test("a registration accepted after an outage tells the session once that it receives again", async () => {
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    let refuse = true;
+    const register = () =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () =>
+          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
+        answered: () => undefined,
+      }).catch(() => undefined);
+
+    await register();
+    await register();
+    refuse = false;
+    await register();
+    // A heartbeat that is accepted again says nothing: the session already knows.
+    await register();
+    expect(told).toEqual(["no_grant", "restored"]);
+    // A second outage is told again, and its end too.
+    refuse = true;
+    await register();
+    refuse = false;
+    await register();
+    expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
+    expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
   });
 });

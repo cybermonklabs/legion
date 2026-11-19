@@ -85,6 +85,14 @@ export interface RegistrationStateLog {
   readonly warn: (message: string, context?: Record<string, unknown>) => void;
 }
 
+/** What a queued task's NATS dial may spend: the task's deadline, as a `performance.now()`
+ *  instant, and whether the task stopped acting (abandoned, refused, or its session moved), after
+ *  which the dial starts no further attempt. */
+export interface DialLimit {
+  readonly deadlineAt: number;
+  readonly stopped: () => boolean;
+}
+
 /**
  * Everything the module needs from its host, injected so the package's own unit tests exercise it
  * with plain fakes: no Oh My Pi host type is imported here.
@@ -110,8 +118,10 @@ export interface RegistrationStateDeps {
     readonly sessionID: string;
     readonly clientInstanceID: string;
   }) => void;
-  /** Opens a NATS connection, storing nothing: this module closes one a refused task opened. */
-  readonly dial: () => Promise<NatsConnection>;
+  /** Opens a NATS connection, storing nothing: this module closes one a refused task opened. A
+   *  queued task's dial is given the task's deadline and whether the task was abandoned, so its
+   *  redials end in time for the rest of the task; a dial outside a task gets no limit. */
+  readonly dial: (limit?: DialLimit) => Promise<NatsConnection>;
   /**
    * The session's one NATS connection, made with `dial` when it has none and kept by the host.
    * The whole acquisition is the fenced step, not the dial alone: the host's own waits after the
@@ -478,7 +488,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     readonly refusal: TaskRefusal;
   }
 
-  const createHandle = (live: () => boolean): RunningTask => {
+  const createHandle = (live: () => boolean, deadlineAt: number): RunningTask => {
     let bound: string | undefined;
     // Whether this task may still write: no step of it has been refused yet, its deadline has not
     // fired and, once bound, its session is still the open one. The one question every step below
@@ -721,7 +731,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     // Private: a task asks for the session's connection, not for a dial.
     const dial = async (): Promise<NatsConnection> => {
       guard();
-      const dialled = await deps.dial();
+      const dialled = await deps.dial({ deadlineAt, stopped: () => !acting() });
       if (!acting()) {
         await dialled.close().catch(() => {});
         refuse(
@@ -861,6 +871,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
             new Promise<T | undefined>((resolve, reject) => {
               let abandoned = false;
               const taskDeadlineMs = deps.deadlineMs();
+              const deadlineAt = performance.now() + taskDeadlineMs;
               const timer = setTimeout(() => {
                 abandoned = true;
                 reject(
@@ -869,7 +880,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
                   )
                 );
               }, taskDeadlineMs);
-              const running = createHandle(() => !abandoned);
+              const running = createHandle(() => !abandoned, deadlineAt);
               // The task runs inside this promise so a synchronous throw is its rejection too.
               void (async () => task(running.handle))().then(
                 (value) => {

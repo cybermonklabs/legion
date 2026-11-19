@@ -348,6 +348,8 @@ test("a failed dial names its servers by their setting, never by any part of the
     "claude-envoy-channel-ses_redact",
     () => {},
     refused,
+    undefined,
+    DIAL_ONCE,
   ).then(
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -378,6 +380,8 @@ test("a credential pasted as a bare server address is never named", async () => 
     "claude-envoy-channel-ses_seed",
     () => {},
     refused,
+    undefined,
+    DIAL_ONCE,
   ).then(
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -405,6 +409,8 @@ test("a token holding an unencoded / is named by none of its segments", async ()
     "claude-envoy-channel-ses_slash",
     () => {},
     refused,
+    undefined,
+    DIAL_ONCE,
   ).then(
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -475,4 +481,73 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(await trading).toBe(STOPPING)
+})
+
+/** One dial, for a row that reads the line a dial that fails for good throws. */
+const DIAL_ONCE = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 }
+/** The channel server's own waits, scaled down, still for its life. */
+const QUICK_FOR_LIFE = { firstDelayMs: 5, maxDelayMs: 5, budgetMs: Number.POSITIVE_INFINITY }
+
+test("dialChannelNats dials again: a dial refused twice then answered comes up, naming each redial", async () => {
+  const fake = fakeDial()
+  const timeouts: (number | undefined)[] = []
+  let dials = 0
+  const dial = async (options: ConnectionOptions): Promise<NatsConnection> => {
+    timeouts.push(options.timeout)
+    dials += 1
+    if (dials <= 2) throw new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout)
+    return fake.dial(options)
+  }
+  const warnings: string[] = []
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "none" },
+    },
+    "claude-envoy-channel-ses_redial",
+    (text) => warnings.push(text),
+    dial,
+    undefined,
+    QUICK_FOR_LIFE,
+  )
+  opened.stop()
+  expect(dials).toBe(3)
+  expect(timeouts).toEqual([10_000, 10_000, 10_000])
+  expect(warnings).toEqual([
+    "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: Authentication Timeout; dialing again in 5 ms",
+    "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: Authentication Timeout; dialing again in 5 ms",
+  ])
+})
+
+test("dialChannelNats dials again until it stops: a stop during a wait ends the start, and no dial follows", async () => {
+  const STOPPING = "the channel server stopped before its NATS subscriptions reached the server"
+  const stopping = new AbortController()
+  let dials = 0
+  const dial = async (): Promise<NatsConnection> => {
+    dials += 1
+    throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
+  }
+  const failure = dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "none" },
+    },
+    "claude-envoy-channel-ses_stop",
+    // The first redial's notice is the moment the dial is waiting: stop it there.
+    () => stopping.abort(),
+    dial,
+    stopping.signal,
+    { firstDelayMs: 200, maxDelayMs: 200, budgetMs: Number.POSITIVE_INFINITY },
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  expect(await failure).toBe(STOPPING)
+  // The wait the stop cut short has run out by now, and it started nothing.
+  const after = Promise.withResolvers<void>()
+  setTimeout(after.resolve, 400)
+  await after.promise
+  expect(dials).toBe(1)
 })

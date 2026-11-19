@@ -42,9 +42,11 @@ export class FakeNats implements ChannelConnection {
   readonly order: string[] = []
   readonly unsubscribed: string[] = []
   readonly subscriptions = new Map<string, Queue>()
-  closed = false
+  /** Set once the connection is closed for good; `closed()` settles then. */
+  closedForGood = false
   private readonly statuses: ChannelConnectionStatus[] = []
   private statusWaiter: PromiseWithResolvers<void> | undefined
+  private readonly ended = Promise.withResolvers<Error | undefined>()
 
   constructor(readonly calls: string[] = []) {}
 
@@ -102,7 +104,7 @@ export class FakeNats implements ChannelConnection {
   }
 
   isClosed(): boolean {
-    return this.closed
+    return this.closedForGood
   }
 
   drain(): Promise<void> {
@@ -110,9 +112,20 @@ export class FakeNats implements ChannelConnection {
   }
 
   close(): Promise<void> {
-    this.closed = true
+    return this.closeForGood()
+  }
+
+  /** The connection closes for good, as nats.js closes one, with the error that closed it. */
+  closeForGood(error?: Error): Promise<void> {
+    if (this.closedForGood) return Promise.resolve()
+    this.closedForGood = true
+    this.ended.resolve(error)
     this.statusWaiter?.resolve()
     return Promise.resolve()
+  }
+
+  closed(): Promise<Error | undefined> {
+    return this.ended.promise
   }
 
   /** nats.js reports a status event: `reconnect`, say. */
@@ -122,7 +135,7 @@ export class FakeNats implements ChannelConnection {
   }
 
   async *status(): AsyncIterable<ChannelConnectionStatus> {
-    while (!this.closed) {
+    while (!this.closedForGood) {
       const next = this.statuses.shift()
       if (next !== undefined) {
         yield next
@@ -248,9 +261,9 @@ export function settled(): Promise<void> {
 }
 
 /**
- * Polls `condition` every 5 ms until it holds; fails after 5 s naming `what`, followed by what
- * `state` reports at that moment (an `observedClient`'s `describe`, the test's own fakes).
- * Real time on purpose: the awaited conditions are filesystem writes the
+ * Polls `condition` every 5 ms until it holds; fails after `deadlineMs` (5 s by default) naming
+ * `what`, followed by what `state` reports at that moment (an `observedClient`'s `describe`, the
+ * test's own fakes). Real time on purpose: the awaited conditions are filesystem writes the
  * server's own heartbeat performs, which no fake clock can advance. The
  * deadline is read from the monotonic clock, which `setSystemTime` leaves alone.
  *
@@ -259,15 +272,17 @@ export function settled(): Promise<void> {
  * only once every wait before it has had its time. The longest is eleven, counting the waits of
  * `boot` and `reconnect` (envoy-channel-replay.test.ts, "a stored frame the channel never takes is
  * named in one notice…"): 11 × 5 s, and 5 s more covers startup and shutdown. A test that chains
- * more raises it. Under bun's default of 5 s its own timeout fired first, and a stuck wait never
- * said which step it was.
+ * more raises it, and so does one that gives a wait a longer deadline (a whole server process,
+ * which a loaded machine starts slowly). Under bun's default of 5 s its own timeout fired first,
+ * and a stuck wait never said which step it was.
  */
 export async function waitFor(
   condition: () => Promise<boolean>,
   what: string,
   state?: () => string,
+  deadlineMs = 5_000,
 ): Promise<void> {
-  const deadline = performance.now() + 5_000
+  const deadline = performance.now() + deadlineMs
   while (!(await condition())) {
     if (performance.now() > deadline) {
       throw new Error(`timed out waiting for ${what}${state === undefined ? "" : ` (${state()})`}`)

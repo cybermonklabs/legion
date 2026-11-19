@@ -44,7 +44,7 @@ test("a startup flush the redial rejects is asked again, and the session registe
 test("a startup flush on a connection closed for good still fails the start", async () => {
   const nats = new FakeNats([])
   nats.failFlushes = 1
-  nats.closed = true
+  void nats.closeForGood()
   const identity = new SessionIdentity("ses_closed", "/tmp")
   const started = startChannelSession(
     sessionOptions(identity, scratchState(), {
@@ -127,7 +127,7 @@ test("a connection closed for good while the startup flush is pending ends the s
   const nats = new FakeNats(calls)
   nats.stallFlush = true
   setTimeout(() => {
-    nats.closed = true
+    void nats.closeForGood()
   }, 100)
   expect(await startOutcome(nats, new AbortController().signal, calls)).toEqual({
     outcome: "the NATS connection closed before its subscriptions reached the server",
