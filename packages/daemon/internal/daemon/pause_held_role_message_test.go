@@ -389,12 +389,15 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 	// after the first pause's: takenOver's by the second pause ended `taken_over`, open's by the
 	// pause that stands is still open, failedSince's by the second pause ended `failed`, and
 	// stoppedAgain's by the second pause ended `stopped` after a release of its pod that came after
-	// the first pause's stop.
+	// the first pause's stop. releasedElsewhere's issue has a pod release after the stop that
+	// another project's daemon recorded, on the database the two share: that daemon's pod of the
+	// issue, not this daemon's, so it ends nothing of this daemon's debt.
 	stopped, cancelled := implementer("LEGION-1", "in_progress"), implementer("LEGION-2", "in_progress")
 	left, releasedSince := implementer("LEGION-3", "backlog"), implementer("LEGION-4", "in_progress")
 	takenOver, open := implementer("LEGION-5", "in_progress"), implementer("LEGION-6", "in_progress")
 	failedSince, stoppedAgain := implementer("LEGION-7", "in_progress"), implementer("LEGION-8", "in_progress")
-	for _, of := range []role{stopped, cancelled, left, releasedSince, takenOver, open, failedSince, stoppedAgain} {
+	releasedElsewhere := implementer("LEGION-9", "in_progress")
+	for _, of := range []role{stopped, cancelled, left, releasedSince, takenOver, open, failedSince, stoppedAgain, releasedElsewhere} {
 		stop(first, of, store.PauseStopStopped, base.Add(5*time.Minute))
 	}
 	release(stopped, base.Add(-time.Hour))
@@ -405,6 +408,10 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 	stop(second, failedSince, store.PauseStopFailed, base.Add(25*time.Minute))
 	release(stoppedAgain, base.Add(15*time.Minute))
 	stop(second, stoppedAgain, store.PauseStopStopped, base.Add(25*time.Minute))
+	if _, err := pool.Exec(ctx, `insert into pod_releases (project, issue, generation, roles, at) values ('otherproject', $1, 1, 'implementer', $2)`,
+		releasedElsewhere.issue, base.Add(15*time.Minute)); err != nil {
+		t.Fatalf("record another project's release of %s's pod: %v", releasedElsewhere.issue, err)
+	}
 
 	view := func(of role, state supervise.ClaimState, by supervise.SuspendSource) supervise.ClaimView {
 		return supervise.ClaimView{Claim: supervise.Claim{Token: of.token, Project: "legion", Tree: of.issue, Issue: of.issue,
@@ -445,6 +452,8 @@ func TestAHeldRoleMessageIsOwedUntilAnEndEventOfItsDebt(t *testing.T) {
 		owedCase{"released, its issue out of the workflow", second, view(left, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
 		owedCase{"released, its row held by no pause", 0, view(stopped, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
 		owedCase{"released, its pod released after the stop", second, view(releasedSince, supervise.StateSuspended, supervise.SuspendedByReleased), 0},
+		owedCase{"released, its issue's pod released after the stop by another project's daemon", second,
+			view(releasedElsewhere, supervise.StateSuspended, supervise.SuspendedByReleased), first},
 	)
 	for _, c := range cases {
 		if got, err := runner.heldMessageOwed(ctx, record.OutboxRow{Issue: c.view.Issue, HeldByPause: c.held}, c.view); err != nil || got != c.want {
