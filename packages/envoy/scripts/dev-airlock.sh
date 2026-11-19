@@ -590,7 +590,14 @@ PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 # own Google machine identity, read from the metadata server at call time; pointing
 # GCE_METADATA_HOST at the metadata stand rather than adding a test-only setting that hands the
 # broker a token leaves that path exactly as production runs it, so what this stack exercises
-# is the code a deployment runs and not a shortcut around it. ---
+# is the code a deployment runs and not a shortcut around it.
+#
+# And each is started with KUBERNETES_SERVICE_HOST empty. Kubernetes sets it in every container,
+# so a run in a Legion pod would hand it to both brokers, and a broker with an airlock that sees it
+# is one deployed in a cluster: it refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that
+# cluster's Service range, which a pod cannot read. These brokers are local processes on loopback,
+# so they start as a local run does, and a BROKER_AIRLOCK_CLUSTER_RANGES the caller exports still
+# reaches them. ---
 start_broker() {
   local n="$1" log="$2"
   : >"$log"
@@ -636,6 +643,7 @@ start_broker() {
   BROKER_JUDGE_DISPATCH_TOKEN_FILE="$JUDGE_DISPATCH_TOKEN_FILE" \
   BROKER_JUDGE_TEST_SKIP_CHECKS="$JUDGE_SKIP_CHECKS" \
   GCE_METADATA_HOST="$METADATA_ADDRESS" \
+  KUBERNETES_SERVICE_HOST='' \
   "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$log" >&2) 2>&1 &
   BROKER_PIDS[n]=$!
 }

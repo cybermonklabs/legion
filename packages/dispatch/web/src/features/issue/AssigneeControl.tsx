@@ -3,9 +3,33 @@ import { type ReactNode, useState } from "react";
 
 import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { usePageWords } from "../../components/tooltips";
+import {
+  badgeLow,
+  badgePrimary,
+  pageAvatar,
+  pageInkText,
+  pageLabelChip,
+  pagePaneBg,
+  pageQuietText,
+} from "../../theme/classes";
+import {
+  badgeSelectBadge,
+  badgeSelectHeaderWrapper,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
+  badgeSelectWrapper,
+} from "./badge-select";
 import { useIssueAssignee } from "./useIssueAssignee";
+
+/** The name the assignee picker answers to, in its words on every page: the property it sets
+ *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The
+ *  new issue page's add menu reaches this picker by this name rather than drawing a second
+ *  one, so a word changed here changes both sides at once. */
+export function assigneeControlName(issueKey: string): string {
+  return `Assignee of ${issueKey}`;
+}
 
 /**
  * The single assignee editor: shows who answers the issue's asks as a badge (their lowercase
@@ -19,17 +43,24 @@ import { useIssueAssignee } from "./useIssueAssignee";
  * partitions update at once and roll back together; a refused person shows the server's
  * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
  * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Labelled `Assignee of <KEY>`.
+ * is queued behind the save. Named by `assigneeControlName`.
+ *
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.person`): the
+ * person's initial in a filled circle beside their name in the ink, or Unassigned in the quiet
+ * grey. The select over it is the same either way.
  */
 export function AssigneeControl({
   assignee,
   disabled = false,
   issueKey,
+  variant = "badge",
 }: {
   assignee: string | null;
   disabled?: boolean;
   issueKey: string;
+  variant?: "badge" | "header";
 }): ReactNode {
+  const page = usePageWords();
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
@@ -39,14 +70,54 @@ export function AssigneeControl({
   // so the control never shows a value its options lack.
   const options = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
   const tone = assignee === null ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` the badge is the new issue page's label chip, and Unassigned its quiet
+  // words on the same ground, as the header variant says it in the quiet grey: each colour there
+  // is one of that page's.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : assignee === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  const shown = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
+  const mark = assignee === null ? page?.pageChrome : page?.authorText;
+  // Inside `NoTooltips` the person is a value, so it keeps `max-w-full` and breaks anywhere, and
+  // its wrapper narrows to the line rather than keep its width. The header variant is the new
+  // page's shape alone, so it wraps on every surface.
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {assignee ?? "Unassigned"}
-        </span>
+      <span
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+      >
+        {variant === "header" ? (
+          <span
+            aria-hidden="true"
+            className={`inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm leading-5 [overflow-wrap:anywhere] ${
+              assignee === null ? pageQuietText : pageInkText
+            }`}
+            {...mark}
+          >
+            {assignee === null ? null : (
+              // The initial is drawn, not written: the name beside it is the value a reader and
+              // a reading of the badge take, so the circle adds no letter to its text.
+              <span
+                className={`inline-grid size-5 shrink-0 place-items-center rounded-full text-xs leading-5 font-semibold before:content-[attr(data-initial)] ${pageAvatar}`}
+                data-initial={assignee.charAt(0).toUpperCase()}
+              />
+            )}
+            <span className="min-w-0 [overflow-wrap:anywhere]">{shown}</span>
+          </span>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+            {...mark}
+          >
+            {shown}
+          </span>
+        )}
         <select
-          aria-label={`Assignee of ${issueKey}`}
+          aria-label={assigneeControlName(issueKey)}
           className={badgeSelectOverlay}
           disabled={disabled}
           onFocus={want}
