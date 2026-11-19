@@ -474,6 +474,33 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 	}
 }
 
+// The controller's pod takes no cache trimmer, however the deployment configured one: its
+// launcher's single-role form returns before the background block that would run one, and the
+// volume it works on is its own Sandbox's, no issue's cache (Options.VolumeTrim).
+func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(controllerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, ack, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the controller's own launcher was refused: %s", reason)
+			}
+			if ack.VolumeTrim != nil {
+				t.Fatalf("the controller's launcher was handed %+v, want none", *ack.VolumeTrim)
+			}
+		})
+	}
+}
+
 // The daemon tells the orphan sweep of every claim it has not retired (internal/daemon's
 // knownClaims), a suspended one with no locator. The controller's Sandbox holds its saved session,
 // so a known controller claim keeps it, running or suspended; once the claim is retired, and so

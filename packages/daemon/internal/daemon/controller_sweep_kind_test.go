@@ -106,7 +106,10 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	// The proof maps no repository and configures no rename, so the mapping's rule
 	// (repositories.serving) answers every provisioning token's repository as it is recorded.
 	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	// The proof applies no fact of a pod's volume and no memory guard kill, so the trimmer's
+	// reports and the guard's reach holders nothing filled, which drop them
+	// (volumeTrimReports.report, memoryGuardKills.killed).
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), "", &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the

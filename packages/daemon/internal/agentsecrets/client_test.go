@@ -1,6 +1,7 @@
 package agentsecrets
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,6 +102,7 @@ func newFakeBroker(t *testing.T) (*fakeBroker, *httptest.Server) {
 	mux.HandleFunc("POST /v1/launcher-credentials/token", b.handleTokenLogin)
 	mux.HandleFunc("POST /v1/enrollments", b.handleEnrollmentRoute)
 	mux.HandleFunc("DELETE /v1/enrollments/{id}", b.handleEnrollmentRoute)
+	mux.HandleFunc("POST /v1/enrollments/carried", b.handleEnrollmentRoute)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return b, server
@@ -765,6 +769,135 @@ func TestEnrollWithoutASessionSendsNull(t *testing.T) {
 	}
 }
 
+// plannerClaim is a role claim token as the daemon spells it (claim.NewToken).
+const plannerClaim = "legion-acme-acme-12-planner"
+
+// TestEnrollSendsTheClaim: the claim the process runs for goes to the broker as `claim`, beside
+// every field the contract already carried, so the broker files the pod's requests under it.
+func TestEnrollSendsTheClaim(t *testing.T) {
+	broker, c := newIssuedClient(t)
+	e := podEnrollment
+	e.Claim = plannerClaim
+	if _, err := c.Enroll(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"kind": "pod", "runtime_id": podEnrollment.PodUID, "operator": nil, "thumbprint": podEnrollment.Thumbprint,
+		"session_id": "ses_implementer", "pod_token": podEnrollment.PodToken, "claim": plannerClaim,
+	}
+	if gotJSON, wantJSON := mustJSON(t, broker.lastEnrollRequest().body), mustJSON(t, want); gotJSON != wantJSON {
+		t.Fatalf("body\n got %s\nwant %s", gotJSON, wantJSON)
+	}
+}
+
+// olderEnrollmentBody is POST /v1/enrollments's body as a broker from before the claim declares
+// it: the fields that broker reads, and no other.
+type olderEnrollmentBody struct {
+	Kind       string  `json:"kind"`
+	RuntimeID  string  `json:"runtime_id"`
+	Slot       string  `json:"slot"`
+	Operator   *string `json:"operator"`
+	Thumbprint string  `json:"thumbprint"`
+	SessionID  *string `json:"session_id"`
+	PodToken   *string `json:"pod_token"`
+}
+
+// newOlderBroker is POST /v1/enrollments as a broker from before the claim answers it: it reads
+// the body as that broker's readJSON does, refusing a field it does not declare with
+// 400 INVALID_ENROLLMENT and the decoder's own words, and records every body it was sent.
+func newOlderBroker(t *testing.T) (*Client, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var sent map[string]any
+		if err := json.Unmarshal(raw, &sent); err != nil {
+			t.Errorf("enrollment body is not JSON: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, sent)
+		mu.Unlock()
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		w.Header().Set("Content-Type", "application/json")
+		if err := decoder.Decode(&olderEnrollmentBody{}); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": "INVALID_ENROLLMENT", "error": "body must be one valid JSON object: " + err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"enrollment_id":"enr-older","lease_expires_at":"2026-09-26T12:15:00Z"}`)
+	}))
+	t.Cleanup(server.Close)
+	c := &Client{URL: server.URL, HTTP: server.Client()}
+	withCredential(t, c, "cred-1")
+	return c, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(bodies)
+	}
+}
+
+// TestEnrollRetriesWithoutTheNewFieldsOnAnOlderBroker: a broker from before the claim refuses
+// the field as unknown, and the daemon reads a 4xx as permanent and drops the pod's identity, so
+// one refusal of that shape is retried once without the fields that broker cannot read, and the
+// enrollment it answers is the pod's. Every other 400 is one call and the permanent refusal it was:
+// another code, an INVALID_ENROLLMENT that names no unknown field, one met by a body that carried
+// no new field to leave out, and the retry's own refusal.
+func TestEnrollRetriesWithoutTheNewFieldsOnAnOlderBroker(t *testing.T) {
+	claimed := podEnrollment
+	claimed.Claim = plannerClaim
+	t.Run("an older broker enrols the pod without its claim", func(t *testing.T) {
+		c, sent := newOlderBroker(t)
+		got, err := c.Enroll(context.Background(), claimed)
+		if err != nil || got.ID != "enr-older" {
+			t.Fatalf("Enroll against an older broker = %+v, %v; want its enrollment enr-older", got, err)
+		}
+		bodies := sent()
+		if len(bodies) != 2 {
+			t.Fatalf("the older broker was sent %d bodies, want two: the body, then the body without the claim", len(bodies))
+		}
+		if bodies[0]["claim"] != plannerClaim {
+			t.Fatalf("the first body = %v, want it to state the claim", bodies[0])
+		}
+		withoutClaim := maps.Clone(bodies[0])
+		delete(withoutClaim, "claim")
+		if gotJSON, wantJSON := mustJSON(t, bodies[1]), mustJSON(t, withoutClaim); gotJSON != wantJSON {
+			t.Fatalf("the retry's body\n got %s\nwant the first body without the claim %s", gotJSON, wantJSON)
+		}
+	})
+	unknownField := `{"code":"INVALID_ENROLLMENT","error":"body must be one valid JSON object: json: unknown field \"claim\""}`
+	for _, c := range []struct {
+		name    string
+		in      PodEnrollment
+		answers []enrollAnswer
+		calls   int
+		code    string
+	}{
+		{"another code", claimed, []enrollAnswer{{http.StatusBadRequest, `{"code":"INVALID_CLAIM","error":"a claim is only for a pod a launcher enrols"}`}}, 1, "INVALID_CLAIM"},
+		{"an INVALID_ENROLLMENT naming no unknown field", claimed, []enrollAnswer{{http.StatusBadRequest, `{"code":"INVALID_ENROLLMENT","error":"body must be one valid JSON object: unexpected EOF"}`}}, 1, "INVALID_ENROLLMENT"},
+		{"a body that states no claim", podEnrollment, []enrollAnswer{{http.StatusBadRequest, unknownField}}, 1, "INVALID_ENROLLMENT"},
+		{"the retry refused as well", claimed, []enrollAnswer{{http.StatusBadRequest, unknownField}, {http.StatusBadRequest, unknownField}}, 2, "INVALID_ENROLLMENT"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			broker, client := newIssuedClient(t)
+			broker.enrollAnswers = c.answers
+			_, err := client.Enroll(context.Background(), c.in)
+			var api *APIError
+			if !errors.As(err, &api) || api.Status != http.StatusBadRequest || api.Code != c.code || !IsPermanent(err) {
+				t.Fatalf("Enroll = %v, want the permanent 400 %s", err, c.code)
+			}
+			broker.mu.Lock()
+			calls := len(broker.enrollReqs)
+			broker.mu.Unlock()
+			if calls != c.calls {
+				t.Fatalf("the broker was called %d times, want %d", calls, c.calls)
+			}
+		})
+	}
+}
+
 func TestEnrollTreatsAnExistingEnrollmentAsTheSame(t *testing.T) {
 	broker, c := newIssuedClient(t)
 	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: `{"enrollment_id":"enr-existing","lease_expires_at":"2026-09-26T12:15:00Z"}`}}
@@ -833,6 +966,92 @@ func TestRevokeIsIdempotent(t *testing.T) {
 	broker.enrollAnswers = []enrollAnswer{{status: http.StatusServiceUnavailable, body: `{"code":"DATABASE","error":"down"}`}}
 	if err := c.Revoke(context.Background(), "enr-1"); err == nil || IsPermanent(err) {
 		t.Fatalf("503 revoke: err %v, want a transient failure", err)
+	}
+}
+
+// Carried reads the contract's shape alone (review of #4355): `{"carried": []}` is none, a list is
+// its enrollments, and a 200 that names no carried list, or a null one, is an error rather than
+// none, since a release reads none as leave to free. A 4xx is a permanent refusal and a 5xx a
+// transient one, as for every launcher call.
+//
+// The control (the pull request records the run): Carried with no check of a missing list
+// answers "{}" as none.
+func TestCarriedReadsOnlyTheContractsShape(t *testing.T) {
+	broker, c := newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: `{"carried":[{"session_id":"ses_a","enrollment_id":"enr-1","state":"dormant","ends_at":"2026-09-26T12:15:00Z"}]}`}}
+	got, err := c.Carried(context.Background(), []string{"ses_a", "ses_b"})
+	if err != nil || len(got) != 1 || got[0].SessionID != "ses_a" || got[0].EnrollmentID != "enr-1" || got[0].State != "dormant" {
+		t.Fatalf("Carried = %+v, %v; want enr-1 of ses_a, dormant", got, err)
+	}
+	req := broker.lastEnrollRequest()
+	if req.method != http.MethodPost || req.path != "/v1/enrollments/carried" || req.authorization != "" || req.proof == "" {
+		t.Fatalf("request %s %s (authorization %q, proof %q), want a POST to the carried route with a proof alone", req.method, req.path, req.authorization, req.proof)
+	}
+	for _, tc := range []struct {
+		body string
+		none bool
+	}{
+		{`{"carried":[]}`, true},
+		{`{}`, false},
+		{`{"carried":null}`, false},
+	} {
+		broker, c := newIssuedClient(t)
+		broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: tc.body}}
+		got, err := c.Carried(context.Background(), []string{"ses_a"})
+		if tc.none && (err != nil || got == nil || len(got) != 0) {
+			t.Fatalf("Carried answered %s = %v, %v; want none", tc.body, got, err)
+		}
+		if !tc.none && err == nil {
+			t.Fatalf("Carried answered %s = %v, <nil>; want an error, not none", tc.body, got)
+		}
+	}
+	broker, c = newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusForbidden, body: `{"code":"SERVICE_LOGIN_REQUIRED","error":"why"}`}}
+	if _, err := c.Carried(context.Background(), []string{"ses_a"}); !IsPermanent(err) {
+		t.Fatalf("a 403 to Carried = %v, want a permanent refusal", err)
+	}
+	broker, c = newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusServiceUnavailable, body: `{"code":"DATABASE","error":"down"}`}}
+	if _, err := c.Carried(context.Background(), []string{"ses_a"}); err == nil || IsPermanent(err) {
+		t.Fatalf("a 503 to Carried = %v, want a transient failure", err)
+	}
+}
+
+// Carried reads its answer up to carriedAnswerBytes, not the 64 KiB every other call reads (side
+// review of #4355): an answer of 1,000 enrollments, about 150 KB, is read whole, and one longer
+// than the bound is a CarriedAnswerTooLargeError, a carry the machine cannot list
+// (UnlistedCarry), never an answer cut short and read as an outage.
+//
+// The control (the pull request records the run): Carried reading through answerBytes answers the
+// 1,000-row answer "a body that is not the contract's shape".
+func TestCarriedReadsAnAnswerPastTheOtherCallsBound(t *testing.T) {
+	row := func(i int) string {
+		return fmt.Sprintf(`{"session_id":"ses_%036d","enrollment_id":"enr-%036d","state":"dormant","ends_at":"2026-09-26T12:15:00Z"}`, i, i)
+	}
+	rows := make([]string, 1000)
+	for i := range rows {
+		rows[i] = row(i)
+	}
+	long := `{"carried":[` + strings.Join(rows, ",") + `]}`
+	if len(long) <= answerBytes {
+		t.Fatalf("the answer is %d bytes, want more than the %d other calls read", len(long), answerBytes)
+	}
+	broker, c := newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: long}}
+	got, err := c.Carried(context.Background(), []string{"ses_a"})
+	if err != nil || len(got) != 1000 || got[999].EnrollmentID != fmt.Sprintf("enr-%036d", 999) {
+		t.Fatalf("Carried of a %d-byte answer = %d rows, %v; want all 1,000", len(long), len(got), err)
+	}
+
+	for len(rows)*len(row(0)) <= carriedAnswerBytes {
+		rows = append(rows, rows...)
+	}
+	broker, c = newIssuedClient(t)
+	broker.enrollAnswers = []enrollAnswer{{status: http.StatusOK, body: `{"carried":[` + strings.Join(rows, ",") + `]}`}}
+	_, err = c.Carried(context.Background(), []string{"ses_a"})
+	var tooLarge *CarriedAnswerTooLargeError
+	if !errors.As(err, &tooLarge) || !tooLarge.UnlistedCarry() || IsPermanent(err) {
+		t.Fatalf("Carried of an answer past %d bytes = %v, want a CarriedAnswerTooLargeError", carriedAnswerBytes, err)
 	}
 }
 

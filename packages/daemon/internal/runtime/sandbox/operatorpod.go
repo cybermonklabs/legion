@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// imageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
+// ImageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
 // worker.Dockerfile, ENV), which every container inherits, and which a pod's env therefore may not
 // override: AWS_CA_BUNDLE holds the AWS CLI to the system root bundle the image probe verifies;
 // CGO_ENABLED=0 keeps cgo off by default in every process that inherits the image's environment,
@@ -31,9 +31,11 @@ import (
 // LEGION_LEAK_CHECK_TAG is the tag of the shared public leak check the daemon reads and pushes to
 // the pod's launcher, which installs it once for the pod before any role starts
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
-// and PATH, which the runtime sets as well. TestImageEnvIsWhatTheWorkerImageSets holds the list to
-// the Dockerfile.
-var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH"}
+// PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
+// skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
+// the Dockerfile. cmd/legion's TLS probe keeps these variables, but gives each client a HOME of
+// its own (tls_probe.go).
+var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
 // env may set it too: the pod baseline yields to the operator's own value, and the operator's
@@ -52,7 +54,7 @@ type setter struct {
 // session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
 // recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
-// image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
+// image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
 // `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
 // of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
 // since `composed` deliberately leaves them out, and every name of `composed`, the spend
@@ -103,7 +105,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 			add(name, "Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience", false)
 		}
 	}
-	for _, name := range imageEnv {
+	for _, name := range ImageEnv {
 		add(name, "the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)", false)
 	}
 	for name := range (runtime.GitIdentity{}).Env() {

@@ -2,8 +2,23 @@ import type { ReactNode } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, priorityBadge } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { usePageWords } from "../../components/tooltips";
+import {
+  badgeLow,
+  pageInkText,
+  pageLabelChip,
+  pagePaneBg,
+  pageQuietText,
+  priorityBadge,
+} from "../../theme/classes";
+import {
+  badgeSelectBadge,
+  badgeSelectHeaderWrapper,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
+  badgeSelectWrapper,
+} from "./badge-select";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -27,10 +42,8 @@ export function PriorityControl({
   issueKey: string;
   priority: IssuePriority | null;
 }): ReactNode {
-  const write = useIssuePriority(issueKey);
-  return (
-    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={write} />
-  );
+  const write = useIssuePriority(issueKey, priority);
+  return <PriorityEditor disabled={disabled} issueKey={issueKey} write={write} />;
 }
 
 /**
@@ -49,25 +62,67 @@ export function PriorityControl({
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
+ * The priority drawn is the write's (`IssueFieldWrite.shown`), so a pick from any of them shows
+ * from its press.
+ *
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
+ * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
+ * quiet grey while it has none. The select over it is the same either way.
  */
 export function PriorityEditor({
   disabled = false,
   issueKey,
-  priority,
+  variant = "badge",
   write,
 }: {
   disabled?: boolean;
   issueKey: string;
-  priority: IssuePriority | null;
+  variant?: "badge" | "header";
   write: IssuePriorityWrite;
 }): ReactNode {
+  const page = usePageWords();
+  const priority = write.shown;
   const tone = priority === null ? badgeLow : priorityBadge[priority];
+  // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
+  // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
+  // there is one of that page's. The prototype's `.prio` draws how urgent a priority is by its
+  // bars and its word, never by a colour, so P0 and P3 wear the same chip.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : priority === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
+  const mark = priority === null ? page?.pageChrome : page?.authorText;
+  // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
+  // and its wrapper narrows to the line rather than keep its width. The header variant is the
+  // new page's shape alone, so it wraps on every surface.
   return (
     <>
-      <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {priority === null ? "Priority" : `P${priority}`}
-        </span>
+      <span
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+      >
+        {variant === "header" ? (
+          <span
+            aria-hidden="true"
+            className={`inline-flex min-w-0 max-w-full items-center gap-[5px] text-sm leading-5 font-semibold [overflow-wrap:anywhere] ${
+              priority === null ? pageQuietText : pageInkText
+            }`}
+            {...mark}
+          >
+            <PriorityBars priority={priority} />
+            {label}
+          </span>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+            {...mark}
+          >
+            {label}
+          </span>
+        )}
         <select
           aria-label={`Priority of ${issueKey}`}
           className={badgeSelectOverlay}
@@ -96,5 +151,30 @@ export function PriorityEditor({
         />
       ) : null}
     </>
+  );
+}
+
+/** The prototype's priority shape: three rising bars, as many filled as the priority is urgent
+ *  - three for P0, none for P3 or none set. `P1` beside it says the same in words. */
+function PriorityBars({ priority }: { priority: IssuePriority | null }): ReactNode {
+  const filled = priority === null ? 0 : 3 - priority;
+  return (
+    <svg aria-hidden="true" className="size-3.5 shrink-0" viewBox="0 0 14 14">
+      {[
+        { height: 5, x: 1, y: 8 },
+        { height: 8, x: 5.5, y: 5 },
+        { height: 11, x: 10, y: 2 },
+      ].map((bar, index) => (
+        <rect
+          className={index < filled ? "fill-page-ink" : "fill-page-hair"}
+          height={bar.height}
+          key={bar.x}
+          rx="1"
+          width="3"
+          x={bar.x}
+          y={bar.y}
+        />
+      ))}
+    </svg>
   );
 }

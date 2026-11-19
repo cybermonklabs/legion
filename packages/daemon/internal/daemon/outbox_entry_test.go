@@ -117,6 +117,21 @@ func entryEngine(t *testing.T) *workflow.Engine {
 		Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 }
 
+// startPromoted raises role's entry on issue as the promotion of a re-admitted tree does
+// (workflow.Engine.StartPromotedWorker), in a transaction of its own that settles the runs its
+// start ends, as a fact's does (workflow.Engine.OpenFact).
+func startPromoted(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
+	ctx = engine.OpenFact(ctx)
+	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
+			return err
+		}
+		return engine.SettleFact(ctx, tx)
+	})
+}
+
 // A start row carries the phase entry its task is of (record.SuperviseRequest.Entry), and the
 // role's phases row names the entry its phase is on now (record.PhaseRow.Entry). A row below that
 // number carries work a later entry of the same phase has superseded, and that entry's own start
@@ -145,9 +160,7 @@ func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t 
 	// the number, writes that entry's task on the phases row and writes its own start
 	// (workflow.Engine.StartPromotedWorker).
 	issue := readIssue(t, rig.pool, rig.issue.Key)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return entryEngine(t).StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
-	}); err != nil {
+	if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
 		t.Fatalf("raise the implementer's second entry: %v", err)
 	}
 	rows = entryStartRows(t, rig.pool, rig.issue.Key)
@@ -269,9 +282,7 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 		// the row that carries that task queues it, and the delivery records entry 2 as given
 		// (supervise's queue, which writes Claim.GivenEntry with the delivery).
 		issue := readIssue(t, rig.pool, rig.issue.Key)
-		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-			return entryEngine(t).StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
-		}); err != nil {
+		if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
 			t.Fatalf("raise the implementer's second entry: %v", err)
 		}
 		rows := entryStartRows(t, rig.pool, rig.issue.Key)
@@ -335,9 +346,7 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 		}
 
 		issue := readIssue(t, rig.pool, rig.issue.Key)
-		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-			return entryEngine(t).StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
-		}); err != nil {
+		if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
 			t.Fatalf("raise the implementer's second entry: %v", err)
 		}
 		rows = entryStartRows(t, rig.pool, rig.issue.Key)
@@ -404,9 +413,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 	}
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return entryEngine(t).StartPromotedWorker(ctx, tx, *issue, claim.RoleImplementer)
-	}); err != nil {
+	if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
 		t.Fatalf("promote the re-admitted tree's implementer: %v", err)
 	}
 
@@ -627,9 +634,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// The phase is handed out again while that turn runs: entry 2, with the phase's resume task,
 	// whose row the runner holds back because the claim is working entry 1's task.
 	issue := readIssue(t, rig.pool, rig.issue.Key)
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester)
-	}); err != nil {
+	if err := startPromoted(ctx, rig.pool, engine, *issue, claim.RoleTester); err != nil {
 		t.Fatalf("raise the tester's second entry: %v", err)
 	}
 	second := testerStart(2)

@@ -47,7 +47,7 @@ const (
 )
 
 // ErrNoSignIn is a machine where nobody has signed in.
-var ErrNoSignIn = fmt.Errorf("nobody is signed in on this machine; run: %s", SignInCommand)
+var ErrNoSignIn = errors.New("nobody is signed in on this machine; " + Hint(FailureNoSignIn))
 
 // SignInRecord is one person's sign-in on this machine as it is kept on disk.
 type SignInRecord struct {
@@ -137,7 +137,7 @@ func (s SignInStore) Read(path string) (SignInRecord, error) {
 		return SignInRecord{}, fmt.Errorf("read the sign-in at %s: %w", path, err)
 	}
 	if record.Person == "" || record.RefreshToken == "" || record.BoxKey == "" {
-		return SignInRecord{}, fmt.Errorf("the sign-in at %s names no person, no refresh token or no box key; run: %s", path, SignInCommand)
+		return SignInRecord{}, WithHint(fmt.Errorf("the sign-in at %s names no person, no refresh token or no box key", path), FailureNoSignIn)
 	}
 	record.path = path
 	return record, nil
@@ -186,8 +186,8 @@ func (s SignInStore) Choose(person string) (SignInRecord, error) {
 				return record, nil
 			}
 		}
-		return SignInRecord{}, fmt.Errorf("%s names %s, who is not signed in on this machine; signed in here: %s; run: %s",
-			PersonVar, person, namesOf(records), SignInCommand)
+		return SignInRecord{}, WithHint(fmt.Errorf("%s names %s, who is not signed in on this machine; signed in here: %s",
+			PersonVar, person, namesOf(records)), FailureNoSignIn)
 	case len(records) == 1:
 		return records[0], nil
 	default:

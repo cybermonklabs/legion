@@ -49,16 +49,25 @@ type connectOpts struct {
 	beforeRequestFlush          func()
 	background                  bool
 	silentCutDetection          bool
+	immediateReconnect          bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
-// (connectWithContext): the NATS user credential names (nkeyCredential, nil for none), and the
-// pings of WithSilentCutDetection when the client asked for them.
+// (connectWithContext): the NATS credential names (credential, nil for none), the pings of
+// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
+// it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
-	if !o.silentCutDetection {
+	settings := []nats.Option{credential}
+	if o.silentCutDetection {
+		settings = append(settings, detectSilentCuts)
+	}
+	if o.immediateReconnect {
+		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	}
+	if len(settings) == 1 {
 		return credential
 	}
-	return allOf(credential, detectSilentCuts)
+	return allOf(settings...)
 }
 
 // parseConnectOptions applies options over the defaults every connect starts from.
@@ -192,6 +201,16 @@ func WithSilentCutDetection() DialOption {
 	return func(o *connectOpts) { o.silentCutDetection = true }
 }
 
+// WithImmediateReconnect has every connection the client makes retry at once after a cut, with a
+// jitter of reconnectJitterImmediate rather than the second every other client waits. It is for
+// the one client a hub's other clients wait on: the NATS auth service
+// (internal/broker/natscallout), which is itself a client of the hub it admits connections to, so
+// a restart drops its connection too and every client that comes back before it is refused until
+// it returns. The jitter keeps two replicas from dialling in the same instant.
+func WithImmediateReconnect() DialOption {
+	return func(o *connectOpts) { o.immediateReconnect = true }
+}
+
 type subscriptionTransport uint8
 
 const (
@@ -293,6 +312,15 @@ type Client struct {
 	// record retention has spent and anything past publishDenialDepth are dropped when the next
 	// one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
+	// refusal is the channel closed when the next refusal of a publish is recorded, which every send
+	// waiting on an answer selects on beside it (refusalSignal): recordPublishDenial closes it and
+	// puts a new one in its place, so a refused send is answered as the refusal arrives rather than
+	// at the end of its own wait. It is atomic, apart from c.mu, since a send takes it with one load.
+	refusal atomic.Pointer[chan struct{}]
+	// installing is the connection install ensures the stream on before it becomes Conn, whose
+	// refusals are recorded as Conn's are (recordPublishDenial); nil outside that ensure. c.mu
+	// guards it.
+	installing *nats.Conn
 
 	// subscriptionsMu guards subscriptions and stopMode. It is held to read and write them, never
 	// across a bind's request to the server, so a reconnect's restore, the health reads and Drain
@@ -369,7 +397,7 @@ type Client struct {
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
 // infinite reconnect every second, retry-loop for the initial 10 attempts), as the NATS user
-// environment names (nkeyCredential), through the SOCKS5 proxy it names (socks5Proxy). A caller
+// environment names (credential), through the SOCKS5 proxy it names (socks5Proxy). A caller
 // that needs core pub/sub on a connection of its own uses it: nats.go re-subscribes core
 // subscriptions on reconnect by itself, so it needs none of Client's recovery, and it touches no
 // stream. It refuses a NATS server that is not this machine's on the same terms as Connect,
@@ -387,7 +415,7 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
-	credential, err := nkeyCredential(environment)
+	credential, err := credential(environment)
 	if err != nil {
 		return nil, err
 	}
@@ -416,8 +444,9 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 // publishes each topic on the transport the deployed stream calls for (UsesCoreTransport).
 //
 // Every client, from Connect or ConnectOwningStream, connects as the NATS user the environment
-// names: NATS_NKEY_SEED_FILE or NATS_NKEY_SEED (nkeyCredential). An unusable seed is an error
-// before any dial; neither variable set connects without a credential. It connects through the
+// names: an nkey seed (NATS_NKEY_SEED_FILE or NATS_NKEY_SEED) or a service's platform token
+// (NATS_SERVICE_TOKEN_FILE or NATS_SERVICE_GOOGLE_AUDIENCE; credential). An unusable one is an error
+// before any dial; none set connects without a credential. It connects through the
 // SOCKS5 proxy the environment names (ENVOY_NATS_SOCKS5_PROXY, socks5Proxy), or directly when it
 // names none. Every connection the client dials later, to recover, is the same user's, through
 // the same proxy.
@@ -458,7 +487,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
 		return nil, err
 	}
-	credential, err := nkeyCredential(opts.environment)
+	credential, err := credential(opts.environment)
 	if err != nil {
 		return nil, err
 	}
@@ -559,18 +588,27 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 		return err
 	}
 	if ensure {
+		// The server's refusals on nc are recorded while the stream is ensured on it, before nc is
+		// c.Conn (recordPublishDenial), so a request of the ensure the grant refuses ends at once.
+		c.mu.Lock()
+		c.installing = nc
+		c.mu.Unlock()
 		ctx, cancel := c.untilStopped()
-		err := c.ensureStreamReported(ctx, nc, js)
+		err := c.ensureStreamReported(ctx, ctx, nc, js, atStart)
 		cancel()
+		c.mu.Lock()
+		c.installing = nil
+		c.mu.Unlock()
 		if err != nil {
 			return err
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, js
+	c.Conn, c.js = nc, c.readsOwnRefusals(js)
 	c.connectionChangedLocked()
-	// install runs only from the constructor, before any connection is c.Conn, so nothing has
-	// been recorded (recordPublishDenial records only for c.Conn) and this clear finds it empty.
+	// install runs only from the constructor, before any connection is c.Conn, so the record holds
+	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
+	// connection being installed too), and nothing of it is owed to a send: it is cleared.
 	c.clearPublishDenials()
 	c.mu.Unlock()
 	registerClient(c)
@@ -591,12 +629,13 @@ const firstStreamSubjectsRead = 2 * time.Second
 // streamSubjectsRead bounds each later read of the deployed stream's subjects.
 const streamSubjectsRead = 10 * time.Second
 
-// ensureStream ensures the stream through js and keeps the subjects it carries afterwards.
-// defaultsAnUnsetCap is what the connected server is, read from the version it answers
-// (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the server
-// caps at a default of its own.
-func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool) error {
-	subjects, err := ensureStreamWithConfig(js, c.streamConfig, defaultsAnUnsetCap)
+// ensureStream ensures the stream through js, for at, the caller that ensures it (streamEnsure),
+// and keeps the subjects it carries afterwards. defaultsAnUnsetCap is what the connected server
+// is, read from the version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with
+// no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
+// the server, which the start's hang guard bounds too (ensureStreamWithConfig).
+func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
+	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}
@@ -614,11 +653,14 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
 // connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
 // request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
-// connection that drops ends with it.
+// connection that drops ends with it, and the ensure's waits on the server end with it too. It
+// waits for no election it did not cause (atReconnect): a stream it finds with no leader is left to
+// elect one, so the hooks after it run, unless the stream must be reconciled, an update that fails
+// at once while the cluster has no quorum, as at main; a create or a raise it makes is waited out.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStreamReported(lookOnce(), conn, requestsUnder(ctx, js))
+		err = c.ensureStreamReported(lookOnce(), ctx, conn, requestsUnder(ctx, js), atReconnect)
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -627,15 +669,15 @@ func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
 }
 
 // ensureStreamReported ensures the stream through js with what conn's server reports it is
-// (connectedDefaultsAnUnsetCap), waiting for that report until ctx is done or
+// (connectedDefaultsAnUnsetCap), waiting for that report until versionCtx is done or
 // natsversion.VersionWait passes; a connection that reports none in that time ensures nothing and
-// answers the error.
-func (c *Client) ensureStreamReported(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext) error {
-	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, conn)
+// answers the error. ctx ends the ensure itself, made for at (ensureStream).
+func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, at streamEnsure) error {
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(versionCtx, conn)
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(js, defaultsAnUnsetCap)
+	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap, at)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given
@@ -669,12 +711,12 @@ func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, time
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
-		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
+		if subjects, err = readStreamSubjects(readsRefusals(conn, requestsUnder(ctx, js))); err == nil {
 			c.deployedSubjects.Store(&subjects)
 			return true
 		}
 	}
-	if publishDenial(conn.LastError(), streamInfoSubject) != nil {
+	if errors.Is(err, ErrPublishDenied) || publishDenial(conn.LastError(), streamInfoSubject) != nil {
 		slog.Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
 			slog.String("name", c.name), slog.String("subject", streamInfoSubject))
 		c.subjectsRefused.Store(true)
@@ -1618,7 +1660,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = js
+		c.js = c.readsOwnRefusals(js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
 		c.mu.Unlock()

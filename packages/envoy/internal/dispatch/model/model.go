@@ -1072,7 +1072,9 @@ type NearCopyChecksPage struct {
 
 // IssueChild is a child item embedded in an issue detail response. The subtree counts
 // include the child itself, every status (icebox included); done is `status = 'done'`.
-// ActiveAt is the newest updated_at anywhere in the child's subtree.
+// ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
+// child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
+// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -1081,6 +1083,8 @@ type IssueChild struct {
 	SubtreeTotal  int            `json:"subtree_total"`
 	ActiveAt      time.Time      `json:"active_at"`
 	ExternalLinks []ExternalLink `json:"external_links"`
+	Needs         []string       `json:"needs,omitempty"`
+	Claim         *IssueClaim    `json:"claim,omitempty"`
 }
 
 // ArchitectureTree is GET /api/v1/projects/{key}/architecture: the project's
@@ -1427,6 +1431,9 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
+	// for a caller that sent `Dispatch-Trees: 1`.
+	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
@@ -1461,13 +1468,17 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run.
+// one result is the one derived from that run. Text is the block's words with every link and
+// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
+// content whole, links and references kept, as the reader is shown it, present only for a
+// caller that sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
 	Text            string        `json:"text"`
+	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
@@ -1524,14 +1535,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
+// are: the words with no link or reference, and the block's whole content as a tree.
 type RequirementCoverage struct {
-	BlockID   string   `json:"block_id"`
-	Ref       string   `json:"ref"`
-	Text      string   `json:"text"`
-	Checks    int      `json:"checks"`
-	PlanTasks int      `json:"plan_tasks"`
-	Gaps      []string `json:"gaps"`
+	BlockID   string      `json:"block_id"`
+	Ref       string      `json:"ref"`
+	Text      string      `json:"text"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+	Checks    int         `json:"checks"`
+	PlanTasks int         `json:"plan_tasks"`
+	Gaps      []string    `json:"gaps"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -1960,9 +1973,10 @@ type AskAnsweredEventPayload struct {
 // blocked_by, external_links; for issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
-// or a reopen every login with a Replies row on one of the issue's open asks
-// (events.IssueThreadLogins), for an assignee move the assignee the issue was taken from and the
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
+// or a reopen every login with a Replies row on one of the issue's open asks, read by the
+// event's own insert, after the ask writes the transaction queued before it
+// (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
 //
@@ -1994,6 +2008,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 		Issue:                   issue,
 		ReferenceChangesPayload: NewReferenceChangesPayload(changes),
 	}
+}
+
+// WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload
+// holds the issue row as the event leaves it, and the event's own sequence is what that row's
+// last_seq becomes when it is appended, so the append derives both from one expression
+// (events.Broker.QueueAppend) and no writer counts the events queued before its own.
+func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
+	p.LastSeq = seq
+	return p
 }
 
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
@@ -2053,7 +2076,7 @@ type BlockInvalidEventPayload struct {
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
-// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.IndexAskParts) - which every read that shows
+// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.PlanAskParts) - which every read that shows
 // an ask's options carries (api.attachAskPartIDs) and no write accepts: a caller that sends an
 // option back as it read it has its id emptied (api.validateAskOptions). Absent on a write's own
 // response and while the ask's parts are not indexed yet.
@@ -2248,9 +2271,14 @@ const (
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
 // SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
+// answered_your_ask, declined_your_ask and replied_on_your_ask are for a session that owns the
+// ask: it wrote the ask or follows it (ask_followers). Any other session the same answer or
+// decline reached reads answered_an_ask or declined_an_ask.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
+	SessionAnswerRelationAnsweredAnAsk          = "answered_an_ask"
 	SessionAnswerRelationDeclinedYourAsk        = "declined_your_ask"
+	SessionAnswerRelationDeclinedAnAsk          = "declined_an_ask"
 	SessionAnswerRelationRepliedOnYourAsk       = "replied_on_your_ask"
 	SessionAnswerRelationRepliedInCommentThread = "replied_in_a_comment_thread"
 	SessionAnswerRelationCommentedOnDocument    = "commented_on_a_document"
@@ -2260,8 +2288,8 @@ const (
 	SessionAnswerRelationRepliedToYourMessage   = "replied_to_your_message"
 )
 
-// SessionAnswerAsk is the ask a session answer item answers or replies in, with the session's
-// whole question.
+// SessionAnswerAsk is the ask a session answer item answers, declines or replies in, with its
+// whole question, whoever asked it. The item's relation says whether the ask is the session's own.
 type SessionAnswerAsk struct {
 	ID       string `json:"id"`
 	Question string `json:"question"`
@@ -2271,12 +2299,13 @@ type SessionAnswerAsk struct {
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
 // body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
 // user. Text is the person's own words in full ("" for an answer that chose options only, and for
-// a decline the person wrote no note with). DispatchWords is set on a decline alone: the words
-// Dispatch wrote for the asking agent (DeclineDispatchWords), kept apart from the person's note so
-// no reader has to cut one out of the other. Selected and Replaced are an answer's, each omitted
-// when empty or false; EditedAt is an edited comment's; Ask is set on an answer, on a decline and
-// on a reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue
-// and has no dispatch:// address; Href is then /agents/<session>/live.
+// a decline the person wrote no note with). DispatchWords is set only on a decline of an ask the
+// session wrote or follows: the words Dispatch wrote for the asking agent (DeclineDispatchWords),
+// kept apart from the person's note so no reader has to cut one out of the other. Selected and
+// Replaced are an answer's, each omitted when empty or false; EditedAt is an edited comment's;
+// Ask is set on an answer, on a decline and on a reply in an ask's thread. Owner and Ref are nil
+// for a direct message, which is on no issue and has no dispatch:// address; Href is then
+// /agents/<session>/live.
 type SessionAnswer struct {
 	Kind          string            `json:"kind"`
 	Relation      string            `json:"relation"`
@@ -2881,6 +2910,19 @@ type CommentEventPayload struct {
 	// "waiting on the agent" without re-reading it. Empty when the comment does not
 	// reply to an open ask.
 	AskWaitingOn string `json:"ask_waiting_on,omitempty"`
+	// AskSessions is carried by comment.created alone, on a comment in an ask's thread: the
+	// sessions that own the ask as the comment's write leaves them, read in the comment's own
+	// transaction (api's askSessions). They are the ask's author when a session wrote it, then
+	// each other session that follows it (ask_followers), ordered by its follow time (since) and
+	// then session id, then the comment's own author when a session wrote the comment and neither
+	// of those names it, each once. Every copy of the event carries the same list, the outbox's
+	// stand-in for an event the bus refused among them (it keeps this list whole, whatever its
+	// size: outbox's standInWholeFields), so a reader that knows its own session tells from this
+	// list whether the reply is on that session's own ask, as the comment's write left the owners.
+	// [] when no session owns the ask (a person wrote it and no session follows it). Absent on
+	// every other comment event, on a comment outside an ask's thread, and on an event a server
+	// older than the field wrote.
+	AskSessions []string `json:"ask_sessions,omitzero"`
 	// ThreadRootID is the id of the head of the thread the comment joined, which is also
 	// what Comment.ReplyTo stores for it. Carried by comment.created and by the
 	// comment.answered a delivery callback appends; empty when the comment replies to an
@@ -3130,6 +3172,112 @@ type HandoffRecordedEventPayload struct {
 	Version   int    `json:"version"`
 }
 
+// StepRecord is one run of one step of an issue's workflow, as the Legion daemon wrote it at the
+// run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
+// lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
+// step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
+// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
+// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
+// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
+// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
+// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
+// the merge's place, and Report the handoff its ending role named, each null where the run has
+// none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
+// the retro gave the plan the issue ran, and its reason, each null where the record holds none
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+type StepRecord struct {
+	ID           string     `json:"id"`
+	Issue        string     `json:"issue"`
+	Task         string     `json:"task"`
+	Step         int        `json:"step"`
+	Kind         string     `json:"kind" enum:"step,retro,merge"`
+	Role         string     `json:"role"`
+	Type         string     `json:"type"`
+	Agent        string     `json:"agent"`
+	Session      string     `json:"session"`
+	Model        string     `json:"model"`
+	Generation   int64      `json:"generation"`
+	Attempt      int        `json:"attempt"`
+	StartedAt    *time.Time `json:"started_at"`
+	EndedAt      *time.Time `json:"ended_at"`
+	Result       string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo   *int       `json:"returned_to"`
+	Report       *string    `json:"report"`
+	Rating       *int       `json:"rating"`
+	RatingReason *string    `json:"rating_reason"`
+}
+
+// StepTask is one task of an issue with every run of its steps, in the order they ran.
+type StepTask struct {
+	Task  string       `json:"task"`
+	Steps []StepRecord `json:"steps"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
+// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
+// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+type IssueSteps struct {
+	Issue string     `json:"issue"`
+	Tasks []StepTask `json:"tasks"`
+}
+
+// PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
+// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+type PlanTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+// PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
+// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
+// owner's document and the version of it the plan was read from (both null for the source
+// default, the default steps of an issue whose owner gave none), and its tasks.
+type PlanRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Generation int64      `json:"generation"`
+	Source     string     `json:"source" enum:"default,owner"`
+	ArtifactID *string    `json:"artifact_id"`
+	Version    *int       `json:"version"`
+	Tasks      []PlanTask `json:"tasks"`
+}
+
+// PlanRating is the rating of one retro of a finished issue: the rating, 1 to 5, the agent that did
+// the retro gave the plan, its reason, the retro's step record and the moment it ended, null where
+// its end never reached Dispatch.
+type PlanRating struct {
+	Rating  int        `json:"rating"`
+	Reason  string     `json:"reason"`
+	StepID  string     `json:"step_id"`
+	EndedAt *time.Time `json:"ended_at"`
+}
+
+// FinishedIssue is one issue of a project that is done and closed, as GET
+// /api/v1/projects/{key}/plans lists it: its plan (that of its newest run, null for an issue whose
+// work started before Legion wrote plans or that Legion never ran), the rating of each of its
+// retros in the order they ran, the earliest start and the latest end of its step records and the
+// whole seconds between them (each null where no record holds one, and the seconds null too where
+// that end is before that start), and its count of step records of kind step that failed.
+type FinishedIssue struct {
+	Issue           string       `json:"issue"`
+	Title           string       `json:"title"`
+	ClosedAt        time.Time    `json:"closed_at"`
+	Plan            *PlanRecord  `json:"plan"`
+	Ratings         []PlanRating `json:"ratings"`
+	StartedAt       *time.Time   `json:"started_at"`
+	EndedAt         *time.Time   `json:"ended_at"`
+	DurationSeconds *int64       `json:"duration_seconds"`
+	FailedSteps     int          `json:"failed_steps"`
+}
+
+// ProjectPlans is GET /api/v1/projects/{key}/plans: each finished issue of the project, newest
+// close first.
+type ProjectPlans struct {
+	Project string          `json:"project"`
+	Issues  []FinishedIssue `json:"issues"`
+}
+
 // ReferencedBy identifies a post or artifact that mentions an artifact.
 type ReferencedBy struct {
 	Kind     string  `json:"kind"`
@@ -3263,6 +3411,47 @@ type GraphReferences struct {
 	Node         GraphNode   `json:"node"`
 	Edges        []GraphEdge `json:"edges"`
 	UnknownKinds []string    `json:"unknown_kinds,omitempty"`
+}
+
+// ReferenceTarget is what one reference of a batched reference read points at: Ref, the
+// reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
+// the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
+// whether nothing answers to that reference now. A gone target carries no name: its node was
+// deleted, so there is nothing left to name it by. Ambiguous says why a member is gone when its
+// reference writes a short id that two or more items carry: the read answers that member gone
+// and answers every other member, where GET /api/v1/references refuses such an id with a 409.
+// TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
+// reference kept and nothing cut, where Name stops at the block's stored excerpt: a typed
+// block's is of its own content, what stands between its opening line and its closing one, read
+// by the block's kind. A document's block has the closing fence's indentation taken out of each
+// line, which a block in a list item or a footnote definition carries; a block of a comment, a
+// message or an ask, stored from the start of its line, has its opening line's indentation, up
+// to three spaces, taken off before the directive is read and up to as many columns taken off
+// each later line, as its own text's parse reads them, the indentation left on a line, and the
+// spaces or tabs after a list marker or `>`, written as spaces with each tab counted to the next
+// multiple of four from its own column. With its opening line at column 0, such a block keeps
+// every line as written; an opening line four spaces or a tab in opens no typed block, so that
+// text answers the tree of its whole stored text. A typed block in a quote answers the tree of its
+// whole stored text, its opening line included, and so does a block of a comment, a message or an
+// ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its
+// text. Only a member whose Kind is block carries one, and only for a caller that sent
+// `Dispatch-Trees: 1`.
+type ReferenceTarget struct {
+	Ref  string `json:"ref"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Gone bool   `json:"gone"`
+	// Ambiguous is true for a reference whose short id two or more items carry in the scope
+	// that the reference names. Such a member is gone, with the name "", and every other
+	// member of the read is answered. The key is left out otherwise.
+	Ambiguous bool        `json:"ambiguous,omitempty"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+}
+
+// ReferenceTargets is GET /api/v1/reference-targets: one member per ?ref= the request named, in
+// the request's order, a reference named twice answered twice.
+type ReferenceTargets struct {
+	Targets []ReferenceTarget `json:"targets"`
 }
 
 // BlockLink is one link from a block of one document to a block of a document: its edge kind,

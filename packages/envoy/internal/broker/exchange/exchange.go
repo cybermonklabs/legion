@@ -31,11 +31,12 @@
 // The principal is the caller's standing identity, never the instance asking: the listed account
 // for a pod, the listed workflow for a run, the listed Google account for a machine, the person
 // for a sign-in and for a dev box. A session name belongs to one principal, so a pod's
-// replacement and a workflow's
-// next run keep writing under the name
-// their predecessor held, and a caller of any other principal is refused it. Instance is the
-// second rule beside it, and the only thing that separates two callers of one principal: the pod
-// uid a registration has to name for a pod of a free-session entry to write under a session name.
+// replacement and a workflow's next run keep writing under the name their predecessor held, and
+// a caller of any other principal is refused it, but for a pod of an account the broker pairs
+// with the holder's (BROKER_SESSION_ACCOUNT_PAIRS, oauthstore.Store.BindSession), whose claim
+// takes the name. Instance is the second rule beside it, and the only thing that separates two
+// callers of one principal: the pod uid a registration has to name for a pod of a free-session
+// entry to write under a session name.
 package exchange
 
 import (
@@ -365,12 +366,13 @@ type Claims struct {
 	Projects []string
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
-	// token naming a session another principal writes under. It is the listed account for a pod,
-	// the listed workflow (its repository, path and ref) for a run, the listed Google account for
-	// a machine, and the person for a dev box session, each spelled with its kind first
-	// (account:, workflow:, google:, person:) so principals of two kinds never compare equal.
-	// Every pod of one account, every run of one workflow, every machine of one Google account
-	// and every machine of one person is therefore one holder.
+	// token naming a session another principal writes under, unless the broker pairs the caller's
+	// account with that principal's (oauthstore.Store.SetSessionPairs), when the claim takes the
+	// name. It is the listed account for a pod, the listed workflow (its repository, path and ref)
+	// for a run, the listed Google account for a machine, and the person for a dev box session,
+	// each spelled with its kind first (account:, workflow:, google:, person:) so principals of
+	// two kinds never compare equal. Every pod of one account, every run of one workflow, every
+	// machine of one Google account and every machine of one person is therefore one holder.
 	Principal string
 	// Instance is which caller of that principal is asking, and is not a claim of the minted
 	// token either: it is the pod uid a registration has to name for this exchange to be made
@@ -1154,9 +1156,13 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 // Three of them are exported because a broker grant follows a session name under one principal
 // too: enroll.Service.Create writes one of these into enrollments.carry_principal, and the next
 // enrollment of that name under that principal takes what the last one held. The name a session
-// writes its Dispatch tokens under and the name its grant follows are one name, so one holder
-// has to spell the same either way, which it does only while there is one definition of each
-// spelling.
+// writes its Dispatch tokens under and the name its grant follows are one name, so one holder has
+// to spell the same either way, which it does only while there is one definition of each
+// spelling. A pod's enrollment is the one exception, whose grant follows a pair rather than its
+// account alone (PodLaunchPrincipal), while its name is held under the account. A pod of an
+// account the broker pairs with that account (enroll.SessionBinder.PairedWith) takes what the
+// other account's pods of the name hold only under the same login account, the pair LaunchedBy
+// spells from the paired account's principal.
 
 // AccountPrincipal is a Kubernetes ServiceAccount's spelling: the account a pod's own projected
 // token proves.
@@ -1171,6 +1177,30 @@ func GooglePrincipal(account string) string { return "google:" + account }
 
 // PersonPrincipal is a person's spelling, by the login that names them.
 func PersonPrincipal(person string) string { return "person:" + person }
+
+// PodLaunchPrincipal is the principal a pod's enrollment carries its grants under: the account
+// the pod's own projected token proved, paired with launcher, the principal of the token login
+// that enrolled the pod (AccountPrincipal of the account that login proved). Every pod of one
+// account is one principal, and the pods of several daemons can run as one account (every public
+// Legion project's pods run as legion-worker), so a session name's grant must follow the daemon
+// that enrolled it too: a pod of another daemon, enrolled under the same name, takes nothing
+// (plan E's t-e-54). It is never a name's holder: a pod's session name is
+// held under its account alone, the principal its own token exchange claims the name under, so
+// the pod's enrollment and its trade never refuse each other. No account or principal kind holds
+// a space, so no two pairs spell one string. The broker's migration 0037_pod_carry_launcher
+// writes the same spelling in SQL.
+func PodLaunchPrincipal(account, launcher string) string {
+	return LaunchedBy(AccountPrincipal(account), launcher)
+}
+
+// LaunchedBy is PodLaunchPrincipal spelled from an account's principal rather than the account:
+// the pair a pod of the account accountPrincipal names carries its grants under when the login
+// launcher names enrolled it. It is how enroll's adopt spells a paired account's pair, which the
+// broker holds as a principal (enroll.SessionBinder.PairedWith), so the pair is spelled in one
+// place.
+func LaunchedBy(accountPrincipal, launcher string) string {
+	return accountPrincipal + " launched-by " + launcher
+}
 
 // sessionRule is the one sentence that says what a session name may be, so an entry refused at
 // build time and a request refused at exchange time are refused in the same words, and the cap it

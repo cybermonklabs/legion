@@ -5,6 +5,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { connect, nkeys } from "nats";
 import { natsSeedFromEnvironment } from "../envoy-settings";
 import { natsAuthOptions } from "../nats-auth";
+import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
 import { type NatsServer, startNatsServer, useNatsServerDirectory } from "./nats-server";
 
 interface TestKeyPair {
@@ -29,13 +30,19 @@ function seedFile(contents: string): string {
   return file;
 }
 
+/** The credential the environment's seed variables name, or none. */
+function seedCredential(env: NodeJS.ProcessEnv): NatsCredential {
+  const seed = natsSeedFromEnvironment(env);
+  return seed === undefined ? { kind: "none" } : { kind: "seed", seed };
+}
+
 /** Connects as a client of this package does: `servers` plus the authenticator the environment
  * names, and nothing else that bears on authentication. */
 async function connectWith(url: string, env: NodeJS.ProcessEnv) {
   const connection = await connect({
     servers: [url],
     name: "nats-auth-test",
-    ...natsAuthOptions(natsSeedFromEnvironment(env)),
+    ...natsAuthOptions(seedCredential(env)),
     reconnect: false,
   });
   await connection.flush();
@@ -82,21 +89,47 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
 describe("natsAuthOptions", () => {
   const user = createUser();
 
-  test("is no option when neither variable is set", () => {
+  test("is no option for no credential", () => {
     expect(natsSeedFromEnvironment({})).toBeUndefined();
-    expect(natsAuthOptions(undefined)).toEqual({});
+    expect(natsAuthOptions({ kind: "none" })).toEqual({});
   });
 
   test("authenticates with a seed resolved elsewhere, and names its source when it is no user seed", () => {
-    expect(
-      natsAuthOptions({ value: user.seed, source: "envoy.natsSeed in /tmp/envoy.json" })
-    ).toHaveProperty("authenticator");
-    expect(() =>
-      natsAuthOptions({ value: "hunter2", source: "envoy.natsSeed in /tmp/envoy.json" })
-    ).toThrow("envoy.natsSeed in /tmp/envoy.json does not hold a valid nkey seed");
+    const source = "envoy.natsSeed in /tmp/envoy.json";
+    expect(natsAuthOptions({ kind: "seed", seed: { value: user.seed, source } })).toHaveProperty(
+      "authenticator"
+    );
+    expect(() => natsAuthOptions({ kind: "seed", seed: { value: "hunter2", source } })).toThrow(
+      "envoy.natsSeed in /tmp/envoy.json does not hold a valid nkey seed"
+    );
   });
 
-  test("refuses an unusable seed naming its variable and path, never falling back", () => {
+  test("presents the broker credential's own CONNECT credential", () => {
+    const asked: (string | undefined)[] = [];
+    const presented = "example-session-credential";
+    const broker: BrokerNatsCredential = {
+      ready: async () => {},
+      renew: async () => {},
+      expiresAt: () => new Date(0),
+      needsReconnect: () => false,
+      drop: () => {},
+      tokenGeneration: () => 0,
+      tokenSession: () => undefined,
+      authenticator: (nonce?: string) => {
+        asked.push(nonce);
+        return { auth_token: presented, sig: "the-proof" };
+      },
+    };
+    const { authenticator } = natsAuthOptions({ kind: "broker", broker });
+    if (typeof authenticator !== "function") throw new Error("no authenticator for the broker");
+    expect(authenticator("server-nonce")).toEqual({
+      auth_token: presented,
+      sig: "the-proof",
+    });
+    expect(asked).toEqual(["server-nonce"]);
+  });
+
+  test("refuses an unusable seed naming its variable, never its path, never falling back", () => {
     const dir = makeDirectory();
     const missing = path.join(dir, "missing");
     const blank = seedFile(" \n");
@@ -105,17 +138,17 @@ describe("natsAuthOptions", () => {
     const cases: [NodeJS.ProcessEnv, string][] = [
       [
         { NATS_NKEY_SEED_FILE: missing, NATS_NKEY_SEED: user.seed },
-        `NATS_NKEY_SEED_FILE names ${missing}, which could not be read`,
+        "NATS_NKEY_SEED_FILE names a file that could not be read (ENOENT)",
       ],
-      [{ NATS_NKEY_SEED_FILE: blank }, `NATS_NKEY_SEED_FILE names ${blank}, which is empty`],
+      [{ NATS_NKEY_SEED_FILE: blank }, "NATS_NKEY_SEED_FILE names a file that is empty"],
       [{ NATS_NKEY_SEED_FILE: "" }, "NATS_NKEY_SEED_FILE is set but empty"],
       [
         { NATS_NKEY_SEED_FILE: notASeed },
-        `NATS_NKEY_SEED_FILE (${notASeed}) does not hold a valid nkey seed`,
+        "the file NATS_NKEY_SEED_FILE names does not hold a valid nkey seed",
       ],
       [
         { NATS_NKEY_SEED_FILE: account },
-        `NATS_NKEY_SEED_FILE (${account}) holds an nkey seed that is not a user's`,
+        "the file NATS_NKEY_SEED_FILE names holds an nkey seed that is not a user's",
       ],
       [{ NATS_NKEY_SEED: "  " }, "NATS_NKEY_SEED is set but empty"],
       [{ NATS_NKEY_SEED: "hunter2" }, "NATS_NKEY_SEED does not hold a valid nkey seed"],
@@ -123,7 +156,7 @@ describe("natsAuthOptions", () => {
     for (const [env, message] of cases) {
       let thrown: unknown;
       try {
-        natsAuthOptions(natsSeedFromEnvironment(env));
+        natsAuthOptions(seedCredential(env));
       } catch (error) {
         thrown = error;
       }
@@ -132,6 +165,7 @@ describe("natsAuthOptions", () => {
       expect(text).toContain(message);
       expect(text).not.toContain(user.seed);
       expect(text).not.toContain("hunter2");
+      expect(text).not.toContain(dir);
     }
   });
 });

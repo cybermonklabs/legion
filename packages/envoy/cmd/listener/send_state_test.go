@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // sendStateSender is the session every send below names as its source, so no answer here turns on
@@ -69,7 +70,7 @@ func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSe
 // read of the bucket, as main's start waits for it.
 func openKnownSessionsOn(t *testing.T, conn *natsgo.Conn, clock func() time.Time) *session.KnownSessions {
 	t.Helper()
-	known, err := session.OpenKnownSessions(conn,
+	known, err := session.OpenKnownSessions(t.Context(), conn,
 		session.WithKnownSessionReplicas(1),
 		session.WithKnownSessionClock(clock))
 	if err != nil {
@@ -746,11 +747,11 @@ func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
 						key, value, answer.Body.String())
 				}
 			}
-			var info stoppedSessionInfo
+			var info listenerwire.StoppedSessionInfo
 			if err := json.Unmarshal(answer.Body.Bytes(), &info); err != nil {
 				t.Fatalf("decode %s: %v", answer.Body.String(), err)
 			}
-			want := stoppedSessionInfo{
+			want := listenerwire.StoppedSessionInfo{
 				SessionID:    gone,
 				State:        sessionStateStopped,
 				LastSeen:     stored.LastSeen,
@@ -774,7 +775,7 @@ func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
 	if askedLive.Code != http.StatusOK {
 		t.Fatalf("GET /v1/registry/%s?include=unresponsive,stopped: status %d, body %s; want 200", live, askedLive.Code, askedLive.Body.String())
 	}
-	var plainInfo, liveInfo sessionInfo
+	var plainInfo, liveInfo listenerwire.SessionInfo
 	if err := json.Unmarshal(plainLive.Body.Bytes(), &plainInfo); err != nil {
 		t.Fatalf("decode %s: %v", plainLive.Body.String(), err)
 	}

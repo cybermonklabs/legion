@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -84,9 +85,9 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 			[]string{`secrets[1] "ANTHROPIC"`, "1800", "900"},
 		},
 		{
-			"a judge and no host",
-			`{"secrets": [{"name": "ANTHROPIC", "hosts": [], "judge": 600}]}`,
-			[]string{`secrets[0] "ANTHROPIC"`, "no host"},
+			"guidance longer than the judge reads",
+			`{"secrets": [{"name": "ANTHROPIC", "judge": 600, "guidance": "` + strings.Repeat("g", 2001) + `"}]}`,
+			[]string{`secrets[0] "ANTHROPIC"`, "guidance", "2001", "2000"},
 		},
 		{
 			"a repeated name",
@@ -132,13 +133,102 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 			if !strings.Contains(stderr, path) {
 				t.Fatalf("the refusal does not name the file %s: %q", path, stderr)
 			}
+			// The file's path is the row's temporary directory, which holds the subtest's name,
+			// so every want is looked for in the refusal with the path taken out.
+			text := strings.ReplaceAll(stderr, path, "")
 			for _, want := range c.want {
-				if !strings.Contains(stderr, want) {
+				if !strings.Contains(text, want) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
 			}
 		})
 	}
+}
+
+// ruleHostRow is one host spelling the broker refuses: what the refusal must say, and the text of
+// the host as written it must not repeat ("" where there is no such text to look for).
+type ruleHostRow struct {
+	name   string
+	host   string
+	want   []string
+	absent string
+}
+
+// ruleHostRows are the host spellings airlock-check
+// (TestAirlockCheckRefusesAHostTheProxyNeverCompares) and the boot
+// (TestMainRefusesAnAirlockRulesFileItCannotServe) both refuse. rulehost's own test holds a row
+// for every way out of the grammar and reads Refusal's text, its one advice among it; these rows
+// read the wiring: that the host Refusal reads is the host the file writes, which a reader of the
+// file would change if it folded case, took a trailing dot or white space off, wrote an address in
+// its canonical form, read the host as a URL or converted it to punycode, and that a refusal's
+// reason and the form it names reach its reader.
+var ruleHostRows = []ruleHostRow{
+	{"a host name in mixed case with a trailing dot", "API.GitHub.com.", []string{"ends in a dot", "write it as api.github.com", "sni mismatch"}, "GitHub"},
+	{"an IPv6 address in upper case", "2001:DB8:8::1",
+		[]string{"is an IP address", "2001:db8:8::1 in its canonical form", "no TLS server name", "sni mismatch", "name the service by its host name"}, "DB8"},
+	{"a scheme with one slash", "https:/slack.com", []string{"is no DNS name"}, "https:"},
+	{"a host with a scheme", "https://slack.com", []string{"holds a scheme", "write the service's host name with no scheme"}, "https"},
+	{"a Unicode internationalized name", "bücher.example", []string{"punycode", "write it as xn--bcher-kva.example"}, "bücher"},
+	{"a trailing dot and a newline", "api.github.com.\n", []string{"white space", "binds nothing"}, "github"},
+}
+
+// foldedRuleHosts are hosts the grammar serves in a spelling a reader of the file would change
+// if it folded case before Refusal read them; rulehost's own test holds every shape the grammar
+// serves and its edges.
+var foldedRuleHosts = []string{"API.GitHub.com", "*.GoogleAPIs.com", "XN--BCHER-KVA.example"}
+
+// rulesWithHosts is a rules file of one entry, name, that binds hosts, written by encoding/json
+// so that a host holding a quotation mark, a control character or Unicode is the host the row
+// means.
+func rulesWithHosts(t *testing.T, name string, hosts ...string) string {
+	t.Helper()
+	type entry struct {
+		Name  string   `json:"name"`
+		Hosts []string `json:"hosts"`
+	}
+	body, err := json.Marshal(struct {
+		Secrets []entry `json:"secrets"`
+	}{[]entry{{name, hosts}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// TestAirlockCheckRefusesAHostTheProxyNeverCompares: a rules host is served only in the one
+// grammar a rules host is written in (rulehost.Refusal, whose own test holds every spelling out of
+// it), and airlock-check refuses a spelling outside it as the boot does, naming the entry and the
+// host's position, saying why, and naming the form to write where one exists, with nothing else
+// of the host as written. The control is a file of hosts the grammar serves in a spelling a reader
+// that folded case would change: it is valid.
+func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
+	for _, c := range ruleHostRows {
+		t.Run(c.name, func(t *testing.T) {
+			path := airlockFile(t, "airlock.json", rulesWithHosts(t, "GITHUB", "api.github.com", c.host))
+			code, stdout, stderr := runAirlockCheck(t, path)
+			if code != 1 || stdout != "" {
+				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
+			}
+			// The refusal names the file, whose path is the row's temporary directory: it holds
+			// the subtest's name and whatever the temporary directory's own path holds, so every
+			// want, and the text that must be absent, is looked for with the path taken out.
+			text := strings.ReplaceAll(stderr, path, "")
+			for _, want := range append([]string{`secrets[0] "GITHUB"`, "hosts[1]"}, c.want...) {
+				if !strings.Contains(text, want) {
+					t.Fatalf("the refusal does not say %q: %q", want, stderr)
+				}
+			}
+			if c.absent != "" && strings.Contains(text, c.absent) {
+				t.Fatalf("the refusal holds %q, which it must not: %q", c.absent, stderr)
+			}
+		})
+	}
+	t.Run("the control: hosts the grammar serves, in a case a reader could fold", func(t *testing.T) {
+		path := airlockFile(t, "airlock.json", rulesWithHosts(t, "GITHUB", foldedRuleHosts...))
+		if code, _, stderr := runAirlockCheck(t, path); code != 0 || stderr != "" {
+			t.Fatalf("a file of hosts in the grammar's spelling = exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)
+		}
+	})
 }
 
 // TestAirlockCheckReportsWhatChangedAgainstTheOldFile is the report a reviewer reads: a host
@@ -151,7 +241,7 @@ func TestAirlockCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 ]}`)
 	now := airlockFile(t, "airlock.json", `{"secrets": [
   {"name": "GITHUB", "hosts": ["api.github.com", "uploads.github.com"], "headers": ["authorization", "x-api-key"],
-   "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600}
+   "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600, "guidance": "grant for the release job"}
 ]}`)
 	code, stdout, stderr := runAirlockCheck(t, now, "--against", old)
 	if code != 0 || stderr != "" {
@@ -164,6 +254,7 @@ secret "GITHUB": header x-api-key added
 secret "GITHUB": allow GET /v1/ → POST /v1/
 secret "GITHUB": kind "" → aws
 secret "GITHUB": judge 300 seconds → 600 seconds
+secret "GITHUB": guidance "" → "grant for the release job"
 secret "LEGACY": removed
 secret "LEGACY": host old.example.com removed
 secret "LEGACY": header authorization removed

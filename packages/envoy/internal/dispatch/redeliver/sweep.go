@@ -56,6 +56,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 const (
@@ -110,9 +111,9 @@ type GitHub interface {
 
 // OpenState opens the sweep's KV bucket on conn, through js, creating it on first use with
 // replicas copies, the deployment's ENVOY_NATS_REPLICAS, and raising a bucket found with fewer
-// (bus.EnsureKeyValue).
-func OpenState(conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.WebhookRedeliveryBucket, TTL: retention, Storage: nats.FileStorage, Replicas: replicas})
+// (bus.EnsureKeyValue), for as long as ctx, the sweep's, lasts.
+func OpenState(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, replicas int) (bus.KeyValue, error) {
+	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{Bucket: bus.WebhookRedeliveryBucket, TTL: retention, Storage: nats.FileStorage, Replicas: replicas})
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open %s KV bucket: %w", bus.WebhookRedeliveryBucket, err)
 	}
@@ -216,11 +217,11 @@ type Options struct {
 // Sweeper lists the App webhook's failed deliveries and redelivers them.
 type Sweeper struct {
 	GitHub GitHub
-	// Open opens the sweep's state bucket (OpenState). A sweep calls it until it has once
-	// succeeded, and every later sweep uses that bucket: a sweep it fails for returns its error
-	// and asks GitHub nothing, so a sweeper made while NATS is down opens its bucket on the first
-	// sweep that finds NATS connected.
-	Open func() (bus.KeyValue, error)
+	// Open opens the sweep's state bucket (OpenState) under the sweep's context. A sweep calls it
+	// until it has once succeeded, and every later sweep uses that bucket: a sweep it fails for
+	// returns its error and asks GitHub nothing, so a sweeper made while NATS is down opens its
+	// bucket on the first sweep that finds NATS connected.
+	Open func(ctx context.Context) (bus.KeyValue, error)
 	// Limits is the GitHub rate limits every process shares (github_rate_limits): a sweep reads
 	// its own backoff (redeliveryScope) and the App's limit before every request, and strikes its
 	// backoff at a rate-limited answer. Nil shares none: the sweep stops at GitHub's answer and
@@ -235,6 +236,11 @@ type Sweeper struct {
 	Pace time.Duration
 	// MaxRequests caps redelivery requests per sweep; zero is 300.
 	MaxRequests int
+	// GitHubReads records each sweep of the running loop (sweepAndReport) as the newest attempt
+	// of githubreads.WebhookRedelivery, which GET /healthz answers: whether it failed on GitHub,
+	// and the first failure. A sweep the operator command runs (Sweep alone) records nothing.
+	// Nil records nothing.
+	GitHubReads githubreads.Recorder
 
 	// state is the bucket Open opened, the zero KeyValue until a sweep has opened it (openState).
 	// Every read and write of the sweep's state goes to it.
@@ -292,8 +298,16 @@ func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.L
 	}
 }
 
-// sweepAndReport is one sweep of the running loop and its log line.
+// sweepAndReport is one sweep of the running loop and its log line. It is the pass duty.Exclusive
+// runs, so it is where the sweep's attempt at reading GitHub opens and is recorded (githubreads):
+// the GitHub client notes on it each request and each failure no caller takes as data, and the
+// sweep notes the failures only it can tell, a listing or a redelivery request GitHub refused
+// (Sweep, decide) and a rate limit that stopped the sweep (below). ctx is the context the lease
+// handed the pass, so a sweep this process's shutdown cut short records nothing.
 func (s *Sweeper) sweepAndReport(ctx context.Context) {
+	caller := ctx
+	ctx, attempt := githubreads.Begin(ctx)
+	defer githubreads.Finish(caller, githubreads.WebhookRedelivery, attempt, s.GitHubReads, s.Logger)
 	report, err := s.Sweep(ctx, Options{})
 	if err != nil {
 		s.Logger.Warn("webhook redelivery sweep failed", "error", err)
@@ -311,6 +325,10 @@ func (s *Sweeper) sweepAndReport(ctx context.Context) {
 	attrs = append(attrs, "complete", report.Complete)
 	if !report.RateLimitedUntil.IsZero() {
 		attrs = append(attrs, "rate_limited_until", report.RateLimitedUntil.Format(time.RFC3339))
+		// The sweep stopped short of the deliveries it was to read and ask for. GitHub's own
+		// rate-limited answer is noted already by the client; a limit recorded before the
+		// request, the sweep's own backoff among them, is noted here alone.
+		githubreads.NoteFailure(ctx, fmt.Errorf("a GitHub rate limit stopped the webhook redelivery sweep; no sweep asks GitHub anything before %s", report.RateLimitedUntil.Format(time.RFC3339)))
 	}
 	s.Logger.Info("webhook redelivery sweep", attrs...)
 }
@@ -321,7 +339,7 @@ func (s *Sweeper) sweepAndReport(ctx context.Context) {
 // its next request is due or another sweeper's claim ends, or expire it. A rate-limited answer from
 // GitHub ends the sweep there. It opens the state first unless an earlier sweep has (openState).
 func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
-	if err := s.openState(); err != nil {
+	if err := s.openState(ctx); err != nil {
 		return Report{}, err
 	}
 	now := s.now()
@@ -369,7 +387,11 @@ func (s *Sweeper) Sweep(ctx context.Context, opts Options) (Report, error) {
 		return report, nil
 	}
 	if err != nil {
-		return Report{}, fmt.Errorf("list webhook deliveries since %s: %w", since.Format(time.RFC3339), err)
+		err = fmt.Errorf("list webhook deliveries since %s: %w", since.Format(time.RFC3339), err)
+		// A failure of the read itself, which the running sweep's attempt records (githubreads); a
+		// sweep with no attempt on its context, the operator command's, notes nothing.
+		githubreads.NoteFailure(ctx, err)
+		return Report{}, err
 	}
 	byGUID := map[string][]githubapp.Delivery{}
 	delivered := map[string]bool{}
@@ -658,6 +680,10 @@ func (s *Sweeper) decide(ctx context.Context, guid string, attempts []githubapp.
 			return decision, true, nil
 		}
 		decision.Outcome = RequestRefused
+		// GitHub refused part of what the sweep was to do, which the running sweep's attempt
+		// records (githubreads). A 404 above is GitHub saying it has no such delivery, which the
+		// sweep takes as data and expires.
+		githubreads.NoteFailure(ctx, err)
 		recorded := s.recordOutcome(guid, answered, claim.ClaimedAt, claimRevision, now, decision)
 		s.Logger.Warn("webhook redelivery request refused", append(s.attrs(decision), "error", err.Error())...)
 		return decision, true, recorded

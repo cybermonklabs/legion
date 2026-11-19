@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/roleholder"
 )
 
@@ -81,8 +82,8 @@ func (w Windows) EntryState(entry session.SessionEntry) session.State {
 // listener's answers carry: the 404's reason and the publish route's recorded outcome. The two
 // no-holder reasons are the shared ones the Legion daemon reads (roleholder), not package-local
 // spellings, so the listener's 404, its refusal exception, the daemon's notify.Publish and its
-// exception consumer all read one list.
-type State string
+// exception consumer all read one list. It is the listener's wire type (listenerwire.RoleState).
+type State = listenerwire.RoleState
 
 const (
 	// Live: the role is claimed and its holder's record reads live.

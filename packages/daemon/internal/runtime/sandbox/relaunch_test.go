@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -1936,7 +1937,12 @@ type sandboxMachineCancel struct{}
 
 func (sandboxMachineCancel) Stop() bool { return true }
 
-type supervisedSandboxStore struct{ claim supervise.Claim }
+type supervisedSandboxStore struct {
+	claim supervise.Claim
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
+}
 
 func (s *supervisedSandboxStore) AdmitClaim(_ context.Context, c supervise.Claim) (supervise.Claim, error) {
 	s.claim = c
@@ -1948,6 +1954,10 @@ func (*supervisedSandboxStore) CheckLaunch(context.Context, supervise.Claim) err
 func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.claim = c
 	return nil
+}
+
+func (s *supervisedSandboxStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (*supervisedSandboxStore) PutDelivery(context.Context, claim.Token, supervise.Delivery) error {

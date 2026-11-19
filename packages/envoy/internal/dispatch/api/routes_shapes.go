@@ -114,6 +114,16 @@ type relatedQuery struct {
 	KeywordsOnly bool `query:"keywords_only"`
 }
 
+// projectPlansQuery is GET /api/v1/projects/{key}/plans's query: the window on the finished
+// issues' close.
+type projectPlansQuery struct {
+	// Since lists only an issue closed at or after it, RFC 3339.
+	Since string `query:"since"`
+	// Until lists only an issue closed before it, RFC 3339; a since not before it is 400
+	// INVALID_QUERY.
+	Until string `query:"until"`
+}
+
 // deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures
 // share: the window, the search and the repeatable facets. The `session` facet is read by the
 // same code (deliveryFacets) and named here by no field, since `session` is the whole API's
@@ -251,6 +261,16 @@ type issueReferencesQuery struct {
 	// version, under its own ETag; absent, empty or `all` is the full answer, another value or
 	// a repeat is 400 INVALID_QUERY.
 	Versions string `query:"versions"`
+}
+
+// referenceTargetsQuery is GET /api/v1/reference-targets's query: the references to resolve.
+type referenceTargetsQuery struct {
+	// Ref is one reference to resolve, given once per reference, at most
+	// referenceTargetsMax of them; naming none is 400 INVALID_REFERENCE and naming more
+	// than the cap is 400 CAP_EXCEEDED. An item id or a block id written short in it is
+	// resolved in the scope the reference names, and a prefix two or more items carry
+	// answers that member gone with ambiguous: true, and every other member is answered.
+	Ref []string `query:"ref"`
 }
 
 // referencesQuery is GET /api/v1/references's query: the edges of one node.
@@ -512,7 +532,7 @@ type liveWritePauseQuery struct {
 // there; the routes it does not list rest on this rule alone. Two things that look like the same
 // fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews, POST
 // .../versions/{number}/reviews and POST .../plan-reviews name model.ArtifactReview while the
-// GET beside them names []artifactReviewRead - the handlers write what docs.WriteReview
+// GET beside them names []artifactReviewRead - the handlers write what docs.QueueReview
 // returned, and the dashboard draws the read rather than the write's answer (ApprovalChip.tsx
 // invalidates and refetches); and a model that carries its own tree field needs no shaped read
 // at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
@@ -691,8 +711,13 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/reference-targets": {
+		Status: http.StatusOK, Response: model.ReferenceTargets{}, Params: referenceTargetsQuery{},
+		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
+		Also: []routeAnswer{{Status: http.StatusNotModified}},
+	},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
@@ -729,9 +754,22 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
-	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/steps/{id}": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
+	},
+	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
+	},
+	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
+	"PUT /api/v1/issues/{key}/plans/{id}": {
+		Status: http.StatusOK, Response: model.PlanRecord{}, Request: planRecordInput{},
+	},
+	"GET /api/v1/projects/{key}/plans": {
+		Status: http.StatusOK, Response: model.ProjectPlans{}, Params: projectPlansQuery{},
+	},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -986,6 +1024,11 @@ var routeShapes = map[string]routeShape{
 		// POST /v1/credential-requests/{record}/deny (agentsecrets.Client.Deny), which answers
 		// the terminal state rather than a credential.
 		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
+	},
+	"POST /api/v1/credential-requests/{id}/dismiss": {
+		// POST /v1/credential-requests/{record}/dismiss (agentsecrets.Client.Dismiss). Dispatch
+		// reads no body: the one field the broker takes, the approver, is the caller.
+		Status: http.StatusOK, Response: wire.DismissResponse{},
 	},
 	"POST /api/v1/credential-requests/machine-lookup": {
 		// POST /v1/machine-logins/lookup (agentsecrets.Client.MachineLookup). Dispatch forwards

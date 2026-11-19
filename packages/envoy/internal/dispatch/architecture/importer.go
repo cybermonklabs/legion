@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -92,6 +93,12 @@ type Importer struct {
 	store  *store.Store
 	github *githubapp.Client
 	events *events.Broker
+
+	// GitHubReads records each pass of the running import (the pass syncAllLeased runs under its
+	// lease) as the newest attempt of githubreads.ArchitectureImport, which GET /healthz answers:
+	// whether a GitHub read of the pass failed, and the first failure. A sync the Settings Refresh
+	// route or `dispatch architecture-sync` runs records nothing. Nil records nothing.
+	GitHubReads githubreads.Recorder
 
 	// owner outlives every caller: the process stopping (Close) is the only
 	// thing that cancels a flight, since a flight runs on behalf of callers
@@ -281,11 +288,22 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	owner, name, token, importErr := i.resolve(ctx, &source)
 	if importErr != nil {
+		// Each of the four steps of the sync that read GitHub -- resolve here, then Ref, Dir and
+		// DirFiles -- gives up this source's read when it fails, which the running import's
+		// attempt records (githubreads), whatever failed inside it. The client notes only the
+		// answers no caller takes as data; a repository the App is not installed on, a missing
+		// Contents permission, a branch GitHub does not have and a 4xx GitHub answers a read with
+		// are answers it leaves to its caller, so the sync notes them here. ctx carries the values
+		// of the caller that started the flight, so a sync a route or a command started notes
+		// nothing. The content of the files (a note over notes.MaxFileSize, notes.Parse, the
+		// projection) is no GitHub read: last_error records it, and the attempt does not.
+		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
 	flight.headAt = time.Now()
 	commit, importErr := i.github.Ref(ctx, token, owner, name, source.Branch)
 	if importErr != nil {
+		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
 	// Unchanged head of a healthy source: the projection already is this
@@ -295,6 +313,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	listing, importErr := i.github.Dir(ctx, token, owner, name, commit, SourceDir)
 	if importErr != nil {
+		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
 	// The head moved but the architecture directory's tree object is
@@ -304,6 +323,13 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	files, importErr := i.github.DirFiles(ctx, token, owner, name, listing)
 	if importErr != nil {
+		// The client refuses a note over notes.MaxFileSize at two points, both
+		// notes.ErrFileTooLarge (notes.CheckSize): by its listed size before any blob read, and by
+		// a blob's decoded size after the read GitHub answered. Either is the source's content
+		// and no failure of GitHub's, so the attempt does not note it.
+		if !errors.Is(importErr, notes.ErrFileTooLarge) {
+			githubreads.NoteFailure(ctx, importErr)
+		}
 		return i.failed(ctx, parent, source, importErr)
 	}
 	parsed, importErr := notes.Parse(files)

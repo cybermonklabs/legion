@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -82,30 +84,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	// start carries its task (every phase start through StartOrOwe), as do the architect's
 	// (awaiting_reconcile.go) and the wake's (wake.go); a child's own architect's plain start carries
 	// none (gateOpened, reviveArchitect), and the task-less starts admission brings back beside a
-	// phase worker are written in internal/admit, never here.
-	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
-	if err != nil {
-		t.Fatalf("read outbox: %v", err)
-	}
-	defer rows.Close()
-	var kinds []string
-	for rows.Next() {
-		var kind string
-		var payload []byte
-		if err := rows.Scan(&kind, &payload); err != nil {
-			t.Fatalf("scan outbox: %v", err)
-		}
-		kinds = append(kinds, kind)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate outbox: %v", err)
-	}
-	// The registration binds the spec step to its document, which moves the issue's
-	// step-to-document pairs, so it queues the publication of that set as well
-	// (record.PublishChangedGates).
-	if want := []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "supervise", "notice"}; !sameStrings(kinds, want) {
-		t.Fatalf("outbox kinds = %v, want %v", kinds, want)
-	}
+	// phase worker are written in internal/admit, never here. The registration binds the spec step
+	// to its document, which moves the issue's step-to-document pairs, so it queues the publication
+	// of that set as well (record.PublishChangedGates).
+	assertOutboxKinds(t, pool, []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "plan_record", "supervise", "notice"})
 }
 
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
@@ -137,7 +119,7 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	// The first supervise row is the child's own architect's start, before its planner's
 	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
 	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -335,6 +317,7 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -374,7 +357,8 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42."; !strings.HasSuffix(task, want) {
+	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
 	if strings.Contains(task, "Handoff verdict") {
@@ -382,9 +366,10 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
+// read back and joined in order.
+func reviewerPrompt(t *testing.T) string {
+	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -401,9 +386,49 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 		}
 		prompt.Write(part)
 	}
+	return prompt.String()
+}
+
+// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
+// its own completion carries none, so a rename on either side alone fails here.
+func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	prompt := reviewerPrompt(t)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt.String(), want) {
+		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
+		}
+	}
+}
+
+// The reviewer is told the commit its later round reads from, and the entry of each round, by
+// the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
+// skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
+// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
+// reviewer writes the entry into its review's footer, so a prompt that did not name the field
+// would leave every review moving no commit.
+func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
+	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
+	body, err := os.ReadFile(mergeGate)
+	if err != nil {
+		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
+	}
+	prompt := reviewerPrompt(t)
+	sentences := reviewround.Sentences("<sha>", 7)
+	for _, tc := range []struct {
+		field, part string
+	}{
+		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
+		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
+	} {
+		if !strings.Contains(sentences, tc.part) {
+			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)
+		}
+		want := "`" + tc.field
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the reviewer's prompt does not say %q", want)
+		}
+		if !strings.Contains(string(body), want) {
+			t.Errorf("%s does not say %q", mergeGate, want)
 		}
 	}
 }
@@ -615,6 +640,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 				// The reviewer has completed its round, so GitHub's approval on a green head is the
 				// review's second half and ends it.
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "claim", HandoffRecord: "review-1", HandoffVersion: 1})
+				seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 				seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 			},
 			fact: func() intake.Fact {
@@ -866,10 +892,13 @@ func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 }
 
 // assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
-// phase worker's start is one of them: one row, which carries the task (StartOrOwe).
+// phase worker's start is one of them: one row, which carries the task (StartOrOwe). A step record
+// is left out: each start and end of a step writes one beside the move's own rows, and the tests
+// of the step sites (step_sites_test.go, step_sites_linger_test.go) read those rows exactly
+// (stepWrites), so every row of any other kind is still compared here.
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox order by id`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1 order by id`, string(record.OutboxKindStepRecord))
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -1059,6 +1088,7 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: headOne, ConflictingHead: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	// Two rounds counted already, so a third counted round would reach the cap of three and post.
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 	engine := testEngine(config.DesignGateRootIssues, nil)

@@ -2,15 +2,19 @@ package architecture
 
 import (
 	"context"
+	"net/http"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -131,5 +135,195 @@ func TestAnImportPassOverUnchangedHeadsFetchesNothingAndTouchesEachSourceOnce(t 
 	}
 	if framing != 2*touches {
 		t.Fatalf("the pass over unchanged heads ran %d transaction statements around %d freshness stamps; want each stamp's own begin and commit and no other transaction", framing, touches)
+	}
+}
+
+// readRecorder is a githubreads.Recorder that keeps each attempt it is handed, in the order the
+// passes recorded them, so a test reads what a pass gave GET /healthz to answer.
+type readRecorder struct {
+	mu       sync.Mutex
+	recorded []recordedRead
+}
+
+// recordedRead is one attempt a readRecorder was handed.
+type recordedRead struct {
+	read      githubreads.Read
+	succeeded bool
+	cause     string
+}
+
+func (r *readRecorder) record(_ context.Context, read githubreads.Read, succeeded bool, cause string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recorded = append(r.recorded, recordedRead{read: read, succeeded: succeeded, cause: cause})
+	return nil
+}
+
+// take answers the attempts recorded since the last take, and forgets them.
+func (r *readRecorder) take() []recordedRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	taken := r.recorded
+	r.recorded = nil
+	return taken
+}
+
+// leasedImports answers the pass the import's loop runs under its lease (syncAllLeased) over
+// importer, each call due one SyncInterval after the one before so the lease's record of the last
+// period served never skips it, and the recorder importer records each pass's attempt at reading
+// GitHub into.
+func leasedImports(t *testing.T, importer *Importer, database *store.Store) (pass func(), reads *readRecorder) {
+	t.Helper()
+	leases := architectureLeases(t, database)
+	reads = &readRecorder{}
+	importer.GitHubReads = reads.record
+	due := time.Now()
+	return func() {
+		syncAllLeased(context.Background(), importer, leases, due)
+		due = due.Add(SyncInterval)
+	}, reads
+}
+
+// Each leased import pass records its attempt at reading GitHub, which GET /healthz answers: a
+// pass whose first request GitHub answered 503 records failed, with that answer as its cause; the
+// next pass, which GitHub answered, records succeeded; and a pass with no enabled source, which
+// asks GitHub nothing, records nothing at all.
+func TestEachLeasedImportPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	ctx := context.Background()
+	// The first request of a sync looks the installation of the source's repository up.
+	fake := &fakeSource{t: t, files: validFiles(), installationStatus: http.StatusServiceUnavailable}
+	importer, database := newImporterFixture(t, fake)
+	pass, reads := leasedImports(t, importer, database)
+
+	pass()
+	installation := "/repos/" + archRepo + "/installation"
+	got := reads.take()
+	if len(got) != 1 || got[0].read != githubreads.ArchitectureImport || got[0].succeeded ||
+		!strings.Contains(got[0].cause, installation) || !strings.Contains(got[0].cause, "status 503") {
+		t.Fatalf("the pass GitHub answered 503 recorded %+v, want one failed %s attempt whose cause is that 503", got, githubreads.ArchitectureImport)
+	}
+
+	fake.installationStatus = 0
+	pass()
+	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || !got[0].succeeded || got[0].cause != "" {
+		t.Fatalf("the pass GitHub answered recorded %+v, want one succeeded %s attempt with no cause", got, githubreads.ArchitectureImport)
+	}
+	if rows := componentRows(t, database); len(rows) == 0 {
+		t.Fatal("the pass GitHub answered imported no component")
+	}
+
+	if _, err := database.Pool.Exec(ctx, `update architecture_sources set enabled = false`); err != nil {
+		t.Fatalf("disable the source: %v", err)
+	}
+	installations, heads := fake.lookups()
+	pass()
+	if got := reads.take(); len(got) != 0 {
+		t.Fatalf("a pass with no enabled source recorded %+v, want nothing", got)
+	}
+	if moreInstallations, moreHeads := fake.lookups(); moreInstallations != installations || moreHeads != heads {
+		t.Fatalf("the pass with no enabled source looked up %d installations and %d heads, want none",
+			moreInstallations-installations, moreHeads-heads)
+	}
+}
+
+// A leased import pass records failed when a source's sync gives up a read of GitHub on an answer
+// the client leaves to its caller and notes nothing of -- a 404 on the installation lookup, a
+// missing Contents permission, a 422 for the branch's head, the directory or a file -- so in each
+// failed row only the sync's own note can make the record say so, and its cause names what
+// failed. A directory GitHub answers 404 for is an empty model (Dir), and notes that do not parse
+// and a note over notes.MaxFileSize, which DirFiles refuses by its listed size before any blob
+// read, are the source's content, which last_error records: none is a read of GitHub that failed,
+// and each records succeeded, the pass having sent the installation, token, head and directory
+// reads.
+func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// arrange sets GitHub's answers before the pass.
+		arrange   func(fake *fakeSource)
+		succeeded bool
+		// causeHas is what the cause of a failed attempt must name.
+		causeHas []string
+		// lastError is whether the sync records a failure on the source row: every row but the
+		// empty directory's, since notes that do not parse fail the sync without failing a read.
+		lastError bool
+	}{{
+		name: "a source whose repository the App is not installed on",
+		// GitHub answers the installation lookup of a repository the App is not installed on 404.
+		arrange:   func(fake *fakeSource) { fake.installationStatus = http.StatusNotFound },
+		causeHas:  []string{"not installed", archRepo},
+		lastError: true,
+	}, {
+		name:      "a source whose installation lacks Contents read",
+		arrange:   func(fake *fakeSource) { fake.contents = "none" },
+		causeHas:  []string{"lacks Contents: read", archRepo},
+		lastError: true,
+	}, {
+		name: "a source whose branch GitHub does not have",
+		// GitHub answers the head of a branch it does not have 422 (writeNoCommit).
+		arrange:   func(fake *fakeSource) { fake.branchMissing = true },
+		causeHas:  []string{"branch does not exist", archRepo},
+		lastError: true,
+	}, {
+		name:      "a source whose directory read GitHub answers 422",
+		arrange:   func(fake *fakeSource) { fake.treeStatus = http.StatusUnprocessableEntity },
+		causeHas:  []string{"/repos/" + archRepo + "/git/trees/", "status 422"},
+		lastError: true,
+	}, {
+		name:      "a source whose file read GitHub answers 422",
+		arrange:   func(fake *fakeSource) { fake.blobStatus = http.StatusUnprocessableEntity },
+		causeHas:  []string{"/repos/" + archRepo + "/git/blobs/", "status 422"},
+		lastError: true,
+	}, {
+		name:      "a source whose directory GitHub answers 404 for",
+		arrange:   func(fake *fakeSource) { fake.treeStatus = http.StatusNotFound },
+		succeeded: true,
+	}, {
+		name:      "a source whose listing names a note over the size limit",
+		arrange:   func(fake *fakeSource) { fake.files["big.md"] = strings.Repeat("a", notes.MaxFileSize+1) },
+		succeeded: true,
+		lastError: true,
+	}, {
+		name: "a source whose notes do not parse",
+		arrange: func(fake *fakeSource) {
+			fake.files = map[string]string{"api.md": "x\n", "API.md": "duplicate\n"}
+		},
+		succeeded: true,
+		lastError: true,
+	}} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := &fakeSource{t: t, files: validFiles()}
+			row.arrange(fake)
+			importer, database := newImporterFixture(t, fake)
+			pass, reads := leasedImports(t, importer, database)
+
+			pass()
+
+			var lastError string
+			if err := database.Pool.QueryRow(context.Background(),
+				`select coalesce(last_error, '') from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
+				t.Fatalf("read the source's last_error: %v", err)
+			}
+			if (lastError != "") != row.lastError {
+				t.Fatalf("the source's last_error after the pass = %q, want one recorded: %t", lastError, row.lastError)
+			}
+			got := reads.take()
+			if len(got) != 1 || got[0].read != githubreads.ArchitectureImport {
+				t.Fatalf("the pass recorded %+v, want one %s attempt", got, githubreads.ArchitectureImport)
+			}
+			if row.succeeded {
+				if !got[0].succeeded || got[0].cause != "" {
+					t.Fatalf("the pass recorded %+v, want succeeded with no cause", got[0])
+				}
+				return
+			}
+			if got[0].succeeded {
+				t.Fatalf("the pass recorded succeeded, want failed (last_error %q)", lastError)
+			}
+			for _, text := range row.causeHas {
+				if !strings.Contains(got[0].cause, text) {
+					t.Fatalf("the recorded cause %q does not name %q", got[0].cause, text)
+				}
+			}
+		})
 	}
 }

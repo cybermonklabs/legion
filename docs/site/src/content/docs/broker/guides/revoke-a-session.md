@@ -146,6 +146,14 @@ source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 decided_by: session:2b8627f4-9a2a-4c12-85bf-910144bc0b5c
 ```
 
+The session that cancels need not be the one that asked: a request belongs to the principal that
+made it, so you cancel your own request from another box, the next pod of a Legion role cancels what
+the pod before it asked for, and a machine cancels its request after its helper restarted. Another
+person, another role of the same issue and another machine of the same fleet are refused
+`NOT_YOURS`, as is every session but the one that asked when its broker enrollment records no owner,
+which is any enrollment made before the broker recorded owners
+([Concepts](/legion/broker/concepts/#requests-and-grants)).
+
 ## End a session
 
 Ending a session's enrollment revokes all of its grants and cancels all of its pending requests
@@ -285,23 +293,25 @@ revoked, every machine and grant command is refused from then on:
 
 ```console
 $ agent-secrets machine list
-agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's login is expired or revoked (run: agent-secrets machine login)
+agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at the broker AGENT_SECRETS_URL names is expired or revoked; run: agent-secrets machine login, and have a human approve it
 ```
 
 Nothing tells the machine's helper; it finds out the next time it calls the broker. A session's
 renewal, within a third of `BROKER_LEASE_SECONDS`, is refused; revoking that session's enrollment is
 refused too, and the helper drops the credential and logs at ERROR `the broker refused the launcher
-credential (…); cleared: no session can enroll until a human approves a new machine login`. A
-helper with no session running finds out at its next refresh, within a day, or when it restarts:
-the broker refuses the refresh, and the helper drops the login, deletes its machine file and logs
-at ERROR `the broker refused the machine login's refresh: it was revoked, lapsed, or its refresh
-token was reused; cleared: no session can enroll until a human approves a new machine login`. From
-then `agent-secrets machine login-status` exits 1 and prints the cause, here a refused session call:
+credential (…); cleared: no session can enroll under this machine's credential; run: agent-secrets
+machine login, and have a human approve it`. A helper with no session running finds out at its next
+refresh, within a day, or when it restarts: the broker refuses the refresh, and the helper drops the
+login, deletes its machine file and logs at ERROR `the broker refused the machine login's refresh:
+it was revoked, lapsed, or its refresh token was reused; cleared: no session can enroll under this
+machine's credential; run: agent-secrets machine login, and have a human approve it`. A person
+signed in on the machine still enrols sessions under their own sign-in. From then
+`agent-secrets machine login-status` exits 1 and prints the cause, here a refused session call:
 
 ```console
 $ agent-secrets machine login-status
 expired
-agent-secrets machine login-status: the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login
+agent-secrets machine login-status: the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it
 ```
 
 The Legion daemon finds out when it next enrolls or ends a pod: the broker refuses its credential
@@ -359,6 +369,8 @@ a sign-in of its own. Run `agent-secrets login` on the machine to sign in again.
 The sessions above are agents'. A person's own sign-in to the broker's approval page is separate:
 it lasts a day at most, is never extended, and ends when they sign out. Nobody ends someone
 else's from a page; an operator ends every browser session one login holds by running the
-broker's own subcommand in a broker pod, `envoy-broker end-sessions <login>`
-([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions)). Revoking a
+broker's own subcommand, `envoy-broker end-sessions <login>`, in a one-off process of the image
+with the serving broker's settings
+([Ending a person's sessions](/legion/broker/operate/#ending-a-persons-sessions) and
+[Running a subcommand](/legion/broker/operate/#running-a-subcommand)). Revoking a
 grant or a machine login does not need a broker sign-in and never ends one.

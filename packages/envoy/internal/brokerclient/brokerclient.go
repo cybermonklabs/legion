@@ -90,22 +90,27 @@ type Token struct {
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
 // one is a refusal no retry can cure — an identity no entry lists, a sign-in a person revoked,
 // a token of the wrong audience — and the renewal loop stops on those rather than asking again
-// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, and a pod
-// session it holds no registration for yet (Permanent).
+// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, a pod
+// session it holds no registration for yet, and a person Dispatch holds (Permanent).
 type RefusedError struct {
 	// Status is the HTTP status of the refusal.
 	Status int
 	// Code and Description are the OAuth error the broker answered.
 	Code, Description string
+	// Identity names the identity the broker refused (refusedIdentity): a person's sign-in on
+	// this machine names the person, and every machine source reads "this machine's identity".
+	// Empty is a refusal of an identity no Source named.
+	Identity string
 	// answer is this same refusal as x/oauth2's own token-endpoint error, which Unwrap says
 	// why it is kept.
 	answer oauth2.RetrieveError
 }
 
-// newRefusedError is the refusal a broker answered with an OAuth error body.
-func newRefusedError(status int, code, description string) *RefusedError {
+// newRefusedError is the refusal a broker answered with an OAuth error body to a trade of
+// identity, as refusedIdentity names it.
+func newRefusedError(identity string, status int, code, description string) *RefusedError {
 	return &RefusedError{
-		Status: status, Code: code, Description: description,
+		Status: status, Code: code, Description: description, Identity: identity,
 		answer: oauth2.RetrieveError{
 			Response:         &http.Response{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status))},
 			ErrorCode:        code,
@@ -114,22 +119,43 @@ func newRefusedError(status int, code, description string) *RefusedError {
 	}
 }
 
+// refusedIdentity is how a refusal of a trade of s names the identity refused. A person's sign-in
+// names the person, so a person whose own sign-in the broker refused never reads "this machine".
+// Every other source reads "this machine's identity", as a refusal always has: a machine source's
+// Describe names configured values (a token file's path, a pool's audiences and account), which a
+// refusal's text has never carried.
+func refusedIdentity(s Source) string {
+	if person, ok := s.(*PersonIdentity); ok {
+		return person.Describe()
+	}
+	return "this machine's identity"
+}
+
+// Error names the identity refused (refusedIdentity) and the broker's answer: it is PrintableText.
 func (e *RefusedError) Error() string { return e.PrintableText() }
 
-// PrintableText is this refusal's sentence, built from fixed words and the answered OAuth error's
-// own status, code and description alone, which is what lets internal/redact print it beside a
-// clean broker URL as it prints that answer (redact.Printable). The code and description go in
-// as the broker wrote them, so where they hold a control character redact prints the answer's
-// own quoted text instead. A caller's words around this error still print nothing there.
+// PrintableText is this refusal's sentence, built from fixed words, the identity refused (Identity,
+// as refusedIdentity names it), and the answered OAuth error's own status, code and description
+// alone, which is what lets internal/redact print it beside a clean broker URL as it prints that
+// answer (redact.Printable). The identity is this client's own words for the source it traded,
+// held before the trade, which neither the answer nor a caller writes: a fixed phrase for every
+// machine source, and for a person's sign-in the person that sign-in's record names
+// (PersonIdentity.Describe). The code and description go in as the broker wrote them, so where
+// they, or the identity, hold a control character redact prints the answer's own quoted text
+// instead. A caller's words around this error still print nothing there.
 func (e *RefusedError) PrintableText() string {
+	identity := e.Identity
+	if identity == "" {
+		identity = "the identity traded"
+	}
 	status := 0
 	if e.answer.Response != nil {
 		status = e.answer.Response.StatusCode
 	}
 	if e.answer.ErrorDescription == "" {
-		return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s", status, e.answer.ErrorCode)
+		return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s", identity, status, e.answer.ErrorCode)
 	}
-	return fmt.Sprintf("the secrets broker refused this machine's identity: HTTP %d %s: %s", status, e.answer.ErrorCode, e.answer.ErrorDescription)
+	return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s: %s", identity, status, e.answer.ErrorCode, e.answer.ErrorDescription)
 }
 
 // Unwrap is this refusal as the answered OAuth token-endpoint error it is, which is how every
@@ -145,7 +171,7 @@ func (e *RefusedError) PrintableText() string {
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
-// four.
+// five.
 //
 // The broker's 429: its token endpoint spends a bucket per source address, and a bucket
 // refills. A client that stopped trading on a 429 would stop for good over a burst — its own,
@@ -164,9 +190,16 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // A pod session the broker holds no registration for yet (PodSessionUnregistered): a pod's
 // trade can reach the broker before its daemon's or its session watch's registration does, and
 // a registrar can be down for minutes, so the trade that follows the registration succeeds.
+//
+// `membership_held` (oauthwire.MembershipHeld): Dispatch holds the person this credential
+// names, because Google refused their Dispatch sign-in, or no refresh has confirmed them for 24
+// hours. A hold revokes nothing, and the person's next Dispatch sign-in, or the next refresh that
+// confirms them, ends it, so the identity this client trades is served again then with no new
+// login. A client that stopped on it would need a restart after every hold.
 func (e *RefusedError) Permanent() bool {
 	switch {
-	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered():
+	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
+		e.Code == oauthwire.MembershipHeld:
 		return false
 	}
 	return true
@@ -316,12 +349,12 @@ func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
 // Token is a live access token: the held one while it is good for longer than RenewBefore, and
 // otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
-// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet), while the
-// held token is still live answers that token, since a client that already holds an identity
-// need not stop for a broker that is merely down or busy; a refusal no retry can cure
-// (RefusedError.Permanent), and a failure with nothing live left, answer the error, so no
-// caller writes with no identity. Token trades once; a caller that waits for a registration to
-// land runs Run, which trades again.
+// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet, a person
+// Dispatch holds), while the held token is still live answers that token, since a client that
+// already holds an identity need not stop for a broker that is merely down or busy; a refusal no
+// retry can cure (RefusedError.Permanent), and a failure with nothing live left, answer the
+// error, so no caller writes with no identity. Token trades once; a caller that waits for a
+// registration to land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -335,7 +368,8 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	}
 	var refused *RefusedError
 	if !(errors.As(err, &refused) && refused.Permanent()) && c.held != nil && c.now().Before(c.held.Expiry) {
-		c.logf(ctx, "the secrets broker did not answer a renewal; the token in hand is still live", "error", err.Error())
+		what, attrs := retriedTrade(err)
+		c.logf(ctx, what+"; the token in hand is still live", attrs...)
 		return c.held, nil
 	}
 	c.held = nil
@@ -349,14 +383,16 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 //
 // It stops with a plain error when the broker refuses the identity in a way no retry can cure
 // (RefusedError.Permanent), and when onToken fails. A broker that does not answer, or answers
-// 429, either of its DPoP refusals, or that it holds no registration for this pod's session yet,
-// is retried, from defaultRetryWait doubling to maxRetryWait, for as long as ctx lives: an outage
-// past the token's own life is the same event as a short one, since this grant has no rotation
-// window to miss, a host whose clock NTP corrects after boot trades again on the next pass rather
-// than holding no credential until somebody restarts it, and a pod whose trade reached the broker
-// before its registration did trades once that registration lands, however long it takes. A
-// missing registration is logged once, naming the session, and again every unregisteredLogEvery
-// while it lasts, rather than at every trade. A cancelled ctx is no error.
+// 429, either of its DPoP refusals, that it holds no registration for this pod's session yet, or
+// that Dispatch holds the person the identity names, is retried, from defaultRetryWait doubling
+// to maxRetryWait, for as long as ctx lives: an outage past the token's own life is the same
+// event as a short one, since this grant has no rotation window to miss, a host whose clock NTP
+// corrects after boot trades again on the next pass rather than holding no credential until
+// somebody restarts it, a pod whose trade reached the broker before its registration did trades
+// once that registration lands, however long it takes, and a person whom Dispatch held is
+// traded again after their next Dispatch sign-in, or the next refresh that confirms them, with
+// nothing restarted. A missing registration is logged once, naming the session, and again every
+// unregisteredLogEvery while it lasts, rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
 	// since is when the broker first refused this pod's session as unregistered, and logged when
@@ -371,6 +407,11 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		c.mu.Unlock()
 		switch {
 		case err == nil:
+			if !since.IsZero() {
+				// The wait was said; so is its end, once, as the TypeScript client says it.
+				c.logf(ctx, "the secrets broker answered this pod's session once it was registered",
+					"session", c.session, "waited", c.now().Sub(since))
+			}
 			wait = defaultRetryWait
 			since, logged = time.Time{}, time.Time{}
 			if err := onToken(ctx, token); err != nil {
@@ -399,7 +440,8 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 				logged = now
 			}
 		default:
-			c.logf(ctx, "the secrets broker did not answer a trade; asking again", "error", err.Error(), "in", wait.String())
+			what, attrs := retriedTrade(err)
+			c.logf(ctx, what+"; asking again", append(attrs, "in", wait.String())...)
 		}
 		if !c.sleep(ctx, wait) {
 			return nil
@@ -410,6 +452,22 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	}
 }
 
+// RenewalAt is when Run trades again once token lands: RenewBefore ahead of its expiry, and
+// halfway to that expiry for a token that lives less than RenewBefore (untilRenewal). A caller
+// that holds an older token beside it reads from this whether the older one outlives the wait.
+func (c *Client) RenewalAt(token *Token) time.Time {
+	return c.renewalAt(token, c.now())
+}
+
+func retriedTrade(err error) (string, []any) {
+	var refused *RefusedError
+	if errors.As(err, &refused) {
+		return "the secrets broker refused a trade, which a later trade may cure",
+			[]any{"status", refused.Status, "code", refused.Code, "error", err.Error()}
+	}
+	return "a trade got no usable answer from the secrets broker", []any{"error", err.Error()}
+}
+
 // untilRenewal is how long to wait before trading again for the token in hand: RenewBefore
 // ahead of its expiry, and half of what is left for a token that lives less than RenewBefore —
 // a deployment that mints short tokens, or a dev stack proving a renewal in seconds. That half
@@ -417,13 +475,19 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 // again the instant each token lands, which would spend the broker's per-address token bucket
 // in a loop and end in a 429.
 func (c *Client) untilRenewal(token *Token) time.Duration {
-	if wait := token.Expiry.Add(-c.renewBefore).Sub(c.now()); wait > 0 {
-		return wait
+	now := c.now()
+	return c.renewalAt(token, now).Sub(now)
+}
+
+// renewalAt is RenewalAt as of now.
+func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
+	if at := token.Expiry.Add(-c.renewBefore); at.After(now) {
+		return at
 	}
-	if left := token.Expiry.Sub(c.now()); left > 0 {
-		return left / 2
+	if left := token.Expiry.Sub(now); left > 0 {
+		return now.Add(left / 2)
 	}
-	return 0
+	return now
 }
 
 // sleep waits d, reporting false when ctx ended first. A Wake cuts the wait short, so the
@@ -505,7 +569,7 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.logf(ctx, "traded this machine's identity for one of the broker's access tokens",
+	c.logf(ctx, "traded an identity for one of the broker's access tokens",
 		"session", c.session, "credential", answer.CredentialID, "expires", answer.Expiry.UTC().Format(time.RFC3339))
 	return answer, nil
 }
@@ -577,7 +641,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// the credential the address carries in the words it answers with; any other
 		// answer prints its words as the address lets them (brokeraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
-			return nil, c.brokerURL.Error(newRefusedError(resp.StatusCode, answer.Error, answer.ErrorDescription))
+			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}
 		return nil, fmt.Errorf("the broker at %s answered HTTP %d %s", shown, resp.StatusCode, c.brokerURL.Words(answer.Error))
 	}
