@@ -1,5 +1,15 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  type RefObject,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
@@ -18,12 +28,26 @@ import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialog } from "./features/issue/CreateIssueDialog";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { useIssuePageChoice } from "./features/issue-page/choice";
+import { IconRail } from "./features/issue-page/IconRail";
+import {
+  type MarginDrawer,
+  type MarginDrawerPage,
+  MarginSlotProvider,
+} from "./features/issue-page/margin-slot";
+import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
+import {
+  type ShellNavigation,
+  ShellNavigationContext,
+} from "./features/issue-page/shell-navigation";
+import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -58,6 +82,7 @@ import {
 } from "./features/shell/sign-in-channel";
 import {
   COMPACT_VIEWPORT_QUERY,
+  MD_VIEWPORT_QUERY,
   READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
@@ -85,6 +110,7 @@ import {
   card,
   linkHoverText,
   linkText,
+  pagePaperBg,
   primaryButtonBg,
   primaryButtonHoverBg,
   railAccentHoverText,
@@ -203,6 +229,37 @@ function IssuePageFallback(): ReactNode {
           >
             {label}
           </span>
+        ))}
+      </div>
+      <div className="space-y-3">
+        {[0, 1, 2, 3].map((row) => (
+          <div className={`h-4 w-full animate-pulse rounded ${skeletonBg}`} key={row} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the new issue page's frame holds while the page's code loads (R10):
+ * the header's two lines, the view row's five controls and the first rows, as boxes with no word
+ * in them, so no name of a control flashes on screen and none of today's nine tab names does.
+ * It takes the inset the page's own column takes, since the frame gives `<main>` no padding.
+ * `min-w-0` and `overflow-hidden`: the row of boxes neither wraps nor scrolls, so a chunk's load
+ * never makes the page wider than a phone's window. Every other reader keeps
+ * `IssuePageFallback`.
+ */
+function IssueFrameFallback(): ReactNode {
+  return (
+    <div aria-busy="true" className="px-3.5 pt-2 md:px-7">
+      <div className={`h-4 w-16 animate-pulse rounded ${skeletonBg}`} />
+      <div className={`mt-2 h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
+      <div
+        className={`mt-4 mb-4 flex min-w-0 gap-2 overflow-hidden border-b pb-2 ${borderDefault}`}
+        role="toolbar"
+      >
+        {[0, 1, 2, 3, 4].map((box) => (
+          <span className={`h-5 w-16 shrink-0 animate-pulse rounded ${skeletonBg}`} key={box} />
         ))}
       </div>
       <div className="space-y-3">
@@ -415,6 +472,38 @@ function NavigationContents({
   );
 }
 
+/**
+ * The providers the shell mounts around everything it draws: the margin's own, and the four the
+ * new issue page's frame reads (R12, R14). `drawer` is Details, which only
+ * the frame passes: with it undefined the margin is the column it has always been, and no page
+ * fills its slot. `navigation` is what the page's header draws its `☰` from, and `openHelp` what
+ * its Keys control opens. A page publishes the names it read for its references to everything
+ * under the shell, the margin beside the router among it (`ReferenceNamesProvider`).
+ */
+function ShellProviders({
+  children,
+  drawer,
+  navigation,
+  openHelp,
+}: {
+  children: ReactNode;
+  drawer: MarginDrawer | undefined;
+  navigation: ShellNavigation | undefined;
+  openHelp: () => void;
+}): ReactNode {
+  return (
+    <MarginProvider>
+      <ReferenceNamesProvider>
+        <MarginSlotProvider drawer={drawer} drawsSlot={drawer !== undefined}>
+          <ShellNavigationContext.Provider value={navigation}>
+            <ShortcutHelpOpener.Provider value={openHelp}>{children}</ShortcutHelpOpener.Provider>
+          </ShellNavigationContext.Provider>
+        </MarginSlotProvider>
+      </ReferenceNamesProvider>
+    </MarginProvider>
+  );
+}
+
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -448,6 +537,41 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     String
   );
   const location = useLocation();
+  // The new issue page's frame (R1, R14), computed here once: an issue's
+  // address, for a reader who chose the new page. In it an icon rail of 56 px stands where the
+  // sidebar stands, from Tailwind's `md` up, and below that the page's header draws the control
+  // that opens the navigation (`ShellNavigationContext`); the margin is Details, a drawer over
+  // the page. The rail is drawn by the query that is `md` itself, in `rem`, because the room the
+  // page makes for it is `md:pl-14`: a pixel query draws the rail over the page wherever the two
+  // disagree, which is every width from 768 to 959 px at a 20 px default font. Every other page,
+  // and every other reader's issue page, keeps the shell below exactly as it was.
+  const [issuePageChoice] = useIssuePageChoice();
+  const issueFrame =
+    issuePageChoice === "outline" &&
+    parseIssuePath(location.pathname, location.search) !== undefined;
+  const railFits = useMediaQuery(MD_VIEWPORT_QUERY);
+  const iconRailShown = issueFrame && railFits;
+  // Whether Details is open, held for the issue it was opened on: every load opens it closed, and
+  // so does every move to another issue. Leaving the issue forgets it in the same render, so
+  // coming back to it - by a link or by Back - finds it closed, as a load does.
+  const detailsIssue = parseIssuePath(location.pathname)?.key;
+  const [detailsFor, setDetailsFor] = useState<string | undefined>(undefined);
+  if (detailsFor !== undefined && detailsFor !== detailsIssue) setDetailsFor(undefined);
+  // What the new page's root hands Details: its words and its address rule
+  // (`features/issue-page/drawer-page.ts`), so that this file imports neither.
+  const [drawerPage, setDrawerPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const detailsDrawer = useMemo<MarginDrawer | undefined>(
+    () =>
+      issueFrame
+        ? {
+            open: detailsFor !== undefined && detailsFor === detailsIssue,
+            page: drawerPage,
+            setOpen: (open: boolean) => setDetailsFor(open ? detailsIssue : undefined),
+            setPage: setDrawerPage,
+          }
+        : undefined,
+    [detailsFor, detailsIssue, drawerPage, issueFrame]
+  );
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
@@ -534,14 +658,28 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useFootInset(statusCornerRef, true, FOOT_STATUS_INSET_PROPERTY);
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
+  // open over the page at every width, as the Menu control opens it below `xl` on every page.
   const drawer = useDialog<HTMLElement>({
     initialFocusRef: closeButtonRef,
     onClose: () => setNavigationOpen(false),
-    open: navigationOpen && isCompactViewport,
+    open: navigationOpen && (isCompactViewport || issueFrame),
   });
+  // What the page's header draws its `☰` from below `md`, where the frame draws neither the
+  // shell's bar nor the rail; undefined wherever the shell draws a control of its own.
+  const shellNavigation = useMemo<ShellNavigation | undefined>(
+    () =>
+      issueFrame && !railFits
+        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
+        : undefined,
+    [issueFrame, navigationOpen, railFits]
+  );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  // What a page's own Keys control does (`features/issue-page/shortcut-help-opener.tsx`): what
+  // `?` does.
+  const openHelp = useCallback(() => setHelpSnapshot(appKeymap.describe()), []);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
   useKeymap("global", [
@@ -609,17 +747,24 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "Shift+S",
       label: "Toggle sidebar",
       run: () => setSidebarHidden(!sidebarHidden),
-      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert.
-      when: () => !isCompactViewport,
+      // Below `xl` the sidebar is a sheet with its own Menu control, and the preference is inert;
+      // so it is in the new issue page's frame, whose navigation is its icon rail.
+      when: () => !isCompactViewport && !issueFrame,
     },
     {
-      id: "toggle-margin",
+      // In the new issue page's frame the margin is Details, which this key opens and closes at
+      // every width. Its id follows the gate, so that crossing it registers the binding again
+      // and the list of keys reads the label of the shell it is in.
+      id: detailsDrawer === undefined ? "toggle-margin" : "toggle-details",
       keys: "Shift+M",
-      label: "Toggle margin",
-      run: () => setMarginHidden(!marginHidden),
+      label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
+      run: () =>
+        detailsDrawer === undefined
+          ? setMarginHidden(!marginHidden)
+          : detailsDrawer.setOpen(!detailsDrawer.open),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
-      when: () => !isCompactViewport && hasMargin,
+      when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
     },
   ]);
   const login = user.login;
@@ -681,7 +826,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const navigation = (
     <NavigationContents
       closeButtonRef={closeButtonRef}
-      compact={isCompactViewport}
+      compact={isCompactViewport || issueFrame}
       onClose={() => setNavigationOpen(false)}
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
@@ -729,7 +874,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   }`;
 
   return (
-    <MarginProvider>
+    <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
         className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
         data-testid="app-shell"
@@ -772,7 +917,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </p>
           ) : null}
         </div>
-        {isCompactViewport ? (
+        {isCompactViewport && !issueFrame ? (
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
           >
@@ -819,7 +964,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </button>
           </header>
         ) : null}
-        {isCompactViewport && navigationOpen ? (
+        {(isCompactViewport || issueFrame) && navigationOpen ? (
           <>
             <div
               aria-hidden="true"
@@ -837,7 +982,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             </aside>
           </>
         ) : null}
-        {isCompactViewport ? null : sidebarHidden ? (
+        {iconRailShown ? (
+          <IconRail
+            inboxCount={inboxCount}
+            navigationOpen={navigationOpen}
+            onOpenNavigation={() => setNavigationOpen(true)}
+            project={routeProject}
+            user={user}
+          />
+        ) : isCompactViewport || issueFrame ? null : sidebarHidden ? (
           <aside
             aria-label="Collapsed sidebar"
             className={`fixed inset-y-0 left-0 z-10 flex w-14 justify-center border-r p-2 ${railBorder} ${railBg} ${railText}`}
@@ -869,16 +1022,25 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <div className="sticky top-0 flex h-dvh flex-col overflow-y-auto p-5">{navigation}</div>
           </aside>
         )}
+        {/* In the frame `<main>` has no padding of its own: the page's header, its view row, its
+            Contents pane and its column each keep the inset the prototype gives them, the pane
+            against the rail, which `md:pl-14` makes room for. Its references open no card on
+            hover (R6). */}
         <main
-          className={`min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`}
-          data-shell-layout={fullWidth ? "full-width" : "standard"}
+          className={
+            issueFrame
+              ? `min-h-dvh min-w-0 flex-1 outline-none md:pl-14 ${pagePaperBg}`
+              : `min-w-0 flex-1 p-6 outline-none xl:order-2 ${fillsViewport ? "flex min-h-0 flex-col" : "pb-32 xl:pb-6"} ${mainLayoutClass}`
+          }
+          data-shell-layout={issueFrame || fullWidth ? "full-width" : "standard"}
+          {...(issueFrame ? { [NO_HOVER_PREVIEW_ATTRIBUTE]: "" } : {})}
           data-testid="main-content"
           id="main-content"
           ref={mainRef}
           tabIndex={-1}
         >
           <ErrorBoundary region="this page" resetKey={location.pathname}>
-            <Suspense fallback={<IssuePageFallback />}>
+            <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
@@ -934,7 +1096,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
         <RefPreviewHost />
       </div>
-    </MarginProvider>
+    </ShellProviders>
   );
 }
 
