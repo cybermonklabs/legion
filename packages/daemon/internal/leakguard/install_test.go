@@ -614,7 +614,9 @@ func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
 // followed the link to the pin would take it for an install, and one that opened the fifo plainly
 // would wait for ever.
 func TestTheInstalledTagIsReadWithoutFollowingASymlinkOrWaitingOnAFifo(t *testing.T) {
-	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}
+	// A role of a deployment that runs a shared leak check, which is told a manifest digest; the
+	// tag file's refusal comes before any digest is compared, so any digest serves.
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag, CheckerVar + "=" + strings.Repeat("5e", 32)}
 	// Each plant makes path one hostile file and answers what releases a read it holds, which the
 	// test calls when the read did not return in time, so its goroutine ends.
 	nothingHeld := func() {}
