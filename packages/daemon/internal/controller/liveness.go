@@ -104,10 +104,16 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 	defer response.Body.Close()
 	body, readErr := io.ReadAll(response.Body)
 	if response.StatusCode == http.StatusNotFound {
-		var refusal listenerwire.RoleRefusal
-		if readErr == nil {
-			_ = json.Unmarshal(body, &refusal)
+		// A 404 whose body could not be read to its end may have named an unresponsive holder,
+		// which is not gone, so what it said is unknown: a reset mid-body is no answer that the
+		// controller is gone.
+		if readErr != nil {
+			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup could not be read to its end",
+				"url", p.lookup, "session", session, "error", readErr)
+			return Unknown
 		}
+		var refusal listenerwire.RoleRefusal
+		_ = json.Unmarshal(body, &refusal)
 		if refusal.HolderState == notify.StateUnresponsive {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
 				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)

@@ -196,6 +196,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		}},
 		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
 		MemoryGuard: DefaultMemoryGuard(),
+		// The file sets no volume_trim, so the whole block settles on the daemon's defaults.
+		VolumeTrim: DefaultVolumeTrim(),
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)

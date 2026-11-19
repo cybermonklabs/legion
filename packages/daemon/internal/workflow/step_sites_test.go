@@ -25,7 +25,9 @@ var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
 	engine := testEngine(config.DesignGateOff, nil)
 	engine.cfg.Clock = func() time.Time { return stepClock }
-	engine.cfg.StepAgent = agent
+	if agent != nil {
+		engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, token claim.Token) StepAgent { return agent(token) }
+	}
 	return engine
 }
 

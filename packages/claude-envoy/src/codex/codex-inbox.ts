@@ -34,20 +34,24 @@ export function codexInboxDirectory(stateDirectory: string, sessionId: string): 
   return join(stateDirectory, "codex-inbox", encodeURIComponent(sessionId))
 }
 
-/** A file name that sorts after every name written before it in this process. */
+/** A file name for a new line: it sorts after every name chosen before it in this process. */
 let lastOrder = 0
-function itemName(): string {
+export function inboxItemName(): string {
   const order = Math.max(Date.now(), lastOrder + 1)
   lastOrder = order
   return `${String(order).padStart(15, "0")}-${randomBytes(4).toString("hex")}.json`
 }
 
-/** Writes `item` as a waiting message and answers its file name, which `isWaiting` and
- *  `takenBy` look up. The file is renamed into place whole, so a reader never sees half of it. */
-export async function putInbox(directory: string, item: CodexInboxItem): Promise<string> {
+/** Writes `item` as a waiting message named `name` and answers the name, which `takenBy` and
+ *  `withdrawWaiting` look up. The file is renamed into place whole, so a reader never sees half of
+ *  it. A caller that must be ready for the line before anyone can see it chooses `name` first. */
+export async function putInbox(
+  directory: string,
+  item: CodexInboxItem,
+  name: string = inboxItemName(),
+): Promise<string> {
   const waiting = join(directory, "waiting")
   await mkdir(waiting, { recursive: true, mode: 0o700 })
-  const name = itemName()
   const temporary = join(directory, `.${name}.tmp`)
   await writeFile(temporary, JSON.stringify(item), { mode: 0o600 })
   await rename(temporary, join(waiting, name))
