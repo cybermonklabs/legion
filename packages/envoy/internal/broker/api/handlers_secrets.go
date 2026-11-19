@@ -232,10 +232,14 @@ func (s *server) refreshAndTell(ctx context.Context, name string) (policy.Lookup
 // read, as a session's cut there has, so the peers are told of it all the same (refreshAndTell).
 // It runs outside net/http's handler goroutine, so nothing would recover a panic in it and the
 // panic would stop the broker: it recovers its own, and logs it as that same one failure line,
-// with the panic and its stack as the error.
+// with the panic and its stack as the error. Nor does srv.Shutdown wait for it, so it is counted
+// in Deps.Detached, which the stop sequence waits on before it ends the work that outlives the
+// drain: a pod that stops right after the 202 still finishes the reread and tells its peers.
 func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadAfterAnswerTimeout)
+	s.deps.Detached.start()
 	go func() {
+		defer s.deps.Detached.done()
 		defer cancel()
 		defer func() {
 			if p := recover(); p != nil {
@@ -248,9 +252,11 @@ func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 	}()
 }
 
-// rereadAfterAnswerTimeout bounds a reread no caller waits on (rereadAfterAnswer): the 45 seconds
+// rereadAfterAnswerTimeout bounds the reread no caller waits on (rereadAfterAnswer): the 45 seconds
 // cmd/broker gives every request (its requestDeadline), which bounded this reread too while its
-// caller waited on it.
+// caller waited on it. The notice to the other pods after it has notifyRereadTimeout of its own,
+// so the whole of it runs 50 seconds at most: a reread that used its whole bound has still merged
+// what it read, and its peers must still hear of it.
 const rereadAfterAnswerTimeout = 45 * time.Second
 
 // notifyPeers tells the other pods to reread name (Deps.NotifyReread) once this pod's own reread

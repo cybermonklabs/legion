@@ -72,6 +72,10 @@ type Deps struct {
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/broker supplies.
 	NotifyReread func(ctx context.Context, name string)
+	// Detached counts the work a route starts that outlives its answer, the reread run after a
+	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
+	// stops.
+	Detached *Detached
 	// SecretsPrefix is BROKER_SECRETS_PREFIX, the namespace GET /v1/settings answers.
 	SecretsPrefix string
 	// SecretsStore is BROKER_SECRETS_STORE, the store GET /v1/settings names: secrets.StoreAWS or

@@ -914,12 +914,16 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   - A call with no `Proof` header is answered `202`
     `{"accepted":true,"reason":"the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"}`
     at once, the same for a name the store holds as for one it does not, and the reread runs after
-    that answer, bounded at 45 seconds. So neither the answer nor how long it takes tells a caller
-    which names exist, though the store takes one call to say it holds no secret by a name and
-    more to describe one it holds. The `reason` is the same for every name; it is there for an
-    `agent-secrets` of an earlier release, which reads this answer as a refusal and prints its
-    reason. A reread that fails after its answer, a panic in it included, logs one
-    `broker: reread secret failed` line.
+    that answer: 45 seconds at most, and 5 more for its notice to the other pods, which still goes
+    out after a reread that used its whole bound, since that reread has merged what it read. So
+    neither the answer nor how long it takes tells a caller which names exist, though the store
+    takes one call to say it holds no secret by a name and more to describe one it holds. The
+    `reason` is the same for every name; it is there for an `agent-secrets` of an earlier release,
+    which reads this answer as a refusal and prints its reason. A reread that fails after its
+    answer, a panic in it included, logs one `broker: reread secret failed` line. A pod that stops
+    waits for such rereads after its shutdown, out of the shutdown's own budget, before it ends
+    its reread listener and closes its database pools, so a reread it answered `202` for still
+    reaches the other pods; one still running when that budget runs out is logged at WARN.
   - A call an enrolled session signs is answered once the reread is done: whether the broker now
     serves the secret, as which type (`type`: `github-app`, `google-login`, `azure-login` or
     `google-service-account`, absent for a stored secret) and, if not, why (`absent`, or a

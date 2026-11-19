@@ -13,10 +13,11 @@ body: |-
   `POST /v1/secrets/{name}/reread` answers a call with no proof `202` at once, with
   `"accepted":true` and one fixed `reason` that names the upgrade, the same for every name, and
   rereads the secret after that answer, so neither the answer nor how long it takes says what the
-  store holds; a call an enrolled session signs is answered as before, once the reread is done,
-  with whether the broker serves the name, why not and as which type, and a proof the broker does
-  not accept is `401 PROOF_INVALID`. `GET /v1/settings` stays open: a machine reads its exchange
-  audience there before it holds any credential.
+  store holds; a pod that stops waits for such a reread, and its notice to the other pods, before
+  it closes its pools. A call an enrolled session signs is answered as before, once the reread is
+  done, with whether the broker serves the name, why not and as which type, and a proof the
+  broker does not accept is `401 PROOF_INVALID`. `GET /v1/settings` stays open: a machine reads
+  its exchange audience there before it holds any credential.
   `agent-secrets secret` signs its reread with a broker identity the process already holds, with
   no wait and no machine trade, and reads the answer. A person's sign-in whose 15-minute session
   lapsed registers again once on the way, as every other session command does: one trade of that

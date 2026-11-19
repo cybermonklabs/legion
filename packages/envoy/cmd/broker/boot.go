@@ -259,6 +259,10 @@ type brokerStop struct {
 	Draining func(bool)
 	// Shutdown finishes the in-flight requests. In production: srv.Shutdown.
 	Shutdown func(ctx context.Context) error
+	// WaitDetached waits for the work a route started that outlives its answer, the reread run
+	// after a 202, which Shutdown does not wait for. It is nil in a row of ordering_test.go about
+	// another step. In production: api.Detached.Wait.
+	WaitDetached func(ctx context.Context) error
 	// ShutdownAirlock drains the airlock's proxy port, and is nil for a deployment with no
 	// airlock. In production: airlockproxy.Server.Shutdown.
 	ShutdownAirlock func(ctx context.Context) error
@@ -319,6 +323,14 @@ func stop(ctx context.Context, s brokerStop) {
 	metricsDrained := drainBeside(shutdownCtx, s.ShutdownMetrics)
 	if err := s.Shutdown(shutdownCtx); err != nil {
 		s.Log.Warn("broker: shutdown", "error", err)
+	}
+	// A reread a route answered 202 for runs after its answer, and Shutdown does not wait for it
+	// (api.Detached): it is waited for here, out of the same budget, so it finishes and tells the
+	// other pods before the serving context ends and the store behind it closes.
+	if s.WaitDetached != nil {
+		if err := s.WaitDetached(shutdownCtx); err != nil {
+			s.Log.Warn("broker: a reread run after its answer was still running when the shutdown's budget ran out", "error", err)
+		}
 	}
 	if err := <-airlockDrained; err != nil {
 		s.Log.Warn("broker: airlock proxy shutdown", "error", err)
