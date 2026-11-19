@@ -1217,14 +1217,14 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // pauseContract is the daemon contract that added the project's pause to the state (version.go's
-// 171, dispatch://INFRA-3759): `paused`, the pause that stands with the roles it waits
+// 178, dispatch://INFRA-3759): `paused`, the pause that stands with the roles it waits
 // on and the rows it holds, and `lastPause`, the newest ended pause while the project runs. A
 // plugin before it is served the state without either key: one built before sjawhar/legion#2788
 // reads it with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the key instead, so the strip is what keeps the pause from a caller that
 // did not ask for it rather than what keeps such a caller reading at all. The two are one band: a
 // state carries one of them at most, and both describe the one pause record.
-const pauseContract = 171
+const pauseContract = 178
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

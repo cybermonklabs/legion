@@ -70,7 +70,7 @@ const schemas: Record<string, z.ZodType> = {
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
   // Written by internal/api's TestStateLastPauseGolden: the state of a project that runs after a
-  // pause has ended, which carries `lastPause` and no `paused` (contract 171). state.json is the
+  // pause has ended, which carries `lastPause` and no `paused` (contract 178). state.json is the
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
@@ -106,7 +106,7 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The project pause (contract 171), each written from what the route itself answers
+  // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
   // the others name something beside the sentence: the setting that turns the pause off (none
@@ -1973,7 +1973,7 @@ test("the release records carry a release, a resume and a hold", () => {
   expect(LegionReleaseRecordsResponse.safeParse(nulled).success).toBeFalse();
 });
 
-// A wake a project pause held (contract 171): the golden's third resume carries the pause that
+// A wake a project pause held (contract 178): the golden's third resume carries the pause that
 // held it and pairs with no release, so a reader of these records counts it apart from the wakes
 // of released pods. A wake no pause held carries no `pause` at all, and a `pause` that is no
 // pause's id is refused.
@@ -2319,13 +2319,13 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The project's pause (contract 171). state.json is the state of a paused project: it names the
+// The project's pause (contract 178). state.json is the state of a paused project: it names the
 // pause that stands, who paused, the claim whose stop the pause still waits on and the two rows
 // it holds, one for a claim and one that names none. state-last-pause.json is the state of a
 // project that runs after a pause has ended: it names that pause with when and by whom it was
 // ended. A state carries one of the two at most, and neither key is required: the daemon writes
 // none before the project's first pause, and the route strips both for a caller in a pod whose
-// plugin is older than 171 (`api.stateFor`, `withoutPause`). What is refused is a pause by
+// plugin is older than 178 (`api.stateFor`, `withoutPause`). What is refused is a pause by
 // nobody the daemon records, a controller's with no session, a pause with no reason or without
 // one of its lists, and a last pause with no end.
 test("the state goldens carry the pause that stands and the last pause, and both keys may be absent", () => {
@@ -2411,7 +2411,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
   }
 });
 
-// What the pause routes answer (contract 171). A pause answers the pause it began, which names
+// What the pause routes answer (contract 178). A pause answers the pause it began, which names
 // no end. A resume answers the pause it ended, with who ended it, and how many held rows it let
 // out; a body that names no end is no resume's answer. Each refusal names what its code names
 // beside its sentence, and nothing else: the setting that turns the pause off, the pause that

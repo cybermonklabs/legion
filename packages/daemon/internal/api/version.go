@@ -2421,7 +2421,7 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 171: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
 // /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
 // (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
 // and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
@@ -2443,7 +2443,7 @@ package api
 // on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
 // waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
 // `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
-// caller from a pod whose claims record a contract below 171 is served the state with neither key
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
 // (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
 // `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
 // held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
@@ -2495,5 +2495,11 @@ package api
 // #4180 and #4193), 172 (#3659), 173 (#4493), 174 (#3993 and #4273), 175 (#3712, #4392, #4432,
 // #4485 and #4495 beside this change) and 176 (#3831 and #4030), and none declares 171, which
 // #4485 and #4495 left for 175, so 171 is the lowest number above main's 168 that no other open
-// head declares.)
-const DaemonAPIVersion = 171
+// head declares.
+// It moves to 178 at the head after 87bb170f, where main still declares 168: #4049 took 171 at
+// 18:54:36Z, and the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
+// request, made between 2026-11-19T20:40:35Z and 20:45:30Z, found 169 (#4065), 170 (#2230, #4180,
+// #4182 and #4193), 171 (#4049 beside this change), 172 (#3659), 173 (#4493), 174 (#3993 and
+// #4273), 175 (#3712, #4392, #4432, #4485 and #4495), 176 (#3831, #4030 and #4173) and 177
+// (#4017), so 178 is the lowest number above main's 168 that no other open head declares.)
+const DaemonAPIVersion = 178
