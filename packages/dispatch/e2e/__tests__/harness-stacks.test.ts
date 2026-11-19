@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { unshownSettingUrl } from "@legion/contracts/setting-url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -181,9 +182,9 @@ test("a run of more than one stack refuses to start without a Postgres provider"
 
 // DISPATCH_E2E_FILE_STORE_ENDPOINT may carry a user and a password. One that is no http or https
 // URL with a host is refused naming its length and the cause the one function found, and one that
-// carries a user part is refused named without it, since the fetch of Playwright's Node refuses
-// such a URL printing it whole; each before a Postgres or a server starts. The password is made
-// for this run.
+// carries a user part is refused named by the fixed phrase `urlForText` gives, no part of the URL
+// printed, since the fetch of Playwright's Node refuses such a URL printing it whole; each before a
+// Postgres or a server starts. The password is made for this run.
 test("a file store endpoint that is no http or https URL with a host, or that carries a user part, is refused printing no part of the password", async () => {
   const password = crypto.randomUUID();
   const unreadable = `made-up-user:${password}@127.0.0.1:1`;
@@ -199,7 +200,7 @@ test("a file store endpoint that is no http or https URL with a host, or that ca
   }
   expect(said).toEqual([
     `DISPATCH_E2E_FILE_STORE_ENDPOINT must be an http or https URL: ${unshownSettingUrl(unreadable)}`,
-    "DISPATCH_E2E_FILE_STORE_ENDPOINT http://127.0.0.1:1 must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole",
+    `DISPATCH_E2E_FILE_STORE_ENDPOINT ${URL_NOT_PRINTED} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole`,
   ]);
 });
 
