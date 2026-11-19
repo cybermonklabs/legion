@@ -58,7 +58,8 @@ and the one Dispatch project it may write, or no project for an entry that names
 (`<service account>==<person>`). A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives it a
 service and a fixed session instead, and no person and no project: the token holds the OAuth scope
 `read` alone. Dispatch serves such a token on the routes its read list names and refuses it on every
-other route with `403 READ_ONLY_TOKEN`, and the Envoy listener refuses it with `401`
+other route with `403 READ_ONLY_TOKEN`; the Envoy listener refuses it with `401`, and the NATS auth
+service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads the whole answer of
 `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each
 source, each component, and every issue of the project, closed and iceboxed ones included. No
@@ -775,10 +776,16 @@ proving that enrollment's key.
 The session name, with the principal beside it, is what decides which enrollment that is.
 The principal is what the enrolling box proved, never anything its launcher states: the person, for
 a box of theirs and for their sign-in on a machine; the fleet's Google account, for a machine's own
-session; the service account its projected token proved, for a pod
+session; for a pod, the service account its projected token proved, paired with the account the
+token login that enrolled it proved
 (`packages/envoy/internal/broker/enroll/enroll.go`, `carryPrincipal`).
+A pod's grants follow that pair because the pods of several daemons can run as one account, and each
+daemon logs in as an account of its own: a pod one daemon enrolled under another daemon's session
+name takes none of that session's grants. A pod enrolled under a login that proved no account
+carries nothing.
 The broker records which principal holds a name, on the row the token exchange binds every token's
-name in, so the name is one principal's whichever of the two claimed it first.
+name in, so the name is one principal's whichever of the two claimed it first; a pod's name is held
+under its service account alone, the principal its own token exchange claims it under.
 An enrollment that names no session belongs to no principal at all.
 
 Enrolling the same session name again under the same principal takes what every earlier enrollment
@@ -802,6 +809,9 @@ A session name another principal holds is refused outright: the enrollment is re
 A token exchange under that name is refused the same way, on the same row, so the name stays its
 principal's for 90 days past the last lease or token under it
 (`packages/envoy/internal/broker/oauthstore/exchange.go`, `ErrSessionHeld` and `SessionRetention`).
+A pod's name is held under its service account alone, though, so a pod another daemon enrolled
+under the name, running as the same account, is not refused it: its grants follow another pair,
+so it is admitted under the name and takes none of what the session holds (`enroll.go`, `adopt`).
 A box whose key a person revoked trades nothing, so it enrols nothing: a launcher proof signed with a
 revoked credential does not authenticate, and an enrollment already under way finds the credential
 revoked and is refused `LAUNCHER_INVALID`.
@@ -890,7 +900,8 @@ session was approved for, with no approval of its own.
 Within one principal what stands between a caller and a secret is the sign-in on a box, or the
 account, and never the session name.
 Three things bound it.
-Another principal is refused the name outright.
+Another principal is refused the name outright, and a pod of another daemon, which shares the
+account the name is held under, is admitted under it and takes none of what the session holds.
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
 

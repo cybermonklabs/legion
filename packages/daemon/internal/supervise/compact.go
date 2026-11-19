@@ -25,13 +25,13 @@ import (
 var ErrCompactInstructions = errors.New("a compaction carries custom instructions, so Oh My Pi writes its summary as text rather than snapcompact's images")
 
 // ErrCompactNotTaken is a compaction nothing was asked for: the claim could not be written as
-// working, it lost its process between the take and the ask, its shim is not connected, or a
-// launch the wake pacing holds waits its turn to replace the process its session runs on, so
-// the daemon had nothing to ask through or nothing worth asking (compactStart). The claim is
-// where the request found it and no task was sent, where every other outcome gives the claim
-// back and sends the task it owes (compactEnded). A claim a suspension is held over is not
-// one of these: it is refused in its state, as every other action refuses such a claim
-// (RefusedError, compactStart).
+// working, it lost its process between the take and the ask, its shim is not connected, a
+// launch the wake pacing holds waits its turn to replace the process its session runs on, or the
+// claim's session is not held to it (holdRecorded), so the daemon had nothing to ask through,
+// nothing worth asking or nothing it may ask (compactStart). The claim is where the request found
+// it and no task was sent, where every other outcome gives the claim back and sends the task it
+// owes (compactEnded). A claim a suspension is held over is not one of these: it is refused in
+// its state, as every other action refuses such a claim (RefusedError, compactStart).
 var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, so nothing was asked of its session")
 
 // ErrCompactNotEnded is a compaction whose end did not finish: Oh My Pi answered and a step of
@@ -330,6 +330,19 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		// the claim, so the refusal carries that state for the door to answer the hold from.
 		return &RefusedError{State: m.claim.State, Request: "compact",
 			Reason: "a suspension is held over the claim, so nothing is asked of a session that hold may stop"}
+	}
+	// Nothing is asked of a session the claim does not hold (holdRecorded, plan E's t-e-54): a
+	// compaction runs Oh My Pi's summarizer over the session and can start a turn, which would put
+	// a process the boot could not suspend to work under another claim's session, or one no claim
+	// holds, as a task would (sendPending; review round 13 of #4220). No refusal of the claim's
+	// state either: the state takes a compaction, and what stops it is the session, so
+	// Machine.Compact answers it as a take that did not happen, carrying the hold's own refusal,
+	// or the store's error when the store did not answer.
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		if errors.Is(err, errHoldUnanswered) {
+			return fmt.Errorf("the store did not answer whether the claim holds its session, so nothing is asked of that session: %w", err)
+		}
+		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
 	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
 		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",
