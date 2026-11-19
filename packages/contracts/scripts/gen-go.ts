@@ -582,12 +582,16 @@ const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)
 // document past the structs ygo decodes in one update, or its history has used up what the room
 // lets its applies scan - DocumentRebuiltCloseReason
 // the one that still holds a history a rebuild replaced, DocumentUpdateRefusedCloseReason the
-// one whose update holds content the document does not take - bytes the decoder refuses, or
-// content the Proof editor never sends - and DocumentClientIdRefusedCloseReason the one whose
+// one whose update holds content the document does not take - bytes the decoder refuses, content
+// the Proof editor never sends, or a document this build cannot render, with the browsers whose
+// parked edits a drain refused for that held - and DocumentClientIdRefusedCloseReason the one whose
 // update carries an edit under a client id that is not the sender's; DocumentBusyCloseCode and
 // DocumentBusyCloseReason close a browser the room-memory budget has no room for, one whose
 // person holds every client id no edit has landed under that a document allows them, each held by
-// a socket still open, and the one whose update would grow a document while that budget is full.
+// a socket still open, the one whose update would grow a document while that budget is full, the
+// one whose update's client ids the table could not be read for, the one whose update the render
+// check could not size yet with the browsers whose parked edits a drain refused for that held, and
+// the one whose first sync the pod's copy heap had no room to answer.
 // Generated from DOCUMENT_TOO_LARGE_CLOSE_CODE, DOCUMENT_TOO_LARGE_CLOSE_REASON,
 // DOCUMENT_TOO_TANGLED_CLOSE_REASON, DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
 // DOCUMENT_REBUILT_CLOSE_REASON, DOCUMENT_UPDATE_REFUSED_CLOSE_REASON,

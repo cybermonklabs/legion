@@ -400,9 +400,16 @@ func holdFreeLoad(bytes int64) func() {
 // and the structs the room's last committed apply reported it holding (roomApplies.structsHeld,
 // crdt.ApplyReport.Structs), which a split-dense copy is as heavy in the pool by as it is in the
 // budget. Both are read off the room's own listing without a lock, an encode or a walk of the
-// document. The report counts what the room has parked with what its store holds: a copy carries
-// the room's pending queue with its store, so a room holding a parked backlog costs the pool what
-// that backlog costs it.
+// document.
+//
+// A copy carries nothing of the room's pending queue: a fork is the room's replica cloned, and the
+// replica applies only what each commit integrated (renderedReplica.takeLocked), and the count's
+// copy is a decode of the room's encoded state, which leaves what the room parks out
+// (leaveParkedOut). Both figures count the queue all the same - its content in the resident bytes
+// and its structs in the report - so a room holding a parked backlog is weighed past what its copy
+// holds by that backlog, the safe side for a bound on the pool, and the room keeps no struct
+// figure without the queue to weigh it more closely. The delete ranges the queue parks are in
+// neither figure, and no copy holds them either.
 //
 // A document no room's load listed is tracked at nothing, and nothing here can name its size
 // without encoding it, so a copy of one takes a whole slot: the writes that reach this on such a

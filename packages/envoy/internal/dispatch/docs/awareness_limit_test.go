@@ -12,6 +12,9 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/encoding"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // limitRoom is the document the sockets in these tests are on.
@@ -323,5 +326,52 @@ func TestAFrameHeaderIsBuiltAndReadBackInEveryLengthForm(t *testing.T) {
 	past := binary.BigEndian.AppendUint64([]byte{finalFrame | gws.BinaryMessage, maskedFrame | 127}, 1<<63)
 	if read := framePayloadLength(past); read != -1 {
 		t.Errorf("a header naming 2^63 payload bytes reads as %d, want -1: no int64 holds it", read)
+	}
+}
+
+// A read-only socket's awareness is read by nothing: ygo answers it and discards it, so the filter
+// passes over its bytes rather than decode them, where a writable socket's awareness is decoded
+// and held to the ids it may announce under. What the filter decoded shows in the line it leaves
+// for the entries it drops (awarenessLimitConn.allowed): a writable page's message naming an id
+// the page was not given leaves it, and a read-only page's same message leaves none. Each page
+// asks for the document after its awareness, and the answer comes once the filter has passed
+// both messages on, in order.
+func TestAReadOnlySocketsAwarenessIsNotDecoded(t *testing.T) {
+	var logs logtest.Recorder
+	logtest.SetDefault(t, &logs)
+	service, artifactID, serverURL := clientIDRoom(t)
+	const dropped = "dispatch: drop the awareness clients a document socket may not hold"
+	drops := func() int {
+		n := 0
+		for _, record := range logs.Records() {
+			if record.Message == dropped {
+				n++
+			}
+		}
+		return n
+	}
+	announce := func(page *docstest.Peer, what string) {
+		t.Helper()
+		if err := page.SetAwareness(uint64(page.Given)+1, map[string]any{"user": map[string]any{"name": "invented"}}); err != nil {
+			t.Fatalf("%s: send the awareness: %v", what, err)
+		}
+		if err := page.AskForDocument(); err != nil {
+			t.Fatalf("%s: ask for the document: %v", what, err)
+		}
+		awaitAnswer(t, page, what)
+	}
+	writer := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, writer, "alice's writable page")
+	announce(writer, "alice's writable page after its awareness")
+	if drops() == 0 {
+		t.Fatal("the filter left no line for the writable page's entry under an id it was not given, so this test cannot see a decode")
+	}
+	setIssueClosed(t, service, true)
+	reader := openPage(t, serverURL, artifactID, "bob")
+	awaitAnswer(t, reader, "bob's read-only page")
+	before := drops()
+	announce(reader, "bob's read-only page after its awareness")
+	if after := drops(); after != before {
+		t.Fatalf("the filter decoded a read-only page's awareness and dropped %d entries of it, which ygo discards whole", after-before)
 	}
 }

@@ -1168,12 +1168,15 @@ func (r *renderedReplica) chargeAdded(handed bool) {
 	// charged for none of them while it held them (TestR6Finding2ParkedStructsEscapeTheDecodeCap,
 	// dispatch://INFRA-179, review 6's finding 2). A room between its load and its first remote
 	// apply has no report yet and is read from its document instead, and a replica of a room no
-	// load gave a document - a test's - charges by its state alone.
+	// load gave a document - a test's - charges by its state alone. The delete ranges the room
+	// parks are charged at the count the hook read after its last apply
+	// (roomApplies.parkedRangeCount), as the struct figure is read off the room's own record
+	// rather than off the document.
 	var structs int64
 	if r.live != nil {
 		structs = int64(applies.structsHeld(r.live))
 	}
-	charge.weigh(applies.residentBytes(), structs)
+	charge.weigh(applies.residentBytes(), structs, applies.parkedRangeCount())
 }
 
 // keepReplica makes the replica live's update observer keeps, moving through log, live's update

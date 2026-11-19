@@ -10,7 +10,7 @@ import (
 
 // What a drain of parked content would land is charged to the decode cap as it parks, two items a
 // struct: the hook asks the cap of the ceiling the room is weighed at, which counts each parked
-// struct again (storedCeiling), and each struct an apply carries costs two items of the structs'
+// struct again (ceilingWithQueue), and each struct an apply carries costs two items of the structs'
 // share (capShares). Nothing a room parks is stored (leaveParkedOut), so the charge bounds the
 // room's pending queue in memory, out of the same headroom as what it integrates.
 //
@@ -54,7 +54,7 @@ func TestFramesParkedBehindGapsOfTheirOwnStopWhereTheStoredStateStillDecodes(t *
 
 // The decode cap's headroom above a room is split between what one apply may carry and what it
 // may cut, and the structs' half is halved again, since a struct that parks behind a gap of its own
-// costs the room's ceiling two items (capShares, storedCeiling): 2 x carried + cut is then the
+// costs the room's ceiling two items (capShares, ceilingWithQueue): 2 x carried + cut is then the
 // headroom itself. With the structs' half not halved, each struct bought one item of it, and one
 // frame could spend both halves whole - carrying the structs' half in structs that each park
 // behind a gap of their own, which the ceiling counts twice over, and cutting the splits' half out

@@ -16,7 +16,8 @@ import (
 // roomCharge is one loaded room's charge against the budget: one weight, the larger of what it
 // holds resident - its tracked state and its pending queue's content (roomApplies.residentBytes)
 // - at bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct in each of its two copies
-// (roomWeight), and the room it belongs to.
+// (roomWeight), with the delete ranges its live copy parks (roomChargeWeight), and the room it
+// belongs to.
 //
 // Its writer for every commit is the room's update observer, whose drain of the room's update log
 // weighs the room again from the room's tracked state and what its pending queue holds
@@ -27,9 +28,10 @@ import (
 // renderedReplica.countCommit). An update the peer hook admits is drained by that observer inside
 // the apply that committed it, as the transaction ends (buildPhase2, crdt/doc.go:1328-1453 in
 // theorem-labs/ygo v1.55.1-theorem.9), before the hook can read what the apply left
-// in the queue, so the hook weighs the room once more itself where its queue's charge moved
-// (Service.weighPeerUpdate, roomApplies.noteQueued); one its apply refused committed nothing to
-// drain and reported nothing.
+// in the queue, so the hook weighs the room once more itself where its queue's charge, or the
+// count of delete ranges it parks, moved (Service.weighPeerUpdate, roomApplies.noteQueued,
+// roomApplies.noteParkedRanges); one its apply refused committed nothing to drain and reported
+// nothing.
 //
 // The charge lasts as long as the room's instance. Its load makes it, from the stored state the
 // load decoded (chargeLoadedRoom); each drain weighs it again; a compaction that folds the room's
@@ -49,16 +51,16 @@ type roomCharge struct {
 }
 
 // weigh charges the room what its resident bytes, stateBytes - its tracked state and its pending
-// queue's content (roomApplies.residentBytes) - and its structs structs come to (roomWeight) and
-// re-weighs its entry under the budget's lock. A nil charge, a replica no room's load charged (a
-// test's), charges nothing.
-func (c *roomCharge) weigh(stateBytes, structs int64) {
+// queue's content (roomApplies.residentBytes) - its structs structs and the parkedRanges delete
+// ranges its live copy parks come to (roomChargeWeight), and re-weighs its entry under the
+// budget's lock. A nil charge, a replica no room's load charged (a test's), charges nothing.
+func (c *roomCharge) weigh(stateBytes, structs, parkedRanges int64) {
 	if c == nil {
 		return
 	}
 	c.budget.mu.Lock()
 	defer c.budget.unlock()
-	c.budget.reweighLocked(c, roomWeight(stateBytes, structs))
+	c.budget.reweighLocked(c, roomChargeWeight(stateBytes, structs, parkedRanges))
 }
 
 // anchorStructs is how many structs live holds, read from the document itself, for the two

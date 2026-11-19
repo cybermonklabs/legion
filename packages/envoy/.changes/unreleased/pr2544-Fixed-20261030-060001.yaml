@@ -32,7 +32,8 @@ body: |-
     - `4413 DOC_TOO_TANGLED` when the apply's conflict scans would pass what the room allows that
       apply: 400,000 items, or what is left of the room's 1,000,000-item scan total.
     - `4413 DOC_REBUILT` when the browser still holds the edit history a rebuild replaced, which
-      applied would put the old document beside the rebuilt one.
+      applied would put the old document beside the rebuilt one, or sends a delete of that history,
+      which the rebuilt room could never land.
 
     One frame a browser sends may carry at most 64 MiB, four times the room's state cap, so four
     whole-state handoffs of a room at that cap fit in it.
@@ -41,14 +42,21 @@ body: |-
     no part of the document until that edit arrives. The room relays and stores only what each
     apply integrated, and no read or first sync is served what parked. It answers a frame that
     parked as not applied, so the editor keeps the edit and sends it again, and it resyncs that
-    browser once a later stored commit lands what the frame parked. Where the room cannot take a
-    drain of parked content, it discards the drain and keeps the update that released it. Each
-    browser that parked what was discarded is closed `4413 DOC_TOO_LARGE` where the drain would
+    browser once a later stored commit lands what the frame parked. A server write that lands such
+    content - a catch-up of another process's rows, a published write - is stored by the room as a
+    browser's commit is, so that browser is told only once a row holds it. Where the room cannot
+    take a drain of parked content, it discards the drain and keeps the update that released it.
+    Each browser that parked what was discarded is closed `4413 DOC_TOO_LARGE` where the drain would
     leave the rendering past the bound, `4413 DOC_UPDATE_REFUSED` where it would leave a document
     this build cannot render, and `4413 DOC_TOO_TANGLED` where its merge would scan or split more
-    than the apply allows. A browser's edit is now answered saved only once the commit that holds
-    it is stored. Where the store refuses it or the room fails, the editor keeps the edit and sends
-    it again. The other browsers still see the edit at once.
+    than the apply allows; it is closed `4503 DOC_BUSY` instead where the update that released the
+    drain changed nothing itself and what the drain started from is not known yet. A parked delete
+    range spends none of the decode cap's headroom, and the room budget charges each 32 bytes on the
+    room's live copy while it waits. A browser's edit is now answered saved only once the commit that
+    holds it is stored. Where the store refuses it or the room fails, the editor keeps the edit and
+    sends it again. The dashboard keeps another tab's saved edit until the server answers that edit
+    itself as saved, rather than dropping it because its page already shows it. The other browsers
+    still see the edit at once.
 
     Each page is now given a client id of its own for each document, from 2^32 up, in the socket's
     first frame, and the id is stored with the person it was given to. An update carrying edits
@@ -60,7 +68,8 @@ body: |-
     edits again; after a refused sync step 2 it drops none, since the step 2 names no edit of its
     own, and an edit of its own that waits on the lost one is held by the room, answered not
     applied, and lands once the other person's browser sends the lost edit again. A socket given an
-    id carries presence only under that id. A page admitted read-only stores no id: it is sent one
+    id carries presence only under that id, and a read-only socket's presence, which ygo discards,
+    is not read at all. A page admitted read-only stores no id: it is sent one
     that no row names, and takes a fresh one once it is admitted writable. A person holds at most 64
     ids in a document that no edit has landed under; past that a new page's admission gives back the
     one presented longest ago, never one an open page holds, and where every one is held it is
@@ -104,11 +113,13 @@ body: |-
     What is transient rather than resident is held by one pool of bytes, the pod's load
     concurrency: slots of 600,000,000 bytes, one in a 4 GiB pod and 16 under a 32Gi container. A
     whole-document decode, a live write's fork and one apply of a browser's update over 2 MiB each
-    take what their own copy costs, at the same two prices. The answer to one browser's first sync
-    takes the greater of 8 bytes a byte of the room's state, and 340 bytes a client the room holds
-    with 4,096 bytes and 101 a struct for the frame being packed, up to the 16,000 structs a frame
-    can hold. No taker takes more than one slot, so the heaviest waits for its turn rather than
-    being refused: a stored document always loads and no honest handoff is turned away.
+    take what their own copy costs, at the same two prices, the apply before any of the update is
+    read. The answer to one browser's first sync takes the greater of 8 bytes a byte of the room's
+    state, and 340 bytes a client the room holds with 4,096 bytes and 101 a struct for the frame
+    being packed, up to the 16,000 structs a frame can hold, and 40 bytes more for each client the
+    browser's own sync step 1 names. No taker takes more than one slot, so the heaviest waits for
+    its turn rather than being refused: a stored document always loads and no honest handoff is
+    turned away.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

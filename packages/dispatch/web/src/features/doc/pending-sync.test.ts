@@ -378,32 +378,34 @@ test("a read-only admission stores none of the editor's own updates", async () =
   });
 });
 
-test("a read-only load drops the heading id an earlier read-only load stored once it derives the id again, and keeps a person's saved edit", async () => {
+// A read-only load keeps every saved row of another tab or an earlier page, whatever of it the
+// document already holds: the document holds what the room relayed, which the room sends before
+// its store takes it, so only an applied answer to the row says the server keeps it, and a read-only
+// admission sends nothing to be answered. The next writable admission replays each row.
+test("a read-only load keeps the heading id an earlier read-only load stored once it derives the id again, and a person's saved edit", async () => {
   const artifact = artifactId();
   const server = serverWithHeading(100);
   // An earlier read-only load stored its editor's heading-id stamp as though it were an edit.
-  await savedChanges(artifact, server, stampHeadingId);
+  const [stamp] = await savedChanges(artifact, server, stampHeadingId);
   // A person typed a paragraph while the document was writable, and it never reached the server.
   const [typed] = await savedChanges(artifact, server, typeParagraph);
   const { doc, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
 
-  // Before the editor exists, each row still changes what the document shows.
   await admit(sync, true);
-  expect((await rowsOf(artifact)).length).toBe(2);
-  expect(states.at(-1)?.count).toBe(2);
-
   stampHeadingId(doc);
-
-  await waitFor(async () => expect(await rowsOf(artifact)).toEqual([typed?.key]));
-  await waitFor(() =>
-    expect(states.at(-1)).toEqual({
-      count: 1,
-      readOnly: true,
-      rebuiltAt: undefined,
-      stored: true,
-      unsent: false,
-    })
-  );
+  // The stamp's row changes nothing the document now shows, and stays all the same.
+  await waitFor(() => expect(states.at(-1)?.count).toBe(2));
+  const rows = await rowsOf(artifact);
+  expect(rows).toHaveLength(2);
+  expect(rows).toContainEqual(stamp?.key);
+  expect(rows).toContainEqual(typed?.key);
+  expect(states.at(-1)).toEqual({
+    count: 2,
+    readOnly: true,
+    rebuiltAt: undefined,
+    stored: true,
+    unsent: false,
+  });
 });
 
 test("a read-only load keeps an earlier row of a browser whose later rows build on it", async () => {
@@ -412,21 +414,12 @@ test("a read-only load keeps an earlier row of a browser whose later rows build 
   // A writable load stamped the heading's id, then its reader typed a paragraph; the socket was
   // down for both, so the paragraph's row continues the stamp's clock.
   const saved = await savedChanges(artifact, server, stampHeadingId, typeParagraph);
-  let judged = 0;
-  const { doc, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server), (store) => ({
-    ...store,
-    async restoreRows() {
-      const rows = await store.restoreRows();
-      judged += 1;
-      return rows;
-    },
-  }));
+  const { doc, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
   await admit(sync, true);
 
   // The read-only load's editor derives the same stamp, which leaves the stamp's row alone
-  // changing nothing; dropping it would leave the paragraph's row nothing to apply after.
+  // changing nothing; the row stays, and the paragraph's row has it to apply after.
   stampHeadingId(doc);
-  await waitFor(() => expect(judged).toBe(2));
   expect(await rowsOf(artifact)).toEqual(saved.map((row) => row.key));
 
   // The issue reopens: the next, writable load restores the paragraph.
@@ -436,19 +429,20 @@ test("a read-only load keeps an earlier row of a browser whose later rows build 
   expect(reopened.states.at(-1)?.rebuiltAt).toBeUndefined();
 });
 
-test("a read-only first sync drops a saved row the server already holds", async () => {
+test("a read-only first sync keeps a saved row the server already holds", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
   const saved = await savedEdit(artifact, server, " saved");
-  // The server applied the edit before the issue closed; the acknowledgement never came.
+  // The server applied the edit before the issue closed; the acknowledgement never came, and
+  // nothing says the server stored it.
   Y.applyUpdate(server, saved);
   const { states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
 
   await admit(sync, true);
 
-  expect(await rowsOf(artifact)).toEqual([]);
+  expect((await rowsOf(artifact)).length).toBe(1);
   expect(states.at(-1)).toEqual({
-    count: 0,
+    count: 1,
     readOnly: true,
     rebuiltAt: undefined,
     stored: true,
@@ -484,7 +478,7 @@ test("a read-only first sync keeps a saved row that changes an object attribute"
   });
 });
 
-test("a read-only first sync drops a saved row that only splits the same text into other items", async () => {
+test("a read-only first sync keeps a saved row that only splits the same text into other items", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
   // The same text typed again in two pieces, the later one before the earlier, which Yjs keeps
@@ -501,17 +495,11 @@ test("a read-only first sync drops a saved row that only splits the same text in
 
   await admit(sync, true);
 
-  expect(await rowsOf(artifact)).toEqual([]);
-  expect(states.at(-1)).toEqual({
-    count: 0,
-    readOnly: true,
-    rebuiltAt: undefined,
-    stored: true,
-    unsent: false,
-  });
+  expect((await rowsOf(artifact)).length).toBe(1);
+  expect(states.at(-1)?.count).toBe(1);
 });
 
-test("a read-only first sync drops a saved row that inserts and deletes the same text", async () => {
+test("a read-only first sync keeps a saved row that inserts and deletes the same text", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
   await savedChanges(artifact, server, (browser) => {
@@ -525,14 +513,8 @@ test("a read-only first sync drops a saved row that inserts and deletes the same
 
   await admit(sync, true);
 
-  expect(await rowsOf(artifact)).toEqual([]);
-  expect(states.at(-1)).toEqual({
-    count: 0,
-    readOnly: true,
-    rebuiltAt: undefined,
-    stored: true,
-    unsent: false,
-  });
+  expect((await rowsOf(artifact)).length).toBe(1);
+  expect(states.at(-1)?.count).toBe(1);
 });
 
 test("a read-only first sync keeps a saved row that writes a margin record", async () => {
@@ -642,13 +624,16 @@ test("a restore that parks on a client the rebuild retired is dropped, reported,
   expect(reported?.rebuiltAt).toBeLessThanOrEqual(Date.now());
 });
 
-test("a restore the server already holds fires no update and drops its rows", async () => {
+// A row of another tab whose content this document already holds - the room relayed it, and may
+// have lost it before its store - is not dropped for that: it is sent again and kept until the
+// applied answer to its own frame, and an answer of 0 leaves it.
+test("a restore the server already holds fires no update, and is sent and kept until the answer that covers it", async () => {
   const artifact = artifactId();
   const server = serverWith("shared", 100);
   const saved = await savedEdit(artifact, server, " saved");
-  // The server applied the edit; the tab reloaded before its acknowledgement cleared the row.
+  // The room relayed the edit; the tab reloaded before its acknowledgement cleared the row.
   Y.applyUpdate(server, saved);
-  const { doc, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
+  const { doc, sent, states, sync } = await scripted(artifact, Y.encodeStateAsUpdate(server));
   const updates: Uint8Array[] = [];
   doc.on("update", (update: Uint8Array) => updates.push(update));
 
@@ -656,7 +641,19 @@ test("a restore the server already holds fires no update and drops its rows", as
 
   expect(updates).toEqual([]);
   expect(paragraphText(doc).toString()).toBe("shared saved");
+  expect(sent).toEqual([saved]);
+  expect(await rowsOf(artifact)).toEqual([[artifact, doc.clientID, 1]]);
+  expect(states.at(-1)?.count).toBe(1);
+
+  sync.socketOpened();
+  sync.frameWritten(updateFrame(saved));
+  await sync.frameReceived(syncStatusFrame(false));
+  expect(await rowsOf(artifact)).toEqual([[artifact, doc.clientID, 1]]);
+
+  sync.frameWritten(updateFrame(saved));
+  await sync.frameReceived(syncStatusFrame(true));
   expect(await rowsOf(artifact)).toEqual([]);
+  await waitFor(() => expect(states.at(-1)?.count).toBe(0));
 });
 
 test("a restore that merges is recorded under the new client and the old rows are dropped", async () => {

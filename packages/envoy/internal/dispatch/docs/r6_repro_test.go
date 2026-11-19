@@ -71,7 +71,7 @@ func TestR6Finding1StructsAndSplitShareNoHeadroom(t *testing.T) {
 // excludes the pending queue, so frames parked behind a clock gap escaped the decode cap, and the
 // room's stored
 // state, which then carried its pending queue, no longer decoded under decodeStoredCopy. The
-// ceiling now charges each parked struct twice (storedCeiling), and the room leaves what it parks
+// ceiling now charges each parked struct twice (ceilingWithQueue), and the room leaves what it parks
 // out of its state (leaveParkedOut), so the state a load decodes carries what landed alone.
 func TestR6Finding2ParkedStructsEscapeTheDecodeCap(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)

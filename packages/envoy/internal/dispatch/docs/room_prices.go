@@ -1,10 +1,11 @@
 package docs
 
-// This file holds the two prices the room budget charges a loaded room at - the heap one copy of
-// a document is measured to hold for each byte of its encoded state, and the heap it is measured
-// to hold for each struct - and the arithmetic that turns a room's tracked state and its struct
-// count into the weight the budget carries (roomWeight) and into what one copy of it takes of
-// the pod's load concurrency (copyWeight).
+// This file holds the prices the room budget charges a loaded room at - the heap one copy of a
+// document is measured to hold for each byte of its encoded state and for each struct, and the
+// heap the live copy holds for each delete range its pending queue parks - and the arithmetic
+// that turns a room's tracked state, its struct count and its parked ranges into the weight the
+// budget carries (roomWeight, roomChargeWeight) and into what one copy of it takes of the pod's
+// load concurrency (copyWeight).
 
 // bytesOfHeapAStateByte is the heap one copy of a document holds for each byte of its encoded
 // state. Measured again 2026-11-09 on ygo v1.55.1-sami.8, whose crdt.Item carries a parked
@@ -54,11 +55,12 @@ const bytesOfHeapAStruct = 630
 const roomCopies = 2
 
 // roomWeight is what the budget charges a room whose tracked state is stateBytes long and whose
-// document holds structs structs: the larger of its state at bytesOfHeapAStateByte and its
-// structs at bytesOfHeapAStruct, in each of its two copies. A mebibyte of prose, whose state is
-// 3,035,240 bytes and which holds 77,600 structs, is charged 103,198,160 by its state, where
-// its structs alone would charge it 97,776,000; it holds 63,594,680
-// (TestAResidentRoomsHeapPerStructItHolds).
+// document holds structs structs for its two copies: the larger of its state at
+// bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct, in each of them. A mebibyte of
+// prose, whose state is 3,035,240 bytes and which holds 77,600 structs, is charged 103,198,160 by
+// its state, where its structs alone would charge it 97,776,000; it holds 63,594,680
+// (TestAResidentRoomsHeapPerStructItHolds). What its live copy parks of delete ranges is charged
+// beside it (roomChargeWeight).
 //
 // Two terms and not one because the two measures come apart in both directions, and a budget
 // that bounds what the open rooms hold must follow whichever is the larger. The state bytes are
@@ -89,6 +91,40 @@ const roomCopies = 2
 // decoded them passes (loadDecodedHistory, fold, buildForkHeld).
 func roomWeight(stateBytes, structs int64) int64 {
 	return max(stateBytes*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct) * roomCopies
+}
+
+// bytesOfHeapAParkedRange is the heap a room's live document holds for each delete range its
+// pending queue parks: 16 bytes in the store's pending delete set (crdt.StructStore.pendingDs, a
+// crdt.DeleteRange of two uint64s) and 16 more in the record of the apply that parked it, which
+// the room keeps so that a refused drain can name who parked what it discards
+// (crdt.Doc.parkedDsBy, crdt/discard_refused_drain.go:87-133 in theorem-labs/ygo
+// v1.55.1-theorem.9, which SetDiscardRefusedDrain turns on: leaveParkedOut). Measured on that
+// pin with one 4,186,013-byte frame of 1,048,565 ranges over one client the room had never seen
+// (TestRV8ParkedDeleteRangesHoldHeapTheRoomBudgetDoesNotCharge): the live heap grew 29,370,136
+// bytes between a reading before the frame and one after it, the frame itself freed between the
+// two, and 2 x 16 x 1,048,565 = 33,554,080 less the frame's 4,186,013 is 29,368,067, within 2,069
+// bytes of it. The 28 bytes a range that reading divides out to are that figure less the frame;
+// what the room holds is the 32.
+//
+// It is charged on the live document alone, outside roomCopies: the room's replica applies only
+// what each commit integrated (renderedReplica.takeLocked), and a live write's fork is that
+// replica cloned (warmFork), so neither holds a range the room parks.
+//
+// It is the price of a range recorded once. At this pin the record of who parked what keeps a copy
+// of each parking frame's ranges, so a frame sent again records its ranges again while the queue's
+// count, which this is charged on, stays where it was [INFERENCE from the fork's code, not run];
+// what bounds that is the fork's to bound. Spread over many clients a range costs more, a map
+// entry of each holder's for each client, which no reading has measured [INFERENCE: about 120 to
+// 180 bytes].
+const bytesOfHeapAParkedRange = 32
+
+// roomChargeWeight is what the budget charges a loaded room in all (roomCharge.weigh): its two
+// copies' weight at its resident bytes, stateBytes, and its structs (roomWeight), and the
+// parkedRanges delete ranges its live document parks at bytesOfHeapAParkedRange each, once,
+// outside roomCopies. The ranges are the hook's reading of the room's pending queue after its last
+// apply (roomApplies.parkedRangeCount).
+func roomChargeWeight(stateBytes, structs, parkedRanges int64) int64 {
+	return roomWeight(stateBytes, structs) + parkedRanges*bytesOfHeapAParkedRange
 }
 
 // copyWeight is what one whole-document copy built from stateBytes bytes of state holding

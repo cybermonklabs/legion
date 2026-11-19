@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
+	"github.com/reearth/ygo/provider/websocket"
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -881,7 +883,7 @@ func TestUnauthenticatedDocumentRequestsDoNotAllocateRooms(t *testing.T) {
 //
 // Every room's answer is cut from its own structs (crdt.SplitStateAsUpdateV1), which decodes
 // nothing, so a browser joining a room that parks nothing is answered under what that cut costs
-// (cutAnswerWeight) rather than under a whole copy of the document: the larger of the room's
+// (answerWeight) rather than under a whole copy of the document: the larger of the room's
 // state at answerHeapAStateByte, and its clients at answerHeapAClient with the update the cut is
 // packing beside them (answerFrameWeight). The clients are the ones the library holds structs of
 // (crdt.Doc.ClientCount): the cut keeps a queue and a map entry for each of them, and of its
@@ -922,13 +924,13 @@ func TestAnAnswerFromARoomThatParksNothingIsGrantedWhatItsCutCosts(t *testing.T)
 
 	granted := grantOfAJoin(t, httpServer.URL, artifactID)
 	state, clients, structs := replica.roomStateBytes(), int64(live.ClientCount()), int64(live.StructCount())
-	want := cutAnswerWeight(state, clients, structs)
-	if cutAnswerWeight(state, 0, structs) == want {
-		t.Fatalf("the room's %d clients change nothing of its %d-byte grant, so its grant shows nothing of what its clients cost", clients, want)
+	want := answerWeight(live, state, structs)
+	if state*answerHeapAStateByte >= want {
+		t.Fatalf("the room's %d-byte state sets its %d-byte grant, so its grant shows nothing of what its %d clients cost", state, want, clients)
 	}
 	if granted != want {
 		t.Fatalf("the answer to a room that parks nothing held %d bytes of the pod's copy heap, want the %d its cut costs for its %d clients; a price on its %d structs read as clients is %d",
-			granted, want, clients, structs, cutAnswerWeight(state, structs, structs))
+			granted, want, clients, structs, max(state*answerHeapAStateByte, structs*answerHeapAClient+answerFrameWeight(structs)))
 	}
 	t.Logf("an answer carrying %d structs of %d clients and %d bytes of tracked state, cut from the room's structs, held %d bytes of the pod's copy heap",
 		structs, clients, state, granted)
@@ -964,8 +966,8 @@ func TestAnAnswerFromARoomHoldingAParkedStructIsGrantedItsCutAlone(t *testing.T)
 
 	granted := grantOfAJoin(t, httpServer.URL, artifactID)
 	state, clients, structs := replica.roomStateBytes(), int64(live.ClientCount()), int64(live.StructCount())
-	want := cutAnswerWeight(state, clients, structs)
-	if parked := int64(live.PendingStats().Items); want == cutAnswerWeight(state, clients, structs+parked) {
+	want := answerWeight(live, state, structs)
+	if parked := int64(live.PendingStats().Items); want == answerWeight(live, state, structs+parked) {
 		t.Fatalf("the room's %d parked structs change nothing of its %d-byte grant, so nothing here is tested", parked, want)
 	}
 	if granted != want {
@@ -1007,6 +1009,94 @@ func grantOfAJoin(t *testing.T, serverURL, artifactID string) int64 {
 		t.Fatal("the room answered the browser holding nothing of the pod's copy heap")
 	}
 	return slices.Max(grants) - outstanding
+}
+
+// stepOneNaming is a browser's SyncStep1 message whose state vector says it holds count entries
+// and carries the first entries of them, each a client of its own at clock 1, as a browser that
+// holds that many clients writes it.
+func stepOneNaming(count, entries int) []byte {
+	vector := encoding.EncodeBytes(func(e *encoding.Encoder) {
+		e.WriteVarUint(uint64(count))
+		for i := range entries {
+			e.WriteVarUint(uint64(1<<32 + i))
+			e.WriteVarUint(1)
+		}
+	})
+	return encoding.EncodeBytes(func(e *encoding.Encoder) {
+		e.WriteVarUint(0) // y-protocols' sync step 1
+		e.WriteVarBytes(vector)
+	})
+}
+
+// A browser's SyncStep1 is weighed in its answer's grant by the entries its state vector names,
+// which ygo decodes into a map the answer holds while it cuts (stepOneWeight):
+// answerHeapAStepOneEntry for each, beside the room's own cut, and nothing for a vector naming
+// more entries than its bytes carry, which the decoder refuses before it makes its map. The
+// entries are the browser's to
+// name whatever the room holds: here 100,000 clients a room of a handful has never seen, which no
+// term of the room's own counts.
+func TestAnAnswerIsGrantedTheEntriesItsSyncStepOneNames(t *testing.T) {
+	service := calibratedService()
+	room := seededDocumentCopy(t)
+	grant := func(step1 []byte) int64 {
+		t.Helper()
+		pool, outstanding := loadSlotsWithRoomFor(t, 2, loadSlotBytes)
+		var taken slotsHeld
+		pool.taken = taken.record
+		release, err := service.weighStateAnswer(websocket.StateAnswerInfo{Room: "room", Doc: room, Structs: room.StructCount(), Step1: step1})
+		if err != nil {
+			t.Fatalf("the answer was refused its grant: %v", err)
+		}
+		release()
+		grants := taken.all()
+		if len(grants) == 0 {
+			t.Fatal("the answer took nothing of the pod's copy heap")
+		}
+		return slices.Max(grants) - outstanding
+	}
+	const named = 100_000
+	empty := grant(ygsync.EncodeSyncStep1(crdt.New()))
+	asked := grant(stepOneNaming(named, named))
+	overstated := grant(stepOneNaming(10*named, named))
+	t.Logf("the room's answer is granted %d bytes to a browser naming no client, %d to one naming %d, and %d to one whose vector says %d and carries %d",
+		empty, asked, named, overstated, 10*named, named)
+	if want := empty + named*answerHeapAStepOneEntry; asked != want {
+		t.Errorf("an answer to a step 1 naming %d clients was granted %d bytes, want the %d of the room's cut and %d for each entry: %d",
+			named, asked, empty, answerHeapAStepOneEntry, want)
+	}
+	if overstated != empty {
+		t.Errorf("an answer to a step 1 whose count the decoder refuses was granted %d bytes, want the room's cut alone, %d", overstated, empty)
+	}
+}
+
+// The map a SyncStep1's state vector decodes into holds no more than answerHeapAStepOneEntry an
+// entry (crdt.DecodeStateVectorV1), at counts from a handful to the most the decoder takes, read as
+// the live heap two collections leave above the decode with the vector's own bytes kept alive.
+func TestAStepOnesStateVectorHoldsNoMoreThanItsPrice(t *testing.T) {
+	skipUnderRace(t)
+	for _, entries := range []int{7, 100, 1_000, 2_000, 4_096, 10_000, 50_000, 100_000, 200_000, 500_000, maxUpdateItems} {
+		step1 := stepOneNaming(entries, entries)
+		_, rest, _ := readUvarint(step1)
+		_, vector, _ := readUvarint(rest)
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		decoded, err := crdt.DecodeStateVectorV1(vector)
+		if err != nil {
+			t.Fatalf("decode a state vector of %d entries: %v", entries, err)
+		}
+		runtime.GC()
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		held := int64(after.HeapAlloc) - int64(before.HeapAlloc)
+		runtime.KeepAlive(decoded)
+		runtime.KeepAlive(vector)
+		t.Logf("%d entries: %d bytes held, %.2f an entry", entries, held, float64(held)/float64(entries))
+		if price := int64(entries) * answerHeapAStepOneEntry; held > price {
+			t.Errorf("a state vector of %d entries decoded into %d bytes of live heap, past the %d its price grants", entries, held, price)
+		}
+	}
 }
 
 // A browser whose answer the pool has no room for inside the server's wait bound is closed

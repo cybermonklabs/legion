@@ -743,12 +743,11 @@ func StateStructsForTest(state []byte) (int64, error) {
 }
 
 // PeerStructsAllowedForTest is how many structs one browser's update may carry into a room weighed
-// at structs items against the decode cap (storedCeiling) and which the state cap leaves whole: the
-// Structs field of the allowance the peer update hook builds (peerApplyAllowance), the decode
-// cap's structs'
-// share of what that cap leaves above the room (capShares) or what the state cap's bytes buy,
-// whichever is less. A real-process drive sizes the frames it fills a room with from it, so the
-// drive follows the hook's own share rather than keeping a copy of its arithmetic.
+// at structs items against the decode cap (ceilingWithQueue) and which the state cap leaves whole:
+// the Structs field of the allowance the peer update hook builds (peerApplyAllowance), the decode
+// cap's structs' share of what that cap leaves above the room (capShares) or what the state cap's
+// bytes buy, whichever is less. A real-process drive sizes the frames it fills a room with from
+// it, so the drive follows the hook's own share rather than keeping a copy of its arithmetic.
 func PeerStructsAllowedForTest(structs int64) int {
 	return peerApplyAllowance(0, 0, 0, uint64(max(structs, 0)), false, peerPressure{}).budget.Structs
 }

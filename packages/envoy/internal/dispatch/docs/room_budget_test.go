@@ -44,18 +44,26 @@ func TestTheRoomBudgetChargesARoomItsTrackedStateAtBothCopies(t *testing.T) {
 	charge := budget.load("room", loaded, 0)
 	requireCharged(t, budget, charge, roomWeight(loaded, 0), "a room that has taken no update is charged its stored state at both copies")
 
-	charge.weigh(loaded+typed, 0)
+	charge.weigh(loaded+typed, 0, 0)
 	requireCharged(t, budget, charge, roomWeight(loaded+typed, 0), "what a commit added is added to the room's tracked state")
-	charge.weigh(loaded+2*typed, 0)
+	charge.weigh(loaded+2*typed, 0, 0)
 	requireCharged(t, budget, charge, roomWeight(loaded+2*typed, 0), "a later commit adds what it added too")
+	// The delete ranges the live copy parks are charged once, beside the two copies' weight, and
+	// the charge falls back once they land.
+	const ranges = 1_000
+	charge.weigh(loaded+2*typed, 0, ranges)
+	requireCharged(t, budget, charge, roomWeight(loaded+2*typed, 0)+ranges*bytesOfHeapAParkedRange,
+		"the delete ranges the room parks are charged at their price, once")
+	charge.weigh(loaded+2*typed, 0, 0)
+	requireCharged(t, budget, charge, roomWeight(loaded+2*typed, 0), "ranges that landed are charged no longer")
 	// A compaction's re-base lowers a room's tracked state while it stands, as a commit that
 	// leaves the state smaller does: the state a fold wrote, which drops the margin the figure
 	// carried above the room - a server delete counted at its update's bytes, say.
-	charge.weigh(loaded, 0)
+	charge.weigh(loaded, 0, 0)
 	requireCharged(t, budget, charge, roomWeight(loaded, 0), "a compaction's re-base lowers the room to the state its fold wrote")
 
 	budget.retire("room")
-	charge.weigh(loaded+typed, 0)
+	charge.weigh(loaded+typed, 0, 0)
 	if budget.used != 0 || len(budget.rooms) != 0 {
 		t.Fatalf("the budget holds %d bytes over %d rooms once the room retired, want nothing", budget.used, len(budget.rooms))
 	}

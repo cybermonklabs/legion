@@ -89,7 +89,7 @@ func (s *Service) rebaseResident(room string, live *crdt.Doc, stateBytes int64, 
 		slog.Log(context.Background(), level, "dispatch: a room's tracked state differs from what its re-base read",
 			"room", room, "tracked", tracked, "read", stateBytes, "difference", tracked-stateBytes)
 	}
-	weighing.roomCharge().weigh(applies.residentBytes(), int64(anchorStructs(room, applies, live)))
+	weighing.roomCharge().weigh(applies.residentBytes(), int64(anchorStructs(room, applies, live)), applies.parkedRangeCount())
 }
 
 // rebaseMark is what a compaction reads of a resident room before it reads the room's stored

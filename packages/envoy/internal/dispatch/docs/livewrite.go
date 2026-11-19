@@ -257,6 +257,11 @@ type liveWriteOrigin struct {
 	// shadow is the write's shadow on the publish of its last update, nil on the others
 	// (reachShadow).
 	shadow *roomShadow
+	// written is the update the write stored, which the room's update observer holds the
+	// commit's update against: a commit whose drain landed parked browser content carries more
+	// than the write stored, and is stored by the room after all (classifyDrained,
+	// carriesBeyond).
+	written []byte
 }
 
 // publishedRendering is one operation's rendering of the fork it left, kept for the room's update
@@ -1312,7 +1317,7 @@ func (s *Service) publishedWithoutARoom(write *liveWrite) {
 func (s *Service) publishLiveUpdate(room string, update []byte, version persistence.Version, rendering publishedRendering, marginRoom weak.Pointer[crdt.Doc], shadow *roomShadow) error {
 	ctx := withOwnerVerified(context.Background())
 	slot := s.prepareSuppressedPersistence(room)
-	origin := &liveWriteOrigin{slot: slot, rendering: rendering, shadow: shadow}
+	origin := &liveWriteOrigin{slot: slot, rendering: rendering, shadow: shadow, written: update}
 	recorded, err := s.applyCaptured(ctx, room, origin, func(doc *crdt.Doc) error {
 		instance := s.instanceOf(doc)
 		// Tagged against the document Apply hands here, not the one the room held when the

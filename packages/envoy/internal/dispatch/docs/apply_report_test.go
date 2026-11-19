@@ -189,8 +189,8 @@ func weighOneUpdate(t *testing.T, room *typedResidentRoom, update []byte) crdt.A
 }
 
 // The cap the hook holds a room to is the decode cap, asked of the ceiling the room is weighed at:
-// the structs the room reports holding, each parked struct again and each parked delete range
-// (storedCeiling). Nothing the room parks is stored (leaveParkedOut), so the parked terms bound
+// the structs the room reports holding and each parked struct again, for the queue that holds it
+// (ceilingWithQueue). Nothing the room parks is stored (leaveParkedOut), so the second count bounds
 // the room's pending queue in memory, out of the same headroom as what it integrates. This drives
 // that counting at the sizes it is for.
 //
@@ -334,5 +334,49 @@ func TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive(t *testing.T)
 	}
 	if parked := room.PendingStats().Items; parked != admitted {
 		t.Fatalf("the room parks %d structs, want the %d frames it admitted, each still waiting on its gap", parked, admitted)
+	}
+}
+
+// A room's parked delete ranges are charged to the room budget as they park, at their heap price
+// on the live copy (bytesOfHeapAParkedRange, roomChargeWeight), and the charge goes back as they
+// land. Nothing else counts them: a range is no part of the room's encoded state, so its tracked
+// state does not move, and no struct, so its struct figure does not either. Before they were
+// charged, one frame of 1,048,565 ranges over a client the room had never seen held 29,370,136
+// bytes more of heap with the frame freed, and moved the room's charge by nothing
+// (TestRV8ParkedDeleteRangesHoldHeapTheRoomBudgetDoesNotCharge, dispatch://INFRA-179, review 8).
+// Here the frame parks 100,000 ranges, one clock apart, and a frame of the client's own clocks
+// lands them all.
+func TestParkedDeleteRangesAreChargedToTheRoomBudgetUntilTheyLand(t *testing.T) {
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
+	defer runtime.KeepAlive(replica)
+	service.budget.limit = roomBudgetBytes
+	charge := service.chargeLoadedRoom("room", replica, int64(len(crdt.EncodeStateAsUpdateV1(room, nil))))
+	applies := service.roomWeighingOf(room).applies()
+	const ranges, client = 100_000, 8_300_001
+	loaded := chargedWeight(charge)
+	if err, called := weighInto(service, room, deleteRangesFrom(client, ranges)); err != nil || !called {
+		t.Fatalf("the frame of %d delete ranges was refused: %v", ranges, err)
+	}
+	if parked := room.PendingStats().DeleteRanges; parked != ranges {
+		t.Fatalf("the room parks %d delete ranges, want the frame's %d", parked, ranges)
+	}
+	parked := chargedWeight(charge)
+	t.Logf("the room was charged %d bytes as it loaded and %d once it parked %d delete ranges", loaded, parked, ranges)
+	if want := loaded + ranges*bytesOfHeapAParkedRange; parked != want {
+		t.Fatalf("the room parking %d delete ranges is charged %d bytes, want the %d it was loaded at and %d for each range: %d",
+			ranges, parked, loaded, bytesOfHeapAParkedRange, want)
+	}
+	filler := newV1Frame(1).group(1, client, 0).gc(2 * ranges).noDeletes()
+	if err, called := weighInto(service, room, filler); err != nil || !called {
+		t.Fatalf("the frame of the client's own clocks was refused: %v", err)
+	}
+	landed := chargedWeight(charge)
+	t.Logf("once the client's clocks arrived the room parks %+v and is charged %d bytes", room.PendingStats(), landed)
+	if left := room.PendingStats().DeleteRanges; left != 0 || applies.parkedRangeCount() != 0 {
+		t.Fatalf("the room still parks %d delete ranges, charged for %d, after the frame that lands them all", left, applies.parkedRangeCount())
+	}
+	if want := roomChargeWeight(applies.residentBytes(), int64(applies.structsHeld(room)), 0); landed != want || landed >= parked {
+		t.Fatalf("the room whose ranges landed is charged %d bytes, want %d, what its state and structs come to with no range, below the %d it was charged parking them",
+			landed, want, parked)
 	}
 }

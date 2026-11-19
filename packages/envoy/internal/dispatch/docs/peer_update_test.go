@@ -1146,6 +1146,26 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			},
 		},
 		{
+			// A delete of the replaced history is as much of it as an edit of it, and the rebuilt
+			// room holds none of a retired client's clocks, so it would park for as long as the
+			// room stayed loaded: a frame of deletes alone, which names no struct for the header
+			// to read, is read from its delete set (refusedBeforeApply, eachV1DeleteRange).
+			name: "a delete of the history a rebuild replaced", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentRebuiltCloseReason,
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				service, room, replica := rebuiltRoom(t, ordinary, rebuilt)
+				update := newV1Frame(0).uint(1).uint(123).uint(1).uint(0).uint(3).done()
+				return service, room, update, replica
+			},
+		},
+		{
+			name: "a delete of the history a rebuild replaced beside the browser's own edit", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentRebuiltCloseReason,
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				service, room, replica := rebuiltRoom(t, ordinary, rebuilt)
+				update := newV1Frame(1).group(1, 1000, 0).gc(1).uint(1).uint(456).uint(1).uint(6).uint(1).done()
+				return service, room, update, replica
+			},
+		},
+		{
 			name: "a 9 KiB paste at the byte bound", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooLargeCloseReason, applies: true,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := peerUpdateRoom(t, proseAtLeast(pmdoc.MaxDocumentBytes), pmdoc.MaxDocumentBytes)
@@ -1458,9 +1478,9 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 // A browser cannot take its room's own state past the decode cap: ygo decodes at most
 // maxUpdateItems structs in one update, and a room's whole state is one update to the next load
 // that reads it, so a room whose state held more could never be loaded again. The apply's
-// allowance of structs is the structs' half of what is left of the cap above what the room's
-// next load meets, which buys half as many structs as that half holds items, since a struct
-// that parks costs the stored state two (storedCeiling, capShares), so a frame that would take
+// allowance of structs is the structs' half of what is left of the cap above the ceiling the room
+// is weighed at, which buys half as many structs as that half holds items, since a struct that
+// parks costs that ceiling two (ceilingWithQueue, capShares), so a frame that would take
 // the room one struct past the cap is refused and taken back out whole, and so is the frame
 // that would take it to the cap exactly: the other half of the headroom is the splits', which
 // the same apply could still make and which no count of what it carries would see. A frame

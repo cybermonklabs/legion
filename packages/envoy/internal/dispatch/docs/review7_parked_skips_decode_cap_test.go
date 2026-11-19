@@ -6,7 +6,7 @@
 // within its allowance, take the room past the decode cap (dispatch://INFRA-179, review 7).
 //
 // The hook now asks the cap of the ceiling the room is weighed at, which counts each parked struct
-// again (storedCeiling). Nothing a room parks is stored any more (leaveParkedOut), so that charge
+// again (ceilingWithQueue). Nothing a room parks is stored any more (leaveParkedOut), so that charge
 // bounds the room's pending queue in memory, out of the same headroom as what it integrates.
 package docs
 

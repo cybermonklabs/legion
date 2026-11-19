@@ -527,7 +527,7 @@ func plusCapped(a, b uint64) uint64 {
 // structCeiling is how many items doc is weighed at against the decode cap, the one measure of a
 // document against that cap that costs neither an encode nor a decode: the structs its store
 // holds (crdt.Doc.StructCount, a walk of the handful of client slices) and what it has parked,
-// weighed as storedCeiling weighs them. A room may park up to maxUpdateItems structs
+// weighed as ceilingWithQueue weighs them. A room may park up to maxUpdateItems structs
 // (Server.MaxPendingItems, which New sets), none of which the store holds yet. Every sum here is
 // capped rather than wrapped, for the reason clockSum gives.
 //
@@ -535,30 +535,45 @@ func plusCapped(a, b uint64) uint64 {
 // taken on (structsAfter), the room that count compares with that copy (leavesPastDecodeCap,
 // which must weigh the two alike) and the document a rebuild judges (rebuild.go). A resident
 // room reads the library's own figure instead, as each apply that commits reports it
-// (crdt.ApplyReport.Structs, heldStructs), and weighs it the same way, through storedCeiling
+// (crdt.ApplyReport.Structs, heldStructs), and weighs it the same way, through ceilingWithQueue
 // (Service.weighPeerUpdate): one measure of the room against the decode cap, read from two places.
 func structCeiling(doc *crdt.Doc) uint64 {
-	parked := doc.PendingStats()
-	return storedCeiling(plusCapped(uint64(doc.StructCount()), uint64(parked.Items)), parked)
+	parked := doc.PendingStats().Items
+	return ceilingWithQueue(plusCapped(uint64(doc.StructCount()), uint64(parked)), parked)
 }
 
-// storedCeiling is how many items a room is weighed at against the decode cap: held, the structs
-// the room holds now with each parked struct counted once, as an apply's report counts them
-// (crdt.ApplyReport.Structs, heldStructs); each parked struct again; and each parked delete range
-// once, for the struct its drain can leave split.
+// ceilingWithQueue is how many items a room is weighed at against the decode cap: held, the
+// structs the room holds now with each of the parkedItems structs its pending queue holds counted
+// once, as an apply's report counts them (crdt.ApplyReport.Structs, heldStructs), and each parked
+// struct once more.
 //
-// A room stores nothing it parks (leaveParkedOut), so the two parked terms are not what its next
-// load decodes but what bounds its pending queue in memory: the queue comes out of the same
-// headroom as what the room integrates, at what the stored state carried for it when it was
-// stored, a skip over its gap beside each struct (withParked, crdt/update.go:268-296 in
-// sjawhar/ygo v1.55.1-sami.8), where the queue's own cap (Server.MaxPendingItems) would let it
-// grow to maxUpdateItems beside a room already at the decode cap. A frame of GC structs
-// alternating with one-clock gaps parked 524,283 structs into a 1,048,576-item state under a
-// count that charged each of them once (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap,
-// dispatch://INFRA-179, review 7). Rows an earlier build stored of what parked are still
-// decoded, and parked, by the next load, which these terms count as they always did.
-func storedCeiling(held uint64, parked crdt.PendingStats) uint64 {
-	return plusCapped(held, uint64(parked.Items)+uint64(parked.DeleteRanges))
+// That second count is the one place the price of a parked struct is set, and the reason for it.
+// Nothing a room parks is stored (leaveParkedOut), so what the count bounds is not a state a load
+// decodes but the pending queue the room holds in memory until its gap fills, which may never
+// happen while the room is loaded: held counts what the store will hold once a parked struct
+// lands, and this counts the queue's own hold on it until then, out of the same headroom as what
+// the room integrates. ygo bounds the queue only at Server.MaxPendingItems, which is the cap
+// itself, so without this the queue could take the whole of the headroom where, counted twice, it
+// takes half of it at most. Any struct an apply carries may park, and one that parks moves this
+// ceiling by two, so an apply's structs are charged two items each (capShares): charged one, two
+// frames of GC structs each behind a one-clock gap of its own, each within its allowance, took the
+// room past the cap (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap, dispatch://INFRA-179,
+// review 7).
+//
+// A parked delete range is counted nowhere here. The splits its landing makes are the drain's, and
+// the apply that lands it spends them from its own Split share, which counts the drain's splits
+// (crdt.ApplyBudget.Split, crdt/doc.go:310-330 in theorem-labs/ygo v1.55.1-theorem.9); a range
+// that never lands adds nothing to what the store holds. Counted once each, one 4,186,013-byte
+// frame of 1,048,565 ranges over a client the room had never seen filled a small room's whole
+// headroom, which refused every edit that adds a struct and every API or server write of two
+// structs or more (TestR7OneFrameOfParkedDeleteRangesLocksEveryEditorOutOfASmallDocument,
+// dispatch://INFRA-179, review 8). What the ranges hold in memory is the room budget's to charge
+// (bytesOfHeapAParkedRange).
+//
+// Rows an earlier build stored of what parked are still decoded, and parked, by the next load,
+// whose queue this counts as it counts any.
+func ceilingWithQueue(held uint64, parkedItems int) uint64 {
+	return plusCapped(held, uint64(parkedItems))
 }
 
 // heldStructs is how many structs doc holds now, read the way an apply's report counts them:
@@ -572,8 +587,8 @@ func storedCeiling(held uint64, parked crdt.PendingStats) uint64 {
 // A room reads it only where no apply has reported one: the room's load from its stored state
 // and a compaction's re-base, which are the anchor, and the room's first update after a load
 // (roomApplies.structsHeld). It is not what the decode cap is asked of: that is the ceiling above
-// it (storedCeiling), which counts a parked struct again to bound the pending queue in memory,
-// where a report counts what the document holds.
+// it (ceilingWithQueue), which counts a parked struct again for the queue that holds it, where a
+// report counts what the document holds.
 func heldStructs(doc *crdt.Doc) uint64 {
 	return plusCapped(uint64(doc.StructCount()), uint64(doc.PendingStats().Items))
 }

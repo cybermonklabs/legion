@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
@@ -901,8 +902,9 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 // With the server's half (New: RelayIntegratedOnly, AnswerParkedNotApplied) a parked frame is
 // neither relayed, nor answered applied, nor stored, nor shown to a reader, so it is kept only by
 // the editor that sent it, which sends it again, and by the queue until the gap fills. The queue
-// itself stays bounded by the room's pending cap (Server.MaxPendingItems) and is charged against
-// the decode cap's headroom (storedCeiling).
+// itself stays bounded by the room's pending cap (Server.MaxPendingItems); its structs are charged
+// against the decode cap's headroom (ceilingWithQueue), and its delete ranges to the room budget
+// (bytesOfHeapAParkedRange).
 //
 // The replica's documents take it as the room's does, so the two agree on what a drain landed:
 // the only parked content a replica can hold is what a load decoded into both from rows an
@@ -918,8 +920,8 @@ func leaveParkedOut(doc *crdt.Doc) {
 // is in that browser's write queue, by every way out including the one that sends nothing
 // (theorem-labs/ygo v1.55.1-theorem.2, provider/websocket/state_answer.go). It holds a grant of
 // the pod's copy heap for the answer, weighed by the path ygo's answer takes for that room
-// (answerWeight), and refuses the answer with the room's busy close where the pool has no room
-// for it inside the server's wait bound.
+// (answerWeight) and by the browser's own SyncStep1 (stepOneWeight), and refuses the answer with
+// the room's busy close where the pool has no room for it inside the server's wait bound.
 //
 // A join of a room already loaded was free here before, and it is not free. The answer does not
 // send the room's state as one frame: it cuts what that browser is missing into frames each
@@ -946,7 +948,10 @@ func leaveParkedOut(doc *crdt.Doc) {
 // grant topped up where the room grew while this answer waited for it, which costs nothing where
 // it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the difference alone):
 // the answer is built after this returns, so a grant sized before a wait is otherwise a grant
-// sized on a room that has since changed.
+// sized on a room that has since changed. Beside the room, the grant weighs the browser's own
+// SyncStep1, whose state vector the answer decodes into a map it holds while it cuts
+// (stepOneWeight): a browser names the clients it holds there, as many as its message's bytes
+// carry, whatever the room holds.
 //
 // A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
 // memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
@@ -958,13 +963,18 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 	slot := newLoadSlot()
 	ctx, cancel := context.WithTimeout(context.Background(), WriteWaitBound)
 	defer cancel()
-	state := s.roomWeighingOf(info.Doc).roomStateBytes()
-	weight := answerWeight(info.Doc, state, int64(info.Structs))
+	asked := stepOneWeight(info.Step1)
+	// The grant is at most one slot, as every taker's is (copyWeight), so the heaviest answer
+	// waits for the pool rather than being refused by it.
+	grant := func(structs int) (state, weight int64) {
+		state = s.roomWeighingOf(info.Doc).roomStateBytes()
+		return state, min(answerWeight(info.Doc, state, int64(structs))+asked, loadSlotBytes)
+	}
+	state, weight := grant(info.Structs)
 	if err := slot.take(ctx, weight); err != nil {
 		return nil, s.refusedStateAnswer(info, state, weight, err)
 	}
-	state = s.roomWeighingOf(info.Doc).roomStateBytes()
-	weight = answerWeight(info.Doc, state, int64(info.StructsNow()))
+	state, weight = grant(info.StructsNow())
 	if err := slot.take(ctx, weight); err != nil {
 		slot.release()
 		return nil, s.refusedStateAnswer(info, state, weight, err)
@@ -972,17 +982,11 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 	return slot.release, nil
 }
 
-// answerWeight is what one answer to a browser's SyncStep1 takes of the pod's copy heap, for the
-// room live tracked at stateBytes of state and holding structs structs, as ygo's answer is built
-// for that room as it stands (crdt.SplitStateAsUpdateV1, weighStateAnswer): the cut of the room's
-// own structs (cutAnswerWeight), which is the whole answer, since nothing the room parks is read
-// back into it (leaveParkedOut).
-func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
-	return cutAnswerWeight(stateBytes, int64(live.ClientCount()), structs)
-}
-
-// cutAnswerWeight is what an answer cut from a room's own structs takes of the pod's copy heap, at
-// most one slot, as every taker is (copyWeight): the larger of the room's tracked state at
+// answerWeight is what the cut of one answer to a browser's SyncStep1 holds of the pod's copy
+// heap, for the room live tracked at stateBytes of state and holding structs structs, as ygo's
+// answer is built for that room as it stands (crdt.SplitStateAsUpdateV1, weighStateAnswer): the
+// cut of the room's own structs, which is the whole answer, since nothing the room parks is read
+// back into it (leaveParkedOut). It is the larger of the room's tracked state at
 // answerHeapAStateByte, and its clients at answerHeapAClient with the update the cut is packing
 // beside them (answerFrameWeight). The state term prices the updates the cut has written, which
 // it holds until the answer is sent; the other prices the record the cut builds of each struct of
@@ -991,7 +995,8 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // (answerHeapAStruct), and a sum would charge the frame again to every room whose state term
 // already covers it: a room of a mebibyte of prose is granted 24,281,920 bytes on its state, as
 // it was before the frame was priced, where the update at its fullest asks 1,620,096 beside the
-// clients.
+// clients. What the browser's own step 1 holds, and the one slot the grant is held to, are
+// weighStateAnswer's.
 //
 // The room's clients are what this answer's heap follows, and the library counts them in constant
 // time under the document's read lock (crdt.Doc.ClientCount, theorem.3). A room of many structs
@@ -1019,8 +1024,27 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // (11,575,360 against 8,405,672, 2,411,016 held); and runs of 1,000 and 4,000 keystrokes by
 // 0.68 and 0.72. Prose, a long paragraph and keystroke runs of 40,000 and more are granted past
 // what they allocate (TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt).
-func cutAnswerWeight(stateBytes, clients, structs int64) int64 {
-	return min(max(stateBytes*answerHeapAStateByte, clients*answerHeapAClient+answerFrameWeight(structs)), loadSlotBytes)
+func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
+	return max(stateBytes*answerHeapAStateByte, int64(live.ClientCount())*answerHeapAClient+answerFrameWeight(structs))
+}
+
+// stepOneWeight is what the answer to step1, a browser's SyncStep1 message, holds of it while
+// the answer is cut: the state vector step1 names, which ygo decodes into a map before the cut
+// reads it (sync.EncodeSyncStep2Split, crdt.DecodeStateVectorV1), at answerHeapAStepOneEntry an
+// entry. The entries are the count the vector's first number names, which the decoder makes its
+// map for before reading one, and none for a message that names none or one the decoder refuses
+// before it makes the map: a count past half the vector's bytes or past maxUpdateItems
+// (crdt/update.go:395-418 in theorem-labs/ygo v1.55.1-theorem.9). Read off the message's first
+// numbers, it costs nothing to weigh.
+func stepOneWeight(step1 []byte) int64 {
+	if kind, rest, ok := readUvarint(step1); !ok || kind != 0 {
+		return 0
+	} else if length, vector, ok := readUvarint(rest); ok && length <= uint64(len(vector)) {
+		if entries, _, ok := readUvarint(vector[:length]); ok && entries <= length/2 && entries <= maxUpdateItems {
+			return int64(entries) * answerHeapAStepOneEntry
+		}
+	}
+	return 0
 }
 
 // answerFrameWeight is what the update an answer's cut is packing holds, for a room of structs
@@ -1056,7 +1080,7 @@ const answerHeapAStateByte = 8
 // the library takes a client id from whoever sends it: 296,397,272 to 331,374,744 bytes above
 // the document, the most 331.37 bytes a client, which is 22.09 bytes a byte of its state. It is
 // set past the most, as bytesOfHeapAStruct is, and is charged on the clients the room holds
-// structs of, as the library counts them (crdt.Doc.ClientCount, cutAnswerWeight).
+// structs of, as the library counts them (crdt.Doc.ClientCount, answerWeight).
 const answerHeapAClient = 340
 
 // answerHeapAStruct is the heap an answer cut from a room's own structs holds for each struct of
@@ -1113,10 +1137,22 @@ const answerHeapAnAnswer = 4_096
 // the ids count from 1, so that the first 127 take one. It is set past the most.
 const answerFrameStructs = 16_000
 
+// answerHeapAStepOneEntry is the heap the map ygo decodes a browser's SyncStep1 state vector into
+// holds for each entry the vector names (crdt.DecodeStateVectorV1, which makes the map at that
+// count before it reads one). Measured 2026-11-19 on theorem-labs/ygo v1.55.1-theorem.9 with
+// go1.27.3, the live heap two collections left above the decode with the vector's own bytes kept
+// alive, at counts from 7 to 1,048,576 (TestAStepOnesStateVectorHoldsNoMoreThanItsPrice): the
+// most 37.83 bytes an entry at 500,000 entries, then 36.99 at 1,000 and 36.08 at 1,048,576, and
+// the least 23.65, from 50,000 to 200,000, as the map's tables round up to the next size. It is
+// set past the most. A browser's step 1 names what it holds, as many entries as its message
+// carries: one frame can name 2^20, the most the decoder takes, which is 41,943,040 bytes here
+// and nothing the room's own terms see.
+const answerHeapAStepOneEntry = 40
+
 // refusedStateAnswer is the close a browser is given whose first sync the pod's copy heap had no
 // room to answer inside the server's wait bound, and the one line that says so: the room, what
-// the answer would have carried, the grant it waited for (answerWeight), and the bound it waited
-// to (weighStateAnswer). ygo logs a
+// the answer would have carried, and the grant it waited for and the bound it waited to
+// (weighStateAnswer). ygo logs a
 // refused state answer at Debug alone (provider/websocket/state_answer.go, "state answer
 // refused"), which the pod's level drops, so without this line an operator sees a browser's
 // socket close before its first sync and nothing says why.
@@ -1196,7 +1232,7 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 // it (unstoredShare).
 func (s *Service) classifyDrained(room string, instance *roomInstance, logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (settles, changed, local bool) {
 	origin, published := logged.Origin.(*liveWriteOrigin)
-	_, remote := logged.Origin.(*remoteUpdateOrigin)
+	catchUp, remote := logged.Origin.(*remoteUpdateOrigin)
 	// The claim rule's set of the ids the stored history names takes every commit the instance
 	// makes as it is classified here, the ids of what it parked included.
 	instance.storedClients.took(logged.Update, logged.Parked)
@@ -1238,12 +1274,20 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 		class.roomCredit = s.unchangedCredit(room, logged.Origin, &instance.hold)
 	}
 	// A published write's update was stored by the transaction that wrote it, before the room
-	// took it, and a catch-up's is the stored row itself. Every other update only the room holds,
-	// so it names its instance and is listed there until its append has returned.
-	if !published && !remote {
+	// took it, and a catch-up's is the stored row itself, so neither is stored again - unless the
+	// commit carries more than its writer stored: the drain of the room's pending queue the apply
+	// ended with landed content a browser's frame had parked behind the clocks the write supplied,
+	// and that content is in no row (carriesBeyond). Such a commit is the room's to store, as a
+	// browser's is, and the browser whose frame it landed is resynced only once it is stored
+	// (resyncLanded), so its applied answer follows the store. The write's own part is stored a
+	// second time beside it, which a load integrates as the nothing it is. Every other update only
+	// the room holds, so it names its instance and is listed there until its append has returned.
+	stored := published && !carriesBeyond(logged.Update, origin.written) ||
+		remote && !carriesBeyond(logged.Update, catchUp.written)
+	if !stored {
 		class.instance = instance
 	}
-	queued := s.queueUpdateClass(room, logged.Update, class, published || remote)
+	queued := s.queueUpdateClass(room, logged.Update, class, stored)
 	if class.instance != nil {
 		instance.listUnstored(queued)
 	}
@@ -1253,6 +1297,67 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 		s.reachShadow(room, origin.shadow, &instance.cursor, seq)
 	}
 	return true, contentChanged, !remote
+}
+
+// carriesBeyond reports whether update, the update a server write's commit made in a room, holds a
+// struct's clocks or a deleted clock that written, the update the writer stored, does not: what
+// the drain of the room's pending queue the commit ended with landed, a browser's frame parked
+// behind the clocks the write supplied, which no row holds (classifyDrained). A commit carries
+// what its apply integrated of written and what its drain landed, so without a drain it holds
+// nothing written does not: each client's structs within the clocks written's reach, and each
+// deleted clock among written's. It is read from the two updates' headers and delete sets, with
+// no content decoded (crdt.ParseUpdateMeta, eachV1DeleteRange), and costs a server write the two
+// passes over its bytes; a browser's keystroke never reaches it. An update either of them cannot
+// read is answered as carrying more, which has the room store the commit itself: a row too many,
+// and nothing lost.
+//
+// A drained struct of a client written carries clocks of, in a gap inside written's own reach,
+// is not seen, since the header gives each client's lowest and highest clock alone: written would
+// have to leave a client's clocks unbroken on either side of a struct it never held, which the
+// rows one process stored in order do not [INFERENCE].
+func carriesBeyond(update, written []byte) bool {
+	from, to, err := crdt.ParseUpdateMeta(update)
+	if err != nil {
+		return true
+	}
+	writtenFrom, writtenTo, err := crdt.ParseUpdateMeta(written)
+	if err != nil {
+		return true
+	}
+	for client, end := range to {
+		if reach, held := writtenTo[client]; !held || from[client] < writtenFrom[client] || end > reach {
+			return true
+		}
+	}
+	deleted := crdt.NewIDSet()
+	if !eachV1DeleteRange(written, func(client crdt.ClientID, clock, length uint64) { deleted.Add(client, clock, length) }) {
+		return true
+	}
+	beyond := false
+	read := eachV1DeleteRange(update, func(client crdt.ClientID, clock, length uint64) {
+		if !beyond && !rangesCover(deleted.Ranges(client), clock, length) {
+			beyond = true
+		}
+	})
+	return beyond || !read
+}
+
+// rangesCover reports whether ranges, sorted and merged as an IDSet keeps them, cover every clock
+// from clock to clock+length.
+func rangesCover(ranges []crdt.IDRange, clock, length uint64) bool {
+	if length == 0 {
+		return true
+	}
+	at, _ := slices.BinarySearchFunc(ranges, clock, func(r crdt.IDRange, clock uint64) int {
+		switch {
+		case r.Clock+r.Len <= clock:
+			return -1
+		case r.Clock > clock:
+			return 1
+		}
+		return 0
+	})
+	return at < len(ranges) && ranges[at].Clock <= clock && clock+length <= ranges[at].Clock+ranges[at].Len
 }
 
 // soleConnectedActor is the one actor connected to a room, and whether more than one distinct

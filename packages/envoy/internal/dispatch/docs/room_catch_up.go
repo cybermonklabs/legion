@@ -34,9 +34,15 @@ type documentHead struct {
 // another process stored, already durable, which the room's persistence must not store again. It
 // carries the suppression slot that holds them from it, finished by the room's update observer
 // before ygo's persistence observer hands the update on (onLoadDocument), exactly as a published
-// live write's is (liveWriteOrigin). Being non-zero sized keeps each origin distinct, since ygo
-// compares origins by interface equality.
-type remoteUpdateOrigin struct{ slot *suppressSlot }
+// live write's is (liveWriteOrigin), and written, the stored rows the transaction applies, which
+// the observer holds the commit's update against: a commit whose drain landed parked browser
+// content carries more than the rows hold, and is stored by the room after all (classifyDrained,
+// carriesBeyond). Being non-zero sized keeps each origin distinct, since ygo compares origins by
+// interface equality.
+type remoteUpdateOrigin struct {
+	slot    *suppressSlot
+	written []byte
+}
 
 // catchUpOutcome is what one catch-up of a room found (catchUpRoom).
 type catchUpOutcome int
@@ -273,7 +279,7 @@ func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (a
 	}
 	defer release()
 	slot := s.prepareSuppressedPersistence(room)
-	origin := &remoteUpdateOrigin{slot: slot}
+	origin := &remoteUpdateOrigin{slot: slot, written: batch}
 	unsubscribe := live.OnUpdate(func(update []byte, updateOrigin any) {
 		if updateOrigin == origin {
 			applied = append([]byte(nil), update...)

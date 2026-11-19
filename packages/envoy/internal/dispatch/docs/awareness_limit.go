@@ -49,6 +49,16 @@ import (
 // back - and a page of an earlier build may name no id Dispatch gave anyone. A cursor or a
 // presence is the same act under a client id as an edit is, and the same rule refuses it.
 //
+// A read-only socket's awareness is decoded by nothing at all. ygo answers a read-only peer's
+// awareness message with a reply of its own and applies and relays none of it
+// (provider/websocket/peer.go:113-125 in theorem-labs/ygo v1.55.1-theorem.9), so reading one here
+// would only be work the read path does for nothing, outside any load slot. The filter passes over
+// such a message's bytes as it passes a message too large to read (skip) and hands ygo an
+// awareness message naming no client in its place. It learns that a socket is read-only from the
+// socket's admission, which the admission decides before ygo's upgrade builds the filter and ygo's
+// Authorize can only narrow (decideWritable, authorize): a page that turns itself read-only later,
+// by the token it sends, has its awareness read as a writable page's is, and ygo still discards it.
+//
 // Every other message reaches ygo as it arrived, a sync step 2 among them: the filter reads no
 // more of one than its Hocuspocus header. ygo hands the peer update hook a step 2 and an
 // incremental update alike, and the hook judges both the same way (judgeClients), under the load
@@ -132,6 +142,9 @@ type awarenessLimitWriter struct {
 	// clients is the ids the socket may announce under, nil for a socket no admission decided
 	// them for, whose entries only the count holds.
 	clients *socketClients
+	// connection is the socket's admission, which says once the upgrade is under way whether its
+	// page may write (connectionState.admission), nil for a socket no admission decided.
+	connection *connectionState
 }
 
 func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -150,6 +163,8 @@ func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	filtered := newAwarenessLimitConn(conn, w.room, pending)
 	filtered.clients = w.clients
+	// The admission is final by now: ygo's Authorize ran before the upgrade that hijacks.
+	filtered.readOnly = w.connection != nil && w.connection.admission != nil && !w.connection.admission.writable
 	buffers.Reader.Reset(filtered)
 	return filtered, buffers, nil
 }
@@ -165,6 +180,9 @@ type awarenessLimitConn struct {
 	room string
 	// clients is the ids the socket may announce under (awarenessLimitWriter.clients).
 	clients *socketClients
+	// readOnly is whether the socket's page was admitted read-only, whose awareness ygo discards
+	// unread, so the filter reads none of it (awarenessLimitWriter.Hijack, decide).
+	readOnly bool
 	// live is the awareness clients this socket holds now: a client announced takes a place and a
 	// client taken away gives it back, so a socket that announces and removes one client at a
 	// time is never refused.
@@ -291,6 +309,12 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 		// The header runs into the next frame of the message.
 		c.mode = limitDeciding
 		return nil
+	case kind == hocuspocusAwareness && c.readOnly:
+		// ygo discards a read-only socket's awareness, so nothing of it is read: its bytes are
+		// passed over and ygo is handed an awareness message naming no client.
+		c.name = name
+		c.message = c.message[:0]
+		return c.skip(rest, final)
 	case kind == hocuspocusAwareness:
 		c.name = name
 		c.message = append(c.message[:0], c.message[read:]...)

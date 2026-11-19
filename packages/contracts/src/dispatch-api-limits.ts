@@ -474,9 +474,12 @@ export const DOCUMENT_REBUILT_CLOSE_REASON = "DOC_REBUILT";
 /** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
  *  holds content the document does not take: bytes the server's decoder refuses, or content the
  *  Proof editor never sends (a subdocument, a root the schema has no place for, an entry of the
- *  list a rebuild writes). Nothing of it is stored or relayed. Permanent like the size refusal,
- *  and for the same reason: the one browser that sent it would send it again on every reconnect,
- *  so the dashboard drops the refused edit and re-reads the document. Generated into Go as
+ *  list a rebuild writes), or when it would leave a document this build cannot render where the
+ *  document rendered before. Nothing of it is stored or relayed. A browser whose parked edit lands
+ *  in a drain of the pending queue that would leave such a document is closed with it too, and
+ *  the drain is discarded. Permanent like the size refusal, and for the same reason: the one
+ *  browser that sent it would send it again on every reconnect, so the dashboard drops the refused
+ *  edit and re-reads the document. Generated into Go as
  *  `contracts.DocumentUpdateRefusedCloseReason`. */
 export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
 
@@ -519,10 +522,15 @@ export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
  * already open is closed with it too, while an update that shrinks one still applies. A browser
  * asking for a document is closed with it as well where its person holds the 64 client ids no edit
  * has landed under that one document allows a person, and each is held by a socket still open. It
- * is in the 4500-4599 band collaborative servers publish as transient, so the dashboard keeps the
- * edit it could not send and reconnects on its own backoff, the live socket's
- * (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it. Generated into
- * Go as `contracts.DocumentBusyCloseCode`.
+ * is also the close of an update the server cannot judge for now: one whose client ids it could
+ * not read from its table, and one that would leave the rendering past its bound where a server
+ * write has committed since the room's last rendering, so what the update started from is not
+ * known yet - with every browser whose parked edit lands in a drain refused that way. And it is
+ * the close of a browser whose first sync the server's copy memory had no room to answer within
+ * its wait bound. It is in the 4500-4599 band collaborative servers publish as transient, so the
+ * dashboard keeps the edit it could not send and reconnects on its own backoff, the live socket's
+ * (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it. Generated
+ * into Go as `contracts.DocumentBusyCloseCode`.
  */
 export const DOCUMENT_BUSY_CLOSE_CODE = 4503;
 
