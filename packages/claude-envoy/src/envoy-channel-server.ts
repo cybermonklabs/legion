@@ -637,6 +637,39 @@ export function createChannelDelivery(input: {
   }
 }
 
+/** Which session id a connection that presents a broker token is admitted as: one at a time, the
+ *  dial's first, then each `/clear`'s once its move lands (`followSession`). */
+export interface SessionAdmission {
+  /** Records that the connection is admitted as `session` now. */
+  readonly admit: (session: string) => void
+  /** Settles once the connection is admitted as `session`: at once where it is now, else when a
+   *  later `admit` names it. A wait for an id another one was admitted after is dropped
+   *  unsettled: that id is gone. */
+  readonly admitted: (session: string) => Promise<void>
+}
+
+/** A {@link SessionAdmission} admitted as `first`. */
+export function sessionAdmission(first: string): SessionAdmission {
+  let current = first
+  const waiting = new Map<string, PromiseWithResolvers<void>>()
+  return {
+    admit: (session) => {
+      current = session
+      waiting.get(session)?.resolve()
+      waiting.clear()
+    },
+    admitted: (session) => {
+      if (session === current) return Promise.resolve()
+      let wait = waiting.get(session)
+      if (wait === undefined) {
+        wait = Promise.withResolvers<void>()
+        waiting.set(session, wait)
+      }
+      return wait.promise
+    },
+  }
+}
+
 /** The channel server's NATS connection, as `dialChannelNats` opened it. */
 export interface ChannelNats {
   readonly connection: NatsConnection
@@ -2539,6 +2572,20 @@ export async function runEnvoyChannelServer(): Promise<void> {
       connection = dialled.connection
       stopNatsKeeper = dialled.stop
       starting = "it registers this session with Envoy"
+      // Which id the connection is admitted as, where its broker token admits one session at a
+      // time: the dial's, then each `/clear`'s once its move lands. The live view takes a new id's
+      // control subject only then (`AgentStreamOptions.admitted`).
+      const admission =
+        dialled.followSession === undefined ? undefined : sessionAdmission(identity.id)
+      const follow = dialled.followSession
+      const followSession =
+        follow === undefined || admission === undefined
+          ? undefined
+          : async (): Promise<void> => {
+              const forSession = identity.id
+              await follow()
+              admission.admit(forSession)
+            }
       const started = await startChannelSession({
         identity,
         connection,
@@ -2555,7 +2602,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         ...(stamping ? { stampTitle } : {}),
         // The QA override names a fixed identity; only a Claude-minted id follows `/clear`.
         ...(configuredValue(overrideSessionId) === undefined ? { handoffPid: process.ppid } : {}),
-        ...(dialled.followSession === undefined ? {} : { followSession: dialled.followSession }),
+        ...(followSession === undefined ? {} : { followSession }),
         startSignal: booting.signal,
       }).catch((error: unknown) => {
         // A stop asked for while the session was still starting (its connection waiting on the
@@ -2576,6 +2623,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           connection: bus,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
+          ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),
           // A pane is the session whose person messages go to the bridge's inbox, which is the
           // same signal the router reads (`inPane`): a pane holds a daemon claim only where a
           // daemon started it, and the row the bridge seeds is there either way.

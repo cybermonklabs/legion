@@ -76,9 +76,10 @@ function redactTokens(text: string, tokens: readonly string[]): string {
  * misconfigured gateway echoes the request back, so two kinds of credential are redacted: first
  * every piece of each of the client's own `tokens`, trimmed as fetch sends them (`redactTokens`);
  * then, after scripts, styles and tags are dropped, the value of an `Authorization` or a `DPoP`
- * header or JSON member, in any case (an `Authorization` value's scheme kept: the `DPoP` header
- * is the proof the credential signed for that one request, which is none of `tokens`), and the
- * value after `Bearer` or `DPoP`. All of it runs before the cut to one line, so a cut never leaves
+ * header or JSON member, in any case, a value written in a list as Go's header JSON writes one
+ * (`"Dpop":["<proof>"]`) included (an `Authorization` value's scheme kept: the `DPoP` header is
+ * the proof the credential signed for that one request, which is none of `tokens`), and the value
+ * after `Bearer` or `DPoP`. All of it runs before the cut to one line, so a cut never leaves
  * a credential's first characters behind. The text is the answerer's, and the excerpt is built on
  * the host's event loop, so only the first `EXCERPT_SCAN_LIMIT` characters are read and every
  * pattern runs in linear time: a tag holds no `<`, and a script or style block left open runs to
@@ -92,7 +93,7 @@ export function excerpt(text: string, tokens: Tokens): string {
   return textHead(
     plain
       .replace(
-        /(\b(?:authorization|dpop)["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;]+/gi,
+        /(\b(?:authorization|dpop)["']?\s*[:=]\s*(?:\[\s*)?["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;\]]+/gi,
         `$1${REDACTED}`
       )
       .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)

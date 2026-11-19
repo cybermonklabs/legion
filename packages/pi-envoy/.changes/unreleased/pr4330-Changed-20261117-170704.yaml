@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The TypeScript broker client treats the broker''s `membership_held` refusal as one to retry: a person whom Dispatch holds, until they sign in to Dispatch again or a refresh confirms them, loses no credential because of the hold, and the client trades again once it ends.'
+body: 'The TypeScript broker client treats the broker''s `membership_held` refusal as one to retry: a person whom Dispatch holds, until they sign in to Dispatch again or a refresh confirms them, loses no credential because of the hold, and the client's retry loop trades again at its next slot, 15 s doubling to 5 minutes, so the hold's release is taken there.'
 time: 2026-11-17T17:07:04.449999756Z
 custom:
     Issue: pr4330

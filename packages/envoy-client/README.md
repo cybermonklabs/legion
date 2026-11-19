@@ -211,9 +211,12 @@ the CONNECT fails, naming that and the setting to undo for that hub (`unset NATS
 reconnects the connection with each new token, before the server drops the user the old one was
 admitted as; a renewal that fails is retried at 2 s doubling to a minute and warned about once,
 then every 30 minutes, never naming the token. It reads the connection's status too: a server
-that refuses the live token in hand is warned of at once, and at the second refusal the keeper
-drops the token (`BrokerNatsCredential.drop`, here and in the token client) and trades for
-another, once until the connection is back. `followNatsCredential(connection, credential,
+that refuses the live token in hand is warned of at once, and at that token's second refusal the
+keeper drops it (`BrokerNatsCredential.drop`, here and in the token client) and trades for
+another. Refusals are counted per token (`tokenGeneration`), and a drop is made once per session
+until the connection is back (`tokenSession`), so a session switched to has its revoked token
+dropped in its turn, and an auth service that is away costs each session one trade for the
+outage. `followNatsCredential(connection, credential,
 boundMs?)` is a session switch's: it takes the token of the session the name reads now and, where
 that is not the token the connection presented, reconnects and returns only once the connection
 is back admitted with it, so a caller subscribes the new session's subjects after it, never

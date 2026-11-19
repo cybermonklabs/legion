@@ -3,23 +3,25 @@ body: |-
   The broker credential trades through one retry loop per session, which no caller cuts short, so
   the broker sees one trade per slot of the loop's schedule however many callers ask. Each trade
   ends at 30 s where the broker has not answered. A trade the broker did not answer, answered with
-  a 5xx, its 429 or a DPoP refusal, or that the identity's source could not make, is traded again
-  15 s later, doubling to 5 minutes; a pod session not registered yet is traded again on its own
-  2 s to 30 s schedule; a refusal no trade cures ends the loop, and a call before the next slot is
-  told the same with no trade. A caller fails fast, as gRPC's default call does: where the last
-  trade failed in a way the loop trades again on and no live token is in hand, it is told so at
-  once with `TradeRetryingError`, so a listener that asks for no credential keeps its calls while
-  the broker is down. Every caller waits out a pending registration within its own deadline.
-  Once a renewal has failed, calls take the token in hand at once while it is live. The NATS
-  credential's startup paths wait for ready: `ready({ life })` for as long as its caller lives,
-  and `ready({ waitForReady: true })` and a session switch's follow for 20 s, which ride out a
-  first trade's 503 and then fail naming it. A session switch ends every wait for the session
-  before. The loop logs as the Go client does: a pending
+  a 5xx, its 429 or a DPoP refusal, refused for a person Dispatch holds (`membership_held`), or
+  that the identity's source could not make, is traded again 15 s later, doubling to 5 minutes, so
+  a hold's release is taken at the loop's next trade; a pod session not registered yet is traded
+  again on its own 2 s to 30 s schedule; a refusal no trade cures ends the loop, and a call before
+  the next slot is told the same with no trade. A caller fails fast, as gRPC's default call does:
+  where the last trade failed in a way the loop trades again on and no live token is in hand, it
+  is told so at once with `TradeRetryingError`, so a listener that asks for no credential keeps its
+  calls while the broker is down. Every caller waits out a pending registration within its own
+  deadline. Once a renewal has failed, calls take the token in hand at once while it is live. The
+  NATS credential's startup paths wait for ready: `ready({ life })` for as long as its caller
+  lives, `ready({ waitForReady: true })` for 20 s or its `boundMs`, and a session switch's follow
+  within its bound (`FOLLOW_DEADLINE_MS`, 28 s, by default), which ride out a first trade's 503 and
+  then fail naming it. A session switch ends every wait for the session before. The loop logs as
+  the Go client does: a pending
   registration once, every 30 minutes and when it ends; any other failure at each wait. Where no
   caller gives it a `log`, its line goes to `console.warn` through the held-secret scrub. A closed
   client answers `TokenClientClosedError`, and a NATS line prints it whole, as it does a machine
-  whose broker route went away between two trades; both printed as an error whose message is
-  withheld.
+  whose broker route went away between two trades. Before, both printed as an error whose message
+  is withheld.
   A request's credential waits the request's deadline less a reserve of `min(1 s, half)`: 4 s of
   a listener call's 5 s attempt, and a Dispatch call's client deadline (`DispatchClient`'s new
   `deadlineMs` option, 60 s when absent) less 1 s. A wait that ends with a live token in hand

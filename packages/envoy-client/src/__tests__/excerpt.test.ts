@@ -50,6 +50,19 @@ test.each([
     (proof: string) => `{ "DPOP" : "${proof}" }`,
     '{ "DPOP" : "[redacted]" }',
   ],
+  // A gateway that echoes Go's header JSON (`http.Header`) writes each value in a list (the review
+  // of c19c0722bf, R2).
+  ["a JSON member's list", (proof: string) => `{"Dpop":["${proof}"]}`, '{"Dpop":["[redacted]"]}'],
+  [
+    "a spaced JSON member's list",
+    (proof: string) => `{ "Dpop" : [ "${proof}" ] }`,
+    '{ "Dpop" : [ "[redacted]" ] }',
+  ],
+  [
+    "an Authorization member's list",
+    (proof: string) => `{"Authorization":["DPoP ${proof}"]}`,
+    '{"Authorization":["DPoP [redacted]"]}',
+  ],
 ] as const)("an excerpt redacts an echoed DPoP proof as %s", (_as, echo, shown) => {
   const proof = `eyJ0eXAiOiJkcG9wK2p3dCJ9.${fixtureSecret("claims")}.${fixtureSecret("sig")}`;
   const quoted = excerpt(`echo ${echo(proof)} Authorization: DPoP ${fixtureSecret("token")}`, []);

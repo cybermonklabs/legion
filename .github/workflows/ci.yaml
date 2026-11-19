@@ -3612,11 +3612,6 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
-              # broker-client's dpop.test.ts reads both connection proofs.
-              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
-              # broker-client's refusal-corpus.test.ts reads the broker's refusal texts as its
-              # library writes them.
-              - 'packages/envoy/internal/broker/oauth/testdata/refusal-descriptions.json'
             # The secrets broker's TypeScript client: its own sources and tests, the one
             # first-party package its sources import, the fixtures its tests use, the Bun install
             # and the Bun it runs, and Biome.

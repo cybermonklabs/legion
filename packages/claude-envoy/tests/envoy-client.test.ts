@@ -72,6 +72,8 @@ test("sends a direct message through Envoy's HTTP API under an idempotency key, 
     target_session: "ses_receiver",
     message: "adapter send proof",
   })
+  // No source session was named, so the transport leaves source_session off the wire.
+  expect(requests[0]?.body).not.toHaveProperty("source_session")
   expect(String(requests[0]?.body["idempotency_key"])).toMatch(MINTED_KEY)
 })
 
@@ -220,6 +222,8 @@ test("envoy-send sends to the listener and with the bearer its envoy.json names"
   expect(requests[0]?.path).toBe("/v1/messages/send")
   expect(requests[0]?.authorization).toBe(`Bearer ${listenerToken}`)
   expect(requests[0]?.body).toMatchObject({ target_session: "ses_receiver", message: "file send" })
+  // The shell names no session, so the transport leaves source_session off the wire.
+  expect(requests[0]?.body).not.toHaveProperty("source_session")
   expect(String(requests[0]?.body["idempotency_key"])).toMatch(MINTED_KEY)
 })
 

@@ -642,7 +642,8 @@ describe("keepNatsCredential with a refused live token", () => {
       for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
 
       // Refused again before the connection is back: the new token does not cure an auth service
-      // that is away, so nothing more is dropped, and no renewal is asked for.
+      // that is away, and this session was dropped for this outage, so nothing more is dropped,
+      // and no renewal is asked for.
       fake.push("error", "AUTHORIZATION_VIOLATION");
       fake.push("error", "AUTHORIZATION_VIOLATION");
       await readerAtRest(fake);
@@ -684,6 +685,8 @@ describe("keepNatsCredential with a refused live token", () => {
       drop: () => {
         drops.push(Date.now());
       },
+      tokenGeneration: () => drops.length,
+      tokenSession: () => "ses_stand_in",
     };
     const fake = fakeConnection(() => {});
     const warnings: string[] = [];
@@ -726,7 +729,7 @@ describe("keepNatsCredential with a refused live token", () => {
   /** A stand-in credential whose renewals the row lands by hand, each with a token that lives
    *  ten minutes; `expiresAt` is when the token in hand lapses. */
   function heldRenewals(expiresAt: number) {
-    const state = { expiresAt, renewals: 0, drops: 0 };
+    const state = { expiresAt, renewals: 0, drops: 0, generation: 0 };
     const pending: (() => void)[] = [];
     const credential: BrokerNatsCredential = {
       ready: async () => {},
@@ -735,6 +738,7 @@ describe("keepNatsCredential with a refused live token", () => {
         const landed = Promise.withResolvers<void>();
         pending.push(() => {
           state.expiresAt = Date.now() + 600_000;
+          state.generation += 1;
           landed.resolve();
         });
         return landed.promise;
@@ -745,6 +749,8 @@ describe("keepNatsCredential with a refused live token", () => {
       drop: () => {
         state.drops += 1;
       },
+      tokenGeneration: () => state.generation,
+      tokenSession: () => "ses_stand_in",
     };
     return { state, credential, land: () => pending.shift()?.() };
   }
@@ -825,6 +831,107 @@ describe("keepNatsCredential with a refused live token", () => {
       stop();
     }
   }, 15_000);
+
+  // The review of c19c0722bf, R1: a count kept across tokens, and a drop allowed once until the
+  // connection was back whatever its session, left a revoked token of a session switched to after
+  // an earlier drop presented until its renewal, and let one refusal each of two tokens drop the
+  // second.
+  test("a token traded after a drop, a switch's included, is dropped at its own second refusal", async () => {
+    const broker = stubBroker(600);
+    let session = "ses_a";
+    const env = podEnvironment(broker.url);
+    const { credential, dropped } = askedOf(brokerNatsCredential(env, () => session));
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      // Session A's token is revoked: dropped at its second refusal, with no reconnect after.
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      expect(dropped.length).toBe(1);
+      jest.advanceTimersByTime(1);
+      await turnsUntil(() => broker.state.trades === 2, "traded after A's drop");
+      // The host moves to session B, whose token is revoked too, before the connection is back.
+      session = "ses_b";
+      await credential.renew(undefined, true);
+      expect(broker.state.minted.at(-1)?.session).toBe("ses_b");
+      credential.authenticator("nonce-b");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      // B's first refusal is not B's second, whatever A's count was.
+      expect(dropped.length).toBe(1);
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      expect(dropped.length).toBe(2);
+      jest.advanceTimersByTime(1);
+      await turnsUntil(() => broker.state.trades === 4, "traded after B's drop", {
+        state: () => `${broker.state.trades} trades`,
+      });
+    } finally {
+      stop();
+    }
+  }, 15_000);
+
+  test("one refusal of a token and one of the token after it drop neither", async () => {
+    const { state, credential, land } = heldRenewals(Date.now() + 600_000);
+    const fake = fakeConnection(() => {});
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      // A renewal lands another token, which the server refuses once.
+      void credential.renew();
+      land();
+      await turn();
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      expect(state.drops).toBe(0);
+      // The control: that token's own second refusal drops it.
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      expect(state.drops).toBe(1);
+    } finally {
+      land();
+      stop();
+    }
+  }, 10_000);
+
+  test("an auth service that refuses every token costs each session one trade for the outage", async () => {
+    // The hub's auth service is away and the broker is up: every CONNECT is refused whatever its
+    // token, and nats.js redials every 2 s. 20 refusals, 40 s of it: one drop and one trade, not one
+    // every second refusal.
+    const broker = stubBroker(600);
+    const env = podEnvironment(broker.url);
+    const { credential, dropped } = askedOf(brokerNatsCredential(env, "ses_storm"));
+    await credential.ready();
+    credential.authenticator("nonce-1");
+    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
+    const stop = keepNatsCredential(fake.connection, credential, () => {});
+    try {
+      for (let refusal = 0; refusal < 20; refusal += 1) {
+        fake.push("error", "AUTHORIZATION_VIOLATION");
+        await readerAtRest(fake);
+        // The renewal a drop asks for runs at once on the keeper's timer, and its trade lands.
+        jest.advanceTimersByTime(1);
+        await turnsUntil(() => credential.expiresAt().getTime() > Date.now(), "a token in hand", {
+          state: () => `${broker.state.trades} trades`,
+        });
+        jest.advanceTimersByTime(2_000 - 1);
+      }
+      expect(dropped.length).toBe(1);
+      expect(broker.state.trades).toBe(2);
+      // The control: back, and refused twice again, is a new outage, with its one drop.
+      fake.push("reconnect");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      fake.push("error", "AUTHORIZATION_VIOLATION");
+      await readerAtRest(fake);
+      expect(dropped.length).toBe(2);
+    } finally {
+      stop();
+    }
+  }, 30_000);
 });
 
 // The review of 2fa6fbf7cf, m3: a session switch's follow inside a pass whose deadline is shorter
