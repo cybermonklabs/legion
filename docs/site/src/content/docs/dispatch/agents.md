@@ -262,10 +262,16 @@ links to its conversation as it happens, at `/agents/<session>/live`.
 - The header holds a link back to **Agents**, the session's name with its
   [running mark](#how-dispatch-shows-an-agent), whether this Dispatch is connected to the
   session's conversation, and a pin.
-  The header reads **Not answering** when the session does not answer the live view, misses its
-  heartbeats, or leaves the session list while you look at it.
+  When the session does not answer the live view, the header reads **Not answering**, and a line
+  above the conversation says what can cause that.
+  When the session list marks the session as missing its heartbeats, the header reads
+  **Unresponsive** with when it was last seen, and the line says that the session has not ended.
+  When the session leaves the list while you look at it, the header reads **Not in the session
+  list**, and the line says so.
+  A turn the session still streams changes neither of the last two, and a lost connection to
+  Dispatch does not remove the line.
   The page reads the session list every 15 seconds, and Dispatch's copy of that list is at most
-  5 seconds old, so a session that leaves the list reads **Not answering** within about 20 seconds.
+  5 seconds old, so a session that leaves the list shows it within about 20 seconds.
   The list marks a session as missing its heartbeats once its last one is older than the live
   window (5 minutes by default), so a session that stops without leaving the list can read **Live**
   for up to about 5 minutes and 20 seconds.

@@ -426,8 +426,9 @@ export function AgentThread({
   /** Where this session's reader was when its view last reported, which the view's entry in
    *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */
   initialPlace: LivePlace | null;
-  /** A line above the transcript saying why it holds only what Dispatch keeps, or undefined for
-   *  none. It shows only while the transcript holds a turn: with none, `empty` says it. */
+  /** A line above the transcript saying why the session is silent, by the relay's word or the
+   *  session list's, or undefined for none. It shows only while the transcript holds a turn: with
+   *  none, `empty` says it. */
   notice: string | undefined;
   /** Reports the place the transcript holds, for that entry to keep. */
   onPlace: (place: LivePlace | null) => void;

@@ -99,8 +99,8 @@ export function AgentRuntimeThread({
   /** Whether this is the view the person is looking at; the transcript's own scrolling reads
    *  it (`AgentThread`). */
   front: boolean;
-  /** The line above a transcript that holds turns while the session does not answer the view, or
-   *  undefined for none (`AgentThread`). */
+  /** The line above a transcript that holds turns while the session is silent, by the relay's
+   *  word or the session list's, or undefined for none (`AgentThread`). */
   notice: string | undefined;
   /** Hands `body` to the session as a write of its own, as the page's delivery mode stands. */
   onSend: (body: string) => void;
