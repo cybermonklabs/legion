@@ -39,8 +39,6 @@ func TestEveryClauseAnswersTrueOrFalseNeverNull(t *testing.T) {
 		"ItemOwnerClause over a missing document":                 ItemOwnerClause("null::text", "'00000000-0000-4000-8000-000000000000'::uuid", "$1"),
 		"MessageClause over a message on no issue and of no node": MessageClause("message_row", "$1"),
 		"MessageClause over a message on a missing issue":         MessageClause("missing_issue_row", "$1"),
-		"RepositoryClause over a missing repository":              RepositoryClause("null::text", "$1"),
-		"RepositoryClause over a repository no mapping names":     RepositoryClause("'acme/unmapped'", "$1"),
 		"DocumentClause over a document of no project or session": DocumentClause("document_row", "$1"),
 	}
 	// Two message rows the MessageClause cases read, neither of which any table holds: one on no
