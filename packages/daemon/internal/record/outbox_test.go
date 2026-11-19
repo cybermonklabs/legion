@@ -279,13 +279,15 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 // stop, a write to Dispatch, a controller's notice.
 func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	decided := map[OutboxKind]string{
-		OutboxKindSupervise:          "op start",
-		OutboxKindNotice:             "every row",
-		OutboxKindPhaseEnded:         "every row",
-		OutboxKindHookPrompt:         "every row",
-		OutboxKindRoleMessage:        "every row",
-		OutboxKindUpdateAsk:          "every row",
-		OutboxKindMergeQueueRemoval:  "every row",
+		OutboxKindSupervise:         "op start",
+		OutboxKindNotice:            "every row",
+		OutboxKindHookPrompt:        "every row",
+		OutboxKindRoleMessage:       "every row",
+		OutboxKindUpdateAsk:         "every row",
+		OutboxKindMergeQueueRemoval: "every row",
+		// A merge forward's message goes to one role of the issue and wakes a released one, as a
+		// hook prompt does (main's dispatch://INFRA-4374).
+		OutboxKindMergeForward:       "every row",
 		OutboxKindCheckWake:          "every row",
 		OutboxKindCheckLook:          "every row",
 		OutboxKindCheckBound:         "every row",
@@ -303,6 +305,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindClaimRelease:       "",
 		OutboxKindDesignGatesPublish: "",
 		OutboxKindMergeQueueRead:     "",
+		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
+		// forward its fact queues is held.
+		OutboxKindConflictConfirm: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
 		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
 		OutboxKindRoleHoldersPublish: "",

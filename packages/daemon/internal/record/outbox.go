@@ -175,7 +175,7 @@ type pauseHold struct {
 // dispatch://INFRA-3759): every row that launches a role, hands it a task or a message, or starts
 // or ends a production check's look. Those are a supervise row whose op is `start`, an architect's
 // notice (which resumes a released architect, the daemon's wakeForDelivery), the four messages to
-// one role (phase_ended, hook_prompt, role_message, update_ask) and the merger's merge-queue
+// one role (hook_prompt, role_message, update_ask, merge_forward) and the merger's merge-queue
 // message, and the three rows of a production check (check_wake, check_look, check_bound). Every
 // other row runs while the project is paused: the stops (a supervise row of any other op,
 // issue_suspend, issue_release), the writes to Dispatch, and the controller's notices
@@ -189,10 +189,10 @@ type pauseHold struct {
 var pauseHolds = []pauseHold{
 	{kind: OutboxKindSupervise, op: "start"},
 	{kind: OutboxKindNotice},
-	{kind: OutboxKindPhaseEnded},
 	{kind: OutboxKindHookPrompt},
 	{kind: OutboxKindRoleMessage},
 	{kind: OutboxKindUpdateAsk},
+	{kind: OutboxKindMergeForward},
 	{kind: OutboxKindMergeQueueRemoval},
 	{kind: OutboxKindCheckWake},
 	{kind: OutboxKindCheckLook},

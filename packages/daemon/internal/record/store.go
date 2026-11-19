@@ -2807,7 +2807,7 @@ const outboxLaneFree = `not (outbox.kind = any($5::text[]) and exists (select 1 
 // once from pauseHolds with each kind and op written in as an SQL literal, so the one list is what
 // holds the rows and no statement's parameters move. It reads:
 //
-//	not ((outbox.kind in ('notice', 'phase_ended', …) or (outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'))
+//	not ((outbox.kind in ('notice', 'hook_prompt', …) or (outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'))
 //		and exists (select 1 from project_pauses pause
 //			where pause.project = split_part(outbox.issue, '-', 1) and pause.ended_at is null))
 //
@@ -3148,12 +3148,12 @@ var (
 
 // pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
-// phase's end, a hook's words and an update ask name the role of the row's own issue, as the
-// executors read it (the daemon's roleToken); the merge-queue message goes to the issue's merger;
+// hook's words, an update ask and a merge forward's message name the role of the row's own issue,
+// as the executors read it (the daemon's roleToken); the merge-queue message goes to the issue's merger;
 // a role message names the claim's token itself (record.RoleMessage.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
-	case OutboxKindSupervise, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk:
+	case OutboxKindSupervise, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
 	case OutboxKindMergeQueueRemoval:
 		role = string(claim.RoleMerger)
 	case OutboxKindRoleMessage:
