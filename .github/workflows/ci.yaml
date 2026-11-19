@@ -5284,7 +5284,7 @@ jobs:
   # The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
   # They were split out of the browser suite (dispatch-browser below), whose full lane - the one
   # the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
-  # nine suites that label holds back, while these checks must come back on every push.
+  # ten suites that label holds back, while these checks must come back on every push.
   # No Postgres service and no Go, but contracts is built
   # before the suites: one case of the dashboard's test run spawns Playwright, whose own
   # resolution reads contracts' built dist/ (the step below says what failed without it). tsc and
