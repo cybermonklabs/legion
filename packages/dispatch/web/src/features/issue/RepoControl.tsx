@@ -97,15 +97,6 @@ export function repoControlName(issueKey: string): string {
  * `useIssueFieldWrite`) is unchanged, so the optimistic write, the rollback and the server's own
  * refusal - `INVALID_ISSUE` for anything that reaches it - show as they did.
  *
- * From the press that writes a value - Enter, leaving the box, or the clear control - the box
- * shows that value as the issue's own repository, and never the repository it replaces. The
- * write puts the value on the issue's cache in a microtask after the press, and TanStack Query
- * tells the cache's listeners a task after that. So at the press's own render the issue's own
- * repository is still the replaced one, and a browser can paint a frame before the next render.
- * The box holds the written value (`written`) until the issue's own repository shows it, or until
- * the write is no longer out. The clear control stays while the issue has a repository of its
- * own, as above.
- *
  * The item renders whenever the issue can carry a repository, which is always: a project that
  * maps none has nothing to suggest, and its issues still take any repository. The mappings are
  * read once the reader reaches for the control (pointer over it, a touch on it, or focus), and at
@@ -181,11 +172,8 @@ export function RepoControl({
   const inDetails = page !== null && inRow;
   const [wanted, setWanted] = useState(false);
   /** What the reader has typed since the box was last written, left or restored; null while the
-   *  box shows the issue's own repository, or what a press wrote (`written`). */
+   *  box shows the issue's own repository. */
   const [draft, setDraft] = useState<string | null>(null);
-  /** What a press last wrote from the box or its clear control - the repository, or "" for none -
-   *  until the issue's own repository shows it or the write is no longer out; null otherwise. */
-  const [written, setWritten] = useState<string | null>(null);
   /** Whether the draft was refused here, for not being `owner/name`. */
   const [refused, setRefused] = useState(false);
   /** Inside `NoTooltips`, in a row of Details, whether the reader has opened the box from the
@@ -234,13 +222,9 @@ export function RepoControl({
     setDraft(null);
     setRefused(false);
   };
-  // The draft is let go as it is written. The box then shows the written value (`written`) until
-  // the issue's own repository shows it. The write puts that value on the issue's cache in a
-  // microtask after the press (`useIssueFieldWrite`), and TanStack Query tells the cache's
-  // listeners a task after that (`notifyManager`'s `setTimeout(0)`). So at the press's own render
-  // `repo` still names the replaced repository. After that the box shows the optimistic value, and
-  // a rollback puts the previous one back under it. A refused draft stays in the box: it is what
-  // the reader has to correct.
+  // The draft goes back to the issue's own repository as it is written, so the optimistic value
+  // is what the box shows and a rollback puts the previous one back under it. A refused draft
+  // stays in the box: it is what the reader has to correct.
   const commit = () => {
     if (draft === null) {
       return;
@@ -254,19 +238,10 @@ export function RepoControl({
     }
     restore();
     if (typed !== (repo ?? "")) {
-      setWritten(typed);
       write.submit(typed === "" ? null : typed);
       setOpened(false);
     }
   };
-  // The box lets the written value go once the issue's own repository shows it, or once the write
-  // is no longer out: it landed, it was refused and rolled back, or it was discarded. From then
-  // on the box shows the issue's own repository again.
-  useEffect(() => {
-    if (written !== null && (written === (repo ?? "") || !write.pending)) {
-      setWritten(null);
-    }
-  }, [repo, write.pending, written]);
   // Inside `NoTooltips` a row of Details draws its value as text - "None" while the issue resolves
   // to no repository, else the repository - until the reader opens the box from it, and the box
   // stays while it holds something of theirs: a draft, refused or not, or a write that is out.
@@ -475,7 +450,7 @@ export function RepoControl({
                 placeholder={resolvedRepo ?? "owner/name"}
                 ref={box}
                 spellCheck={false}
-                value={draft ?? written ?? repo ?? ""}
+                value={draft ?? repo ?? ""}
               />
               {repo === null ? null : (
                 <button
@@ -509,7 +484,6 @@ export function RepoControl({
                       box.current?.focus();
                     }
                     restore();
-                    setWritten("");
                     write.submit(null);
                     setOpened(false);
                   }}
