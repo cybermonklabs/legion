@@ -775,7 +775,7 @@ const REDACTED = "[redacted]";
 const EXCERPT_SCAN_LIMIT = 64 * 1024;
 
 /**
- * The shortest run of the client's bearer's characters an excerpt redacts wherever it stands. A
+ * The shortest run of the client's bearer's UTF-16 code units an excerpt redacts wherever it stands. A
  * gateway that echoes the header can cut it short, split it with markup, or write it twice with the
  * copies overlapping (a bearer can end in its own first characters), so redacting only whole copies
  * leaves most of one behind; a bearer shorter than this is redacted only whole.
@@ -783,9 +783,9 @@ const EXCERPT_SCAN_LIMIT = 64 * 1024;
 const BEARER_PIECE = 8;
 
 /**
- * The first `EXCERPT_SCAN_LIMIT` characters of `text`, each run of `bearer`'s characters at least
+ * The first `EXCERPT_SCAN_LIMIT` UTF-16 code units of `text`, each run of `bearer`'s UTF-16 code units at least
  * `BEARER_PIECE` long replaced with one `REDACTED`. Every piece of that length starting inside the
- * limit is found (one that runs past it reads up to `BEARER_PIECE - 1` characters beyond), so a
+ * limit is found (one that runs past it reads up to `BEARER_PIECE - 1` UTF-16 code units beyond), so a
  * run is redacted whole however the limit or another copy cuts it. Redaction changes the length,
  * so the text is cut to the limit only afterwards, and nothing from past the limit moves into it.
  * Each distinct piece is one native scan of that slice, and no two distinct pieces of one length
@@ -825,7 +825,7 @@ function redactBearer(text: string, bearer: string): string {
  * scripts, styles and tags are dropped, the value after `Authorization:` (its scheme kept) or
  * `Bearer`. All of it runs before the cut to one line, so a cut never leaves a credential's first
  * characters behind. The text is the answerer's, and the excerpt is built on the host's event loop,
- * so only the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time:
+ * so only the first `EXCERPT_SCAN_LIMIT` UTF-16 code units are read and every pattern runs in linear time:
  * a tag holds no `<`, and a script or style block left open runs to the end.
  */
 function excerpt(text: string, token: string): string {

@@ -102,7 +102,7 @@ const DEFAULT_RATE = 5;
 const IN_FLIGHT = 8;
 /** A network failure or a 5xx is tried this many times before the unit is recorded as failed. */
 const ATTEMPTS = 5;
-/** The shortest stored paragraph `--check-no-stored-text` judges, in normalised characters: a
+/** The shortest stored paragraph `--check-no-stored-text` judges, in normalised UTF-16 code units: a
  * shorter one ("Done.", "Approve") says nothing about where a file's words came from. */
 export const MIN_STORED_PARAGRAPH = 64;
 
@@ -1175,9 +1175,9 @@ export interface StoredParagraph {
 }
 
 /**
- * Every stored paragraph by its first MIN_STORED_PARAGRAPH characters, so one file is searched in
+ * Every stored paragraph by its first MIN_STORED_PARAGRAPH UTF-16 code units, so one file is searched in
  * one pass over its own characters rather than once for each of a hundred thousand paragraphs.
- * That head is what a file is held to: that many characters of production's prose, run together,
+ * That head is what a file is held to: that many UTF-16 code units of production's prose, run together,
  * is a quotation however the file goes on after them.
  */
 export function storedParagraphs(texts: Iterable<StoredText>): Map<string, StoredParagraph[]> {
@@ -1200,7 +1200,7 @@ export interface StoredTextHit {
   /** The stored text the paragraph came from. */
   readonly id: string;
   readonly group: Group;
-  /** Where in the file the match begins, in normalised characters. */
+  /** Where in the file the match begins, in normalised UTF-16 code units. */
   readonly offset: number;
 }
 

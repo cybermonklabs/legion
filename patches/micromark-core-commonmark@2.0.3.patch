@@ -138,7 +138,7 @@ index 492756f04eb7e5f0b77d0c4283692ef7457e6d7c..751a512de58921c916817ecfbb8c8542
 +    context.parser._definedCount = defined.length
 +  }
 +
-+  // `normalizeIdentifier` keeps every character that is not markdown whitespace, and collapses
++  // `normalizeIdentifier` keeps every UTF-16 code unit that is not markdown whitespace, and collapses
 +  // or drops the whitespace, so a label with more than `max` of them is longer than every
 +  // identifier defined and cannot be one. Counting them is cheaper than serializing a long
 +  // label on every `]`, and it stops as soon as there are too many.
@@ -330,7 +330,7 @@ index 927808f648bac3803c8149d3b24c97e6def7e103..e87326955606ec400db5ba4b08a77fcb
 +    context.parser._definedCount = defined.length;
 +  }
 +
-+  // `normalizeIdentifier` keeps every character that is not markdown whitespace, and collapses
++  // `normalizeIdentifier` keeps every UTF-16 code unit that is not markdown whitespace, and collapses
 +  // or drops the whitespace, so a label with more than `max` of them is longer than every
 +  // identifier defined and cannot be one. Counting them is cheaper than serializing a long
 +  // label on every `]`, and it stops as soon as there are too many.

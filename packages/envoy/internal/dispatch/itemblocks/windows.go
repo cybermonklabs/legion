@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	// WindowTextChars is the most characters of block text one window holds: about 300 tokens at
+	// WindowTextChars is the most new characters of block text one window holds: about 300 tokens at
 	// the 4-characters-a-token rate the embedder's EstimateTokens uses, which is a passage a
 	// reader would call one point rather than one document. Small enough that a hit names a
 	// place in a long item, large enough that a paragraph is rarely cut.
@@ -58,9 +58,9 @@ type Window struct {
 // their meaning (the owner's title and the nearest heading above for a document, the issue's
 // title for a comment or a message, the question for an ask's parts).
 //
-// A window is a run of neighbouring blocks holding at most WindowTextChars characters of block
+// A window is a run of neighbouring blocks holding at most WindowTextChars new characters of block
 // text; a heading always starts a new one; and a block longer than that budget on its own
-// becomes pieces of at most WindowTextChars characters, each after the first carrying the
+// becomes pieces of at most WindowTextChars new characters, each after the first carrying the
 // previous WindowOverlapChars characters of the block in front of it. Characters are runes, as
 // the embedder counts them, and no cut falls inside one.
 //

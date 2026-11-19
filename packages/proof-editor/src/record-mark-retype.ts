@@ -238,7 +238,7 @@ export function retypeMark(
 /** How much of the text on each side of the selected words a placement keeps. Measured over this
  *  repository's own prose - every `.md` of the root, `docs/`, `packages/dispatch/docs/` and
  *  `packages/proof-editor/`, taking each run of three to eight words (16 to 80 characters) that
- *  reads more than once in one block for a reader's selection: 32 characters each side tell
+ *  reads more than once in one block for a reader's selection: 32 UTF-16 code units each side tell
  *  those 13,876 readings apart in 90.4% of cases, where 16 reach 81.1% and 64 reach 96.9% for
  *  twice the text on every compose and in the held-send store. The paragraph this was written
  *  for needs 3 ("ta " of "Beta " against "ha " of "Alpha " in front of the same words), and a
@@ -288,7 +288,7 @@ interface Readings {
 }
 
 /** One block of a document's text: where its own content opens in the document, where its first
- *  character sits in that text, and how many characters it reads there. The list of them is what
+ *  character sits in that text, and how many UTF-16 code units it reads there. The list of them is what
  *  every scan is given, because it is the only thing that says where a block begins and ends: a
  *  newline of the text says nothing, `textOf` reading a hard break and a code block's own lines
  *  as newlines exactly as it reads the break between two blocks. */
@@ -312,7 +312,7 @@ function blockAt(blocks: readonly TextBlock[], at: number): TextBlock {
   return blocks[low];
 }
 
-/** Whether the reading of a `length`-character quote at offset `at` of `text` is surrounded by
+/** Whether the reading of a quote of `length` UTF-16 code units at offset `at` of `text` is surrounded by
  *  `surroundings`: the text before it ends with the remembered prefix, the text after it starts
  *  with the remembered suffix, and a side remembered whole reaches the edge of this reading's
  *  own block, as it reached the edge of the block the reader selected in. That edge is read from

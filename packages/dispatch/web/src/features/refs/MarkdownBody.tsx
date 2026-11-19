@@ -264,7 +264,7 @@ function* paintBlockInSlices(
  * as Proof renders it.
  *
  * Once the schema and Proof's headless engine are loaded (the first body on the page loads
- * them), a body of at most `markdownWorkerThreshold` characters renders synchronously in the
+ * them), a body of at most `markdownWorkerThreshold` UTF-16 code units renders synchronously in the
  * layout phase of the commit that mounts it (`useRenderedMarkdown`); only the very first render
  * on a page, or a schema that failed to load, takes the asynchronous path. A longer body is
  * parsed off the page's own thread, so it holds its own text, marked `data-markdown-pending`,

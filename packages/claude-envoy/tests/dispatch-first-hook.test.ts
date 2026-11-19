@@ -48,7 +48,7 @@ test("with Dispatch configured, puts the plugin's dispatch-first skill into the 
     const skill = await readFile(join(packageRoot, "skills", "dispatch-first", "SKILL.md"), "utf8")
     expect(context).toContain(skill.slice(skill.indexOf("# Dispatch first")).trim())
     expect(context).not.toContain("name: dispatch-first")
-    // Claude Code keeps an additionalContext string whole only up to 10,000 characters.
+    // Claude Code keeps an additionalContext string whole only up to 10,000 UTF-16 code units.
     expect(context.length).toBeLessThan(10_000)
   } finally {
     await rm(home, { recursive: true, force: true })

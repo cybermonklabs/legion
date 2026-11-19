@@ -51,7 +51,7 @@ const (
 	// tail the refusal quotes. The
 	// tail probeLog keeps (probeLogBytes) is kept from its end (lastBytes), so the OK line, the
 	// tail's last line, is in reach whatever a line's length: a capability line is its prefix,
-	// the row's own words, and a command's quoted output cut at 300 characters
+	// the row's own words, and a command's quoted output cut at 300 bytes
 	// (capabilities.maxDetail), about 500 bytes at the longest, so a hundred such lines stay near
 	// 50 KiB, and a passing pod prints about twenty. PodLogOptions.LimitBytes is not used for the
 	// bound: it counts from the start of the returned tail too, the same cutoff lastBytes avoids.

@@ -3,7 +3,7 @@ import { useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 
 /**
- * The address's cut: at most `SEARCH_QUERY_MAX` characters, ending on a whole code point. A cut
+ * The address's cut: at most `SEARCH_QUERY_MAX` UTF-16 code units, ending on a whole code point. A cut
  * that lands between the halves of a surrogate pair would leave a lone high surrogate, so that
  * half is dropped rather than written. Shared rather than copied because the Inbox's own search
  * box applies the same cut in its change handler before it navigates, and two cuts worded apart
@@ -16,7 +16,7 @@ export function capSearchQuery(next: string): string {
 
 /**
  * A free-text `?<name>=` parameter: read live, written with `replace` so filtering never piles up
- * history entries, and capped at `SEARCH_QUERY_MAX` characters, because the page's address is
+ * history entries, and capped at `SEARCH_QUERY_MAX` UTF-16 code units, because the page's address is
  * where it lives and the load balancer refuses a URL past 16 K on reload or a shared link. The cut
  * lands on a code point: a trailing lone high surrogate is dropped rather than split, so a value
  * longer than the cap - typed, or arriving on a link - never leaves half an emoji in the address.

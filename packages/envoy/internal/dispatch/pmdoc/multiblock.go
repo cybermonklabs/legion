@@ -9,7 +9,7 @@ const maxMultiblockUnits = 240
 // resolveStructuralMultiblockRange), from the first one's start to the last one's end. It reports
 // false where the editor takes none because it reads other than two textblocks under r, or more than
 // maxMultiblockUnits of their text. The editor reads a textblock's text as its content short of its
-// last position, so it skips a one-character textblock at r's edge. Whether it takes a range other
+// last position, so it skips a textblock of one UTF-16 code unit at r's edge. Whether it takes a range other
 // than the one returned depends on the editor's edge tolerance; the one returned it always takes.
 func MultiblockRange(doc *Node, r Range) (Range, bool) {
 	var blocks []Range

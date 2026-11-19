@@ -24,13 +24,13 @@ function childrenOf(node: DisplayTree): readonly DisplayTree[] | undefined {
 }
 
 /** What a cut of one node left: the node to keep, absent where nothing of it fits, and how many
- *  characters of the budget are still free. */
+ *  UTF-16 code units of the budget are still free. */
 interface CutNode {
   readonly node?: DisplayTree;
   readonly left: number;
 }
 
-/** How many characters of text a node holds, counted no further than `limit`: a node holding
+/** How many UTF-16 code units of text a node holds, counted no further than `limit`: a node holding
  *  more than the budget answers `limit` or a little more, which is all the cut needs to know. */
 function textLength(node: DisplayTree, limit: number): number {
   const text = textOf(node);
@@ -48,7 +48,7 @@ function textLength(node: DisplayTree, limit: number): number {
 }
 
 /**
- * The start of one run of characters: `text` itself where it is at most `max` characters
+ * The start of one run of characters: `text` itself where it is at most `max` UTF-16 code units
  * (UTF-16 units), and otherwise its last whitespace within `max`, with the space the cut left
  * trimmed off. Where the budget's second half holds no whitespace - one long URL or path - the
  * cut falls at `max` itself, and never inside a surrogate pair.
@@ -125,7 +125,7 @@ function closedWithEllipsis(node: DisplayTree): DisplayTree | undefined {
 
 /**
  * The start of the stored text `tree` was read from, for a place that shows only its start: the
- * tree itself when it holds at most `max` characters of text (UTF-16 units), and otherwise the
+ * tree itself when it holds at most `max` UTF-16 code units of text, and otherwise the
  * nodes that fit, the last of them cut at its last whitespace and closed with an ellipsis.
  * Every mark, every attribute and every block the cut keeps is the server's own, so the head
  * draws exactly as the start of the whole text draws.

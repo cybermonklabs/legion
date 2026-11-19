@@ -781,7 +781,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
     "Which checkpoint gates the sandbox tree before the daemon restarts mid-tree: the fence, the node release, or the linger close that follows both of them?";
   const longUrl = `https://docs.example.com/runbooks/legion/go-coordinator/stage-4b/${"sandbox-tree-".repeat(4)}checkpoints`;
   const longRoute = "role:merge-queue-controller-for-legion";
-  // A label's 40-character cap is still wider than the label picker's 256 px popover.
+  // A label's cap of 40 UTF-16 code units is still wider than the label picker's 256 px popover.
   const longLabel = "sandbox-tree-checkpoint-evidence-runbook";
   const longBroadcast =
     "Please rebase every open pull request onto main before the stage 4b sandbox tree run, and post the new head in this thread once its checks have gone green again";

@@ -42,7 +42,7 @@ export interface TextReference {
    *  reference as written, as the server stores it. */
   readonly reference: string | undefined;
   readonly route: DispatchReferenceRoute | undefined;
-  /** How many characters from `start` the reference names, where that is fewer than all of the
+  /** How many UTF-16 code units from `start` the reference names, where that is fewer than all of the
    *  ones written, so a title drawn over it hides no character it does not stand for: a `#id`
    *  or an address an author left a sentence's or an emphasis's `-` or `_` on resolves without
    *  those characters, which stay the author's own text. Absent where the reference needs every

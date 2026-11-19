@@ -45,7 +45,7 @@ func TestSearchLeadsWithTheIssueTheQueryNamesInEveryForm(t *testing.T) {
 		}
 	}
 	// Both projects are moved to the same four-digit number: an issue's number is its project's
-	// next, and a one-digit query is below the route's own two-character minimum.
+	// next, and a one-digit query is below the route's own two-UTF-16-code-unit minimum.
 	if _, err := database.Pool.Exec(ctx,
 		"update projects set next_number = 1042 where key in ('SRCH', 'OTHER')"); err != nil {
 		t.Fatalf("move both projects to number 1042: %v", err)
@@ -203,7 +203,7 @@ func TestSearchReadsABareNumberInThePageProjectWithoutNarrowingToIt(t *testing.T
 	}
 	// Both projects are moved to the same four-digit number, as the key-forms row above moves
 	// them: an issue's number is its project's next, and a one-digit query is below the route's
-	// own two-character minimum.
+	// own two-UTF-16-code-unit minimum.
 	if _, err := database.Pool.Exec(ctx,
 		"update projects set next_number = 1042 where key in ('SRCH', 'OTHER')"); err != nil {
 		t.Fatalf("move both projects to number 1042: %v", err)

@@ -37,7 +37,7 @@ import { procmgr } from "@oh-my-pi/pi-utils";
  *  - The host's `shellPath` setting, and its use of a fish `$SHELL`, do not apply: the shell is
  *    the one `procmgr.getShellConfig()` resolves with no `shellPath`.
  *  - Bounds of its own, which answering through a Dispatch reply needs: the output is cut at
- *    `SHELL_OUTPUT_MAX` characters, where the CLI keeps a head of it and saves the rest as an
+ *    `SHELL_OUTPUT_MAX` UTF-16 code units, where the CLI keeps a head of it and saves the rest as an
  *    artifact; the command is stopped after `ENVOY_SHELL_COMMAND_LIMIT_MS` (120 s by default),
  *    where the CLI's bash timeout is 300 s by default; it runs in a process group of its own,
  *    killed with it; and its standard input is ignored.
@@ -47,13 +47,13 @@ import { procmgr } from "@oh-my-pi/pi-utils";
  * session's own terminal never reaches here, so it keeps the host's own shell mode.
  */
 
-/** Characters of a command's output each of the three texts carries; past it the text is cut and
+/** UTF-16 code units of a command's output each of the three texts carries; past it the text is cut and
  *  says so. The CLI keeps a head of a command's output and saves the rest as an artifact; this
  *  bound is the one answering through a Dispatch reply needs, whose body is bounded. */
 export const SHELL_OUTPUT_MAX = 8_000;
 
-/** Bytes of a command's output this module keeps, for the same reason the character cut has. Four
- *  times the character cut, so what is kept always holds more characters than the cut keeps,
+/** Bytes of a command's output this module keeps, for the same reason the UTF-16 code-unit cut has. Four
+ *  times the UTF-16 code-unit cut, so what is kept always holds at least as many code points as the cut keeps,
  *  whatever the encoding costs. Past it every byte is read and thrown away, so a command that
  *  prints without end costs the session this much memory and nothing else at all: no file of its
  *  own, and no room on the session's disk. */

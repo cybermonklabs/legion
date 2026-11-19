@@ -268,7 +268,7 @@ func TestACommentCitingABlockIDPastTheBoundPosts(t *testing.T) {
 	}
 }
 
-// A document whose own reference key is long - a name of 2680 incompressible characters, which
+// A document whose own reference key is long - a name of 2683 incompressible characters, which
 // main stores, since its ref_key still fits artifacts_ref_key_key - takes its upload and later
 // edits as main does: each stores its version. A block node's id is `<ref_key>#<block id>`, so
 // such a key leaves no room in document_blocks' node_id key even for a minted 36-byte paragraph
@@ -302,7 +302,7 @@ func TestADocumentWhoseReferenceKeyLeavesNoRoomForABlockIDIsStillWritten(t *test
 	}
 }
 
-// Text that cites a block of a document whose reference key is long - the 2680-character name
+// Text that cites a block of a document whose reference key is long - the 2683-character name
 // above - is written as main writes it: a comment posts and a document citing it uploads. Main
 // reads no `#b-` reference, so neither write indexes an edge there; a block reference's target
 // id is `<ref_key>#<block id>`, which the refs and block_refs keys cannot hold at this length, so

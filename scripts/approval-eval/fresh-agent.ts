@@ -132,7 +132,7 @@ const DEFAULT_OMP = "/opt/omp/bin/omp";
 /** How long one agent run may take before it is killed and counted as a fault. */
 const RUN_TIMEOUT_MS = 300_000;
 
-/** How many characters of an unreadable answer a row and a printed line carry. */
+/** How many UTF-16 code units of an unreadable answer a row and a printed line carry. */
 const DETAIL_CHARS = 400;
 
 /** The slice and the kind of case this is scored over, which is what the skill's numbers name. */

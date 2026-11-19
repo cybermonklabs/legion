@@ -98,13 +98,13 @@ export function pictureCaption(name: string): string {
  * `js/polynomial-redos`). Every bound sits past what a writer can reach:
  *
  * - a caption is a file name (`pictureCaption`), which no file system Dispatch takes an upload
- *   from carries past 255 bytes and which escaping at most doubles, so 512 characters is past
+ *   from carries past 255 bytes and which escaping at most doubles, so a bound of 512 repetitions is past
  *   any of them; a line break ends a picture in markdown, so no caption holds one;
  * - an address is `dispatch://` and a target id, which holds at most
- *   MAX_REFERENCE_TARGET_BYTES (2048) UTF-8 bytes, so 2048 characters is at least as much;
+ *   MAX_REFERENCE_TARGET_BYTES (2048) UTF-8 bytes, so 2048 UTF-16 code units is at least as much;
  * - a version is a positive int64, whose largest value is 19 digits;
  * - a title is the short quoted string a writer may put after the address, past which 256
- *   characters is; at most four spaces or one line break and an indent separate the two.
+ *   regex repetitions lie; at most four spaces or one line break and an indent separate the two.
  */
 const PICTURE_CAPTION = String.raw`(?:\\.|[^\\\]\n]){0,512}`;
 const PICTURE_ADDRESS = String.raw`dispatch://[^\s()]{1,2048}@v[1-9][0-9]{0,18}`;

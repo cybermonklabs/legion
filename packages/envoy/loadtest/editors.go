@@ -383,7 +383,7 @@ type editOrigin struct{ _ byte }
 // editParagraph types text into doc as a browser's keystroke does: one transaction that inserts
 // text, without marks, into the text of a top-level paragraph, at a position inside it (never at
 // its start or end, so the paragraph neither starts nor ends with what was typed). A paragraph is
-// eligible when it holds one text run of two characters or more and is not the document's first
+// eligible when it holds one text run of two UTF-16 code units or more and is not the document's first
 // paragraph, which in a seeded spec is the "Revision token rN" line the event generator's edits
 // replace. It reads the tree with the transaction's lock-free accessors only. It returns the
 // update the transaction made, or nil when doc holds no eligible paragraph.

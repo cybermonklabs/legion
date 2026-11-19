@@ -1565,7 +1565,7 @@ wait_until() {
 # words a query and a window share: a query sharing no term with the text would be near no
 # window at all and would prove nothing, where a query of the passage's own words, which stand
 # nowhere else in the document, reaches the one window that covers the end of the block. The
-# block's filler is a multiple of the window's 1,200 characters, so that last window is the
+# block's filler is a multiple of the window's 1,200 new characters, so that last window is the
 # window's 200-character overlap and the passage, and the passage is most of what it embeds.
 # A one-line ask option is the second half: a search for its text names that option's part.
 get "/api/v1/search/coverage"
@@ -1575,7 +1575,7 @@ if [[ -z "$a9_identity" ]]; then
   printf 'SKIP: A9 this server has no embedder (GET /api/v1/search/coverage answers identity null), so no window is embedded and neither the passage at the end of a long block nor an ask option can be found by meaning; run against a server with an embedder configured, or the local harness, which sets DISPATCH_DEV_EMBEDDER=1\n'
 else
   # Words no two alike, so the 200 characters of filler the last window carries weigh little
-  # beside the passage; 27 windows of 1,200 characters, the passage alone in the twenty-eighth.
+  # beside the passage; 27 chunks of 1,200 new characters, with the passage in the twenty-eighth.
   a9_filler="The quarry crew logs its shift here: winch cables inspected, ladder bolts torqued, \
 drainage sumps pumped, floodlight housings cleaned, radio batteries swapped, haul road graded, \
 weighbridge calibrated, blast shelters aired, cabinets restocked, bowsers filled, conveyor \

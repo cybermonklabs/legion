@@ -79,7 +79,7 @@ func seedSearchResultsCorpus(t *testing.T, handler http.Handler, database *store
 	}
 	// Both projects are moved to the same four-digit number, as the bar's own number tests move
 	// them (search_bar_test.go): an issue's number is its project's next, and a one-digit query
-	// is below the route's two-character minimum.
+	// is below the route's two-UTF-16-code-unit minimum.
 	if _, err := database.Pool.Exec(ctx,
 		"update projects set next_number = 1042 where key in ('SRCH', 'OTHER')"); err != nil {
 		t.Fatalf("move both projects to number 1042: %v", err)

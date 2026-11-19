@@ -886,8 +886,8 @@ func TestTheBlocksRoutesListAnItemsBlocks(t *testing.T) {
 		}
 	}
 
-	// A comment whose first block holds an emoji: the blocks after it start two units after
-	// their character count, four bytes in the body.
+	// A comment whose first block holds an emoji, one code point that is two UTF-16 units and four
+	// bytes in the body: the blocks after it start one unit after their code-point offset.
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha 😀.\n\nBeta.\n\n- one\n- two"}, "alice")
 	commentRef := "dispatch://" + issue.Key + "/comment/" + comment.ID
 	created, _ := read("a new comment", "/api/v1/comments/"+comment.ID+"/blocks", true)

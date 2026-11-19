@@ -173,7 +173,7 @@ function matchesCombo(combo: KeyCombo, press: KeyPress, isMac: boolean): boolean
   if (!(sameCharacter || samePosition) || combo.alt !== press.altKey) {
     return false;
   }
-  // A single non-letter character (`?`, `/`, `1`) already encodes whether Shift was held.
+  // A non-letter key of one UTF-16 code unit (`?`, `/`, `1`) already encodes whether Shift was held.
   const shiftEncodedInKey =
     combo.key.length === 1 && combo.key.toLowerCase() === combo.key.toUpperCase();
   if (!shiftEncodedInKey && combo.shift !== press.shiftKey) {

@@ -40,7 +40,7 @@ import {
   refusalWithinCostBounds,
 } from "./cpu-time";
 
-/** The longest comment, message or broadcast body a caller may write, in characters. */
+/** The per-block limit for a comment, message or broadcast body, in UTF-16 code units. */
 const bodyCap = 32_000;
 
 /**

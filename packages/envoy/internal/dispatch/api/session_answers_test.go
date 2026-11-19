@@ -744,7 +744,7 @@ func TestSessionAnswersMaxCharsStopsAfterTheCrossingItem(t *testing.T) {
 // max_chars bounds every word the list serves, and a decline serves two: the person's note and
 // the sentences Dispatch wrote beside it, which are about 200 units and the whole of a decline
 // written with no note. A window that holds less than those sentences stops after the decline,
-// so a caller asking for a few hundred characters of declines is answered with what it asked
+// so a caller asking for a few hundred UTF-16 code units of declines is answered with what it asked
 // for and not with thousands.
 func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
 	f := newAnswersFixture(t)

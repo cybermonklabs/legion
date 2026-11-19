@@ -2715,7 +2715,7 @@ const indented = (text: string, depth = 6) =>
  *   - quoted: every run sharedRuns finds has the verdict `names` in shared-runs.json. Each run is
  *     printed with its context in the text and in the input.
  *   - self: spec.md and each text of agent-texts.json hold neither the session id the
- *     transcript's header names nor its first 8 characters.
+ *     transcript's header names nor its first 8 UTF-16 code units.
  *   - judged: faults.json's faults and STE breaks; decisions.json's choices not recorded, or
  *     recorded without a reason, the options or the parts; findings.json's findings and `neither`
  *     rows; checkable.json (`checkable`: the approved version's every requirement has a check);

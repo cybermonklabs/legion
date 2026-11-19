@@ -83,7 +83,7 @@ const leftOut = (count: number) =>
   `${count} older ${count === 1 ? "item" : "items"} left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`;
 
 /** A message item whose list, rendered alone (with the left-out line `after` older items take),
- *  is exactly `target` characters long. */
+ *  is exactly `target` UTF-16 code units long. */
 function sizedItem(id: string, target: number, after = 0): SessionAnswer {
   const probe = message(id, hoursAgo(1), "x");
   const tail = after === 0 ? 0 : 2 + leftOut(after).length;

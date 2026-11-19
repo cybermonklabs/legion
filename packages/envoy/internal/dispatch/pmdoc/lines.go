@@ -169,7 +169,7 @@ type tabIndented struct {
 
 // Open also leaves goldmark the block's position where its text starts: goldmark places an opened
 // block at the line's start plus the block offset, which counts the columns a tab spans as bytes,
-// so a block after a tab stood a character or two past its text, or on the next line.
+// so a block after a tab stood a byte or two past its text, or on the next line.
 func (p tabIndented) Open(parent ast.Node, reader gmtext.Reader, pc parser.Context) (ast.Node, parser.State) {
 	_, start := reader.PeekLine()
 	if p.opens != nil && !tabFree(pc) {

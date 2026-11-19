@@ -313,7 +313,7 @@ function isList(carried: ShownAnswers): boolean {
  * and bytes, as a list does with its read note.
  *
  * Between two lists, the two reads' words (`sessionAnswersWords`, one string per item Dispatch
- * sent inside the read's window, shown or left out by the list's character cap) answer it
+ * sent inside the read's window, shown or left out by the list's UTF-16 code-unit cap) answer it
  * (`sessionAnswersChanged`): an item new to `next`, or one whose words changed, is a change, so a
  * new item or an edit the cap leaves out still moves the list, and the model reads the new text
  * with its left-out line rather than the person's old words as current. An item `next` no longer
@@ -324,7 +324,7 @@ function isList(carried: ShownAnswers): boolean {
  * left to compare. The comparison there is deliberately crude: the texts are the same only when
  * they differ in nothing but the line naming the read, and every other difference counts as
  * something new, so the list is re-rendered after the last message. Reading that text more
- * closely — by paragraph, or cut into items, each without the line counting what the character
+ * closely — by paragraph, or cut into items, each without the line counting what the UTF-16 code-unit
  * cap left out — was tried twice and defeated twice by an item whose own words read like the
  * renderer's: a person's answer quoting another item's first lines, or ending in a sentence of
  * the cap line's shape, was taken for something already shown, and what they wrote reached no

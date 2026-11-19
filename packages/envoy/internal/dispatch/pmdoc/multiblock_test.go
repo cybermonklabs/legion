@@ -6,7 +6,7 @@ import (
 )
 
 // The browser editor's accept takes block content across exactly two textblocks, reading each
-// one position short of its end, and replaces both whole: a one-character textblock at the
+// one position short of its end, and replaces both whole: a textblock of one UTF-16 code unit at the
 // range's edge is not one of them.
 func TestMultiblockRangeIsTheTextblocksTheEditorReads(t *testing.T) {
 	long := strings.Repeat("L", 250)

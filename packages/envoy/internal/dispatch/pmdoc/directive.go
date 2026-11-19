@@ -367,7 +367,7 @@ func parseDirectiveAttributes(value string) (Attrs, error) {
 			// every character up to the marker and gives no meaning to a backslash, so `\"` ends
 			// the value after a literal backslash, and what the value holds is decoded as
 			// character references alone (its html compiler's parseEntities) - `a\u202fb` is
-			// those six characters and not U+202F, which is what the browser draws.
+			// those eight characters and not U+202F, which is what the browser draws.
 			for offset < len(value) && value[offset] != '"' {
 				offset++
 			}

@@ -21,7 +21,7 @@ export interface ReferenceCandidate {
 /** What a candidate resolves to: `href` is the `dispatch://` reference the drawn title carries as
  *  `data-dispatch-href` (the host's click handler and hover card read it), `title` the words the
  *  editor draws in place of the stored text, `titleKey` an issue key `title` starts with, drawn
- *  in semibold, and `length` how many of the candidate's characters, from its start, the title
+ *  in semibold, and `length` how many of the candidate's UTF-16 code units, from its start, the title
  *  stands for, when that is fewer than all of them: the rest stay drawn as stored text (a `#q2-`
  *  whose question is q2 draws its title for `#q2` and keeps the `-`, so no character the
  *  reference does not name is ever hidden from the author who typed it). */
@@ -258,8 +258,8 @@ function nextCandidates(
   return next;
 }
 
-/** Where a resolved candidate's title ends: `length` characters into it, and never past its end,
- *  so a target naming more characters than the candidate holds - its words shortened by an edit
+/** Where a resolved candidate's title ends: `length` UTF-16 code units into it, and never past its end,
+ *  so a target naming more UTF-16 code units than the candidate holds - its words shortened by an edit
  *  the host has not answered for yet - hides no text beyond the words it was read from. */
 function drawnEnd(candidate: Decoration, target: ReferenceTarget): number {
   return target.length === undefined

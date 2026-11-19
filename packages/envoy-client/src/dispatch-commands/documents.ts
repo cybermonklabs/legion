@@ -711,7 +711,7 @@ function artifactNameExistsProblem(held: Artifact, owner: string): string {
 const STORED_LINE_QUOTED = 200;
 
 /** `line` as a refusal quotes it: its JSON spelling whole while the line is short, and
- *  otherwise that of its first STORED_LINE_QUOTED characters, with the cut named after it. */
+ *  otherwise that of its first STORED_LINE_QUOTED UTF-16 code units, with the cut named after it. */
 function quotedStoredLine(line: string): string {
   if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
   const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
@@ -753,7 +753,7 @@ function firstStoredDifference(given: string, stored: string): string {
 const STORED_TEXT_PRINTED = 2000;
 
 /** The stored text as a refusal prints it, and what the refusal says of the cut: whole while it
- *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED characters. */
+ *  is short, and otherwise its first whole lines up to STORED_TEXT_PRINTED UTF-16 code units. */
 function storedTextPrinted(stored: string): { readonly text: string; readonly cut: string } {
   if (stored.length <= STORED_TEXT_PRINTED) return { text: stored, cut: "" };
   const head = stored.slice(0, STORED_TEXT_PRINTED);

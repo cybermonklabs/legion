@@ -58,7 +58,7 @@ test("every form of an issue key puts that issue first on a page of its project"
     // Each form is its own reported check (`expect.soft`), so a run where one form leads and
     // another does not says which.
     for (const form of [key, key.toLowerCase(), key.replace("-", " "), number]) {
-      // Emptied between forms: the bar holds no hit for a query under two characters, so the
+      // Emptied between forms: the bar holds no hit for a query under two UTF-16 code units, so the
       // row this form finds is this form's own and never the last one's.
       await search.fill("");
       await expect(dialog.locator('[role="option"][id^="search-option-issue-"]')).toHaveCount(0);

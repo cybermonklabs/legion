@@ -161,7 +161,7 @@ export const holdsNoToken = (text: string) => {
 const jwtHeader = Buffer.from('{"alg":"RS256","typ":"JWT"}', "utf8").toString("base64url");
 
 /** Asserts that TEXT quotes no App JWT and no private key of the stand-in Apps IDS names, as
- * `holdsNoToken` asserts it quotes no token: the key's base64 body lines are 64 characters
+ * `holdsNoToken` asserts it quotes no token: the key's base64 body lines are at most 64 characters
  * apiece of a key this run generated, which nothing else here could print. */
 export const holdsNoKey = (text: string, ids: readonly number[]) => {
   expect(text).not.toContain("BEGIN PRIVATE KEY");

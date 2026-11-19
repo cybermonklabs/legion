@@ -18,7 +18,7 @@ async function expectTouchTarget(locator: Locator): Promise<void> {
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
 }
 
-/** A 90-character component title: on a phone it must truncate, never widen the row or the page. */
+/** A 91-character component title: on a phone it must truncate, never widen the row or the page. */
 const longTitle =
   "Observability pipeline for ingesting, enriching, and retaining structured service telemetry";
 

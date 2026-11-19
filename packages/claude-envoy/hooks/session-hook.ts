@@ -1,6 +1,6 @@
 // Claude Code hook commands, one bundle for all three; hooks.json names the mode as the argument.
 // Each mode is a hook command of its own because Claude Code caps each hook's output at 10,000
-// characters, so a long open-asks summary or answers list sharing a command with the skill could
+// UTF-16 code units, so a long open-asks summary or answers list sharing a command with the skill could
 // push it out.
 //
 // open-asks (every SessionStart: startup, resume, clear, compact, fork). Four jobs:

@@ -341,7 +341,7 @@ function contextOf(run: HookRun, event: string): string {
   const output = JSON.parse(run.stdout)
   expect(output.hookSpecificOutput.hookEventName).toBe(event)
   const context: string = output.hookSpecificOutput.additionalContext
-  // Claude Code keeps an additionalContext string whole only up to 10,000 characters.
+  // Claude Code keeps an additionalContext string whole only up to 10,000 UTF-16 code units.
   expect(context.length).toBeLessThan(10_000)
   return context
 }

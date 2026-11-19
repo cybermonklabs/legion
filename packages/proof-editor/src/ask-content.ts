@@ -200,7 +200,7 @@ export const brokenAskInputGuards: EditorProps = {
 /**
  * Whether `tr` drops, from the ask at `askPos` in `state.doc` that its content rule refuses, a
  * child block that lies wholly outside the selection: every step of `tr` replaces a range inside
- * the ask's content, and some step deletes a leaf of the block, one character of its text or a
+ * the ask's content, and some step deletes a leaf of the block, one UTF-16 code unit of its text or a
  * leaf node such as an image or a hard break, or the block itself when it is a leaf (a divider),
  * so a block holding only an image, or a divider, is kept as one holding text is. Inserting into
  * the block deletes none of its leaves, nor does deleting only node boundaries, as a Backspace

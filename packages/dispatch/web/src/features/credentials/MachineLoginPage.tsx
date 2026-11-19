@@ -53,7 +53,7 @@ function MachineLoginDecision({
 }
 
 /**
- * The machine-login page: `agent-secrets machine login` prints an 8-character code on the
+ * The machine-login page: `agent-secrets machine login` prints a 9-character code on the
  * machine, and the operator types it here. A service, such as the Legion daemon, logs in with its
  * own Kubernetes token and prints no code; a service's login an older broker opened can still be
  * looked up here, and only denied. Decision 13 of the shared broker contract:

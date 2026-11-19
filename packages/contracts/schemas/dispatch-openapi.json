@@ -9183,7 +9183,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 code points, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.",
+        "description": "Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 UTF-16 code units (counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 code points, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.",
         "operationId": "postApiV1Priorities",
         "parameters": [
           {
@@ -9281,7 +9281,7 @@
         "x-write-scope": "deployment"
       },
       "patch": {
-        "description": "Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND.",
+        "description": "Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 UTF-16 code units (counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND.",
         "operationId": "patchApiV1PrioritiesById",
         "parameters": [
           {

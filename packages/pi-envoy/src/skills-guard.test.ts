@@ -64,7 +64,7 @@ test("the injected dispatch-first skill fits its budget on every host", () => {
   const skill = readFileSync(file, "utf8");
   expect(skill.split("\n").length).toBeLessThan(60);
   // Oh My Pi and Claude Code inject the marker-wrapped body. Claude Code keeps a hook's context
-  // whole up to 10,000 characters; 6,000 leaves room for a later edit.
+  // whole up to 10,000 UTF-16 code units; 6,000 leaves room for a later edit.
   expect(readDispatchFirstContext(file).length).toBeLessThan(6_000);
 });
 

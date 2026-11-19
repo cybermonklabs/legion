@@ -159,7 +159,7 @@ const ANSWER_LIMIT = 4;
  * it is still owed. A stored text is rendered once, from the tree the server read it into, in
  * the caller's own commit: it is never parsed here and never sent to the worker, whatever its
  * length. A text Dispatch does not store is parsed: one of at most `markdownWorkerThreshold`
- * characters in the caller's own commit, a longer one at once as pending, with no document - its
+ * UTF-16 code units in the caller's own commit, a longer one at once as pending, with no document - its
  * literal text is what the reader reads meanwhile - and again with the document once the worker
  * answers.
  */
@@ -459,7 +459,7 @@ export function drawWithEngine(
  * already resolved, whatever its length: drawing reads no markdown, so neither the page's own
  * thread nor the parse worker parses it, and the engine's answer cache holds nothing for it.
  *
- * A text with no tree of its own is parsed. One of at most `markdownWorkerThreshold` characters
+ * A text with no tree of its own is parsed. One of at most `markdownWorkerThreshold` UTF-16 code units
  * is parsed on the page's own thread and rendered synchronously, where a load has already
  * resolved, so it renders in the layout phase of the commit that mounts it (a list that inserts
  * a turn sees the turn's full height in that same commit, and `ViewportAnchor` compensates in

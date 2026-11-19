@@ -112,7 +112,7 @@ phoneTest(
   }
 );
 
-// The search filter holds up to 1,000 characters, and its chip stays inside its row: that text
+// The search filter holds up to 1,000 UTF-16 code units, and its chip stays inside its row: that text
 // on one line makes the page 7,535 px wide at 1280, and a phone zooms out until it is 1,560 px.
 filterTest(
   "a table search of 1,000 ASCII characters stays inside the page @phone @pr",

@@ -6497,7 +6497,7 @@ That is the relay doing its work on a run it cannot tell from a key's, not a val
 The key command's channel is the only one read that way, and `agent-secrets`' messages are not: there a path, an identifier and an approval link are left as the broker wrote them.
 
 What the key relay does not mask is a run shorter than those bounds, and a key can end in one.
-A PEM's last body line is `4*ceil((DER length mod 48)/3)` characters, so a key whose DER length leaves 12 bytes or fewer in its last group ends in a line of 16 base64 characters or fewer, which this relay passes.
+A PEM's last body line is `4*ceil((1 + ((DER length - 1) mod 48))/3)` characters, so a key whose DER length leaves 12 bytes or fewer in its last group ends in a line of 16 base64 characters or fewer, which this relay passes.
 Measured, the RSA-2048 keys GitHub issues end in 24 base64 characters (PKCS#8) to 56 (PKCS#1), RSA-3072 the same, RSA-4096 32 and 60, an EC P-256 key 36 (SEC1) or 56 (PKCS#8), and RSA-1024 PKCS#8 keys ended in 12 and in 16;
 a key of its own carries a DER length of its own, which moves each of these a few characters.
 A key re-wrapped below 20 columns, or broken up every 16 base64 characters, passes line by line for the same reason.

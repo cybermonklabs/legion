@@ -327,7 +327,7 @@ test("bin/dispatch is executable and runs a fresh dist/dispatch.js without node_
   }
 })
 
-/** Where two bundles part ways, with 80 characters of each side around it. */
+/** Where two bundles part ways, with 80 bytes of each side around it. */
 function describeMismatch(file: string, first: Buffer, second: Buffer): string {
   const shorter = Math.min(first.length, second.length)
   let offset = 0

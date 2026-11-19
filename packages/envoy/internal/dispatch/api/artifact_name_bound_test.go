@@ -106,7 +106,7 @@ func TestANewArtifactNamePastTheBoundIsRefused(t *testing.T) {
 	}
 }
 
-// An artifact stored before the bound under a name and a reference key past it - 5000 characters,
+// An artifact stored before the bound under a name and a reference key past it - over 5000 characters,
 // which main stores, since Postgres compresses the repeated key into artifacts_ref_key_key - takes
 // writes as before: an upload under its name stores a new version, an edit stores another, and the
 // artifact reads.

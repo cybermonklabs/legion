@@ -425,7 +425,7 @@ func requireRevokedClose(t *testing.T, connection *gws.Conn, what string) {
 	}
 }
 
-// paragraphMarkdown is a document of paragraphs paragraphs, each of 161 characters whose every
+// paragraphMarkdown is a document of paragraphs paragraphs, each ending with 144 characters whose every
 // word is "document ", the word an edit replaces to tell its own text from the seed's.
 func paragraphMarkdown(paragraphs int) string {
 	var markdown strings.Builder
@@ -441,7 +441,7 @@ func paragraphMarkdown(paragraphs int) string {
 func bigDocumentMarkdown() string { return paragraphMarkdown(4_000) }
 
 // syncMessageBytesPerParagraph is how many bytes one of paragraphMarkdown's paragraphs adds to the
-// sync message a room sends a page that asks for the whole document: its 161 characters and the
+// sync message a room sends a page that asks for the whole document: its paragraph text and the
 // block the document's tree holds them in. Measured at 257 on documents of 200 to 1,600
 // paragraphs, whose messages ran from 51 KB to 407 KB, and used only to size a document to a
 // socket's send buffer; the test below logs the message the server really wrote, so a build that

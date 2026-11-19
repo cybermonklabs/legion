@@ -47,7 +47,7 @@ var censusForbiddenFunctions = []string{
 }
 
 // censusToken is one token of a census's code: a word (a keyword, an identifier or a number) or a
-// quoted identifier's name, lowercased, or one other character.
+// quoted identifier's name, lowercased, or another token.
 type censusToken struct {
 	text   string
 	quoted bool

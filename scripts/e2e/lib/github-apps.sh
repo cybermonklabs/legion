@@ -411,7 +411,7 @@ app_token_redact() {
 #   in the command's own error message can come back partly masked.
 # Everything else of the line is passed on, for the reason the release relay passes every word.
 # What it does not mask is a run shorter than those bounds, and a key can end in one: a PEM's last
-# body line is 4*ceil((DER length mod 48)/3) characters, so a key whose DER length leaves 12 bytes
+# body line is 4*ceil((1 + ((DER length - 1) mod 48))/3) characters, so a key whose DER length leaves 12 bytes
 # or fewer in its last group ends in a line of 16 characters or fewer, which this relay passes.
 # Measured, the RSA-2048 keys GitHub issues end in 24 characters (PKCS#8) to 56 (PKCS#1), RSA-3072
 # the same, RSA-4096 32 and 60, an EC P-256 key 36 (SEC1) or 56 (PKCS#8), and RSA-1024 PKCS#8 keys

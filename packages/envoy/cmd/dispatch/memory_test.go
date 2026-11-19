@@ -561,7 +561,7 @@ func refusedWithAdvice(answer response) bool {
 // has no room for kept on its ask and left out of its block. Either way the document stays within
 // the cap, still reads, and a one-word edit on a server that has not loaded it holds at most the
 // bound. The 900 KB description this test grew a document with before is refused outright now,
-// for the 32,000 characters an ask's question and options may hold together (INFRA-370), so the
+// for the 32,000 UTF-16 code units an ask's question and options may hold together (INFRA-370), so the
 // growth is written here in texts that bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
@@ -682,7 +682,7 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 
 // An answer is stored on its ask as well as in its block, and settlement writes it back into a block
 // that returns to the document, so returning blocks cannot grow a document past what one upload may
-// hold on a real Dispatch process either: forty answers of 32,000 characters, the most an answer
+// hold on a real Dispatch process either: forty answers of 32,000 UTF-16 code units, the most an answer
 // may hold (INFRA-370), each taken against a document their deleted blocks had left small, then all
 // forty blocks returned in one edit, leave the document within 1 MiB, the edit and its settlement
 // hold at most the bound, and so does each cold read of the document. An answer of 900,000

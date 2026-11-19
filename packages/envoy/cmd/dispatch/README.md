@@ -3183,7 +3183,7 @@ the answer's `total` counts every match of every kind, and `reachable` the hits 
 Search snippets are escaped text with only server-inserted `<mark>` elements around matches.
 Native issue creation rejects a near copy of an open issue of the same project with `409 POSSIBLE_DUPLICATE` and up to five candidates;
 `force` bypasses that refusal, and external references skip the check.
-An issue title is at most 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming), on creation and on a retitle, and a longer one is `400 CAP_EXCEEDED` before the near-copy check runs.
+An issue title is at most 1,000 UTF-16 code units (`contracts.IssueTitleMax`, after trimming), on creation and on a retitle, and a longer one is `400 CAP_EXCEEDED` before the near-copy check runs.
 The check scores the project's issues whose status is not `done`, less the new issue's ancestors (its parent and every issue above it), on the share of the new text's rarest words that a candidate's title vector and its primary document's latest vector hold together:
 the terms are the related-item check's own (`pickRelatedTerms`, `api/related_terms.go`), and the statement drives from them into `issues.search` and `document_search`, so each term is one probe of a GIN index and no candidate's spec vector is read more than once per term.
 Every lexeme an issue key contributes is dropped from those terms, so a spec that cites the nearest issue it ruled out is not refused for citing it.
@@ -3828,7 +3828,7 @@ Each item below names a path with its method and identity, then its purpose.
   A call that can name none — a credential that acts for no person and names no `default_assignee` — is `400 INVALID_PROJECT` naming the field, and a login nobody has signed in with, whether the call names it or it is the person the credential acts for (a broker-issued token's owner comes from the broker, not from `people`), is `400 ASSIGNEE_NOT_ALLOWED`.
   The answer is the project plus the `default_assignee` it took; the `project.created` event carries the project alone.
   It also rejects a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate (U+202A-U+202E, U+2066-U+2069), and a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF);
-  combining marks, format characters, private-use characters and whitespace don't count) with `400 INVALID_PROJECT`, a name over 80 characters (`contracts.ProjectNameMax`, UTF-16 units after the trim) with `400 CAP_EXCEEDED`, and a duplicate key with `409 PROJECT_EXISTS`.
+  combining marks, format characters, private-use characters and whitespace don't count) with `400 INVALID_PROJECT`, a name over 80 UTF-16 code units (`contracts.ProjectNameMax`, after the trim) with `400 CAP_EXCEEDED`, and a duplicate key with `409 PROJECT_EXISTS`.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
 
@@ -3983,7 +3983,7 @@ Each item below names a path with its method and identity, then its purpose.
   It is absent on an issue hit, which has no blocks, and on a hit only the keyword list found.
   A query under 2 UTF-16 units returns `400 INVALID_QUERY`;
   a stop-word-only query returns `200` with no results;
-  `400 CAP_EXCEEDED` over 1,000 characters (`contracts.SearchQueryMax`, UTF-16 units after trimming), since the query rides in the URL;
+  `400 CAP_EXCEEDED` over 1,000 UTF-16 code units (`contracts.SearchQueryMax`, after trimming), since the query rides in the URL;
   `400 INVALID_PROJECT` for a project that is not a project key (none searches every project); `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.
   This route declares `q`, `project`, `limit` and `offset` alone.
   `number_project`, `status`, `author`, `updated_since` and `keywords_only` are declared on `GET /api/v1/search/results` below, and a client sends a search carrying one of them there.
@@ -4113,7 +4113,7 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
-  A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
+  A title over 1,000 UTF-16 code units (`contracts.IssueTitleMax`, after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
   External references skip the check.

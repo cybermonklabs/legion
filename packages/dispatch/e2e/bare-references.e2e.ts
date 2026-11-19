@@ -64,7 +64,7 @@ const NO_ISSUE_KEY = "CORE-404";
  *  holds one (400 DECISION_BLOCK_IN_BODY, INFRA-1201), so the reply that carries this row is
  *  seeded straight into `comments` (`e2e/decision-bodies.ts`) rather than written through the
  *  API. It stays on the rendered surface, which is the only browser surface it can be read on:
- *  the preview takes rows of at most 160 characters with no line break, and this body has two. */
+ *  the preview takes rows of at most 160 UTF-16 code units with no line break, and this body has two. */
 const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
 
 /** Rows no document can hold as a line of its text, each with the reason. They are read on the

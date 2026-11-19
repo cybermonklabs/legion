@@ -31,7 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// BlockCap is the longest one block of a body may be, in characters: the bound the comment,
+// BlockCap is the longest one block of a body may be, in UTF-16 code units: the bound the comment,
 // message and broadcast routes refuse a longer block against (contracts.DispatchBlockUnits).
 // The shapes below are grown against it - to it, but for the marker chain at one under it and
 // the two runs of brackets at 30,000 - so what is measured is the worst a reader can be sent in
@@ -52,10 +52,10 @@ type Shape struct {
 	ID string
 	// Name says what the shape is and names its subtest.
 	Name string
-	// Body is the shape carrying size characters of whatever it repeats, after its own fixed
+	// Body is the shape carrying up to size repeated characters, after its own fixed
 	// opening (a quote's first line, a nesting of items, a typed fence) where it has one.
 	Body func(size int) string
-	// Grown is how many repeated characters the shape carries at full size: the body cap, less
+	// Grown is the target number of repeated characters at full size: the body cap, less
 	// the characters the shape spells around them, for all but the two runs of brackets, which
 	// stand at 30,000. It is also the size a growth measurement scales, so a shape whose opening
 	// is a fixed cost - the items the nested shape indents before its blank lines - is measured

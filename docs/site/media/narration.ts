@@ -18,7 +18,7 @@ export const NARRATION_VOICE = {
   },
 } as const;
 
-/** How much of the neighbouring narration ElevenLabs reads on each side, in characters. */
+/** How much of the neighbouring narration ElevenLabs reads on each side, in UTF-16 code units. */
 export const CONTEXT_CHARS = 200;
 
 /**

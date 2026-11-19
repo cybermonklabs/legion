@@ -542,7 +542,7 @@ test("a request an older copy already gave the list gets no second one and no re
 
 // A list an older copy placed carries no item fingerprints, so only its text is left to compare,
 // and every difference but the line naming the read counts as something new. Here the read note's
-// own length pushed an item past the reader's character cap, so the list is re-rendered after the
+// own length pushed an item past the reader's UTF-16 code-unit cap, so the list is re-rendered after the
 // last message: a prompt-cache miss, and never a person's words held back. Reading that text more
 // closely to spare the miss swallowed an item twice (see `showsNew`).
 const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`;

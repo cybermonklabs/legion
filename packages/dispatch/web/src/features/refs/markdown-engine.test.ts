@@ -106,9 +106,9 @@ test("a parse the engine refuses leaves the next parses of unrelated text intact
 });
 
 // The boundary the browser rows measure (`e2e/heavy-bodies.e2e.ts`, whose two shortest rows sit
-// one character under it): a body of exactly `markdownWorkerThreshold` characters is parsed
-// where every body always was, on the page's own thread, and one character more is parsed in the
-// worker (sjawhar/legion#2519).
+// one unit under it): a body of exactly `markdownWorkerThreshold` UTF-16 code units is parsed
+// where every body always was, on the page's own thread, and one UTF-16 code unit more is parsed
+// in the worker (sjawhar/legion#2519).
 describe("the parse worker's threshold", () => {
   afterEach(restoreParseWorker);
 

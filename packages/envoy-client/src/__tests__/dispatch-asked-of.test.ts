@@ -196,8 +196,8 @@ test("the two shared sentences stand in both ask descriptions and in the dispatc
 });
 
 // The negative half, as a rule a reader can decide: on one line, one of the words that would tell
-// an agent to move an ask somewhere, standing within forty characters of `ask` or `asks`. Forty
-// characters is a clause: near enough that the two words are about each other, far enough to catch
+// an agent to move an ask somewhere, standing within forty UTF-16 code units of `ask` or `asks`. Forty
+// UTF-16 code units is a clause: near enough that the two words are about each other, far enough to catch
 // "the ask ... hand it to". The scan reads every file under skills/, every packages/*/AGENTS.md
 // and every dispatch_* tool description, which is every text that tells an agent how asks work.
 //
@@ -337,8 +337,8 @@ function matches(line: string, pattern: RegExp): { from: number; to: number }[] 
   }));
 }
 
-/** Every line of `text` where one of the moving words stands within `NEAR` characters of `ask`
- *  or `asks`, counting the characters between the two words. */
+/** Every line of `text` where one of the moving words stands within `NEAR` UTF-16 code units of `ask`
+ *  or `asks`, counting the UTF-16 code units between the two words. */
 function hitsIn(source: string, text: string): Hit[] {
   const hits: Hit[] = [];
   text.split("\n").forEach((line, index) => {

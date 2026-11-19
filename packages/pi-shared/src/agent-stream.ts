@@ -393,7 +393,7 @@ export class AgentStreamPublisher {
    * at once when they differ from the list last kept while a viewer is attached. Each name is
    * capped and kept once, a name a person could not type dropped (`isTypableCommandName`). The
    * list keeps the host-order prefix whose frame fits what the settings frame leaves of the
-   * replay's byte budget (`#fitCommands`): the caps count characters, and a character JSON escapes
+   * replay's byte budget (`#fitCommands`): the caps count UTF-16 code units, and a character JSON escapes
    * (`\u0001`) costs six bytes.
    */
   setCommands(subject: string, commands: readonly AgentStreamCommand[]): void {

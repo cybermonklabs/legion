@@ -4,7 +4,7 @@
 --
 -- The check (duplicateQuery, api/duplicates.go) compares a new title's lexemes with those of every
 -- other issue in its project, and it built each title's from the title as it ran, several times
--- over once Postgres inlined the query's CTEs: in a project of 2,000 titles at the 1,000-character
+-- over once Postgres inlined the query's CTEs: in a project of 2,000 titles at the 1,000-UTF-16-code-unit
 -- cap that took 1.3-2.5 s for every creation. issues.search cannot stand in for it, since it holds
 -- the key's lexemes beside the title's, and a title holding a word of its own key would lose that
 -- word were the key's taken out. title_lexemes(title) is the one definition of a title's lexemes,

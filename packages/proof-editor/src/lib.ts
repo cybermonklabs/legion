@@ -270,9 +270,9 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  set draws nothing. See ./editor-highlights.ts. */
   setBlockMarks(marks: readonly BlockMark[]): void;
   /** Draws what changed over and beside the document, without changing it: one text entry per
-   *  run, naming its top-level block by index and the run by character offsets into that block's
+   *  run, naming its top-level block by index and the run by UTF-16 code-unit offsets into that block's
    *  text, or the whole block where it names no range; one widget per piece of text the document
-   *  no longer holds, drawn at a character offset inside the block it names, for words that
+   *  no longer holds, drawn at a UTF-16 code-unit offset inside the block it names, for words that
    *  block lost, before that block where it names no offset or the block holds no text of its
    *  own, and at the end of the document where it names the index past the last block.
    *  Replaces what was drawn before; an empty set draws nothing.

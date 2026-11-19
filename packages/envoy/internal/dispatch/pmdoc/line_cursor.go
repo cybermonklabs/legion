@@ -64,7 +64,7 @@ func (c *lineCursor) take() {
 	c.col++
 }
 
-// step consumes one character that is no tab.
+// step consumes one byte that is no tab.
 func (c *lineCursor) step() {
 	c.i++
 	c.col++

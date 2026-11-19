@@ -7,7 +7,7 @@ import { $prose } from "@milkdown/kit/utils";
 export interface TextDecoration {
   /** Index of the top-level block of the document the decoration sits in. */
   blockIndex: number;
-  /** Character offsets into that block's own text; with none, the whole block carries the class
+  /** UTF-16 code-unit offsets into that block's own text; with none, the whole block carries the class
    *  as a node decoration. The two ends are one field, so a run with only one end cannot be
    *  written. */
   range?: { from: number; to: number };
@@ -19,7 +19,7 @@ export interface BlockWidget {
   /** The widget is drawn before the top-level block at this index; `doc.childCount` draws it at
    *  the end of the document. */
   blockIndex: number;
-  /** Character offset into that block's own text to draw the widget at. With none, or in a block
+  /** UTF-16 code-unit offset into that block's own text to draw the widget at. With none, or in a block
    *  that holds no text of its own, the widget is drawn before the whole block. */
   offset?: number;
   text: string;
@@ -85,7 +85,7 @@ function textRuns(block: TopLevelBlock): TextRun[] {
     }
     if (node.isLeaf) {
       // ProseMirror's `textContent` draws a leaf through its type's `leafText` - commonmark's
-      // `hardbreak` declares one newline - so the block's text counts those characters where its
+      // `hardbreak` declares one newline - so the block's text counts those UTF-16 code units where its
       // text nodes count none, and a run after the leaf stands that much further on. A host
       // reading its offsets off `textContent` would otherwise name the wrong characters.
       offset += node.type.spec.leafText?.(node).length ?? 0;
@@ -96,7 +96,7 @@ function textRuns(block: TopLevelBlock): TextRun[] {
   return runs;
 }
 
-/** The document position `offset` characters into the block's text, or `undefined` for an offset
+/** The document position `offset` UTF-16 code units into the block's text, or `undefined` for an offset
  *  past its end. The position where one run ends and the next begins is two positions in the
  *  document whenever anything stands between them, so an offset there belongs to the run that
  *  begins at it while a decoration opens (`"from"`) and to the one that ends at it while a
@@ -216,7 +216,7 @@ function changeDecorations(doc: ProseMirrorNode, value: ChangeDecorations): Deco
  * stood. A host that writes classes into mark or block DOM makes ProseMirror read that DOM back
  * as a document edit, so these classes are decorations computed from editor state.
  *
- * The entries name a block by its index among the document's top-level blocks, a run by character
+ * The entries name a block by its index among the document's top-level blocks, a run by UTF-16 code-unit
  * offsets into that block's text and a widget by the offset it stands at, so a host computes them
  * from text alone and never from document positions. The editor this serves is read-only and
  * `setMarkdown` replaces its whole document, so a document change recomputes the set from the

@@ -84,7 +84,7 @@ import {
  * so a count over the file is a count of judgements and never of attempts at them.
  *
  * **A fault says why.** A fault's `faultDetail` is the answering body of the attempt that ended
- * the retry ladder, not its length and not a tally, bounded at the 2,000 characters `models.ts`
+ * the retry ladder, not its length and not a tally, bounded at the 2,000 UTF-16 code units `models.ts`
  * keeps, and `attempts` says how many tries there were. The summary and `round.json` carry, for
  * each fault kind and each arm, the count and one example detail, and the progress line prints a
  * new fault kind's first detail once, so a round that is failing says why while it runs.
@@ -127,7 +127,7 @@ const EXIT_CANNOT_RUN = 2;
 /** The deadline stopped the run with judgements left: run it again. */
 const EXIT_UNFINISHED = 10;
 
-/** How many characters of a fault detail one printed line carries. */
+/** How many UTF-16 code units of a fault detail one printed line carries. */
 const PROGRESS_DETAIL_CHARS = 400;
 
 /** Where a judgement's second order is drawn from, so the examples do not follow the documents. */

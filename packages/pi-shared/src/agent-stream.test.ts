@@ -264,7 +264,7 @@ describe("AgentStreamPublisher", () => {
     expect(last?.kind === "commands" && last.commands).toHaveLength(AGENT_STREAM_LIMITS.commands);
   });
 
-  // The caps count characters, but the replay's budget is UTF-8 bytes of JSON: a control character
+  // The caps count UTF-16 code units, but the replay's budget is UTF-8 bytes of JSON: a control character
   // is one character and a six-byte `\u0000` escape. A list at every cap made of escaped text must
   // still leave the whole replay inside the budget, ending in the host-order prefix that fits.
   test("the session's commands keep the replay inside its byte budget however their text escapes", () => {

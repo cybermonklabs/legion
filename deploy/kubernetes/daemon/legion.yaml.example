@@ -453,7 +453,7 @@ runtime:
         # spend row names an issue yet. A row grouped by issue follows when the collector keeps
         # them (dispatch://INFRA-1835). The loader refuses a member the agent's parser would
         # throw on — one that is no single key=value, an empty key, a side that does not
-        # percent-decode or runs past 255 characters, or one naming legion.issue or legion.role
+        # percent-decode or runs past 255 UTF-16 code units, or one naming legion.issue or legion.role
         # — since one such member costs the pod every attribute of the variable:
         # OTEL_RESOURCE_ATTRIBUTES: theorem.project=widgets,theorem.lane=widgets-platform
       service_account: legion-worker

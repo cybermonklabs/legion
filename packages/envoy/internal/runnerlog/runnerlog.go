@@ -41,7 +41,7 @@ func Say(w io.Writer, prefix, format string, args ...any) {
 // `##\x5b##\x5b`. No escape holds a "#" or a "[", so no "##[" is left, and that keeps out every
 // command of the second form, since only a literal "##[" names one. The runner finds "##[" with a
 // culture-sensitive search, which can pass over an ignorable character such as U+034F or U+FE0F
-// as if it were not there. But it then reads the command name a fixed three characters after the
+// as if it were not there. But it then reads the command name a fixed three UTF-16 code units after the
 // start of the match, and accepts only a name of its registered commands, compared without regard
 // to case. So in a match through an ignorable character the name starts inside the match, at a
 // "#", a "[" or that character, and no command the runner defines has that name. In actions/runner

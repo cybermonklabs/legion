@@ -15,7 +15,7 @@
 // browser module, so a spec loads it for its shapes alone.
 import { DISPATCH_BLOCK_UNITS } from "@legion/contracts/dispatch-tools";
 
-/** `head` followed by `filler` repeated, cut to exactly `length` characters. */
+/** `head` followed by `filler` repeated, cut to exactly `length` UTF-16 code units. */
 export function padTo(head: string, filler: string, length: number): string {
   const padding = filler.repeat(Math.ceil((length - head.length) / filler.length));
   return (head + padding).slice(0, length);

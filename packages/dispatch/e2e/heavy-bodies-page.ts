@@ -16,7 +16,7 @@ export function markdownBody(card: Locator): Locator {
   return card.locator(".dispatch-markdown").first();
 }
 
-/** The characters standing in `element` itself rather than inside a block a paint attached:
+/** The length, in UTF-16 code units, of the text standing in `element` itself rather than inside a block a paint attached:
  *  a body's own literal text, which a reader is shown while the worker owes its formatting and
  *  which a paint replaces rather than stands behind. */
 export function looseTextLength(element: Locator): Promise<number> {

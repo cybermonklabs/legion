@@ -86,7 +86,7 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
  * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
  * its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
+ * UTF-16 code units, on an answer, on a decline and on a reply in an ask's thread; on an answer,
  * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
  * sentences Dispatch wrote for the asking agent; then the person's words in full.
  *
@@ -245,7 +245,7 @@ export interface RenderSessionAnswersOptions {
  * The per-request message: `SESSION_ANSWERS_MARKER` (and, for a cached list, `As read at <time>;
  * this read failed: <reason>.` on the next line), then each item newest first, blank-line
  * separated, as a strict prefix under the cap: the whole message, header and left-out line
- * included, is shorter than `SESSION_ANSWERS_MAX_CHARS` (at most 7,999 characters, as the
+ * included, is shorter than `SESSION_ANSWERS_MAX_CHARS` (at most 7,999 UTF-16 code units, as the
  * left-out line's "under 8,000" says); the first item that does not fit is left
  * out with every item after it, so an item over the cap on its own is left out whole, never cut.
  * When any item is left out, the last line counts them and names `dispatch answers` (no command

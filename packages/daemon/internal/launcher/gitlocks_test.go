@@ -1098,7 +1098,7 @@ func TestAClockPassRemovesALockWhoseUnreadableProcessIsNoGitOrJJ(t *testing.T) {
 
 	// comm is matched whole, so nothing a git ships beside itself is a holder of this clone's
 	// locks: a git-remote-https speaks to a server and takes no lock here. The kernel cuts comm
-	// at fifteen characters, which is the second spelling, and neither of them is `git`.
+	// at fifteen bytes, which is the second spelling, and neither of them is `git`.
 	for _, comm := range []string{"git-remote-https", "git-remote-http"} {
 		t.Run("a "+comm+" is no git", func(t *testing.T) {
 			c := newLockClone(t)

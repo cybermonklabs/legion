@@ -33,7 +33,7 @@ import (
 // the element limit. `)_` saved in linear time before the fix too and is held to the same growth.
 //
 // A comment, a comment edit, a message and a broadcast hold up to contracts.DispatchBlockUnits
-// characters in one block - 32,000 since INFRA-45, sixteen times the 2,000 that was too short
+// UTF-16 code units in one block - 32,000 since INFRA-45, sixteen times the 2,000 that was too short
 // for a ladder to tell the code before the fix from the code after it, whose removed timings
 // measured a 2,000-character `a_` comment at 51 ms before the fix and 56 ms after. That bound is
 // laddered here ("comment a_"), a one-block `a_` comment at it being the longest pathological

@@ -396,7 +396,7 @@ describe("running a person's command", () => {
   // from, so `!yes`, `!cat /dev/urandom` or an ordinary `!grep -r … /` writes until the limit
   // (120 s by default) or until the filesystem is full. Measured at c974ed1e653a on the issue pod:
   // 376,043,850 bytes in 1.5 s, which the default limit scales to about 28 GiB. The bound here is
-  // sixteen times the character cut, far above anything a fix that caps the writer would leave.
+  // sixteen times the UTF-16 code-unit cut, far above anything a fix that caps the writer would leave.
   // The watcher samples the real filesystem while a real child process writes to it, so no fake
   // clock can drive it: the bytes come from the shell, not from a timer this test owns.
   test("bounds what an endless command writes to disk, not only what it reads back", async () => {

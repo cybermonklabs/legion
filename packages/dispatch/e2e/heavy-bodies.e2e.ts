@@ -106,7 +106,7 @@ function deepestNesting(element: Locator, selector: string): Promise<number> {
   }, selector);
 }
 
-/** How many characters `element` holds, so a row can assert a shape read as one run of text
+/** How many UTF-16 code units `element` holds, so a row can assert a shape read as one run of text
  *  without shipping 30,000 characters into an assertion message. */
 function textLength(element: Locator): Promise<number> {
   return element.evaluate((node) => node.textContent?.length ?? 0);

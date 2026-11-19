@@ -174,7 +174,7 @@ export interface SessionTitleSources {
  * The title this session registers with the Envoy listener, which Dispatch's Agents page shows in
  * place of the session id: `ENVOY_SESSION_TITLE`; else the name the user gave the session, alone,
  * since a name a person chose needs nothing to tell it apart; else a name and the current id's
- * first eight characters, the name being the pane's tmux name inside tmux (`TMUX` and
+ * first eight UTF-16 code units, the name being the pane's tmux name inside tmux (`TMUX` and
  * `TMUX_PANE`, asked of the server `TMUX` names, for a pane whose first process `ownPane`
  * accepts, by default one of this process's ancestors) and the project directory's name
  * otherwise. The short id keeps two sessions that share a tmux window or session apart. The tmux

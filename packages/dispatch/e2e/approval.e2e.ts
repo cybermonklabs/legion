@@ -360,7 +360,7 @@ test("an undo that restores the approved text around a decision block the agent 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // The restored text is one character away from the approved version, so the approval stays
+    // The restored text is different from the approved version, so the approval stays
     // stale at version 1 with version 3 the latest. The read is polled rather than slept on:
     // nothing settles into this artifact - `editArtifact` wrote version 3 itself, and no page
     // is in the room - which 16 reads 250 ms apart measured here, every one of them this same

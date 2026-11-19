@@ -199,7 +199,7 @@ export function sanitizeSubjectSegment(value: string): string {
 }
 
 // Tail-recursive through an accumulator, so the compiler takes a literal of any practical length
-// rather than stopping at its instantiation depth after about 100 characters.
+// rather than stopping at its instantiation depth after about 100 UTF-16 code units.
 type SanitizedSubjectSegment<
   Value extends string,
   Done extends string = "",

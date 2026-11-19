@@ -361,7 +361,7 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
     const option = screen.getByRole("option");
     await waitFor(() => expect(option.querySelector("strong")?.textContent).toBe("both"));
 
-    // The cut is on the tree now, not on the markdown, so the 280 characters
+    // The cut is on the tree now, not on the markdown, so the 280 UTF-16 code units
     // (ANSWER_PREVIEW_CHARS) are the words a reader sees rather than the source: the four
     // characters of `**both**`'s markers are no longer spent, and the cut lands two words
     // further in. A deliberate change of this task; the bound it is held to is the same one.

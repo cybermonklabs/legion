@@ -281,7 +281,7 @@ func keystroke(txn *crdt.Transaction, fragment *crdt.YXmlFragment, random *rand.
 	length := text.Len()
 	switch roll := random.IntN(10); {
 	case roll == 0 && length >= 2:
-		// Replace a selection: delete one to three characters and type a short word there.
+		// Replace a selection: delete one to three UTF-16 code units and type a short word there.
 		at := random.IntN(length)
 		removed := 1 + random.IntN(min(3, length-at, length-1))
 		text.Delete(txn, at, removed)

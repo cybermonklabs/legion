@@ -957,7 +957,7 @@ describe("DispatchClient", () => {
 
   // Whatever answers at the Dispatch URL (a repository's own `.envoy/envoy.json` can name it)
   // controls the body, and the excerpt is built synchronously on the host's event loop, before the
-  // 120-character cut. Each pass over the body must stay linear and the scan bounded, or a page of
+  // cut at 120 UTF-16 code units. Each pass over the body must stay linear and the scan bounded, or a page of
   // unclosed tags freezes the session: a quadratic pass takes seconds on tens of kilobytes. The
   // row's own 5 s limit is that bound, and nothing here reads a clock. It sits between the row and
   // the defect it catches, so an idle machine catches it as well as a busy one: measured in a

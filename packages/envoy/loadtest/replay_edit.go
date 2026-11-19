@@ -45,7 +45,7 @@ type replayEditOp struct {
 }
 
 // planEdit is a version's edit of text: the logged diff's changes as ops when the diff is complete
-// (not cut at production's 4,094 characters) and every change can be one (diffOps), else
+// (not cut at production's 4,094 bytes) and every change can be one (diffOps), else
 // substitute replaces whose length change is delta, the logged size change (substituteEdit). It
 // returns the ops, the text after them, whether they came from the diff, and false when no edit can
 // be made.

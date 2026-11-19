@@ -622,7 +622,7 @@ the bearer, which is a header), the status and reason phrase, a one-line plain-t
 body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
 reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
-of the client's bearer's characters (a shorter bearer only whole), so a copy cut short, split by
+of the client's bearer's UTF-16 code units (a shorter bearer only whole), so a copy cut short, split by
 markup or overlapping another leaves no such piece. A body none of whose read part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever

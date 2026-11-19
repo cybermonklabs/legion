@@ -636,7 +636,7 @@ func (r *recordingEmbedder) Embed(ctx context.Context, texts []string, inputType
 	return r.fakeEmbedder.Embed(ctx, texts, inputType)
 }
 
-// maxBlock is a body of one block of exactly contracts.DispatchBlockUnits characters: word
+// maxBlock is a body of one block of exactly contracts.DispatchBlockUnits bytes: word
 // repeated, then filler up to the bound, ending in a letter so no trimming can shorten it.
 func maxBlock(word string) string {
 	body := strings.Repeat(word+" ", contracts.DispatchBlockUnits/(len(word)+1))

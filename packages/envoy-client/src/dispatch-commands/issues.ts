@@ -648,7 +648,7 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
   };
 }
 
-/** How many characters of a reading `--brief` keeps. R2 of the spec sets the number: a reader
+/** How many UTF-16 code units of a reading `--brief` keeps. R2 of the spec sets the number: a reader
  *  who wants the gate alone on an issue holding hundreds of results reads this much of a reading
  *  that stands at none of the compared commits, and the whole of every other one. */
 const BRIEF_READING_CHARACTERS = 200;

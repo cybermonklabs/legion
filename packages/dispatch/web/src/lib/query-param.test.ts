@@ -14,7 +14,7 @@ test("a query over the cap is cut to the cap", () => {
 });
 
 test("a cut that would split a surrogate pair drops the lone high surrogate", () => {
-  // The emoji starts at the last character the cap allows, so the cut lands inside it: half a
+  // The emoji starts at the last UTF-16 code unit the cap allows, so the cut lands inside it: half a
   // code point in the address is what this rule exists to prevent.
   const split = `${"x".repeat(SEARCH_QUERY_MAX - 1)}😀`;
   expect(split.length).toBe(SEARCH_QUERY_MAX + 1);
