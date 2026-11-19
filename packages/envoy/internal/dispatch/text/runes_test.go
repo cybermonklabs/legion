@@ -322,7 +322,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		copiesNothing(t, sliced)
 	})
 
-	t.Run("each of six kinds of character at each place of 2,001 characters agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
+	t.Run("each of six kinds of character at each place of 2,001 runes agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
 		const characters = 2001
 		differ, cuts := 0, 0
 		var sliced []pair
@@ -344,7 +344,7 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 					}
 					if differ < 10 {
 						from := min(max(0, place-5), len(got), len(want))
-						t.Errorf("%+q at character %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", kind, place, limit, len(got), got[from:], from, len(want), want[from:])
+						t.Errorf("%+q at rune %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", kind, place, limit, len(got), got[from:], from, len(want), want[from:])
 					}
 					differ++
 				}
