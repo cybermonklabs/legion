@@ -298,7 +298,6 @@ func writeObjectKind(ctx context.Context, database *store.Store, kind objectKind
 		report.Rows += written.Rows
 		report.Nodes += written.Nodes
 		report.Tuples += written.Tuples
-		report.Skipped += written.Skipped
 	}
 	for {
 		if budget != nil && *budget == 0 {

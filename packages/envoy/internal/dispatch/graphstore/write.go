@@ -42,8 +42,9 @@ var writeFunctions = [...]string{"Write", "WriteUncaused", "WriteArms", "WriteAr
 // WriteFunctions is the name of every function of this package a write of the store from outside
 // it goes through (writeFunctions), a fresh slice for each caller. It is the one list the source
 // scans that hold the store's writers read: this package's register of their call sites
-// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
-// (TestNoProjectionRowIsWrittenWithoutTheStore).
+// (TestEveryStoreWriteCallSiteIsListed), api's scan of the writers of the projected tables
+// (TestNoProjectionRowIsWrittenWithoutTheStore) and docs' scan of the passes that write the store
+// (TestTheIndexPassesAreStoreWritersAndNoRepairExists).
 func WriteFunctions() []string { return slices.Clone(writeFunctions[:]) }
 
 // LatestEvent is the cause of a write whose event its write phase appends right before the
