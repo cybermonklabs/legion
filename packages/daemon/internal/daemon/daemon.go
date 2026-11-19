@@ -470,6 +470,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	s.reportCapabilities()
 	if workflow != nil {
 		workflow.admission.ReportCapabilities(s.reportCapabilities)
+		// This release's one-time rename pass (renameAtBoot, dispatch://INFRA-4401 A10), after
+		// supervision opened and the worker image passed its probe, so the runtime answers which
+		// issues' pods it holds, and before the consumers open, so no fact and no launch reads a
+		// record while the pass writes it. Each write is bounded by its own budget, and nothing the
+		// pass meets stops the boot. dispatch://INFRA-3532's own change removes it.
+		workflow.renameAtBoot(store.WithTransactionTracking(ctx), s.runtime)
 		// The durable consumers exist before the listing is read: a consumer created now delivers
 		// only what is published after it, so everything earlier is the listing's, and what the
 		// listing misses (a move published while it is read) the consumer delivers. Both wait out

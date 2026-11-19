@@ -18,12 +18,13 @@ func (r Rename) describe() string { return r.From.String() + " -> " + r.To.Strin
 // and answers exactly as strings.EqualFold does, so a deployment that configures no rename reads
 // exactly as one with no equivalence at all.
 //
-// The equivalence is read-side only: nothing it answers rewrites a record, so a tree keeps the
-// repository name it was recorded under for its whole life, and the pair must stay configured for
-// as long as any record names the old repository. This release's one exception is a one-time
-// pass at the daemon's boot and at the end of an issue's pod, which writes each pair's `to` over
-// its `from` in the stored records once (dispatch://INFRA-4401), and which
-// dispatch://INFRA-3532's own change removes.
+// The equivalence is read-side only: nothing it answers rewrites a record, and the pair must stay
+// configured for as long as any record names the old repository. This release's one exception is
+// a one-time pass at the daemon's boot and at the end of an issue's pod (the daemon's renamePass,
+// through record.RenameIssueRepository), which writes each pair's `to` over its `from` on the
+// stored records while no pod of the issue is live (dispatch://INFRA-4401 A10) and logs, for each
+// table, the rows still on each `from`: once none is, no record names the old repository and the
+// pair can go. dispatch://INFRA-3532's own change removes the pass.
 type Renames struct {
 	// pairs are the configured pairs, in configured order.
 	pairs []Rename

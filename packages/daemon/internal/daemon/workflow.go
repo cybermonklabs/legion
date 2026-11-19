@@ -1240,7 +1240,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // GitHub through this runtime's own read of a pull request and waits this runtime's wait between
 // failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
 // outbox (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
-// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy).
+// unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
+// and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
+// which also drops that repository (podEndsOn).
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
@@ -1252,6 +1254,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		return pull, err
 	}
 	w.outbox.mergeStateWait = w.mergeStateWait
+	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)

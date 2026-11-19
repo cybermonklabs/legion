@@ -251,7 +251,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
-			Description: "The repositories that moved, each pair naming the repository as every record holds it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, so a pair stays here for as long as any record names the old repository.",
+			Description: "The repositories that moved, each pair naming the repository as the records hold it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, and this release also writes each pair's new name over its old one on the stored records once, at boot and at the end of an issue's pod, logging the rows each table still holds on the old name, so a pair stays here until that count is zero (dispatch://INFRA-3532's own change removes the pass).",
 			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
 		},
 		{

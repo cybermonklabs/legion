@@ -107,6 +107,17 @@ type outbox struct {
 	// error that names the missing read.
 	readPullRequest func(context.Context, record.PullRequest) (githubPullRequest, error)
 	mergeStateWait  func() time.Duration
+	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
+	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
+	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
+	// places only, each once the runtime's own call has answered that the pod is gone: an idle
+	// release's teardown, after SuspendIssue returns and before the release's mark is cleared
+	// (releaseIssue); an issue close, after SuspendIssue returns nil on a close the store
+	// authorized (the record.IssueSuspend case of execute); and a workflow tree close, after the
+	// tree's cleanup, for each issue of the tree (endTreePods). Never after a pod update's
+	// ReplacePod, which starts the next pod at once. Set by attach after newOutbox; a test that
+	// builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
+	podEnded func(context.Context, []string)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -707,9 +718,22 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		}
 		closing := store.IssueClose{Issue: row.Issue, Tree: value.Tree, IssueGeneration: value.Generation,
 			TreeGeneration: value.TreeGeneration, Row: row.ID}
-		return suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
-			return r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
-		})
+		// authorized is the store's answer under the runtime's pod lock: a close it refused
+		// finishes without acting and may leave the pod standing, so only a close it authorized
+		// ends the pod. A runtime that stops the pod without asking leaves it true, its nil return
+		// being the stop.
+		authorized := true
+		if err := suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
+			act, err := r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
+			authorized = act
+			return act, err
+		}); err != nil {
+			return err
+		}
+		if authorized {
+			r.endPods(ctx, row.Issue)
+		}
+		return nil
 	case record.IssueBundle:
 		return r.bundleIssueWorkspace(ctx, row, value)
 	case record.IssueRelease:
@@ -2525,7 +2549,8 @@ func carriedStopDeadline(oldRoot *record.Issue, now time.Time, stop time.Duratio
 // would wait forever. The cleanup (store.CleanupReservedTree) waits until every stored claim of the
 // tree has retired, then has the runtime release what it holds for the tree and confirms the
 // reservation. It reports false, acting on nothing, when the tree holds no unconfirmed
-// reservation and this close could not take one; the ordinary fences then decide.
+// reservation and this close could not take one; the ordinary fences then decide. A cleanup that
+// finished ends the pods of the tree's issues (endTreePods).
 func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	lifecycle, reserved, err := r.trees.ReserveWorkflowTreeCleanup(ctx, r.project, payload.Tree, payload.Linger)
 	if err != nil {
@@ -2544,7 +2569,45 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 		}
 	}
 	r.dropReleasedWork(ctx, row.Issue)
-	return true, r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime)
+	if err := r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime); err != nil {
+		return true, err
+	}
+	r.endTreePods(ctx, row.Issue, payload.Tree)
+	return true, nil
+}
+
+// endPods runs the end of issues' pods (podEnded), where attach set it.
+func (r *outbox) endPods(ctx context.Context, issues ...string) {
+	if r.podEnded != nil {
+		r.podEnded(ctx, issues)
+	}
+}
+
+// endTreePods runs the end of the pods of tree's issues (podEnded) once the tree's cleanup released
+// what the runtime held for it, which under the Sandbox runtime waits until no Sandbox of the tree
+// is left: each issue the record holds in tree, and issue, the close row's own. A read of the
+// tree's issues that fails is logged and ends the pod of issue alone, since the cleanup is done and
+// a retry of the row would not run it again; the next boot's rename pass writes what this one left.
+func (r *outbox) endTreePods(ctx context.Context, issue, tree string) {
+	if r.podEnded == nil {
+		return
+	}
+	var members []record.Issue
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		members, err = r.records.TreeIssues(ctx, tx, tree)
+		return err
+	}); err != nil {
+		r.log.Warn("outbox: the issues of a cleaned-up tree could not be read for the end of their pods; the row's own issue's pod is ended alone",
+			"tree", tree, "issue", issue, "error", err)
+	}
+	issues := []string{issue}
+	for _, member := range members {
+		if member.Key != issue {
+			issues = append(issues, member.Key)
+		}
+	}
+	r.podEnded(ctx, issues)
 }
 
 // root is issue's tree root as recorded, nil when it is not, read in a transaction of its own
@@ -2775,6 +2838,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		hold, why := releaseHold(decision.Cause)
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 	}
+	// The pod is gone. The end of its pod (podEnded) runs here, on the issue's lifecycle lane and
+	// before the release's mark is cleared below, so a start queued behind the release waits for it.
+	r.endPods(ctx, row.Issue)
 	if decision.SuspendsNoRole {
 		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
 			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
