@@ -675,9 +675,11 @@ func (c Claim) LeftPodRound(round string) bool {
 }
 
 // HoldsSession is whether session is the one the claim holds. The claim holds its session as the
-// store keeps it (storetext.Text): register sets it so, and a restart reads it back so. A session
-// is therefore compared as the store would keep it, and an agent whose session id holds a NUL is
-// the claim's own agent before a restart and after one.
+// store keeps it: register records the session of a registration Handle gave through the store's
+// rule, and a restart reads it back so. A session is compared as the store would keep it
+// (storetext.Text), because internal/api and internal/daemon ask this with a session of their own
+// — an API request's, a notice's recipient — which no Handle has given through the rule, and an
+// agent whose session id holds a NUL is the claim's own agent before a restart and after one.
 func (c Claim) HoldsSession(session string) bool { return c.Session == storetext.Text(session) }
 
 // RuleMayResume says whether the rule may resume this suspended claim: every suspension but the
@@ -1595,7 +1597,16 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
 // process to stop (holdSuspendUntilReady).
+//
+// Every row reads ev as the store keeps its text (storetext.Strings), so no row cleans a field of
+// an event itself.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
+	// An event is a far side's or an agent's words — a session id, a task, an update round's id
+	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
+	// claim in memory, the store and a restart agree. So the event is given through the store's
+	// rule once, here, before anything reads it, as intake.ApplyFact gives every fact. Strings
+	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
+	ev = storetext.Strings(ev)
 	if _, suspending := ev.(RequestSuspend); suspending {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
@@ -2653,7 +2664,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
-		m.logFarSideError(ctx, slog.LevelWarn, "supervise: launch failed", storetext.FarSideError(err.Error()), err,
+		m.logFarSideError(ctx, slog.LevelWarn, "supervise: launch failed", err,
 			"generation", m.claim.Generation, "launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
@@ -2757,7 +2768,7 @@ const (
 func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
-		storetext.FarSideError(err.Error()), err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
+		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
 	return errors.Join(err, m.persist(ctx))
@@ -2911,12 +2922,11 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost bool)
 // report to the issue, the architect and the controller goes only once the fresh agent is
 // actually running: a spawn that failed is a launch failure the caller charges, and says nothing
 // yet about the session. The runtime's account of the session is a far side's error text, so the
-// line, the abandoned session and the report all carry it as the claim keeps one
-// (storetext.FarSideError, logFarSideError).
+// line, the abandoned session and the report all carry it as the claim keeps one: the text the
+// line's logFarSideError writes and returns.
 func (m *Machine) startFresh(ctx context.Context, token string, cause error) (runtime.Locator, error) {
-	kept := storetext.FarSideError(cause.Error())
-	m.logFarSideError(ctx, slog.LevelWarn, "supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
-		kept, cause, "session", m.claim.Session, "sessionFile", m.claim.SessionFile)
+	kept := m.logFarSideError(ctx, slog.LevelWarn, "supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
+		cause, "session", m.claim.Session, "sessionFile", m.claim.SessionFile)
 	lost := m.claim.Session
 	m.forgetSession("no session store the runtime could resume it from holds it any more: " + kept)
 	spec, err := m.spawnSpec(ctx, token, true)
@@ -3273,15 +3283,26 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 	return m.durableWrite(ctx, StateFailed, m.persist)
 }
 
-// logFarSideError writes msg at level with args and then "error": kept, err's text as the claim
-// keeps a far side's error text (storetext.FarSideError), so the line holds no more of a relayed
-// command's output than the store does and stays within what one log entry takes. Where that
-// bound cut the text, the whole of it, URL credentials removed, follows at Info under the same
-// msg and args (storetext.LogWhole): nothing of the far side's answer is lost, only moved.
-func (m *Machine) logFarSideError(ctx context.Context, level slog.Level, msg, kept string, err error, args ...any) {
+// farSideErrorInFull is the message of the lines that carry a far side's whole error, in parts,
+// where the line that met the error keeps only its start (logFarSideError, storetext.LogWhole).
+// Each part names that line's own message as "of".
+const farSideErrorInFull = "supervise: a far side's error in full; the line it is of keeps its start"
+
+// logFarSideError writes msg at level with args and then "error": err's text as the claim keeps a
+// far side's error text (storetext.FarSideError), so the line holds no more of a relayed command's
+// output than the store does and stays within what one log entry takes. It returns that text, so a
+// caller that keeps the error keeps the text its line carries. Where that bound cut the text, the
+// whole of it follows at Info in parts (storetext.LogWhole) under farSideErrorInFull rather than
+// msg, each with "of": msg and then args: a reader that counts msg counts one line for each error,
+// however long, and a reader of the whole text joins the parts to their line by "of" and args.
+// Nothing of the far side's answer is lost, only moved.
+func (m *Machine) logFarSideError(ctx context.Context, level slog.Level, msg string, err error, args ...any) string {
+	text := err.Error()
+	kept := storetext.FarSideError(text)
 	args = slices.Clip(args)
 	m.log.Log(ctx, level, msg, append(args, "error", kept)...)
-	storetext.LogWhole(m.log, msg, err.Error(), args...)
+	storetext.LogWhole(m.log, farSideErrorInFull, text, append([]any{"of", msg}, args...)...)
+	return kept
 }
 
 // release asks the runtime to let go of everything it holds for the claim — the process, when one

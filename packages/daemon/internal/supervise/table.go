@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -1440,8 +1439,8 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // name of its own: it is raised before any frame leaves, and an operator told the transport lost
 // the prompt would look at the network while the GitHub App is the thing that is down.
 //
-// Every failure here, charged or not, is recorded on the pending delivery before the split is
-// read: how many sends of this task have failed, when this one failed and the error it failed
+// Every failure here, charged or not, is recorded on the pending delivery before the split acts:
+// how many sends of this task have failed, when this one failed and the error it failed
 // with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
 // second budget, and the uncharged failures are exactly the ones it exists for: a transport loss
 // costs nothing and is retried for ever, so without it the only trace of a claim waiting days on
@@ -1456,14 +1455,13 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 //
 // The text is the far side's own — a refused adoption carries the wedged command's whole stderr
 // and a refused prompt Oh My Pi's decoded `error` — so the delivery holds it, in memory as in the
-// store, as the daemon keeps any far side's error text (storetext.FarSideError): cleaned, its URL
-// credentials removed and cut to its start, a text the store takes whatever the far side wrote.
-// The log lines below and the charge's own line carry that same text, and where the cut left
-// something out, the whole text follows them at Info under the same message (logFarSideError,
-// storetext.LogWhole).
+// store, as the daemon keeps any far side's error text: the text the split's line carries, which
+// logFarSideError writes and returns, so the line, the record and the charge's own line carry one
+// text. That is why the split chooses its line before the record is written. Where the bound cut
+// the text, its whole follows the line in parts under a message of its own (logFarSideError).
 //
 // The write may still fail — the store has its own weather — and a failed write is logged and
-// carried past rather than returned, so the split below is always read. A return there would
+// carried past rather than returned, so what the split decided is always done. A return there would
 // charge a refused adoption nothing and re-send it with no bound, which is the stall this split
 // exists to end. Nothing of the delivery is lost by carrying on: the failed write left it
 // unsaved (saved), and settle writes the claim and the delivery together before the next
@@ -1484,10 +1482,27 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		handshakeMoved = m.takeBackConfirmation(p)
 		untold = m.moveTelling(p.ID, "")
 	}
+	// The split: the line that names this failure, and for a charged one the words its charge
+	// puts before the far side's text ("" for a failure charged nothing).
+	busy := errors.Is(r.Err, runtime.ErrPromptRefused) && agentBusy(runtime.RefusalReason(r.Err))
+	level, msg, charge := slog.LevelWarn, "supervise: the prompt was lost to the transport; the delivery waits", ""
+	args := []any{"delivery", r.DeliveryID}
+	switch {
+	case busy && m.awaitsResult():
+		level, msg = slog.LevelInfo, "supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task"
+		args = append(args, "outstanding", m.outstanding)
+	case busy:
+		msg = "supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again"
+	case errors.Is(r.Err, runtime.ErrPromptRefused):
+		msg, charge = "supervise: the agent refused the prompt", "refused: "
+	case errors.Is(r.Err, runtime.ErrAdoptRefused):
+		msg, charge = "supervise: the shim refused to adopt the working copy; the prompt was never sent", "the working copy was not adopted: "
+	case errors.Is(r.Err, runtime.ErrIdentityUnavailable):
+		msg = "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"
+	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = storetext.FarSideError(r.Err.Error())
-	kept := p.LastSendError
+	p.LastSendError = m.logFarSideError(ctx, level, msg, r.Err, args...)
 	var err error
 	if untold || handshakeMoved {
 		err = m.saved(m.putClaimAndPending(ctx))
@@ -1498,32 +1513,12 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on",
 			"delivery", r.DeliveryID, "error", err)
 	}
-	if errors.Is(r.Err, runtime.ErrPromptRefused) {
-		if agentBusy(runtime.RefusalReason(r.Err)) {
-			if m.awaitsResult() {
-				m.logFarSideError(ctx, slog.LevelInfo, "supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
-					kept, r.Err, "delivery", r.DeliveryID, "outstanding", m.outstanding)
-			} else {
-				m.logFarSideError(ctx, slog.LevelWarn, "supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again",
-					kept, r.Err, "delivery", r.DeliveryID)
-			}
-			return m.recordBusyTurn(ctx)
-		}
-		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the agent refused the prompt", kept, r.Err, "delivery", r.DeliveryID)
-		return m.chargePrompt(ctx, "refused: "+kept)
-	}
-	if errors.Is(r.Err, runtime.ErrAdoptRefused) {
-		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the shim refused to adopt the working copy; the prompt was never sent",
-			kept, r.Err, "delivery", r.DeliveryID)
-		return m.chargePrompt(ctx, "the working copy was not adopted: "+kept)
-	}
-	if errors.Is(r.Err, runtime.ErrIdentityUnavailable) {
-		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits",
-			kept, r.Err, "delivery", r.DeliveryID)
-	} else {
-		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the prompt was lost to the transport; the delivery waits", kept, r.Err, "delivery", r.DeliveryID)
-	}
-	if resend {
+	switch {
+	case busy:
+		return m.recordBusyTurn(ctx)
+	case charge != "":
+		return m.chargePrompt(ctx, charge+p.LastSendError)
+	case resend:
 		return m.sendPending(ctx)
 	}
 	return nil
@@ -2332,18 +2327,18 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 
 // register records the session the agent became, once every name of it is held to this claim
 // (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
-// before anything of the registration is recorded or enrolled. The session id and the file are
-// taken as the store keeps them (storetext.Text) before they are checked, held or recorded, so the
-// hold, the claim in memory and the stored claim name the same session, and a restart reads back
-// what was held: a name holding a NUL is stored with U+FFFD in its place. The boot intervals end
-// with the registration, but not the deadline: it is armed again at its base bound, and only the
-// agent's ready ends it. A registration whose answer never reached its agent leaves a claim no
-// ready will ever come for, and from here that looks exactly like an agent slow to boot. A
-// registration whose plugin still differs from the daemon's is relaunched at once and refused
-// (staleRegistration): the agent that just registered is not the one that relaunch starts.
+// before anything of the registration is recorded or enrolled. The session id and the file arrive
+// as the store keeps them, as every event's text does (Handle), so the hold, the claim in memory
+// and the stored claim name the same session, and a restart reads back what was held: a name
+// holding a NUL is held and stored with U+FFFD in its place. The boot intervals end with the
+// registration, but not the deadline: it is armed again at its base bound, and only the agent's
+// ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
+// ever come for, and from here that looks exactly like an agent slow to boot. A registration whose
+// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration):
+// the agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	session, file := storetext.Text(r.Session), storetext.Text(r.SessionFile)
+	session, file := r.Session, r.SessionFile
 	if err := checkSessionNames(session, file); err != nil {
 		return err
 	}
@@ -2379,7 +2374,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	session, file := storetext.Text(r.Session), storetext.Text(r.SessionFile)
+	session, file := r.Session, r.SessionFile
 	if err := checkSessionNames(session, file); err != nil {
 		return err
 	}
@@ -2802,14 +2797,14 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // openPodUpdate records this claim's update round (PodUpdateOpen). The daemon's sweep posts the
 // event at every tick while the round runs, so the action is idempotent.
 //
-// A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the reasons the
-// post carries, as the store keeps them (storetext.Text: they quote what the runtime read of the
-// pod, so the claim the operator's answers read holds the reasons the store holds), and clears
-// what an earlier round left: the ask it published, the signal it got, the head that signal
-// reported, and the notice it wrote. The same round again changes nothing, its reasons included:
-// the round's terms are fixed when it opens (dispatch://INFRA-2981 R9), so the ask the sweep
-// publishes and the record an operator reads name the same reasons for one round id, however the
-// drift the sweep reads moves while the round runs.
+// A round the claim is not in yet starts its clock here — UpdateOpenedAt — with the round's id
+// and the reasons the post carries, as the store keeps them, as every event's text is (Handle: the
+// reasons quote what the runtime read of the pod, so the claim the operator's answers read holds
+// the reasons the store holds), and clears what an earlier round left: the ask it published, the
+// signal it got, the head that signal reported, and the notice it wrote. The same round again
+// changes nothing, its reasons included: the round's terms are fixed when it opens
+// (dispatch://INFRA-2981 R9), so the ask the sweep publishes and the record an operator reads name
+// the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
@@ -2846,7 +2841,7 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 	}
 	opened := m.deps.Clock.Now()
 	m.clearUpdate()
-	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, storetext.Text(open.Reasons), &opened
+	m.claim.UpdateRound, m.claim.UpdateReasons, m.claim.UpdateOpenedAt = open.Round, open.Reasons, &opened
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
@@ -3088,8 +3083,8 @@ func (m *Machine) clearUpdate() {
 // The line it logs is the one durable record of the head: the claim's UpdateHead goes with the
 // round that ends (clearUpdate), and the answer is what an operator reads the replacement back
 // against — `git ls-remote` of each head a worker reported says whether the work survived the pod.
-// The head is the worker's word, so the claim holds it as the store keeps it (storetext.Text),
-// and the operator's answers read the head the store holds.
+// The head is the worker's word, and the claim holds it as the store keeps it, as it holds every
+// event's text (Handle), so the operator's answers read the head the store holds.
 func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 	signal := ev.(PodUpdateSignalled)
 	if signal.Round != m.claim.UpdateRound {
@@ -3104,7 +3099,7 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 	}
 	at := m.deps.Clock.Now()
 	m.claim.UpdateSignalledAt = &at
-	m.claim.UpdateHead = storetext.Text(signal.Head)
+	m.claim.UpdateHead = signal.Head
 	m.log.Info("supervise: the worker answered the update round; its work is pushed and its process may be replaced",
 		"round", m.claim.UpdateRound, "head", signal.Head)
 	return m.persist(ctx)

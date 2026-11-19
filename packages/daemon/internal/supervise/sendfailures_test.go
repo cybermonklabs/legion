@@ -216,8 +216,11 @@ func TestDeliveryBudgets(t *testing.T) {
 	// (storetext.FarSideError), in memory as in the store. It is the wedged command's own output,
 	// relayed whole, and the column holds a diagnosis rather than a log: each NUL and each byte
 	// that is not UTF-8 reads U+FFFD, and the text is cut to its start. The warning beside the
-	// record carries that same text, and what the cut left out follows it in the log at Info, in
-	// lines one log entry holds (storetext.LogWhole), so nothing is lost and only moved.
+	// record carries that same text, and it is the one line of its message however long the text
+	// is: a check that counts refused adoptions by that message counts one. What the cut left out
+	// follows it in the log at Info, in lines one log entry holds, under a message of their own
+	// that names the warning's (farSideErrorInFull, storetext.LogWhole), so nothing is lost and
+	// only moved.
 	t.Run("the text a failed send records is cleaned and bounded", func(t *testing.T) {
 		// About a megabyte of relayed stderr, as a jj wedged on a lock writes it, ending in a
 		// line the log must still carry and the record must not.
@@ -230,8 +233,8 @@ func TestDeliveryBudgets(t *testing.T) {
 			reason string
 			// want is the whole text the delivery must hold.
 			want string
-			// whole is the far side's whole text, which the log's Info lines after the warning
-			// carry when the record holds only its start, and "" when the record holds all of it.
+			// whole is the far side's whole text, which the log's parts after the warning carry
+			// when the record holds only its start, and "" when the record holds all of it.
 			whole string
 		}{
 			{name: "a NUL byte, which PostgreSQL refuses in text",
@@ -270,8 +273,8 @@ func TestDeliveryBudgets(t *testing.T) {
 						stored.LastSendError, ok)
 				}
 				records := h.records.of(adoptRefusedLine)
-				if len(records) == 0 || records[0].level != slog.LevelWarn {
-					t.Fatalf("logged %d records of %q, want the refusal's warning first", len(records), adoptRefusedLine)
+				if len(records) != 1 || records[0].level != slog.LevelWarn {
+					t.Fatalf("logged %d records of %q, want the refusal's one warning, however long its text", len(records), adoptRefusedLine)
 				}
 				warned, _ := records[0].attr("error")
 				delivery, _ := records[0].attr("delivery")
@@ -279,13 +282,15 @@ func TestDeliveryBudgets(t *testing.T) {
 					t.Fatalf("the warning carries %.300q, want the text the delivery records", warned.String())
 				}
 				var whole strings.Builder
-				for i, part := range records[1:] {
+				for i, part := range h.records.of(farSideErrorInFull) {
 					number, _ := part.attr("part")
+					of, _ := part.attr("of")
 					partDelivery, _ := part.attr("delivery")
 					text, _ := part.attr("error")
-					if part.level != slog.LevelInfo || number.Kind() != slog.KindInt64 || number.Int64() != int64(i+1) || partDelivery.String() != delivery.String() {
-						t.Fatalf("record %d after the warning is %s part %v of delivery %v, want part %d at INFO of delivery %v",
-							i+1, part.level, number, partDelivery, i+1, delivery)
+					if part.level != slog.LevelInfo || number.Kind() != slog.KindInt64 || number.Int64() != int64(i+1) ||
+						of.String() != adoptRefusedLine || partDelivery.String() != delivery.String() {
+						t.Fatalf("part record %d is %s part %v of %q for delivery %v, want part %d at INFO of %q for delivery %v",
+							i+1, part.level, number, of, partDelivery, i+1, adoptRefusedLine, delivery)
 					}
 					whole.WriteString(text.String())
 				}
