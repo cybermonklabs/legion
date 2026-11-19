@@ -49,8 +49,8 @@ usage: route-timings.sh --url <base url> --issue <issue key> [options]
   --label <name>          names the run in the output; "base-1", "head-1", and so on
   --requests <n>          requests to each route (default 50, which is what A9 asks for)
   --body-bytes <n>        size of each comment, message and small upload, 1024 to 20480
-                          (default 8192); an ask takes the smaller of this and its own
-                          2,000-character cap
+                          (default 8192); an ask takes the smaller of this and 2,000
+                          bytes
   --artifact <name>       the existing document the small upload writes a version of
                           (default: the issue's first document that is not its primary one)
   --large-artifact <name> the 100-660 KB document the large upload writes a version of
@@ -218,9 +218,9 @@ measure() {
   printf '%s\t%s\t%s\t%s\n' "$label" "$route" "$median" "$(IFS=,; printf '%s' "${readings[*]}")"
 }
 
-# payload writes one request's JSON body for a route. An ask's question is capped at
-# contracts.AskQuestionMax, 2,000 characters, so the ask route is measured at that cap rather
-# than at --body-bytes: a larger question is 400 CAP_EXCEEDED.
+# payload writes one request's JSON body for a route. An ask's question is held to the smaller of
+# --body-bytes and 2,000 bytes of the generator's ASCII words (ask_bytes), so the ask route is
+# measured at a short question's size; the route's own bound is far above it.
 #
 # The large upload appends one paragraph to the document's own markdown each round, so no two
 # uploads are the same text and a version is written every time, while the document stays the
