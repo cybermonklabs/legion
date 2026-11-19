@@ -1132,23 +1132,31 @@ Turn `writer_audience` on in this order:
    A pod shows it when its launcher container's command carries `--session-writer-audience`, and its proxy's start line ends `with the launcher's writer token`.
    Until that grant is gone, the pod's own credentials still impersonate the account, and every process that holds them can sign in as it.
 
-A daemon before the release that adds `writer_audience` refuses the member by name, as a key it does not know.
-The worker image moves with the daemon at that release's daemon API contract, so a rollback takes back the file, the daemon and the image together.
-A pod created under the member keeps `--session-writer-audience` in its launcher's command for its whole life.
-A daemon before that release sends no `agentExecutable` in a start command, so the launcher of such a pod refuses every Oh My Pi start into it until the pod is replaced (`newSessionPeer`, `internal/launcher/sessionpeer.go`).
-So such a rollback replaces those pods, and each kind of pod is replaced in its own way:
+A pod created under the member keeps `--session-writer-audience` in its launcher's command for its whole life, and its launcher refuses every Oh My Pi start that names no `agentExecutable` (`newSessionPeer`, `internal/launcher/sessionpeer.go`).
+A daemon before the release that adds `writer_audience` sends no `agentExecutable`, and it refuses the member by name, as a key it does not know.
+So turn `writer_audience` off on this release first, and roll back below it only after that, in this order:
 
-- The older daemon reads each issue pod on the newer image as drift and opens its update round ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)).
-  The round replaces the pod once every role it asks has answered and no turn runs, or at its bound, `pod_update_grace_minutes` after it opened (30 by default).
-  A role whose start was refused cannot answer, so a round that asks such a role runs to its bound, and every Oh My Pi start into that pod is refused until the pod is replaced.
-  To end that wait sooner, delete the issue's Sandbox (`kubectl -n legion delete sandbox <name>`).
-  That takes the pod and the pod's disk, and with the disk the issue's unpushed work, and the issue's next launch makes a Sandbox of the older release.
+1. On the release that carries the member, restore the account's grant to the pod's own principal, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
+   The grant comes first, because a pod created without the member impersonates the account with the pod's own credentials, and Google refuses them without the grant.
+   This release reads the fifth flag of every pod (`sessionProxyFlagsIn`, `internal/runtime/sandbox/addresses.go`), so each pod that carries it holds a moved session store.
+   An issue pod is replaced by its update round, whose workers can still answer it, since this release names `agentExecutable` in every Oh My Pi start.
+   The controller's pod is replaced at the next launch into it, whatever that launch installs (`movedInPod` in `addresses.go`, `relaunch.go`).
 
-- The controller's pod has no update round, and the next launch into it replaces it, since its launcher's flags differ from the ones the older daemon renders.
-  A launch that replaces the pod starts Oh My Pi in the new pod, so no start into the old one is refused.
+2. When no pod's launcher command carries `--session-writer-audience`, roll back the daemon and the worker image together, with the file that no longer names the member.
+   This prints nothing then:
+   `kubectl -n legion get pods -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[*].command}{"\n"}{end}' | grep -- --session-writer-audience`.
 
-Once the account's grant to the pod's own principal is gone, a release without `writer_audience` cannot sign in: its proxy impersonates the account with the pod's own credentials, and Google refuses them.
-So restore that grant before such a rollback.
+A rollback that skips step 1 stops the controller and holds the issues whose pods carry the member.
+A daemon before this release reads no fifth flag, so it sees no moved session store.
+Every relaunch of a claim recorded at this release's contract installs that daemon's plugin pair (`stalePluginInstall`), and a launch that installs keeps its pod, whatever its image.
+Each start into such a pod is refused, and each refusal is charged as a launch failure, so the claim fails after `launch_failure_limit` refusals (3 by default), seconds apart.
+
+- The controller's claim fails, and the daemon's retry of it is again a launch that installs into the same pod.
+  The controller stays down until its Sandbox is deleted (`kubectl -n legion delete sandbox <name>`), and the next launch then makes a new one.
+
+- An issue role's claim fails the same way, and a failed claim of the role that works the issue's phase holds the issue.
+  The pod's update round asks no failed claim, and the replacement of the pod restarts none.
+  So each such claim needs a retry once its pod is replaced: `legion claims retry --operator-token-file <file> --claim <token>`, or `--failed` in place of `--claim` for every failed claim.
 
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon never holds the connection string:
@@ -2903,7 +2911,8 @@ Contract 141, cybermonklabs/legion#3575, has its own section below, which gives 
 Its one migration, `20261111045636_experiment_assignments.up.sql`, adds the table `experiment_assignments`, which a release before it names in no statement, so that release boots with the table and its rows in place, and the block below touches neither the table nor that migration's row.
 No release declares 138, 139 or 140: the contract went from 137 to 141 in that one change, so a rollback from 141 to 137 crosses no other contract.
 Contract 137, cybermonklabs/legion#4046, has no section of its own here: it adds no migration, and a daemon before it refuses `impersonate_service_account` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, as [Selecting the store](#selecting-the-store) says.
-Contract 175, cybermonklabs/legion#4495, has no section of its own here either: it adds no migration, and a daemon before it refuses `writer_audience` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, restores the account's grant to the pod's own principal where the deployment removed it, and replaces every pod created under `writer_audience`, as [Selecting the store](#selecting-the-store) says.
+Contract 175, cybermonklabs/legion#4495, has no section of its own here either: it adds no migration, and a daemon before it refuses `writer_audience` as an unknown key, so a rollback below it first turns the member off on this release: it restores the account's grant to the pod's own principal where the deployment removed it, removes `writer_audience` and restarts the daemon, which replaces every pod that carries the member, and only then takes back the daemon and the worker image together, as [Selecting the store](#selecting-the-store) says.
+A daemon before it reads no fifth flag, so a rollback that skips that first step stops the controller until its Sandbox is deleted and fails the claims of every issue pod created under the member.
 Contract 133, cybermonklabs/legion#3937, has no section of its own here either: its one migration, `20261112070503_pull_request_state_read_at.up.sql`, adds the column `pull_requests.state_read_at` at a default every row takes, which a release before it neither reads nor writes, since its pull request reads and its insert name each column they touch, and its header gives no step.
 Neither has cybermonklabs/legion#3983, which landed after it at the same contract: its one migration, `20261113082415_claim_ended_work.up.sql`, adds the nullable column `claims.ended_work`, which a release before it names in no statement, and its header gives no step.
 Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.

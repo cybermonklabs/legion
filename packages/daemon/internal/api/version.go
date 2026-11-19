@@ -2445,14 +2445,18 @@ package api
 // older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
 // renders neither the flag nor the controller's roles-dir form. An older launcher ignores
 // `agentExecutable`. A pod created under the member keeps `--session-writer-audience` in its
-// launcher's command for its life, and an older daemon sends no `agentExecutable`, so after a
-// rollback that launcher refuses every Oh My Pi start into the pod (`internal/launcher`'s
-// newSessionPeer) until the pod is replaced. The older daemon reads an issue pod on the newer
-// image as drift and its update round replaces the pod, at the latest at the round's bound,
-// `pod_update_grace_minutes` after it opened, since a role whose start was refused cannot answer;
-// `kubectl -n legion delete sandbox <name>` ends that wait sooner and takes the pod's disk, and
-// the issue's unpushed work with it. The controller's pod has no round: the next launch into it
-// replaces it, since its flags differ, and starts Oh My Pi in the new pod. A deployment that sets
+// launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
+// launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
+// newSessionPeer). An older daemon also reads no fifth flag, and every relaunch of a claim
+// recorded at 175 installs its plugin pair and so keeps the pod whatever its image: each start is
+// refused and charged as a launch failure, the controller's claim fails and its retries install
+// into the same pod until its Sandbox is deleted, and each issue claim fails and needs a retry
+// once its pod is replaced. So the member is turned off on this release first: restore the
+// account's grant to the pod's own principal, remove writer_audience and restart the daemon,
+// which reads the fifth flag as a moved session store and replaces each pod that carries it (an
+// issue pod by its update round, the controller's pod at its next launch); only once no launcher
+// command carries the flag is the daemon rolled back below 175 (docs/kubernetes.md, "Selecting
+// the store"). A deployment that sets
 // no writer audience renders no fifth flag, and its launcher reads no `agentExecutable`, so its
 // pods carry the command they carried before. (The
 // number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
