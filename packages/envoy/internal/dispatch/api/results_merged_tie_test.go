@@ -272,7 +272,11 @@ func onePass(t *testing.T, database *store.Store, served *server) {
 // writeReadMergedRow stores the row that a read of the release before leaves for pull request
 // number of repo, merged at sha. The row holds its URL, the issue issueKey ("" for none), and
 // checked_at now. It stores no texts, because that release stores none. So the statement answers
-// the stored issue until the facts line of a pass reads the row from GitHub.
+// the stored issue until the facts line of a pass reads the row from GitHub. Its event_at is
+// GitHub's update time as that older read answered it, before the time of the fake's answer
+// (mergedPull): a later time on a row that no read of this build wrote would make the pass's own
+// write owe one more read (pull_request_heads_older_read), and the head is not read while a read
+// is owed.
 func writeReadMergedRow(t *testing.T, database *store.Store, repo string, number int, sha, issueKey string) {
 	t.Helper()
 	var attributed *string
@@ -281,7 +285,7 @@ func writeReadMergedRow(t *testing.T, database *store.Store, repo string, number
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, url, event_at, checked_at)
-		values ($1, $2, $3, 'feature/no-key', 'main', 'merged', $4, $5, now(), now())
+		values ($1, $2, $3, 'feature/no-key', 'main', 'merged', $4, $5, '2026-11-05T07:00:00Z', now())
 	`, repo, number, sha, attributed, fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)); err != nil {
 		t.Fatalf("store the merged row of %s#%d: %v", repo, number, err)
 	}

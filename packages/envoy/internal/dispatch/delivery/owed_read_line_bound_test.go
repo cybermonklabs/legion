@@ -20,7 +20,7 @@ func TestTheLineOfAnOwedReadUnderATargetWithNoSlashNamesTheTargetToABound(t *tes
 	const old, number = "acme/legacy-9105", 9105
 	target := strings.Repeat("x", 3500)
 	renameRepository(t, ctx, pool, old, target)
-	if err := owePullRequestRead(ctx, pool, old, number, owedFailure); err != nil {
+	if err := owePullRequestRead(ctx, pool, old, number, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
 	fake := newFakeGitHub(t)

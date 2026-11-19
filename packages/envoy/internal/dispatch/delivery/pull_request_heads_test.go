@@ -367,14 +367,14 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 	writeHead(909, newerMerged, "merged", issue)
 	writeHead(912, closed, "closed", issue)
 	writeHead(920, othersOpen, "open", other)
-	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 909, HeadSHA: newerMerged}) {
+	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 909, HeadSHA: newerMerged, State: "merged"}) {
 		t.Fatalf("NewestPullRequestHead(%s) with no open pull request = %+v, %v; want the merged #909 at %s",
 			issue, head, found, newerMerged)
 	}
 
 	writeHead(903, olderOpen, "open", issue)
 	writeHead(907, newerOpen, "open", issue)
-	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 907, HeadSHA: newerOpen}) {
+	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 907, HeadSHA: newerOpen, State: "open"}) {
 		t.Fatalf("NewestPullRequestHead(%s) = %+v, %v; want the open #907 at %s over the merged #909 and the closed #912",
 			issue, head, found, newerOpen)
 	}
@@ -706,9 +706,12 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 	merged := time.Date(2026, 2, 5, 0, 0, 0, 0, time.UTC)
 	issue := "HEAD-6"
 	for _, number := range []int{31, 32} {
+		// The row holds GitHub's title and URL, as a read of GitHub leaves them. A row of GitHub's
+		// second with other facts owes a read at the read-through (pull_request_heads_older_read).
 		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: "acme/widgets", Number: number, HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &merged, CheckedAt: &merged,
+			Title: "Tidy the walk", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 		}); err != nil {
 			t.Fatalf("store the merged head of #%d attributed by its commit messages: %v", number, err)
 		}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -129,7 +130,7 @@ func TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure(t *testing.T) {
 	head := fakeSHA("88", real)
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	github.set("acme/widgets", real, "open", head, branch, body, time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", real, owedFailure); err != nil {
+	if err := owePullRequestRead(ctx, pool, "acme/widgets", real, owedFailure, ""); err != nil {
 		t.Fatalf("owe the failure: %v", err)
 	}
 	started := time.Now()
@@ -194,10 +195,10 @@ func TestOwedReadsGoFewestReadsFirstAndTakeTheKindOfTheirLastAnswer(t *testing.T
 	failing.mu.Lock()
 	failing.failing = true
 	failing.mu.Unlock()
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", 91, owedFailure); err != nil {
+	if err := owePullRequestRead(ctx, pool, "acme/widgets", 91, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := owePullRequestRead(ctx, pool, "acme/gadgets", 92, owedRefusal); err != nil {
+	if err := owePullRequestRead(ctx, pool, "acme/gadgets", 92, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
 		t.Fatal(err)
 	}
 	fake.notInstalled.Store("acme/widgets", true)

@@ -488,8 +488,10 @@ type oweStart struct {
 
 type oweStartKey struct{}
 
+// TraceQueryStart notes the start of each owe that owePullRequestRead sends: its four arguments
+// are the repository, the number, the reason and the word of a refusal.
 func (o *oweWaitTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(data.SQL, "insert into pull_request_reads_owed") && len(data.Args) == 3 {
+	if strings.Contains(data.SQL, "insert into pull_request_reads_owed") && len(data.Args) == 4 {
 		return context.WithValue(ctx, oweStartKey{}, oweStart{reason: fmt.Sprint(data.Args[2]), at: time.Now()})
 	}
 	return ctx

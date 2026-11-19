@@ -344,7 +344,7 @@ func readLinkPairs(t *testing.T, ctx context.Context, q Querier, statements *att
 		}
 		for rows.Next() {
 			var number int
-			if err := rows.Scan(&number, new(string), new(bool), new(*time.Time), new(*time.Time)); err != nil {
+			if err := rows.Scan(&number, new(string), new(bool), new(*time.Time), new(*time.Time), new(*string), new(*time.Time)); err != nil {
 				t.Fatal(err)
 			}
 			listed = append(listed, number)

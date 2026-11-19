@@ -1736,13 +1736,18 @@ export const dispatchToolSpecs = [
       "merged into and with the repository's default branch, and with the default branch alone " +
       "where Dispatch holds no merge of the issue. A default_branch check is compared with the " +
       "repository's default branch alone, whatever branch the pull request merged into. Where " +
-      "a check compared with nothing, it says which of three things happened: the issue has no " +
-      "pull request and no branch to compare with, Dispatch cannot read the repository, or a " +
-      "read Dispatch made did not answer. " +
+      "a check compared with nothing, it says which of five things happened: the issue has no " +
+      "pull request and no branch to compare with, Dispatch cannot read the repository, a read " +
+      "Dispatch made did not answer, Dispatch has not read the head of a pull request of the " +
+      "issue, or Dispatch does not know yet whether a pull request it read is this issue's. " +
       "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
       "from which roles. A pass stands when its commit is one of the commits the check " +
       "compared with, the check's words did not move after the result was recorded, and no " +
       "retraction stands against it. " +
+      "Under its head line, a check names each pull request whose head Dispatch has not read " +
+      "(`Not read yet:`), and why and since when GitHub refuses that read where it does " +
+      "(`Not read:`), then each pull request Dispatch does not know yet is the issue's " +
+      "(`Not known yet:`). " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
@@ -1760,7 +1765,9 @@ export const dispatchToolSpecs = [
       "words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> " +
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
-      "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
+      "issue with no pull request head, a head whose read of GitHub is owed, a pull request " +
+      "that Dispatch does not know yet is the issue's and that can come before the head, or " +
+      "GitHub not read, with what GitHub answered. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
@@ -2227,6 +2234,7 @@ export const dispatchToolSpecs = [
       "It prints the changes of attribution whose events wait. " +
       "It names the key reading that runs now. " +
       "It counts the links that more than one issue holds in other letter cases. " +
+      "It prints the pull requests whose head is not read while a read of GitHub is owed: those GitHub did not answer and those GitHub refuses, each with the oldest time of its kind. " +
       "After a deploy, run it after each reconcile pass until the counts on its first three lines are 0.",
     arguments: () => ({}),
     strict: true,

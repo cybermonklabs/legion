@@ -94,7 +94,7 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 			}
 
 			owedBefore, headsBefore := tableRows(t, pool, "pull_request_reads_owed"), tableRows(t, pool, "pull_request_heads")
-			oweErr := owePullRequestRead(ctx, pool, owedUnder, row.number, owedFailure)
+			oweErr := owePullRequestRead(ctx, pool, owedUnder, row.number, owedFailure, "")
 			owed := tableRows(t, pool, "pull_request_reads_owed") - owedBefore
 			headErr := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: row.repo, Number: row.number, HeadSHA: sha, HeadRef: "topic", BaseRef: "main", State: "open",

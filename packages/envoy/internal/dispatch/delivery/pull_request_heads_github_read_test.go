@@ -149,8 +149,8 @@ func writeHeadAsTheReleaseBefore(t *testing.T, ctx context.Context, pool *store.
 // a merge at another head, an hour ahead of GitHub's clock, naming no head repository — and
 // writes it as that release writes every envelope: its head, its state and its time, with the
 // issue the row held kept, since a payload that names no head repository is an incomplete
-// attribution that deletes nobody's issue. That makes the forged head a basis of the issue's
-// `before_merge` check, which is the release before's own defect and the state this build meets.
+// attribution that deletes nobody's issue. That write owes a read (pull_request_heads_unread_write),
+// and while the read is owed no reader takes the forged head for a basis of the issue's check.
 //
 // From there GitHub's answer must win at the first read of it this build makes: a later event of
 // the pull request reads GitHub and writes its answer, though the stored time is later than
@@ -159,7 +159,9 @@ func writeHeadAsTheReleaseBefore(t *testing.T, ctx context.Context, pool *store.
 // writes GitHub's answer. The fake counts a batched query of the facts line apart from that read.
 // Before the fix the event read nothing (headReadCovers took the forged time for GitHub's), and
 // the pass would have refused GitHub's older time. A write that keeps the forged head, or a pass
-// that reads the owed row more than once over REST, makes this test fail.
+// that reads the owed row more than once over REST, makes this test fail. The write of GitHub's
+// answer over the forged row owes one more read, so GitHub's head stands after the pass that
+// reads it, and not before.
 func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing.T) {
 	for _, repair := range []string{"a later event of GitHub", "the reconcile's next pass"} {
 		t.Run(repair, func(t *testing.T) {
@@ -193,10 +195,14 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 				State: "merged", Title: "Change 98769",
 				URL: "https://github.com/acme/widgets/pull/98769", EventAt: &ahead,
 			}, noAttribution)
-			// The precondition: the release before's write is the row B3 of the review names, the
-			// forged head a basis of the issue's check.
-			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || !attributed {
-				t.Fatalf("HeadAttributedTo(%s, the forged head) after the release before's write = %v, %v; want true: the fixture is not the row under test", issue, attributed, err)
+			// The precondition: the release before's write is the row B3 of the review names. It
+			// owes a read (pull_request_heads_unread_write), and while that read is owed no reader
+			// takes the forged head for a basis of the issue's check.
+			if owed, held := readOwedRow(t, ctx, pool, "acme/widgets", 98769); !held || owed.reason != owedFailure {
+				t.Fatalf("after the release before's write #98769 is owed %+v (held %v), want a failure: the fixture is not the row under test", owed, held)
+			}
+			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
+				t.Fatalf("HeadAttributedTo(%s, the forged head) while its read is owed = %v, %v; want false: no head stands while a read is owed", issue, attributed, err)
 			}
 
 			readsBefore := github.reads.Load()
@@ -224,8 +230,22 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
 				t.Errorf("HeadAttributedTo(%s, the forged head) after %s = %v, %v; want false: a head GitHub never sent stands", issue, repair, attributed, err)
 			}
+			// The repair's own write lands GitHub's answer over a row that no read wrote and whose
+			// time is later, so its trigger owes one more read (pull_request_heads_older_read). While
+			// that read is owed, GitHub's head is not read either. The next pass reads it once more,
+			// over a row a read wrote now, owes nothing and settles it.
+			if _, held := readOwedRow(t, ctx, pool, "acme/widgets", 98769); !held {
+				t.Errorf("after %s no read of #98769 is owed, want the one that the repair's own write owes", repair)
+			}
+			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || attributed {
+				t.Errorf("HeadAttributedTo(%s, GitHub's head) after %s = %v, %v; want false while its read is owed", issue, repair, attributed, err)
+			}
+			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+			if owed, held := readOwedRow(t, ctx, pool, "acme/widgets", 98769); held {
+				t.Errorf("after %s and one more pass #98769 is owed %+v, want none: that pass read it", repair, owed)
+			}
 			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
-				t.Errorf("HeadAttributedTo(%s, GitHub's head) after %s = %v, %v; want true", issue, repair, attributed, err)
+				t.Errorf("HeadAttributedTo(%s, GitHub's head) after %s and one more pass = %v, %v; want true", issue, repair, attributed, err)
 			}
 		})
 	}

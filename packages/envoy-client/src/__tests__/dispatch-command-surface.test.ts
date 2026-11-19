@@ -515,6 +515,10 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
         keys_on_another_reading: 42,
         moves_queued: 9,
         links_in_two_cases: 2,
+        owed_failures: 23,
+        owed_failures_oldest_at: "2026-11-17T06:05:00Z",
+        owed_refusals: 4,
+        owed_refusals_since: "2026-11-17T08:09:00Z",
       });
     case "GET /api/v1/references":
       return response({ node: { kind: "issue", id: ISSUE }, edges: [] });

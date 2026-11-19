@@ -608,7 +608,7 @@ func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo s
 	if err != nil {
 		return repo, number, err
 	}
-	return repo, number, owePullRequestRead(handling, in.pool, repo, number, owedFailure)
+	return repo, number, owePullRequestRead(handling, in.pool, repo, number, owedFailure, "")
 }
 
 // redeliverAfter hands msg back to the server for redelivery in after — at once where after is

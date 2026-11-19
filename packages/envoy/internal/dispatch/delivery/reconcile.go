@@ -1048,8 +1048,9 @@ func (p *passRateLimit) err() error {
 // read once GitHub answers for the pull request, or once one answer of GitHub, asked with the
 // token of the read GitHub refused, shows the repository readable and the pull request absent
 // (pullRequestAbsent, one GraphQL request for each 404 or 410), and otherwise counts the read
-// under the kind it gave. So a pull request owed a failure is read every pass until GitHub
-// answers, and one GitHub refuses with no such answer is read again by a later pass, with no age
+// under the kind it gave, with the word of GitHub's refusal for a refusal (refusalOf). So a pull
+// request owed a failure is read every pass until GitHub answers, and one GitHub refuses with no
+// such answer is read again by a later pass, with no age
 // that ends it. Both lists are taken before either is read, so a row a read of this pass moves to
 // the other kind is not read again in it. A rate limit, of the read or of the question whether the
 // pull request exists, is kept for the pass (limited); the read's counts the read as a failure, and
@@ -1058,7 +1059,7 @@ func (p *passRateLimit) err() error {
 func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, installations *passInstallations, limited *passRateLimit) error {
 	read := func(ctx context.Context, owed owedRead) error {
 		_, refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, installations, owed.Repo, owed.Number, now)
-		outcome := owedReadAnswered
+		outcome, refusedAs := owedReadAnswered, ""
 		switch {
 		case err != nil:
 			outcome = owedReadFailed
@@ -1069,10 +1070,10 @@ func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, ins
 					"repo", owed.Repo, "number", owed.Number, "error", askErr)
 			}
 			if !absent {
-				outcome = owedReadRefused
+				outcome, refusedAs = owedReadRefused, refusalOf(refused.err)
 			}
 		}
-		if recordErr := recordOwedReadOutcome(ctx, r.pool, owed, outcome); recordErr != nil {
+		if recordErr := recordOwedReadOutcome(ctx, r.pool, owed, outcome, refusedAs); recordErr != nil {
 			slog.Warn("dispatch delivery: record how a pull request's owed read ended; the next pass reads it again",
 				"repo", owed.Repo, "number", owed.Number, "error", recordErr)
 		}

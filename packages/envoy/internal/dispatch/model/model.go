@@ -1297,16 +1297,57 @@ const (
 	BasisLearnedUpdatedAt = "updated_at"
 )
 
-// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
-// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
-// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
-// is a different thing for a reader to do: there is no pull request and no branch to compare
-// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed, ReasonHeadNotRead
+// and ReasonIssueNotKnown are why a check names nothing to compare its results with
+// (CheckBlock.ComparedNothing), and why a result's commit cannot be placed
+// (ResultCommitStands.Reason). Each one is a different thing for a reader to do. There is no
+// pull request and no branch to compare with. The App cannot read the repository. A read that
+// Dispatch makes did not answer. Dispatch has not read the head of a pull request of the issue
+// yet (CheckBlock.HeadsNotRead). Dispatch does not know yet whether a pull request that it read
+// is the issue's (CheckBlock.IssuesNotKnown).
 const (
 	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
 	ReasonRepositoryUnreadable  = "repository_unreadable"
 	ReasonReadFailed            = "read_failed"
+	ReasonHeadNotRead           = "head_not_read"
+	ReasonIssueNotKnown         = "issue_not_known"
 )
+
+// RefusedAsAppNotInstalled, RefusedAsRepositoryUnreadable and RefusedAsPullRequestNotFound name
+// how GitHub refuses the read that a pull request is owed (HeadNotRead.RefusedAs). The App is
+// not installed on the repository. The App cannot read the repository. GitHub has no such pull
+// request.
+const (
+	RefusedAsAppNotInstalled      = "app_not_installed"
+	RefusedAsRepositoryUnreadable = "repository_unreadable"
+	RefusedAsPullRequestNotFound  = "pull_request_not_found"
+)
+
+// HeadNotRead is one pull request of a check's issue whose head Dispatch has not read: it has
+// no results row yet, or a read of GitHub is owed for it. RefusedAs names how GitHub refuses
+// that read, and RefusedSince is the time of the first refusal of the owed read. Both are empty
+// while no refusal is owed. A refusal that an older release owed has no RefusedSince.
+type HeadNotRead struct {
+	Number       int        `json:"number"`
+	RefusedAs    string     `json:"refused_as,omitempty" enum:"app_not_installed,repository_unreadable,pull_request_not_found"`
+	RefusedSince *time.Time `json:"refused_since,omitempty"`
+}
+
+// IssueNotKnown is one pull request of the issue's repository whose answer is not known: its
+// facts name no issue that Dispatch holds, and its commit messages are not read. The check's
+// answer turns on it, because it can be the issue's own pull request.
+type IssueNotKnown struct {
+	Number int `json:"number"`
+}
+
+// PossibleHead is the pull request whose head a result's commit is, where that pull request's
+// answer is not known (ReasonIssueNotKnown). It has the shape of a basis, and it is no basis:
+// nothing showed that the pull request is the issue's.
+type PossibleHead struct {
+	Repo        string `json:"repo"`
+	PullRequest int    `json:"pull_request"`
+	Commit      string `json:"commit"`
+}
 
 // CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
 // one of the commits the check named, at another commit, or not known with the reason.
@@ -1363,12 +1404,16 @@ type CheckPassStands struct {
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
-// (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
-// which CheckResult.CheckWordsMoved answers on its own.
+// (ReasonRepositoryUnreadable, ReasonReadFailed, ReasonHeadNotRead, ReasonIssueNotKnown). It says
+// nothing about the check's words, which CheckResult.CheckWordsMoved answers on its own.
+// PossibleHead is set only where the reason is ReasonIssueNotKnown and the commit is the head of
+// that pull request. Basis stays empty there, because nothing compared the result with a head of
+// the issue.
 type ResultCommitStands struct {
-	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
-	Basis  *CheckBasis `json:"basis,omitempty"`
-	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+	Answer       string        `json:"answer" enum:"at_basis,other_commit,unknown"`
+	Basis        *CheckBasis   `json:"basis,omitempty"`
+	Reason       string        `json:"reason,omitempty" enum:"repository_unreadable,read_failed,head_not_read,issue_not_known"`
+	PossibleHead *PossibleHead `json:"possible_head,omitempty"`
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
@@ -1461,10 +1506,17 @@ type CheckBlock struct {
 	Results         []CheckResult `json:"results"`
 	// ComparedWith is every commit and branch this check's results are compared with, in the
 	// order they are asked about, and ComparedNothing is why there are none where it is empty
-	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
-	ComparedWith    []CheckBasis    `json:"compared_with"`
-	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
-	PassStands      CheckPassStands `json:"pass_stands"`
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed,
+	// ReasonHeadNotRead, ReasonIssueNotKnown).
+	ComparedWith    []CheckBasis `json:"compared_with"`
+	ComparedNothing string       `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed,head_not_read,issue_not_known"`
+	// HeadsNotRead names each pull request of a `before_merge` check's issue whose head Dispatch
+	// has not read. It is no basis, and no pass stands by it. IssuesNotKnown names each pull
+	// request of the issue's repository whose answer is not known and that the check's answer
+	// turns on. HeadsNotRead never names such a pull request.
+	HeadsNotRead   []HeadNotRead   `json:"heads_not_read,omitempty"`
+	IssuesNotKnown []IssueNotKnown `json:"issues_not_known,omitempty"`
+	PassStands     CheckPassStands `json:"pass_stands"`
 }
 
 // CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI

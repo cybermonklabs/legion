@@ -285,13 +285,13 @@ func TestARateLimitOnOneInstallationEndsNoReadOfTheReconcileForAnother(t *testin
 	acme.mu.Unlock()
 	const limited = 20
 	for n := 1; n <= limited; n++ {
-		if err := owePullRequestRead(ctx, pool, "acme/widgets", n, owedFailure); err != nil {
+		if err := owePullRequestRead(ctx, pool, "acme/widgets", n, owedFailure, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 	head := fakeSHA("c", 5)
 	other.set("other/tools", 5, "open", head, "legion/"+issue, "Dispatch: "+issue, time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
-	if err := owePullRequestRead(ctx, pool, "other/tools", 5, owedFailure); err != nil {
+	if err := owePullRequestRead(ctx, pool, "other/tools", 5, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
 	passErr := NewReconcile(pool, client, events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now())

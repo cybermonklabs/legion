@@ -8,6 +8,7 @@ import type {
   CheckResult,
   ClaimedIssue,
   DuplicateCandidate,
+  HeadNotRead,
   Issue,
   IssueCheckResults,
   IssueComponents,
@@ -653,14 +654,44 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
  *  that stands at none of the compared commits, and the whole of every other one. */
 const BRIEF_READING_CHARACTERS = 200;
 
-/** The three reasons a check compared its results with nothing, and the two a result's commit
- *  cannot be placed, in words a reader acts on. A check takes all three and a result all but
+/** The five reasons a check compared its results with nothing, and the four a result's commit
+ *  cannot be placed, in words a reader acts on. A check takes all five and a result all but
  *  no_pull_request_or_branch, so the check's set types this map and answers both. */
 const COMPARISON_REASONS: Readonly<Record<NonNullable<CheckBlock["compared_nothing"]>, string>> = {
   no_pull_request_or_branch: "the issue has no pull request and no branch to compare with",
   repository_unreadable: "Dispatch cannot read the repository",
   read_failed: "a read Dispatch made did not answer",
+  head_not_read: "Dispatch has not read the head of a pull request of this issue yet",
+  issue_not_known: "Dispatch does not know yet whether a pull request it read is this issue's",
 };
+
+/** Why GitHub refuses the read that is owed for a head, by the word the server gives. */
+const REFUSAL_WORDS: Readonly<Record<NonNullable<HeadNotRead["refused_as"]>, string>> = {
+  app_not_installed: "the GitHub App is not installed on the repository",
+  repository_unreadable: "the GitHub App cannot read the repository",
+  pull_request_not_found: "GitHub has no such pull request",
+};
+
+/** A time the server gives (RFC 3339), in UTC to the minute: `2026-11-17 08:09 UTC`. The minute
+ *  is cut, not rounded. A value that is not a time prints as the server gave it. */
+export function minuteUTC(at: string): string {
+  const time = Date.parse(at);
+  if (Number.isNaN(time)) return at;
+  const iso = new Date(time).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+/** The line of one head that Dispatch has not read, and the line of GitHub's refusal of its read
+ *  directly after it, where GitHub refuses that read. */
+function headNotReadLines(head: HeadNotRead): string[] {
+  const line = `  Not read yet: the head of pull request #${head.number}.`;
+  if (head.refused_as === undefined) return [line];
+  const since = head.refused_since === undefined ? "" : `, since ${minuteUTC(head.refused_since)}`;
+  return [
+    line,
+    `  Not read: GitHub refuses the read of pull request #${head.number} (${REFUSAL_WORDS[head.refused_as]})${since}.`,
+  ];
+}
 
 /** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's
  *  own read of the pull request, `updated_at` is GitHub's update time as a webhook carried it. */
@@ -797,8 +828,9 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   ];
 }
 
-/** One check: a head line naming what it compared with and whether a pass of it stands, the
- *  check's own words once, then every result recorded against it. */
+/** One check: a head line naming what it compared with and whether a pass of it stands, a line
+ *  for each pull request whose head Dispatch has not read and each one Dispatch does not know is
+ *  this issue's, the check's own words once, then every result recorded against it. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
   if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const bases = check.compared_with ?? [];
@@ -812,6 +844,10 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
   const results = check.results ?? [];
   return [
     `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
+    ...(check.heads_not_read ?? []).flatMap(headNotReadLines),
+    ...(check.issues_not_known ?? []).map(
+      (entry) => `  Not known yet: whether pull request #${entry.number} is this issue's.`
+    ),
     `  The check's words: ${check.text}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]

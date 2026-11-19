@@ -13,6 +13,7 @@ import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
 import type { DispatchToolResult, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
+import { minuteUTC } from "./issues";
 
 /**
  * `dispatch answers`: the answers this session's asks have been given since it last read them.
@@ -124,12 +125,21 @@ export async function limitsCommand(context: SessionContext): Promise<DispatchTo
 /**
  * `dispatch attribution`: what the attribution of the stored pull requests still waits for, as
  * the server counts it at the call (`GET /api/v1/delivery/attribution`). An operator runs it after
- * a deploy until the first three counts are 0. It names no owner, so it runs on the session's
- * context alone.
+ * a deploy until the first three counts are 0. The last line counts the pull requests whose head
+ * is not read while a read of GitHub is owed, by kind, with the oldest time of each kind where the
+ * server names one. It names no owner, so it runs on the session's context alone.
  */
 export async function attributionCommand(context: SessionContext): Promise<DispatchToolResult> {
   const counts = await context.newClient().attribution();
   const count = (value: number) => value.toLocaleString("en-US");
+  const failuresSince =
+    counts.owed_failures_oldest_at === undefined
+      ? ""
+      : ` (the oldest owed since ${minuteUTC(counts.owed_failures_oldest_at)})`;
+  const refusalsSince =
+    counts.owed_refusals_since === undefined
+      ? ""
+      : ` (the oldest refused since ${minuteUTC(counts.owed_refusals_since)})`;
   return {
     text: [
       `Pull requests that wait for their facts from GitHub: ${count(counts.facts_left)}.`,
@@ -138,6 +148,7 @@ export async function attributionCommand(context: SessionContext): Promise<Dispa
       `Changes of attribution whose events wait: ${count(counts.moves_queued)}.`,
       `The key reading: ${counts.reading}.`,
       `Links that more than one issue holds in other letter cases: ${count(counts.links_in_two_cases)}.`,
+      `Pull requests whose head is not read while a read is owed: ${count(counts.owed_failures)} that GitHub did not answer${failuresSince}, and ${count(counts.owed_refusals)} that GitHub refuses${refusalsSince}.`,
     ].join("\n"),
     details: { ...counts },
   };

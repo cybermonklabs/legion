@@ -65,6 +65,11 @@ const (
 	ciCaseAbsent          = "absent"
 	ciCaseNoHead          = "no_head"
 	ciCaseUnreadable      = "github_unreadable"
+	// ciCaseHeadNotRead is a newest head that a read of GitHub is owed for, and
+	// ciCaseIssueNotKnown a pull request whose answer is not known that can come before the newest
+	// head. Each has the word of its reason (model.ReasonHeadNotRead, model.ReasonIssueNotKnown).
+	ciCaseHeadNotRead   = model.ReasonHeadNotRead
+	ciCaseIssueNotKnown = model.ReasonIssueNotKnown
 )
 
 // ciRunCompleted is the status of a check run that has concluded.
@@ -90,7 +95,15 @@ type ciRun struct {
 // issue, whose Verification document holds the checks and whose pull request heads they are read
 // at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
 // case of the answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
+//
+// Two heads Dispatch does not know stop the read of the check runs, where Dispatch can read the
+// repository (comparisonReader.decides, rule 2). A pull request of the repository whose answer
+// is not known, and which comes before the newest head in the order of
+// delivery.NewestPullRequestHead, or any one where no head is found, can be the issue's newest
+// head: each check answers unread with ciCaseIssueNotKnown (decision D1). Else a newest head that
+// a read of GitHub is owed for may not be the head: each check answers unread with
+// ciCaseHeadNotRead. Either way no check run is read, and passStandsOf answers unknown.
+func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -106,6 +119,16 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
 	if err != nil {
 		return err
+	}
+	unread, err := s.ciHeadNotKnown(ctx, reader, issueKey, head, found)
+	if err != nil {
+		return err
+	}
+	if unread != nil {
+		for _, p := range proved {
+			p.check.CI = ciUnconcluded(*p.check, p.name, model.CIStateUnread, unread.ciCase, unread.detail)
+		}
+		return nil
 	}
 	if !found {
 		for _, p := range proved {
@@ -130,6 +153,64 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		}
 	}
 	return nil
+}
+
+// ciUnreadHead is why a check CI proves reads no check run: its case and the sentence that names
+// the pull request.
+type ciUnreadHead struct {
+	ciCase, detail string
+}
+
+// ciHeadNotKnown is why the newest head of issueKey cannot be the head that the check runs are
+// read at (deriveCIResults), and nil where it can, or where Dispatch cannot read the repository:
+// a deployment with no App key and a repository the App cannot read answer as before (rule 2).
+// The pull requests whose answer is not known are read from the database only where the issue
+// resolves to a repository. A failed read of them is an error, as a failed read of the heads is.
+func (s *server) ciHeadNotKnown(
+	ctx context.Context, reader *comparisonReader, issueKey string, head delivery.NewestHead, found bool,
+) (*ciUnreadHead, error) {
+	repo, answered := reader.repositoryOf(ctx, issueKey)
+	if !answered || repo == nil || s.deps.GitHub == nil {
+		return nil, nil
+	}
+	pulls, err := delivery.PullRequestsNotKnown(ctx, s.deps.Store.Pool, *repo)
+	if err != nil {
+		return nil, err
+	}
+	var before *delivery.NotKnownPullRequest
+	for index := range pulls {
+		pull := &pulls[index]
+		if found && !newestBefore(pull.State, pull.Number, head.State, head.Number) {
+			continue
+		}
+		if before == nil || newestBefore(pull.State, pull.Number, before.State, before.Number) {
+			before = pull
+		}
+	}
+	if before == nil && !(found && head.ReadOwed) {
+		return nil, nil
+	}
+	if !reader.decides(ctx, issueKey) {
+		return nil, nil
+	}
+	if before != nil {
+		return &ciUnreadHead{ciCase: ciCaseIssueNotKnown, detail: fmt.Sprintf(
+			"Dispatch does not know yet whether pull request #%d is %s's: its commit messages are not read.",
+			before.Number, issueKey)}, nil
+	}
+	return &ciUnreadHead{ciCase: ciCaseHeadNotRead, detail: fmt.Sprintf(
+		"Dispatch has not read the head of pull request #%d of %s yet: a read of GitHub is owed for it.",
+		head.Number, head.Repo)}, nil
+}
+
+// newestBefore is whether a pull request in state with number comes before one in otherState
+// with otherNumber in the order of delivery.NewestPullRequestHead: open before merged, then the
+// higher number.
+func newestBefore(state string, number int, otherState string, otherNumber int) bool {
+	if (state == "open") != (otherState == "open") {
+		return state == "open"
+	}
+	return number > otherNumber
 }
 
 // provedCI is a check CI proves and name, the run its `ci_check` names as the rules read it,

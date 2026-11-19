@@ -539,7 +539,10 @@ func upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head Pu
 // pull request attributed to another issue never answers for this one; the results read asks
 // this about the check's own issue, so a child's pull request never answers for a check above
 // it (api/results_comparison.go's comparisonReader). The issue is the statement's
-// (attributedTerms), and only a pull request with a results row has a head to answer.
+// (attributedTerms), and only a pull request with a results row has a head to answer. While a
+// read of GitHub is owed for the pull request (owedReadJoin), Dispatch does not know that the
+// stored head is the head, so it answers false for it: the record route then reads GitHub
+// through for that commit.
 func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	statements, err := attribution()
 	if err != nil {
@@ -552,10 +555,11 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 	return found, nil
 }
 
-const headAttributedToSelect = `
+var headAttributedToSelect = `
 	select exists (
 		select 1 from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
-		where a.issue_key = $1 and h.head_sha = $2 and h.state in ('open', 'merged')
+		` + owedReadJoin + `
+		where a.issue_key = $1 and h.head_sha = $2 and h.state in ('open', 'merged') and o.reason is null
 	)`
 
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
@@ -566,13 +570,18 @@ const headAttributedToSelect = `
 // writer has carried it. The reader shows the later of the two and names which it is
 // (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). HeadKnown is false for a pull request
 // Dispatch holds no results row of, only a timeline row: it has no head, HeadSHA is "" and both
-// times are nil.
+// times are nil. HeadKnown is false too while a read of GitHub is owed for the pull request, and
+// HeadSHA and the times are then those of its results row. RefusedAs and RefusedSince name how
+// GitHub refuses that owed read and since when (model.HeadNotRead), and are empty unless the owed
+// read is a refusal.
 type AttributedHead struct {
-	Number    int
-	HeadSHA   string
-	HeadKnown bool
-	CheckedAt *time.Time
-	EventAt   *time.Time
+	Number       int
+	HeadSHA      string
+	HeadKnown    bool
+	CheckedAt    *time.Time
+	EventAt      *time.Time
+	RefusedAs    string
+	RefusedSince *time.Time
 }
 
 // HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
@@ -580,11 +589,13 @@ type AttributedHead struct {
 // descending: the whole list HeadAttributedTo answers one commit of, which the results read names
 // as what a `before_merge` check's results are compared with (R3). The issue is the statement's
 // (attributedTerms), so the two reads keep one rule, and a commit HeadAttributedTo answers yes for
-// is a commit this list holds.
+// is a commit this list holds. A pull request with no results row, and one owed a read of GitHub
+// (owedReadJoin), is a head Dispatch has not read.
 //
-// The order is by the later of the two times either way, with a row carrying neither last and
-// the pull request's own number breaking a tie, so the list does not turn on whichever row the
-// planner returned first. A reader taking the first head takes the one Dispatch learned last.
+// The order of the heads that are read is by the later of the two times, with a row carrying
+// neither last and the pull request's own number breaking a tie, so the list does not turn on
+// whichever row the planner returned first. A reader taking the first head takes the one Dispatch
+// learned last.
 func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
 	statements, err := attribution()
 	if err != nil {
@@ -598,8 +609,13 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	var heads []AttributedHead
 	for rows.Next() {
 		var head AttributedHead
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.HeadKnown, &head.CheckedAt, &head.EventAt); err != nil {
+		var refusedAs *string
+		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.HeadKnown, &head.CheckedAt, &head.EventAt,
+			&refusedAs, &head.RefusedSince); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
+		}
+		if refusedAs != nil {
+			head.RefusedAs = *refusedAs
 		}
 		heads = append(heads, head)
 	}
@@ -610,19 +626,29 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 }
 
 // headsAttributedToSelect is HeadsAttributedTo's select over the statement's terms by issue: a
-// left join with heads, so a pull request with a timeline row only is listed with no head.
-const headsAttributedToSelect = `
-	select a.number, coalesce(h.head_sha, ''), h.repo is not null, h.checked_at, h.event_at
+// left join with heads, so a pull request with a timeline row only is listed with no head, and a
+// left join with its owed read (owedReadJoin), so a pull request owed a read is listed with its
+// stored head and HeadKnown false.
+var headsAttributedToSelect = `
+	select a.number, coalesce(h.head_sha, ''), h.repo is not null and o.reason is null, h.checked_at, h.event_at,
+		o.refused_as, o.refused_since
 	from attributed a left join heads h on h.j_repo = a.repo and h.j_number = a.number
+	` + owedReadJoin + `
 	where a.issue_key = $1 and (h.repo is null or h.state in ('open', 'merged'))
-	order by h.repo is null, greatest(h.checked_at, h.event_at) desc nulls last, a.number desc`
+	order by h.repo is null or o.reason is not null,
+		case when h.repo is not null and o.reason is null then greatest(h.checked_at, h.event_at) end desc nulls last,
+		a.number desc`
 
 // NewestHead is the one pull request head the results read derives a check CI proves at: the
-// repository's canonical name, the pull request's number and its head commit.
+// repository's canonical name, the pull request's number, its head commit and its state (open or
+// merged). ReadOwed is true while a read of GitHub is owed for that pull request (owedReadJoin):
+// Dispatch then does not know that HeadSHA is the head, and reads no check run at it.
 type NewestHead struct {
-	Repo    string
-	Number  int
-	HeadSHA string
+	Repo     string
+	Number   int
+	HeadSHA  string
+	State    string
+	ReadOwed bool
 }
 
 // NewestPullRequestHead is the head of the open pull request of the highest number attributed
@@ -632,14 +658,16 @@ type NewestHead struct {
 // at one of the heads a `before_merge` check compares its results with. A closed-unmerged pull
 // request is no head, and a pull request with no results row has none. The repository is the
 // canonical name (refs.CanonicalRepoSQL), which GitHub answers the head's check runs under
-// (api/results_ci.go), whatever name the row is stored under.
+// (api/results_ci.go), whatever name the row is stored under. A pull request owed a read is
+// answered as before, with ReadOwed true.
 func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
 	statements, err := attribution()
 	if err != nil {
 		return NewestHead{}, false, err
 	}
 	var head NewestHead
-	err = pool.QueryRow(ctx, statements.newestPullRequestHead, issueKey).Scan(&head.Repo, &head.Number, &head.HeadSHA)
+	err = pool.QueryRow(ctx, statements.newestPullRequestHead, issueKey).Scan(
+		&head.Repo, &head.Number, &head.HeadSHA, &head.State, &head.ReadOwed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NewestHead{}, false, nil
 	}
@@ -649,9 +677,10 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 	return head, true, nil
 }
 
-const newestPullRequestHeadSelect = `
-	select a.repo, a.number, h.head_sha
+var newestPullRequestHeadSelect = `
+	select a.repo, a.number, h.head_sha, h.state, o.reason is not null
 	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
+	` + owedReadJoin + `
 	where a.issue_key = $1 and h.state in ('open', 'merged')
 	order by h.state = 'open' desc, a.number desc
 	limit 1`
@@ -1136,6 +1165,14 @@ func repositoryUnreadable(err error) bool {
 // it had, and the reconcile reads it again rather than this read-through standing as the last
 // word.
 //
+// A read-through settles what its answer covers. Before its list read it takes the name and the
+// revision of each read owed in the repository (owedReadsIn), through the renaming rule. After it
+// writes a pull request of GitHub's answer, it settles that pull request's owed read at that
+// revision (settleOwedRead), as the intake does (recordPullRequestHead). An owe made after the
+// read began has another revision, and it stays: so does the owe the write's own trigger makes
+// (pull_request_heads_older_read). Without the settle, a pull request that is owed a read and has
+// no row stays a head not read in the answer of the read that learns it.
+//
 // repoFull comes from outside — the repository the check's issue resolves to — so it is
 // canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
 // is ever written under a name a repository was renamed away from. The read-time caller has
@@ -1157,6 +1194,7 @@ func ReadThroughCommitPulls(
 	if err != nil {
 		return 0, false, err
 	}
+	owed := owedReadsIn(ctx, pool, canonical)
 	began, err := startRead(ctx, pool)
 	if err != nil {
 		return 0, false, err
@@ -1173,6 +1211,12 @@ func ReadThroughCommitPulls(
 			return written, atHead, err
 		}
 		written++
+		for _, read := range owed[pull.Number] {
+			if err := settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision); err != nil {
+				logging.FromContext(ctx).Warn("dispatch delivery: settle the read owed before this read-through; the reconcile reads the pull request once more",
+					"repo", read.Repo, "number", read.Number, "error", err)
+			}
+		}
 	}
 	return written, atHead, nil
 }
@@ -1321,7 +1365,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 // that names both, and nothing is logged here: until the record is written, nothing is owed. The
 // refusal is named and not wrapped, so no caller reads the failed record as GitHub's refusal.
 func (in *Intake) oweRefusedRead(ctx context.Context, repoFull string, number int, refused error) (headRead, error) {
-	if err := owePullRequestRead(ctx, in.pool, repoFull, number, owedRefusal); err != nil {
+	if err := owePullRequestRead(ctx, in.pool, repoFull, number, owedRefusal, refusalOf(refused)); err != nil {
 		return headRead{}, markHeadNotStored(fmt.Errorf("%v, and %w", refused, err))
 	}
 	logging.FromContext(ctx).Info("dispatch delivery: GitHub gave no pull request for this read, so no head row is written; the read is owed, and the reconcile reads it again",

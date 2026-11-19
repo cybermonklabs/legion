@@ -69,9 +69,16 @@ package delivery
 // it, so a flood that continues can hold it back with no fixed bound. Its next event reads GitHub
 // at once regardless.
 //
-// No reader of a head reads this table. The results read, the CI-proved checks and the delivery
-// timeline read pull_request_heads and delivery_pull_requests alone, so an owed read is never a
-// head, a basis or a merge anywhere; and a release before it neither reads nor writes the table.
+// The readers of a head read this table, and they read pull_request_heads, pull_request_texts and
+// delivery_pull_requests through one statement (attributedTerms). While a read is owed, Dispatch
+// does not know that the stored head is the head. So each reader by issue reads the owed row of
+// each pull request that it answers, through the renaming rule (owedReadJoin): HeadsAttributedTo
+// answers the pull request with HeadKnown false, HeadAttributedTo answers false for its stored
+// head, and NewestPullRequestHead answers ReadOwed true. An owed read is never a head, a basis or
+// a merge. BaseBranchMergedFor does not read it: GitHub never changes the state or the base branch
+// of a merged pull request. A refusal row names how GitHub refuses the read (refused_as) and since
+// when (refused_since), so a reader can name the state and its way out. A release before this one
+// neither reads nor writes the two columns.
 
 import (
 	"context"
@@ -81,6 +88,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -188,7 +197,11 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // corrected. The reason is one of this package's two constants. So no value this writes is one
 // the table refuses, and a failure of a statement is the database's alone, which the intake hands
 // back (recordRefused). Its statements run within owedReadWriteTimeout of the call.
-func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
+//
+// refusedAs is the word of GitHub's refusal where reason is owedRefusal (refusalOf), and "" for a
+// failure. A row that becomes a refusal takes the time of this write as refused_since, a row that
+// stays one keeps its time, and a row that becomes a failure clears both columns (owedRefusalSet).
+func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason, refusedAs string) error {
 	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
 	if err := checkPullRequestKey(given, number); err != nil {
@@ -202,13 +215,43 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 		repoFull = given
 	}
 	if _, err := pool.Exec(ctx, `
-		insert into pull_request_reads_owed (repo, number, reason) values ($1, $2, $3)
+		insert into pull_request_reads_owed (repo, number, reason, refused_as, refused_since)
+		values ($1, $2, $3::text, case when $3::text = 'refusal' then nullif($4::text, '') end,
+			case when $3::text = 'refusal' then now() end)
 		on conflict (repo, number) do update
-			set reason = excluded.reason, owed_at = excluded.owed_at, revision = excluded.revision
-	`, repoFull, number, reason); err != nil {
+			set reason = excluded.reason, owed_at = excluded.owed_at, revision = excluded.revision,
+				`+owedRefusalSet("excluded.reason", "excluded.refused_as", "excluded.refused_since", "pull_request_reads_owed.")+`
+	`, repoFull, number, string(reason), refusedAs); err != nil {
 		return fmt.Errorf("record the read %s#%d is owed: %w", repoFull, number, err)
 	}
 	return nil
+}
+
+// owedRefusalSet is the assignment of refused_as and refused_since where an owed row takes the
+// reason next (an expression): the word refusedAs, or the row's own word where refusedAs is null;
+// the time since, or the row's own time where the row is a refusal already; and null for both
+// where the row becomes a failure. row prefixes the row's own columns ("" in an update).
+func owedRefusalSet(next, refusedAs, since, row string) string {
+	return `refused_as = case when ` + next + ` = 'refusal' then coalesce(` + refusedAs + `,
+					case when ` + row + `reason = 'refusal' then ` + row + `refused_as end) end,
+				refused_since = case when ` + next + ` <> 'refusal' then null
+					when ` + row + `reason = 'refusal' then ` + row + `refused_since else ` + since + ` end`
+}
+
+// refusalOf is the word of GitHub's refusal err of a read (HeadNotRead.RefusedAs): the App is not
+// installed on the repository, the App cannot read the repository, or GitHub has no such pull
+// request. The errors carry no status as a value (githubapp's errors), so the word names the
+// status. It is "" for any other error.
+func refusalOf(err error) string {
+	switch {
+	case errors.Is(err, githubapp.ErrNoInstallation):
+		return model.RefusedAsAppNotInstalled
+	case errors.Is(err, githubapp.ErrRepositoryUnreadable):
+		return model.RefusedAsRepositoryUnreadable
+	case errors.Is(err, ErrPullRequestNotFound):
+		return model.RefusedAsPullRequestNotFound
+	}
+	return ""
 }
 
 // settleOwedRead deletes the read repoFull's pull request number is owed where the row's revision
@@ -285,7 +328,9 @@ const (
 // names the revision the list read (settleOwedRead), so an event owed again while the reconcile
 // read GitHub keeps its record, as that event recorded it, for the next pass. The count is no owe
 // and gives no new revision, so an intake's read that read the row before it still deletes it.
-func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead, outcome owedReadOutcome) error {
+// refusedAs is the word of GitHub's refusal for owedReadRefused (refusalOf), and "" otherwise. It
+// sets refused_as and refused_since as owePullRequestRead does (owedRefusalSet).
+func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead, outcome owedReadOutcome, refusedAs string) error {
 	if outcome == owedReadAnswered {
 		return settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision)
 	}
@@ -294,10 +339,69 @@ func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead,
 		reason = owedRefusal
 	}
 	if _, err := pool.Exec(ctx, `
-		update pull_request_reads_owed set reason = $4, reads = reads + 1
+		update pull_request_reads_owed set reason = $4::text, reads = reads + 1,
+			`+owedRefusalSet("$4::text", "nullif($5::text, '')", "now()", "")+`
 		where repo = $1 and number = $2 and revision = $3
-	`, read.Repo, read.Number, read.Revision, reason); err != nil {
+	`, read.Repo, read.Number, read.Revision, string(reason), refusedAs); err != nil {
 		return fmt.Errorf("count the read %s#%d is owed: %w", read.Repo, read.Number, err)
 	}
 	return nil
+}
+
+// owedReadJoin is the lateral join of the owed read of each pull request `a` of the statement's
+// terms answers (attributedTerms): the row owed under a.repo, the canonical name, or under a name
+// that repo_projects renames to it. The owed row's own name goes through the same rule, so a read
+// owed under an old name matches, and so does one owed under the name given where the canonical
+// name is no name GitHub can have (owePullRequestRead). A refusal comes first. o.reason is null
+// where no read is owed, and o.refused_as and o.refused_since are null unless the row is a
+// refusal: a trigger that owes a failure over a refusal row leaves both as they were. The index
+// pull_request_reads_owed_repo_number serves the probe.
+var owedReadJoin = `left join lateral (
+		select o.reason, case when o.reason = 'refusal' then o.refused_as end as refused_as,
+			case when o.reason = 'refusal' then o.refused_since end as refused_since
+		from pull_request_reads_owed o
+		where lower(o.repo) = any(array(select lower(a.repo) union select lower(r.repo) from repo_projects r
+				where r.renamed_to is not null and lower(r.renamed_to) = lower(a.repo)))
+			and octet_length(o.repo) <= 1024 and o.number = a.number
+			and lower(` + refs.CanonicalRepoSQL("o.repo") + `) = lower(a.repo)
+		order by o.reason = 'refusal' desc limit 1) o on true`
+
+// owedReadsOfRepository is the read of the name and the revision of each read owed in one
+// repository, $1 its canonical name, through the same rule as owedReadJoin: the snapshot that a
+// read-through takes before its list read (ReadThroughCommitPulls).
+var owedReadsOfRepository = `select o.repo, o.number, o.revision from pull_request_reads_owed o
+	where lower(o.repo) = any(array(select lower($1::text) union select lower(r.repo) from repo_projects r
+			where r.renamed_to is not null and lower(r.renamed_to) = lower($1::text)))
+		and octet_length(o.repo) <= 1024
+		and lower(` + refs.CanonicalRepoSQL("o.repo") + `) = lower($1::text)`
+
+// owedReadsIn is the name, the number and the revision of each read owed in repoFull, the
+// canonical name, as a read of GitHub begins (owedReadsOfRepository). A read that fails answers
+// nothing, so the read-through settles nothing and the reconcile reads each one again.
+func owedReadsIn(ctx context.Context, pool *store.Pool, repoFull string) map[int][]owedRead {
+	bounded, cancel := context.WithTimeout(ctx, owedRevisionReadTimeout)
+	defer cancel()
+	rows, err := pool.Query(bounded, owedReadsOfRepository, repoFull)
+	if err != nil {
+		logging.FromContext(ctx).Warn("dispatch delivery: read the reads owed in a repository; this read settles none, and the reconcile reads each once more",
+			"repo", repoFull, "error", err)
+		return nil
+	}
+	defer rows.Close()
+	owed := map[int][]owedRead{}
+	for rows.Next() {
+		var read owedRead
+		if err := rows.Scan(&read.Repo, &read.Number, &read.Revision); err != nil {
+			logging.FromContext(ctx).Warn("dispatch delivery: read the reads owed in a repository; this read settles none, and the reconcile reads each once more",
+				"repo", repoFull, "error", err)
+			return nil
+		}
+		owed[read.Number] = append(owed[read.Number], read)
+	}
+	if err := rows.Err(); err != nil {
+		logging.FromContext(ctx).Warn("dispatch delivery: read the reads owed in a repository; this read settles none, and the reconcile reads each once more",
+			"repo", repoFull, "error", err)
+		return nil
+	}
+	return owed
 }

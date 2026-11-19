@@ -1952,7 +1952,8 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 // GET /repos/{owner}/{repo}/commits/{sha}/pulls from the body its test set last, so a test can
 // open a pull request between two reads, and counts every such ask per repository, so a test can
 // show what one read of an issue's results spent. It also answers the batched query of the facts
-// of pull requests from pull (serveFactsQuery), and counts those queries apart from the asks.
+// of pull requests from pull (serveFactsQuery), and counts those queries apart from the asks. It
+// answers the pages of the commits of a pull request (serveCommits), and counts them too.
 type commitPullsFake struct {
 	mu     sync.Mutex
 	asked  map[string]int
@@ -1963,6 +1964,13 @@ type commitPullsFake struct {
 	pull func(repo, number string) string
 	// factsQueried counts the batched queries of facts that GitHub was asked.
 	factsQueried int
+	// refused maps a commit to the status that GitHub refuses the list of its pull requests with.
+	// GitHub answers the list of each other commit.
+	refused map[string]int
+	// commits answers GET /repos/{owner}/{repo}/pulls/{number}/commits with a status and, for a
+	// 200, a page of commits. No function is one empty page. commitPages counts those reads.
+	commits     func(repo, number string) (int, string)
+	commitPages int
 }
 
 // pullAnswers sets what GET /repos/{owner}/{repo}/pulls/{number} answers from now on.
@@ -2003,12 +2011,60 @@ func (f *commitPullsFake) asks(repo string) int {
 	return f.asked[repo]
 }
 
+// refusesCommitPulls makes GitHub refuse the list of the pull requests of sha with status from
+// now on. The ask is counted.
+func (f *commitPullsFake) refusesCommitPulls(sha string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refused[sha] = status
+}
+
+// commitsAnswer sets what GET /repos/{owner}/{repo}/pulls/{number}/commits answers from now on:
+// the status of GitHub's answer and, for a 200, its page of commits.
+func (f *commitPullsFake) commitsAnswer(answer func(repo, number string) (int, string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = answer
+}
+
+// commitPagesRead is how often GitHub has been asked for a page of the commits of a pull
+// request, a refused ask included.
+func (f *commitPullsFake) commitPagesRead() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.commitPages
+}
+
+func (f *commitPullsFake) serveCommits(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.commitPages++
+	answer := f.commits
+	f.mu.Unlock()
+	if answer == nil {
+		fmt.Fprint(w, `[]`)
+		return
+	}
+	status, body := answer(r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("number"))
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
+		return
+	}
+	fmt.Fprint(w, body)
+}
+
 func (f *commitPullsFake) serveCommitPulls(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("owner") + "/" + r.PathValue("repo")
 	f.mu.Lock()
 	f.asked[repo]++
 	answer := f.answer
+	status, refused := f.refused[r.PathValue("sha")]
 	f.mu.Unlock()
+	if refused {
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
+		return
+	}
 	if answer == nil {
 		fmt.Fprint(w, `[]`)
 		return
@@ -2169,10 +2225,10 @@ func openPullAt(number int, issueKey string) func(repo, sha string) string {
 // an App key, the server its handler mounts — whose commitPulls cache a test moves — and the
 // GitHub it reads. The App is installed on repos and on nothing else, every repository it can
 // read answers `main` as its default branch (so a commit heading no pull request is
-// `other_commit` rather than `unknown`), each pull request's commit messages are an empty
-// page, and one commit's pull requests are the fake's, which counts the asks. The fake answers
-// the batched query of the facts of pull requests from its pull requests, and counts that query
-// apart (serveFactsQuery).
+// `other_commit` rather than `unknown`), each pull request's commit messages are an empty page
+// until a test sets them (commitsAnswer), and one commit's pull requests are the fake's, which
+// counts the asks. The fake answers the batched query of the facts of pull requests from its pull
+// requests, and counts that query apart (serveFactsQuery).
 func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Store, *server, *commitPullsFake) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -2184,7 +2240,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	for _, repo := range repos {
 		installed[repo] = true
 	}
-	fake := &commitPullsFake{asked: map[string]int{}}
+	fake := &commitPullsFake{asked: map[string]int{}, refused: map[string]int{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if !installed[r.PathValue("owner")+"/"+r.PathValue("repo")] {
@@ -2204,9 +2260,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", fake.serveCommitPulls)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", fake.servePull)
 	mux.HandleFunc("POST /graphql", fake.serveFactsQuery(t, installed))
-	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `[]`)
-	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", fake.serveCommits)
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
@@ -2340,6 +2394,14 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 	// The push: the pull request's head moves, Dispatch holds that row, and the next result of the
 	// same check is recorded there.
 	writeHead(t, database, "acme/widgets", 97, newHeadCommit, "open", issue.Key)
+	// GitHub's answer below is older than this row. Over a row that no read of GitHub wrote, that
+	// answer owes a read (pull_request_heads_older_read). So the row holds the time of a read of
+	// GitHub, as a read of this build leaves it.
+	if _, err := database.Pool.Exec(context.Background(), `
+		update pull_request_heads set github_read_at = now() where repo = 'acme/widgets' and number = 97
+	`); err != nil {
+		t.Fatalf("mark #97 read by GitHub: %v", err)
+	}
 	newest := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", newHeadCommit, nil)))
 
 	// GitHub names that pull request for the superseded commit too, carrying the head it has now,
@@ -2451,6 +2513,238 @@ func TestAPullRequestOpenedAtASettledCommitIsSeenOnceTheSpanEnds(t *testing.T) {
 		model.CommitAtBasis, false)
 	if asked := fake.asks("acme/widgets") - spent; asked != 1 {
 		t.Fatalf("the read past the settled span asked GitHub %d times, want 1", asked)
+	}
+}
+
+// oweAFailedRead records that pull request number of repo is owed a read of GitHub of the kind
+// failure, as the intake records a read that GitHub did not answer.
+func oweAFailedRead(t *testing.T, database *store.Store, repo string, number int) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into pull_request_reads_owed (repo, number, reason) values ($1, $2, 'failure')
+	`, repo, number); err != nil {
+		t.Fatalf("owe a read of %s#%d: %v", repo, number, err)
+	}
+}
+
+// readsOwedOf is the number of reads owed for pull request number, under each name of a
+// repository.
+func readsOwedOf(t *testing.T, database *store.Store, number int) int {
+	t.Helper()
+	var owed int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pull_request_reads_owed where number = $1
+	`, number).Scan(&owed); err != nil {
+		t.Fatalf("count the reads owed for #%d: %v", number, err)
+	}
+	return owed
+}
+
+// headRowsOf is the number of results rows of pull request number, under each name of a
+// repository.
+func headRowsOf(t *testing.T, database *store.Store, number int) int {
+	t.Helper()
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from pull_request_heads where number = $1
+	`, number).Scan(&rows); err != nil {
+		t.Fatalf("count the results rows of #%d: %v", number, err)
+	}
+	return rows
+}
+
+// pullRequestsComparedWith is the numbers of the pull requests whose heads a check compares its
+// results with, in the order of the answer.
+func pullRequestsComparedWith(check model.CheckBlock) []int {
+	numbers := []int{}
+	for _, basis := range check.ComparedWith {
+		if basis.PullRequest != nil {
+			numbers = append(numbers, *basis.PullRequest)
+		}
+	}
+	return numbers
+}
+
+// A pass at the stored head of a pull request that is owed a read of GitHub does not stand. The
+// owed read is a change of the pull request that no read of GitHub answered, so the stored head
+// can be an older one. acme/widgets#65 has a results row at headCommit under the issue, and k1
+// has a pass there. Row a_read_owed owes a read of acme/widgets#65. Row owed_under_the_old_name
+// owes it as acme/old-widgets#65, a name that repo_projects renames to acme/widgets. Each wants no
+// basis, compared_nothing head_not_read and heads_not_read [65]. Each wants the result unknown
+// with head_not_read, and pass_stands unknown. The controls are the rows nothing_owed and
+// owed_in_another_repository (a read owed of acme/other#65). Each wants #65 as its one basis, and
+// pass_stands yes.
+func TestAPassAtTheHeadOfAPullRequestOwedAReadDoesNotStand(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		owedAs string // the repository that the read of #65 is owed under, "" for no read owed
+		unread bool   // whether the owed read is a read of this #65
+	}{
+		{"nothing_owed", "", false},
+		{"a_read_owed", "acme/widgets", true},
+		{"owed_under_the_old_name", "acme/old-widgets", true},
+		{"owed_in_another_repository", "acme/other", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true},
+				func(string, string) string { return "diverged" })
+			issue := issueInRepository(t, handler, "RESOW", "acme/widgets", "Owed")
+			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/old-widgets",
+				map[string]any{"project": "RESOW", "renamed_to": "acme/widgets"}, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("record that acme/old-widgets is renamed to acme/widgets: status=%d body=%s",
+					response.Code, response.Body.String())
+			}
+			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", siblingChecks)
+			writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+			recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+			if row.owedAs != "" {
+				oweAFailedRead(t, database, row.owedAs, 65)
+			}
+
+			read := readResults(t, handler, issue.Key)
+			check := checkOf(t, read, "k1")
+			stands := resultRead(t, read, "k1", recorded.Result.ID).CommitStands
+			t.Logf("%s: compared_with=%v compared_nothing=%q heads_not_read=%+v commit_stands=%+v pass_stands=%s",
+				row.name, pullRequestsComparedWith(check), check.ComparedNothing, check.HeadsNotRead, stands, check.PassStands.Answer)
+			if !row.unread {
+				if compared := pullRequestsComparedWith(check); len(check.ComparedWith) != 1 || !slices.Equal(compared, []int{65}) ||
+					check.PassStands.Answer != model.PassStandsYes {
+					t.Fatalf("%s: k1 compares with %v and answers pass_stands %s, want #65 alone and yes: no read of this #65 is owed",
+						row.name, compared, check.PassStands.Answer)
+				}
+				return
+			}
+			if len(check.ComparedWith) != 0 || check.ComparedNothing != model.ReasonHeadNotRead {
+				t.Errorf("%s: k1 compares with %v for the reason %q, want no basis for %q: a pass at a head that may be older must not count",
+					row.name, pullRequestsComparedWith(check), check.ComparedNothing, model.ReasonHeadNotRead)
+			}
+			if !slices.Equal(check.HeadsNotRead, []model.HeadNotRead{{Number: 65}}) {
+				t.Errorf("%s: k1 names heads_not_read %+v, want [{number: 65}]", row.name, check.HeadsNotRead)
+			}
+			if stands == nil || stands.Answer != model.CommitUnknown || stands.Reason != model.ReasonHeadNotRead {
+				t.Errorf("%s: the pass at #65's stored head stands %+v, want %s with the reason %s",
+					row.name, stands, model.CommitUnknown, model.ReasonHeadNotRead)
+			}
+			if check.PassStands.Answer != model.PassStandsUnknown {
+				t.Errorf("%s: k1 answers pass_stands %s, want %s", row.name, check.PassStands.Answer, model.PassStandsUnknown)
+			}
+		})
+	}
+}
+
+// R5 while a read is owed. The intake owes a read of acme/widgets#97, and Dispatch holds no row of
+// #97. k1 has a pass at headCommit, recorded while GitHub names no pull request for it. Then
+// GitHub names #97 at that commit. One read of the results learns #97 and settles the owed read.
+// So k1 compares with #97, the pass stands, and no read of #97 stays owed. The control is a second
+// issue's pass at newHeadCommit while #98 is owed a read. GitHub refuses the list of the pull
+// requests of that commit with 403. The read stores no row of #98, and the owed read of #98 stays.
+func TestAResultsReadComparesWithAPullRequestOwedARead(t *testing.T) {
+	handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
+	issue := issueInRepository(t, handler, "RESL", "acme/widgets", "Learned while owed")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	refused := issueOfProject(t, handler, "RESL", "Refused while owed", twoChecks)
+	recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+	recordResult(t, handler, refused, resultBody("k1", "pass", newHeadCommit, nil))
+	// The intake's reads of #97 and #98 failed, so a read of each is owed.
+	oweAFailedRead(t, database, "acme/widgets", 97)
+	oweAFailedRead(t, database, "acme/widgets", 98)
+	if rows := headRowsOf(t, database, 97) + headRowsOf(t, database, 98); rows != 0 {
+		t.Fatalf("SETUP: Dispatch holds %d rows of #97 and #98 before the reads, want none", rows)
+	}
+	fake.answers(func(repo, sha string) string {
+		if sha != headCommit {
+			return `[]`
+		}
+		return openPullAt(97, issue.Key)(repo, sha)
+	})
+	fake.refusesCommitPulls(newHeadCommit, http.StatusForbidden)
+	served.commitPulls = delivery.CommitPullReads{}
+
+	t.Run("learned_while_owed", func(t *testing.T) {
+		check := checkOf(t, readResults(t, handler, issue.Key), "k1")
+		owed := readsOwedOf(t, database, 97)
+		t.Logf("compared_with=%v compared_nothing=%q heads_not_read=%+v pass_stands=%s reads_owed_of_97=%d",
+			pullRequestsComparedWith(check), check.ComparedNothing, check.HeadsNotRead, check.PassStands.Answer, owed)
+		if compared := pullRequestsComparedWith(check); !slices.Equal(compared, []int{97}) {
+			t.Errorf("R5: the read that learns #97 compares with %v, want [97] in the same answer", compared)
+		}
+		if check.PassStands.Answer != model.PassStandsYes {
+			t.Errorf("R5: the read that learns #97 answers pass_stands %s, want yes", check.PassStands.Answer)
+		}
+		if owed != 0 {
+			t.Errorf("%d reads of #97 stay owed after the read wrote GitHub's answer for it, want none", owed)
+		}
+	})
+	t.Run("control_a_refused_list_read", func(t *testing.T) {
+		check := checkOf(t, readResults(t, handler, refused), "k1")
+		rows, owed := headRowsOf(t, database, 98), readsOwedOf(t, database, 98)
+		t.Logf("compared_with=%v compared_nothing=%q pass_stands=%s rows_of_98=%d reads_owed_of_98=%d",
+			pullRequestsComparedWith(check), check.ComparedNothing, check.PassStands.Answer, rows, owed)
+		if rows != 0 || owed != 1 {
+			t.Errorf("after GitHub refused the list read, Dispatch holds %d rows of #98 and owes %d reads of it, want 0 and 1: a refused read settles nothing",
+				rows, owed)
+		}
+	})
+}
+
+// R5 where the read learns a pull request through a result that is not at its head. k1 has a pass
+// at newHeadCommit, recorded first, and a newer pass at headCommit. Dispatch holds no pull
+// request. GitHub names #97 at the head newHeadCommit for each commit. The read asks about the
+// newer pass first, and GitHub answers #97 at the other commit. The read must read the heads again
+// after that write, so one read compares with #97 and the pass at its head stands.
+func TestAResultsReadComparesWithThePullRequestItLearnsInTheSameAnswer(t *testing.T) {
+	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
+	issue := issueInRepository(t, handler, "RESB", "acme/widgets", "Both")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	recordResult(t, handler, issue.Key, resultBody("k1", "pass", newHeadCommit, nil))
+	recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+	fake.answers(func(repo, _ string) string { return openPullAt(97, issue.Key)(repo, newHeadCommit) })
+	served.commitPulls = delivery.CommitPullReads{}
+
+	check := checkOf(t, readResults(t, handler, issue.Key), "k1")
+	t.Logf("compared_with=%v compared_nothing=%q pass_stands=%s",
+		pullRequestsComparedWith(check), check.ComparedNothing, check.PassStands.Answer)
+	if compared := pullRequestsComparedWith(check); !slices.Equal(compared, []int{97}) || check.PassStands.Answer != model.PassStandsYes {
+		t.Fatalf("R5: the read that learns #97 compares with %v and answers pass_stands %s, want [97] and yes in the same answer",
+			compared, check.PassStands.Answer)
+	}
+}
+
+// R5 where GitHub refuses the commits of the pull request that the read learns (B4). Dispatch
+// holds no pull request. GitHub names #98 at the commit of k1's pass, with the branch
+// legion/<the issue's key>. It answers 500 to each page of the commits of #98. The branch names
+// the issue, so the read reads no page of commits. One read compares with #98, and the pass
+// stands.
+func TestAResultsReadComparesWithAPullRequestWhoseCommitsAnswer500(t *testing.T) {
+	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
+	issue := issueInRepository(t, handler, "RESF", "acme/widgets", "Commits refused")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+	fake.answers(func(repo, sha string) string {
+		return fmt.Sprintf(`[{"number":98,"title":"A change","body":"","html_url":"https://github.com/%s/pull/98",
+			"state":"open","merged":false,"updated_at":"2026-11-05T07:15:08Z",
+			"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`,
+			repo, "legion/"+issue.Key, sha, repo)
+	})
+	fake.commitsAnswer(func(_, number string) (int, string) {
+		if number == "98" {
+			return http.StatusInternalServerError, ""
+		}
+		return http.StatusOK, `[]`
+	})
+	served.commitPulls = delivery.CommitPullReads{}
+	spent := fake.commitPagesRead()
+
+	check := checkOf(t, readResults(t, handler, issue.Key), "k1")
+	pages := fake.commitPagesRead() - spent
+	t.Logf("compared_with=%v compared_nothing=%q heads_not_read=%+v issues_not_known=%+v pass_stands=%s commit_pages=%d",
+		pullRequestsComparedWith(check), check.ComparedNothing, check.HeadsNotRead, check.IssuesNotKnown, check.PassStands.Answer, pages)
+	if compared := pullRequestsComparedWith(check); !slices.Equal(compared, []int{98}) || check.PassStands.Answer != model.PassStandsYes {
+		t.Errorf("R5: the read that learns #98 compares with %v and answers pass_stands %s, want [98] and yes: its branch names the issue",
+			compared, check.PassStands.Answer)
+	}
+	if pages != 0 {
+		t.Errorf("the read asked GitHub for %d pages of the commits of #98, want none: the branch decides", pages)
 	}
 }
 
@@ -3619,5 +3913,51 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 	assertCI(t, check, ciCheckRun, model.CIStateNoResult, "absent", ciUnconcludedLineOf("c1", ciCheckRun, "absent"))
 	if len(check.Results) != 0 {
 		t.Fatalf("c1 holds %+v at a head no run has reached, want no result", check.Results)
+	}
+}
+
+// A check that CI proves is not read while a read of GitHub is owed for the newest head. The
+// stored head can be an older one, so a run at it proves nothing. acme/widgets#65 is open at
+// headCommit, and GitHub holds a successful run of the check at that commit. With a read of #65
+// owed, the check is unread with the case head_not_read, and its detail names #65. No page of
+// check runs is read, and pass_stands is unknown. The control owes nothing: the runs at the head
+// of #65 are read, and the pass stands.
+func TestACheckThatCIProvesIsUnreadWhileAReadIsOwed(t *testing.T) {
+	for _, owed := range []bool{true, false} {
+		t.Run(map[bool]string{true: "a_read_owed", false: "control_nothing_owed"}[owed], func(t *testing.T) {
+			handler, database, fake := resultsGitHubCheckRuns(t)
+			issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Owed at the head")
+			uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+			writeHead(t, database, "acme/widgets", 65, headCommit, "open", issue.Key)
+			fake.set(headCommit, completedRun(91, ciCheckRun, "success"))
+			if owed {
+				oweAFailedRead(t, database, "acme/widgets", 65)
+			}
+
+			check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+			t.Logf("owed=%v ci=%+v results=%d pass_stands=%s check_run_pages=%d",
+				owed, check.CI, len(check.Results), check.PassStands.Answer, fake.allReads())
+			if !owed {
+				assertDerived(t, check, 91, ciCheckRun, "success", "pass", headCommit)
+				if reads := fake.reads(headCommit); reads != 1 {
+					t.Fatalf("the read asked for %d pages of the check runs of #65's head, want 1", reads)
+				}
+				if check.PassStands.Answer != model.PassStandsYes {
+					t.Fatalf("c1 answers pass_stands %s, want yes", check.PassStands.Answer)
+				}
+				return
+			}
+			if asked := fake.allReads(); asked != 0 {
+				t.Errorf("the read asked for %d pages of check runs while a read of #65 is owed, want none", asked)
+			}
+			assertCI(t, check, ciCheckRun, model.CIStateUnread, "head_not_read", ciUnconcludedLineOf("c1", ciCheckRun, "head_not_read"))
+			if want := "Dispatch has not read the head of pull request #65 of acme/widgets yet: a read of GitHub is owed for it."; check.CI.Detail != want {
+				t.Errorf("c1's detail is %q, want %q", check.CI.Detail, want)
+			}
+			if len(check.Results) != 0 || check.PassStands.Answer != model.PassStandsUnknown {
+				t.Errorf("c1 holds %+v and answers pass_stands %s, want no result and %s",
+					check.Results, check.PassStands.Answer, model.PassStandsUnknown)
+			}
+		})
 	}
 }

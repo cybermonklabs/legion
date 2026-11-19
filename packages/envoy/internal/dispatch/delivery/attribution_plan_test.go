@@ -8,6 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -269,4 +272,123 @@ func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 	if !slices.Contains(scanned, "pull_request_heads") {
 		t.Errorf("the control: without pull_request_heads_url_lower, HeadsAttributedTo of %s scans no pull_request_heads:\n%s", linkIssue, strings.Join(plan, "\n"))
 	}
+}
+
+// recordedReads is a Querier that sends each statement to pool and keeps it with its arguments.
+// A plan test explains the statements that a reader sent, and not a copy of their text.
+type recordedReads struct {
+	pool *store.Pool
+	sent []recordedRead
+}
+
+// recordedRead is one statement that a reader sent, with its arguments.
+type recordedRead struct {
+	sql  string
+	args []any
+}
+
+func (r *recordedReads) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	r.sent = append(r.sent, recordedRead{sql: sql, args: args})
+	return r.pool.Query(ctx, sql, args...)
+}
+
+func (r *recordedReads) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	r.sent = append(r.sent, recordedRead{sql: sql, args: args})
+	return r.pool.QueryRow(ctx, sql, args...)
+}
+
+// The reader of the pull requests whose answer is not known (PullRequestsNotKnown) reads the rows
+// of one repository whose messages are not read through pull_request_texts_messages_not_read. No
+// node of its plan scans pull_request_heads or pull_request_texts. 5,000 merged pull requests of
+// acme/widgets and 5,000 of acme/gadgets have current texts, and 20 of them have no messages. In
+// acme/widgets, 8 of those name a held issue in their branch, so the rule decides them without the
+// messages. #18 and #20 name nothing, so their answer is not known. The test explains each
+// statement that the reader sent (recordedReads). Control in the same test: with the index
+// dropped, the same read scans pull_request_texts. The probe of the plan
+// (zz_r18_notknown_cost_test.go) read 1.14 ms with the index and 1.72 ms without it, the best of
+// 20 reads.
+func TestTheReaderOfPullRequestsWhoseAnswerIsNotKnownUsesItsIndex(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	held := seedHeadIssue(t, ctx, pool, 1)
+	exec := func(what, sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	exec("store 5,000 merged rows of each of two repositories", `
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, url, title, event_at, checked_at, github_read_at, issue_key, attribution_source)
+		select case when n % 2 = 0 then 'acme/widgets' else 'acme/gadgets' end, n, lpad(to_hex(n), 40, 'a'),
+			case when n between 1 and 17 then 'legion/' || $1::text else 'work/' || n end, 'main', 'merged',
+			'https://github.com/acme/x/pull/' || n, 'Change ' || n, '2026-11-18T01:00:00Z', now(), now(), null, 'none'
+		from generate_series(1, 10000) n`, held)
+	exec("store their texts, with no messages for #1 to #20", `
+		insert into pull_request_texts (repo, number, head_sha, head_ref, head_repo, base_ref, title, body, commit_messages, updated_at)
+		select h.repo, h.number, h.head_sha, h.head_ref, h.repo, 'main', h.title, 'A body of change ' || h.number,
+			case when h.number <= 20 then null else array['Work.']::text[] end, h.event_at
+		from pull_request_heads h`)
+	for _, table := range []string{"pull_request_heads", "pull_request_texts"} {
+		exec("analyze "+table, `analyze `+table)
+	}
+
+	// read reads PullRequestsNotKnown(acme/widgets) 20 times, wants #18 and #20 from each read,
+	// and answers the plan of each statement that the last read sent, with the tables that a node
+	// of that plan scanned.
+	read := func(t *testing.T) (plan, scanned []string) {
+		t.Helper()
+		var best time.Duration
+		var numbers []int
+		for i := range 20 {
+			recorder := &recordedReads{pool: pool}
+			began := time.Now()
+			pulls, err := PullRequestsNotKnown(ctx, recorder, "acme/widgets")
+			took := time.Since(began)
+			if err != nil {
+				t.Fatalf("PullRequestsNotKnown(acme/widgets): %v", err)
+			}
+			if i == 0 || took < best {
+				best = took
+			}
+			numbers = numbers[:0]
+			for _, pull := range pulls {
+				numbers = append(numbers, pull.Number)
+			}
+			if !slices.Equal(numbers, []int{18, 20}) {
+				t.Fatalf("PullRequestsNotKnown(acme/widgets) = %v, want [18 20]", numbers)
+			}
+			if i < 19 {
+				continue
+			}
+			if len(recorder.sent) == 0 {
+				t.Fatal("PullRequestsNotKnown(acme/widgets) sent no statement through its Querier, so no plan of it can be read")
+			}
+			for _, sent := range recorder.sent {
+				lines, tables := planOf(t, ctx, pool, sent.sql, sent.args...)
+				plan, scanned = append(plan, lines...), append(scanned, tables...)
+			}
+		}
+		t.Logf("not_known=%v best_of_20=%s sequential_scans=%v indexes=%v", numbers, best, scanned, indexesRead(plan))
+		return plan, scanned
+	}
+
+	t.Run("with_the_index_of_the_migration", func(t *testing.T) {
+		plan, scanned := read(t)
+		for _, table := range []string{"pull_request_heads", "pull_request_texts"} {
+			if slices.Contains(scanned, table) {
+				t.Errorf("PullRequestsNotKnown(acme/widgets) scans %s:\n%s", table, strings.Join(plan, "\n"))
+			}
+		}
+		if !slices.Contains(indexesRead(plan), "pull_request_texts_messages_not_read") {
+			t.Errorf("PullRequestsNotKnown(acme/widgets) reads no pull_request_texts_messages_not_read:\n%s", strings.Join(plan, "\n"))
+		}
+	})
+	t.Run("control_without_the_index", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `drop index pull_request_texts_messages_not_read`); err != nil {
+			t.Fatalf("drop the index of the migration: %v", err)
+		}
+		plan, scanned := read(t)
+		if !slices.Contains(scanned, "pull_request_texts") {
+			t.Errorf("the control: without pull_request_texts_messages_not_read, PullRequestsNotKnown(acme/widgets) scans no pull_request_texts, so the check above cannot fail:\n%s", strings.Join(plan, "\n"))
+		}
+	})
 }

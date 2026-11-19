@@ -69,6 +69,14 @@ import (
 // the repository the check's issue names at all (repositoryOf), among them. A database hiccup
 // must not make a reviewer refuse an approval.
 //
+// Two more answers say what Dispatch does not know yet. model.ReasonHeadNotRead names a pull
+// request of the issue whose head Dispatch has not read: it has no results row, or a read of
+// GitHub is owed for it (headBases). model.ReasonIssueNotKnown names a pull request of the
+// repository whose answer is not known: its facts name no held issue, and its commit messages
+// are not read (notKnownOf). Either can be the head a pass must stand at, so a result it can
+// decide is unknown and never another commit. Both change an answer only where Dispatch holds
+// the repository and can read it (decides), so a deployment with no App key answers as before.
+//
 // Where the reader was given a commit (?at=), that one commit is the only basis of every check
 // of the issue and the comparison makes no read of GitHub at all: the reader asked what the
 // results say about one commit, and nothing about that question turns on what GitHub holds now.
@@ -95,6 +103,10 @@ type comparisonReader struct {
 	readThroughs map[[2]string]struct{}
 	storedHeads  map[[2]string]bool
 	commits      map[[3]string]delivery.BranchAnswer
+	// notKnown is the open and merged pull requests of each repository whose answer is not known
+	// (notKnownOf), by canonical name. learn deletes a repository's entry each time its
+	// read-through writes a row, so a pull request that the same read learns is in it.
+	notKnown map[string]notKnownAnswer
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -105,9 +117,27 @@ const noCommitNamed = ""
 // asked about, and the reason there are none where the list is empty. Exactly one of the two
 // is filled in, and bases is never nil, so the answer carries an empty list rather than a
 // null.
+//
+// headsNotRead is each pull request of a `before_merge` check's issue whose head Dispatch has
+// not read (headBases), whatever the reason. headNotRead says whether they leave a result at no
+// basis unknown: Dispatch holds the repository and can read it (rule 2), so a head it has not
+// read can be the head that a result stands at. issuesNotKnown is each pull request of the
+// repository whose answer is not known, where the issue holds no pull request at all (decision
+// D2).
 type comparison struct {
-	bases  []model.CheckBasis
-	reason string
+	bases          []model.CheckBasis
+	reason         string
+	headsNotRead   []model.HeadNotRead
+	headNotRead    bool
+	issuesNotKnown []model.IssueNotKnown
+}
+
+// notKnownAnswer is what one read of delivery.PullRequestsNotKnown answered for a repository, and
+// whether it answered at all. A failed read is kept as one, so every result it would decide reads
+// model.ReasonReadFailed, as a failed read of the heads does.
+type notKnownAnswer struct {
+	pulls []delivery.NotKnownPullRequest
+	read  bool
 }
 
 // noBases is a check comparing with nothing, for the one reason given: the empty list is the
@@ -157,7 +187,8 @@ func newComparisonReader(s *server, at string) *comparisonReader {
 		baseBranches: map[string]baseBranchAnswer{},
 		bases:        map[[2]string]comparison{},
 		readThroughs: map[[2]string]struct{}{}, storedHeads: map[[2]string]bool{},
-		commits: map[[3]string]delivery.BranchAnswer{},
+		commits:  map[[3]string]delivery.BranchAnswer{},
+		notKnown: map[string]notKnownAnswer{},
 	}
 }
 
@@ -188,18 +219,46 @@ const noDefaultBranchNamed = ""
 // answered by the digest the result recorded beside the digest the check carries now. A result
 // at the compared commit under an older wording is both, and one word for both would hide
 // which of the two a reader is looking at.
+//
+// The check names each head it has not read (model.CheckBlock.HeadsNotRead), and each pull
+// request whose answer is not known that its answer turns on (model.CheckBlock.IssuesNotKnown):
+// those of an issue with no pull request (decision D2), the possible head of each result, and the
+// merges into another branch that leave an `after_merge` result unknown (mergedElsewhere).
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
 	check.ComparedWith = compared.bases
 	check.ComparedNothing = compared.reason
+	check.HeadsNotRead = compared.headsNotRead
+	check.IssuesNotKnown = nil
+	for _, notKnown := range compared.issuesNotKnown {
+		check.IssuesNotKnown = appendIssueNotKnown(check.IssuesNotKnown, notKnown.Number)
+	}
 	for index := range check.Results {
 		result := &check.Results[index]
 		moved := check.SHA256 != result.CheckSHA256
 		result.CheckWordsMoved = &moved
 		stands := c.commitStands(ctx, *check, compared, *result)
 		result.CommitStands = &stands
+		if stands.Reason != model.ReasonIssueNotKnown {
+			continue
+		}
+		if stands.PossibleHead != nil {
+			check.IssuesNotKnown = appendIssueNotKnown(check.IssuesNotKnown, stands.PossibleHead.PullRequest)
+			continue
+		}
+		for _, number := range c.mergedElsewhere(ctx, *check) {
+			check.IssuesNotKnown = appendIssueNotKnown(check.IssuesNotKnown, number)
+		}
 	}
 	check.PassStands = passStandsOf(*check, compared)
+}
+
+// appendIssueNotKnown is list with the pull request number, where list does not name it yet.
+func appendIssueNotKnown(list []model.IssueNotKnown, number int) []model.IssueNotKnown {
+	if slices.ContainsFunc(list, func(held model.IssueNotKnown) bool { return held.Number == number }) {
+		return list
+	}
+	return append(list, model.IssueNotKnown{Number: number})
 }
 
 // comparedWith is the bases of one check, read once per issue and `when`: two `before_merge`
@@ -234,20 +293,140 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 // The heads answer whether or not Dispatch can read the repository. A head Dispatch holds is a
 // fact about the work whatever the App can see today, so a result at one stands at it, and
 // only a result at no head of the list needs the repository read at all (commitStands).
+//
+// A pull request whose head Dispatch has not read is no basis: it has no results row yet, or a
+// read of GitHub is owed for it (delivery.HeadsAttributedTo). It goes to headsNotRead, and no
+// pass stands by it. Where Dispatch can read the repository (decides), such a head can be the
+// head a result stands at: a result at no basis is then not known, never another commit, and a
+// check with no basis names model.ReasonHeadNotRead (rule 1 of the shape of the answer).
+//
+// An issue with no pull request at all, in a repository that holds an open or merged pull
+// request whose answer is not known, names model.ReasonIssueNotKnown and lists each of them
+// (decision D2): one of them can be the issue's own, so "no pull request" says more than Dispatch
+// knows. A failed read of those pull requests is model.ReasonReadFailed.
 func (c *comparisonReader) headBases(ctx context.Context, issueKey string) comparison {
 	heads, err := delivery.HeadsAttributedTo(ctx, c.server.deps.Store.Pool, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a check's issue", "issue", issueKey, "error", err)
 		return noBases(model.ReasonReadFailed)
 	}
-	if len(heads) == 0 {
-		return noBases(c.nothingReason(ctx, issueKey))
-	}
-	bases := make([]model.CheckBasis, 0, len(heads))
+	compared := comparison{bases: make([]model.CheckBasis, 0, len(heads))}
 	for _, head := range heads {
-		bases = append(bases, headBasis(head))
+		if head.HeadKnown {
+			compared.bases = append(compared.bases, headBasis(head))
+			continue
+		}
+		compared.headsNotRead = append(compared.headsNotRead, model.HeadNotRead{
+			Number: head.Number, RefusedAs: head.RefusedAs, RefusedSince: head.RefusedSince,
+		})
 	}
-	return comparison{bases: bases}
+	if len(compared.headsNotRead) > 0 {
+		compared.headNotRead = c.decides(ctx, issueKey)
+	}
+	if len(compared.bases) > 0 {
+		return compared
+	}
+	compared.reason = c.nothingReason(ctx, issueKey)
+	switch {
+	case compared.reason != model.ReasonNoPullRequestOrBranch:
+	case compared.headNotRead:
+		compared.reason = model.ReasonHeadNotRead
+	case len(heads) == 0 && c.decides(ctx, issueKey):
+		pulls, read := c.notKnownOf(ctx, issueKey)
+		if !read {
+			compared.reason = model.ReasonReadFailed
+			break
+		}
+		for _, pull := range pulls {
+			compared.issuesNotKnown = append(compared.issuesNotKnown, model.IssueNotKnown{Number: pull.Number})
+		}
+		if len(compared.issuesNotKnown) > 0 {
+			compared.reason = model.ReasonIssueNotKnown
+		}
+	}
+	return compared
+}
+
+// decides is whether a head Dispatch has not read, and a pull request whose answer is not known,
+// can change an answer about the check's issue: the issue resolves to a repository, the
+// deployment holds an App key, and the App reads the repository (defaultBranchOf). Elsewhere each
+// field answers as it did before Dispatch named either (rule 2): a repository Dispatch cannot
+// read is unknown already, and an issue with no repository holds every head it will ever hold.
+func (c *comparisonReader) decides(ctx context.Context, issueKey string) bool {
+	repo, answered := c.repositoryOf(ctx, issueKey)
+	if !answered || repo == nil || c.server.deps.GitHub == nil {
+		return false
+	}
+	_, readable := c.defaultBranchOf(ctx, issueKey)
+	return readable
+}
+
+// notKnownOf is the open and merged pull requests of the repository the check's issue resolves
+// to whose answer is not known (delivery.PullRequestsNotKnown), and whether the read answered,
+// read once per repository per read of the results. An issue with no repository has none. learn
+// deletes the entry each time its read-through writes a row of the repository, so the next use
+// reads the pull requests that the same read learned (review 18, note 3).
+func (c *comparisonReader) notKnownOf(ctx context.Context, issueKey string) ([]delivery.NotKnownPullRequest, bool) {
+	repo, answered := c.repositoryOf(ctx, issueKey)
+	if !answered || repo == nil {
+		return nil, true
+	}
+	if memoized, held := c.notKnown[*repo]; held {
+		return memoized.pulls, memoized.read
+	}
+	pulls, err := delivery.PullRequestsNotKnown(ctx, c.server.deps.Store.Pool, *repo)
+	if err != nil {
+		slog.Warn("dispatch: read the pull requests of a check's repository whose issue is not known",
+			"repo", *repo, "error", err)
+	}
+	answer := notKnownAnswer{pulls: pulls, read: err == nil}
+	c.notKnown[*repo] = answer
+	return answer.pulls, answer.read
+}
+
+// possibleHeadAt is the pull request of the check's repository whose answer is not known and
+// whose head is sha, nil where none is, and whether the read of those pull requests answered.
+// It has the shape of a basis and is no basis: nothing showed that it is the issue's (decision
+// D4).
+func (c *comparisonReader) possibleHeadAt(ctx context.Context, issueKey, sha string) (*model.PossibleHead, bool) {
+	pulls, read := c.notKnownOf(ctx, issueKey)
+	if !read {
+		return nil, false
+	}
+	repo, _ := c.repositoryOf(ctx, issueKey)
+	for _, pull := range pulls {
+		if pull.HeadSHA == sha {
+			return &model.PossibleHead{Repo: *repo, PullRequest: pull.Number, Commit: sha}, true
+		}
+	}
+	return nil, true
+}
+
+// mergedElsewhere is the numbers of the merged pull requests of the check's repository whose
+// answer is not known and that merged into another base branch than the issue's: the branch
+// delivery.BaseBranchMergedFor answers, or the default branch where it answers none. Such a pull
+// request can be the issue's own, so the issue's work can have reached that other branch. It is
+// nil where decides is false, and for every check that no merge decides.
+func (c *comparisonReader) mergedElsewhere(ctx context.Context, check model.CheckBlock) []int {
+	if check.When != checkWhenAfterMerge || c.at != noCommitNamed || !c.decides(ctx, check.IssueKey) {
+		return nil
+	}
+	pulls, read := c.notKnownOf(ctx, check.IssueKey)
+	merged, mergedRead := c.baseBranchMergedFor(ctx, check.IssueKey)
+	if !read || !mergedRead {
+		return nil
+	}
+	issueBranch := merged
+	if issueBranch == noMergedBranch {
+		issueBranch, _ = c.defaultBranchOf(ctx, check.IssueKey)
+	}
+	var numbers []int
+	for _, pull := range pulls {
+		if pull.State == "merged" && pull.BaseRef != issueBranch {
+			numbers = append(numbers, pull.Number)
+		}
+	}
+	return numbers
 }
 
 // headBasis is one stored pull request head as the surface names it: the commit, the pull
@@ -359,7 +538,8 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 
 // learn teaches Dispatch the pull requests GitHub names for every result commit of the
 // document that heads none of the pull requests it already holds, and reads the heads again
-// where GitHub named one: that head is now a row, and so a basis.
+// where the read-through wrote a row: a pull request that GitHub named can be a basis now, at
+// that commit or at another result's commit, and the same read compares with it (R5).
 //
 // It is what stops a result recorded at a commit before any pull request carried it from
 // standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
@@ -374,6 +554,10 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // through once in this read is never read through again, whichever check holds the result
 // and whenever it was recorded, since the stored rows can have changed only by this read's
 // own read-through.
+//
+// A row the read-through wrote can be a pull request whose answer is not known. So learn empties
+// the memo of those pull requests of the repository before it reads the heads again
+// (notKnownOf), and the same answer names the pull request it learned (review 18, note 3).
 func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock) {
 	if c.at != noCommitNamed {
 		return
@@ -391,10 +575,13 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 			if _, asked := c.readThroughs[key]; asked {
 				continue
 			}
-			named := c.readThroughHead(ctx, result)
+			wrote := c.readThroughHead(ctx, result)
 			c.readThroughs[key] = struct{}{}
-			if !named {
+			if !wrote {
 				continue
+			}
+			if repo, answered := c.repositoryOf(ctx, result.CheckIssueKey); answered && repo != nil {
+				delete(c.notKnown, *repo)
 			}
 			compared = c.headBases(ctx, check.IssueKey)
 			c.bases[[2]string{check.IssueKey, check.When}] = compared
@@ -424,6 +611,10 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // reason: Dispatch cannot say whether there is a repository to read a head from, so a commit
 // no head names is no evidence that the work moved on. Both nils were one answer here before
 // dispatch://INFRA-1522, and a failed resolve read as the fact about the work.
+//
+// A `before_merge` result at no basis that the rules above leave at another commit can still be
+// at a head Dispatch does not know of (atNoBasis). An `after_merge` result can stand at a branch
+// that another merge did not reach (mergedElsewhere).
 func (c *comparisonReader) commitStands(
 	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
 ) model.ResultCommitStands {
@@ -449,9 +640,41 @@ func (c *comparisonReader) commitStands(
 		if reason := c.nothingReason(ctx, check.IssueKey); reason != model.ReasonNoPullRequestOrBranch {
 			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: reason}
 		}
-		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
+		return c.atNoBasis(ctx, check, compared, result)
 	}
-	return c.onNamedBranch(ctx, check, compared, result)
+	stands := c.onNamedBranch(ctx, check, compared, result)
+	if len(c.mergedElsewhere(ctx, check)) == 0 {
+		return stands
+	}
+	// A merge whose answer is not known reached another branch than the issue's. It can be the
+	// issue's own, so only the default branch, which every merge reaches in the end, decides.
+	if defaultBranch, _ := c.defaultBranchOf(ctx, check.IssueKey); stands.Answer == model.CommitAtBasis &&
+		stands.Basis != nil && stands.Basis.Branch == defaultBranch {
+		return stands
+	}
+	return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonIssueNotKnown}
+}
+
+// atNoBasis is where a `before_merge` result's commit stands where no basis names it and the base
+// answers another commit. Dispatch can read the repository there, and two pull requests it has
+// not placed can still be the one at that commit. A pull request whose answer is not known and
+// whose head is the commit makes it unknown with model.ReasonIssueNotKnown, and names it as the
+// possible head (decision D4). Else a head of the issue that Dispatch has not read makes it
+// unknown with model.ReasonHeadNotRead. Else it is another commit. A failed read of the pull
+// requests whose answer is not known is model.ReasonReadFailed.
+func (c *comparisonReader) atNoBasis(
+	ctx context.Context, check model.CheckBlock, compared comparison, result model.CheckResult,
+) model.ResultCommitStands {
+	possible, read := c.possibleHeadAt(ctx, check.IssueKey, result.CommitSHA)
+	switch {
+	case !read:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed}
+	case possible != nil:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonIssueNotKnown, PossibleHead: possible}
+	case compared.headNotRead:
+		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonHeadNotRead}
+	}
+	return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 }
 
 // basisAt is the basis naming that commit, and nil where none does. A branch basis names no
@@ -564,13 +787,22 @@ func standingCommit(result model.CheckResult) string {
 // pass is held up only by a commit Dispatch could not place. A check that compared with nothing
 // because there is no pull request and no branch answers no: there is nothing for a pass to
 // stand at, and that is a fact about the work rather than a failed read.
+//
+// A check that compared with nothing because Dispatch has not read a head of its issue, or does
+// not know whether a pull request of its repository is the issue's, answers unknown: that head
+// can be the one a pass must stand at. So does a check with a head that Dispatch has not read and
+// that can decide (comparison.headNotRead), where no pass stands at a basis. No answer says more
+// than Dispatch knows: unknown, never no.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
-	if compared.reason == model.ReasonRepositoryUnreadable ||
-		(check.CI != nil && check.CI.State == model.CIStateUnread) {
+	switch {
+	case compared.reason == model.ReasonRepositoryUnreadable,
+		compared.reason == model.ReasonHeadNotRead,
+		compared.reason == model.ReasonIssueNotKnown,
+		check.CI != nil && check.CI.State == model.CIStateUnread:
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	var roles []string
-	unknown := false
+	unknown := compared.headNotRead
 	for _, result := range check.Results {
 		if result.Verdict != "pass" {
 			continue
@@ -647,8 +879,9 @@ func (c *comparisonReader) measuredBranches(
 }
 
 // readThroughHead teaches Dispatch the pull requests GitHub names for a result's commit
-// (delivery.ReadThroughCommitPulls) and reports whether GitHub named one whose head is that
-// commit, which is the only answer worth reading the stored heads again for.
+// (delivery.ReadThroughCommitPulls) and reports whether it wrote a row (wrote): a row written at
+// another head can be the basis of another result of the same read, and a row of a pull request
+// owed a read settles that read (R5), so learn reads the stored heads again after any write.
 //
 // It asks GitHub only where GitHub's answer can repair the result, since listCheckResults
 // places every result of every check and the Verification tab reads them all again on every
@@ -716,7 +949,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if written > 0 && !atHead {
 		c.server.commitPulls.Settle(*repo, result.CommitSHA, now)
 	}
-	return atHead
+	return written > 0
 }
 
 // headStoredAt is whether Dispatch holds an open or merged pull request whose head is that

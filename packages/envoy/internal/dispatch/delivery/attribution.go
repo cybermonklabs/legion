@@ -310,6 +310,7 @@ type attributionStatements struct {
 	headAttributedTo      string
 	newestPullRequestHead string
 	baseBranchMergedFor   string
+	pullRequestsNotKnown  string
 	syncAttributions      string
 	attributionCounts     string
 	factsLine             string
@@ -326,6 +327,7 @@ func attributionStatementsFor(schema string) *attributionStatements {
 		headAttributedTo:      byIssue + headAttributedToSelect,
 		newestPullRequestHead: byIssue + newestPullRequestHeadSelect,
 		baseBranchMergedFor:   byIssue + baseBranchMergedForSelect,
+		pullRequestsNotKnown:  attributedTerms(schema, notKnownJudged) + notKnownSelect,
 		syncAttributions:      syncAttributionsStatement(schema),
 		attributionCounts:     attributedTerms(schema, factsLineJudged) + attributionCountsSelect,
 		factsLine:             attributedTerms(schema, factsLineJudged) + factsLineSelect,
@@ -333,6 +335,63 @@ func attributionStatementsFor(schema string) *attributionStatements {
 		remakeKeys:            remakeKeysStatement(schema),
 		readingOther:          readingOtherStatement(schema),
 	}
+}
+
+// notKnownJudged is the judged rows of PullRequestsNotKnown: the open and merged results rows of
+// $1, the canonical name, and of each name that the repository was renamed away from, whose texts
+// hold no commit messages. The index pull_request_texts_messages_not_read holds exactly the texts
+// rows whose messages are not read, so the read costs those rows of $1 and no more.
+const notKnownJudged = `select t.repo, t.number from pull_request_texts t
+		join pull_request_heads h on h.repo = t.repo and h.number = t.number
+		where lower(t.repo) = any(array(select lower($1::text) union select lower(r.repo) from repo_projects r
+			where r.renamed_to is not null and lower(r.renamed_to) = lower($1::text)))
+		and t.commit_messages is null and h.state in ('open', 'merged')`
+
+// notKnownSelect is PullRequestsNotKnown's select over the terms of notKnownJudged: each judged
+// pull request whose answer is not known, by number.
+const notKnownSelect = `
+	select a.number, h.head_sha, h.state, h.base_ref, h.event_at
+	from attributed a join heads h on h.j_repo = a.repo and h.j_number = a.number
+	where not a.known and h.state in ('open', 'merged')
+	order by a.number`
+
+// NotKnownPullRequest is one open or merged pull request whose answer is not known: its texts are
+// current, its commit messages are not read, and no held candidate decides its issue
+// (attributedTerms). It belongs to no issue, so no reader by issue lists it. It can be the issue's
+// own pull request of each issue of its repository.
+type NotKnownPullRequest struct {
+	Number         int
+	HeadSHA, State string
+	BaseRef        string
+	EventAt        *time.Time
+}
+
+// PullRequestsNotKnown is every open or merged pull request of repoFull, a canonical name, whose
+// answer is not known, by number: the path of such a pull request to the results route, by its
+// repository and never by a stored issue (api/results_comparison.go, api/results_ci.go). It reads
+// the rows stored under repoFull and under each name renamed away from it.
+func PullRequestsNotKnown(ctx context.Context, q Querier, repoFull string) ([]NotKnownPullRequest, error) {
+	statements, err := attribution()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, statements.pullRequestsNotKnown, repoFull)
+	if err != nil {
+		return nil, fmt.Errorf("read the pull requests of %s whose issue is not known: %w", repoFull, err)
+	}
+	defer rows.Close()
+	var pulls []NotKnownPullRequest
+	for rows.Next() {
+		var pull NotKnownPullRequest
+		if err := rows.Scan(&pull.Number, &pull.HeadSHA, &pull.State, &pull.BaseRef, &pull.EventAt); err != nil {
+			return nil, fmt.Errorf("read the pull requests of %s whose issue is not known: %w", repoFull, err)
+		}
+		pulls = append(pulls, pull)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the pull requests of %s whose issue is not known: %w", repoFull, err)
+	}
+	return pulls, nil
 }
 
 var preparedAttribution atomic.Pointer[attributionStatements]
@@ -685,15 +744,23 @@ func AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *even
 // part of them that has no facts, R4's number; FactsRefused the part whose last read was refused.
 // Reading is the identity of the reading that runs now, and KeysOnAnotherReading the texts rows
 // whose keys another reading made. MovesQueued is the moves that wait for their events.
-// LinksInTwoCases is the folded URLs that more than one issue links.
+// LinksInTwoCases is the folded URLs that more than one issue links. OwedFailures and
+// OwedRefusals count the pull requests whose head is not read while a read is owed: GitHub did
+// not answer the read, or GitHub refuses it. OwedFailuresOldestAt is the oldest time that a
+// failure is owed since. OwedRefusalsSince is the oldest time that a refusal is refused since, or
+// owed since where an older release owed it. Each time is nil where its count is 0.
 type AttributionCounts struct {
-	FactsLeft            int    `json:"facts_left"`
-	ReadsLeft            int    `json:"reads_left"`
-	FactsRefused         int    `json:"facts_refused"`
-	Reading              string `json:"reading"`
-	KeysOnAnotherReading int    `json:"keys_on_another_reading"`
-	MovesQueued          int    `json:"moves_queued"`
-	LinksInTwoCases      int    `json:"links_in_two_cases"`
+	FactsLeft            int        `json:"facts_left"`
+	ReadsLeft            int        `json:"reads_left"`
+	FactsRefused         int        `json:"facts_refused"`
+	Reading              string     `json:"reading"`
+	KeysOnAnotherReading int        `json:"keys_on_another_reading"`
+	MovesQueued          int        `json:"moves_queued"`
+	LinksInTwoCases      int        `json:"links_in_two_cases"`
+	OwedFailures         int        `json:"owed_failures"`
+	OwedFailuresOldestAt *time.Time `json:"owed_failures_oldest_at,omitempty"`
+	OwedRefusals         int        `json:"owed_refusals"`
+	OwedRefusalsSince    *time.Time `json:"owed_refusals_since,omitempty"`
 }
 
 // factsLineJudged is the judged rows of the facts line: each results row that is open or merged,
@@ -729,7 +796,8 @@ const attributionCountsSelect = `
 // ReadAttributionCounts counts, at the call, what the attribution of the stored pull requests
 // still waits on (AttributionCounts). It reads no setting and no GitHub. A pull request GitHub
 // proved absent is in no count, and one whose texts are current and whose messages are not read
-// is in ReadsLeft, and in FactsLeft only where its answer is not known.
+// is in ReadsLeft, and in FactsLeft only where its answer is not known. The owed reads are
+// counted by one more statement, one scan of pull_request_reads_owed (owedReadCounts).
 func ReadAttributionCounts(ctx context.Context, pool *store.Pool) (AttributionCounts, error) {
 	statements, err := attribution()
 	if err != nil {
@@ -740,8 +808,38 @@ func ReadAttributionCounts(ctx context.Context, pool *store.Pool) (AttributionCo
 		&counts.Reading, &counts.KeysOnAnotherReading, &counts.MovesQueued, &counts.LinksInTwoCases); err != nil {
 		return AttributionCounts{}, fmt.Errorf("count the attribution's work left: %w", err)
 	}
+	rows, err := pool.Query(ctx, owedReadCounts)
+	if err != nil {
+		return AttributionCounts{}, fmt.Errorf("count the pull requests owed a read: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reason owedReason
+		var count int
+		var since *time.Time
+		if err := rows.Scan(&reason, &count, &since); err != nil {
+			return AttributionCounts{}, fmt.Errorf("count the pull requests owed a read: %w", err)
+		}
+		switch reason {
+		case owedFailure:
+			counts.OwedFailures, counts.OwedFailuresOldestAt = count, since
+		case owedRefusal:
+			counts.OwedRefusals, counts.OwedRefusalsSince = count, since
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return AttributionCounts{}, fmt.Errorf("count the pull requests owed a read: %w", err)
+	}
 	return counts, nil
 }
+
+// owedReadCounts counts the reads owed of each kind, with the oldest time of each: when a failure
+// was owed, and when a refusal was first refused (refused_since), or owed where a release before
+// this one owed it and wrote no refused_since. A trigger that owes a failure over a refusal row
+// leaves its refused_since, so a failure's time is its owed_at alone.
+const owedReadCounts = `select reason, count(*),
+		min(case when reason = 'refusal' then coalesce(refused_since, owed_at) else owed_at end)
+	from pull_request_reads_owed group by reason`
 
 // factsLineSelect is the facts line's select over its terms: each entry under its canonical name,
 // the name of a stored results row that is not the canonical name, the name of its timeline row,
