@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -232,14 +233,27 @@ func (r *outbox) RunOnce(ctx context.Context) error {
 	return nil
 }
 
+// outboxErrorInFull is the message of the lines that carry a failed run's whole error, in parts
+// (settle, storetext.LogWhole), where the row and every other line about it keep only its start.
+const outboxErrorInFull = "outbox row's error in full; the row and the lines about it keep its start"
+
 // settle records what a row's run came to, under the lease the run held: a wait or a failure is
 // retried on the row's backoff (or after the wait GitHub asks for), a failure no retry repairs is
 // finished refused with its follow-up (permanentRefusal, finishRefused), and anything else is
 // finished. A row whose finish or retry fails is logged and left leased: its lease expires and the
 // row is due again, so one row's failed transaction never stops the rows after it.
+//
+// A run's error is a far side's text, which can carry a relayed command's whole stderr. Every
+// line about it carries it as the row keeps it (storetext.FarSideError, record.Store.RetryOutbox),
+// this function's own and finishRefused's alike, so no line holds more than a log entry takes.
+// This is the one place the whole text is logged, once for each failed attempt and only when that
+// bound cuts it (storetext.LogWhole): every failed attempt passes here once, retried or finished
+// refused, and the whole text is in the log even where the retry's or the finish's own write then
+// fails.
 func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err != nil {
 		r.noteLimit(row, err)
+		kept := storetext.FarSideError(err.Error())
 		// A failure no retry repairs is not logged as the row failing: once its finish commits,
 		// finishRefused's own line says what became of the row, and a finish that does not commit
 		// is logged below with it as the cause.
@@ -259,13 +273,14 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 				level = slog.LevelWarn
 			}
 			r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
-				"attempts", row.Attempts, "error", err)
+				"attempts", row.Attempts, "error", kept)
 		} else if !permanent {
-			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", err)
+			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", kept)
 		}
+		storetext.LogWhole(r.log, outboxErrorInFull, err.Error(), "row", row.ID, "kind", row.Kind, "issue", row.Issue)
 		if permanent {
 			if finishErr := r.finishRefused(ctx, row, err); finishErr != nil {
-				r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", finishErr, "cause", err)
+				r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", finishErr, "cause", kept)
 			}
 			return
 		}
@@ -337,12 +352,14 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // nothing else would: the message is the daemon's only word on the issue for what it carries.
 // Each of those notice rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, intake.OnCommit), so the notice's lane is woken as the
-// finish commits and the notice is published without a sweep.
+// finish commits and the notice is published without a sweep. Each line says the refusal as the
+// row and the notice keep it (storetext.FarSideError); settle logged it whole.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
+	kept := storetext.FarSideError(cause.Error())
 	scoped, committed := intake.WithCommitHooks(ctx)
 	// follow is what the transaction does beside the finish, and told the line logged once it commits.
 	var follow func(pgx.Tx) error
@@ -351,7 +368,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	case record.StatusWrite:
 		refusal, _ := dispatch.PermanentRefusal(cause)
 		r.log.Error("outbox status write refused by Dispatch and dropped; the issue's later writes go on",
-			"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+			"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
 		rule, err := ruleFor(value.Kind)
 		if err != nil {
 			return fmt.Errorf("outbox row %d: %w", row.ID, err)
@@ -364,7 +381,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		follow = func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, notice) }
 		told = func() {
-			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
+			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", kept)
 		}
 	case record.ClaimRelease:
 		// Nobody is told: the claim stands where it was, which is the state the daemon would
@@ -374,7 +391,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		refusal, _ := dispatch.PermanentRefusal(cause)
 		told = func() {
 			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
-				"status", refusal.Status, "code", refusal.Code, "error", cause)
+				"status", refusal.Status, "code", refusal.Code, "error", kept)
 		}
 	case record.DesignGatesPublish:
 		// Nobody is told: the one refusal that ends this row is an issue Dispatch does not know
@@ -385,7 +402,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		refusal, _ := dispatch.PermanentRefusal(cause)
 		told = func() {
 			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
-				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
 		}
 	case record.RoleHoldersPublish:
 		// Nobody is told, and the line is what says the row ended. Two refusals end it
@@ -403,7 +420,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		told = func() {
 			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
-				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
 		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
@@ -433,11 +450,12 @@ const messageRefusedPreview = 200
 // block over its own bound among them, so the row is finished and the message is on no issue.
 // Nothing else would tell anyone, since the message is the daemon's only word on the issue for
 // what it carries. The reason names the issue, how long the message is, its first line (a READY
-// packet opens with its own `READY #<n> at <sha>` line) and Dispatch's own refusal.
+// packet opens with its own `READY #<n> at <sha>` line) and Dispatch's own refusal, bounded as a
+// far side's error text is (storetext.FarSideError).
 func messagePostRefused(issue string, payload record.MessagePost, cause error) record.Notice {
 	return record.Notice{Kind: "message-refused", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("Dispatch refused the message Legion was posting on %s, so it is on no issue and the daemon will not post it again. The message is %d characters and begins %q. Dispatch answered: %s",
-			issue, utf8.RuneCountInString(payload.Body), refusedPreview(payload.Body), cause)}
+			issue, utf8.RuneCountInString(payload.Body), refusedPreview(payload.Body), storetext.FarSideError(cause.Error()))}
 }
 
 // refusedPreview is the first line of a body a notice quotes, cut to messageRefusedPreview.
@@ -490,7 +508,7 @@ func (e *statusWriteFailure) Unwrap() error { return e.err }
 // record reads the one the row wrote, which only a person's move on the issue settles, and the
 // reason beside it may be posted already, which nobody should post a second time.
 func statusWriteRefused(issue string, payload record.StatusWrite, cause error, wrote statusWrites) record.Notice {
-	told := fmt.Sprintf("Dispatch refused a write Legion was making on %s and the daemon will not make it again. Dispatch answered: %s.", issue, cause)
+	told := fmt.Sprintf("Dispatch refused a write Legion was making on %s and the daemon will not make it again. Dispatch answered: %s.", issue, storetext.FarSideError(cause.Error()))
 	if wrote.status {
 		told += fmt.Sprintf(" The status %s was set on the issue all the same.", payload.Status)
 	} else {
@@ -529,7 +547,7 @@ func statusRefusalTold(ctx context.Context, r *outbox, row record.OutboxRow, pay
 	told := func() {
 		r.log.Error("outbox status write refused by Dispatch; its architect is told what the issue holds now",
 			"row", row.ID, "issue", row.Issue, "status", payload.Status,
-			"status_set", wrote.status, "reason_posted", wrote.reason, "error", cause)
+			"status_set", wrote.status, "reason_posted", wrote.reason, "error", storetext.FarSideError(cause.Error()))
 	}
 	return follow, told
 }
@@ -553,7 +571,11 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 	return r.retryAt(ctx, row, nextAt, cause)
 }
 
-// retryAt returns row to the outbox, due again at nextAt, with cause as its last error.
+// retryAt returns row to the outbox, due again at nextAt, with cause as its last error. The row
+// keeps the start of cause's text (record.Store.RetryOutbox stores storetext.FarSideError of it).
+// The whole text is logged where the failed attempt is settled (settle), not here: a deferral
+// behind another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt,
+// and the error its cause wraps is the limited row's own, which that row's settle logged.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())

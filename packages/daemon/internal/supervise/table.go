@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -1431,10 +1432,13 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // Two things keep that record from deciding anything about the charge, because the charge is
 // what bounds the re-sends and the record is only a diagnosis.
 //
-// The text is the far side's own, so it is scrubbed and bounded before it is stored
-// (scrubSendError): a refused adoption carries the wedged command's whole stderr and a refused
-// prompt Oh My Pi's decoded `error`, neither of which the store is obliged to take. The log
-// lines below carry the whole text as it arrived.
+// The text is the far side's own — a refused adoption carries the wedged command's whole stderr
+// and a refused prompt Oh My Pi's decoded `error` — so the delivery holds it, in memory as in the
+// store, as the daemon keeps any far side's error text (storetext.FarSideError): cleaned, its URL
+// credentials removed and cut to its start, a text the store takes whatever the far side wrote.
+// The log lines below and the charge's own line carry that same text, and where the cut left
+// something out, the whole text follows them at Info under the same message (logFarSideError,
+// storetext.LogWhole).
 //
 // The write may still fail — the store has its own weather — and a failed write is logged and
 // carried past rather than returned, so the split below is always read. A return there would
@@ -1460,7 +1464,8 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = scrubSendError(r.Err.Error())
+	p.LastSendError = storetext.FarSideError(r.Err.Error())
+	kept := p.LastSendError
 	var err error
 	if untold || handshakeMoved {
 		err = m.saved(m.putClaimAndPending(ctx))
@@ -1474,27 +1479,27 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	if errors.Is(r.Err, runtime.ErrPromptRefused) {
 		if agentBusy(runtime.RefusalReason(r.Err)) {
 			if m.awaitsResult() {
-				m.log.Info("supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
-					"delivery", r.DeliveryID, "outstanding", m.outstanding, "error", r.Err)
+				m.logFarSideError(ctx, slog.LevelInfo, "supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
+					kept, r.Err, "delivery", r.DeliveryID, "outstanding", m.outstanding)
 			} else {
-				m.log.Warn("supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again",
-					"delivery", r.DeliveryID, "error", r.Err)
+				m.logFarSideError(ctx, slog.LevelWarn, "supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again",
+					kept, r.Err, "delivery", r.DeliveryID)
 			}
 			return m.recordBusyTurn(ctx)
 		}
-		m.log.Warn("supervise: the agent refused the prompt", "delivery", r.DeliveryID, "error", r.Err)
-		return m.chargePrompt(ctx, "refused: "+r.Err.Error())
+		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the agent refused the prompt", kept, r.Err, "delivery", r.DeliveryID)
+		return m.chargePrompt(ctx, "refused: "+kept)
 	}
 	if errors.Is(r.Err, runtime.ErrAdoptRefused) {
-		m.log.Warn("supervise: the shim refused to adopt the working copy; the prompt was never sent",
-			"delivery", r.DeliveryID, "error", r.Err)
-		return m.chargePrompt(ctx, "the working copy was not adopted: "+r.Err.Error())
+		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the shim refused to adopt the working copy; the prompt was never sent",
+			kept, r.Err, "delivery", r.DeliveryID)
+		return m.chargePrompt(ctx, "the working copy was not adopted: "+kept)
 	}
 	if errors.Is(r.Err, runtime.ErrIdentityUnavailable) {
-		m.log.Warn("supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits",
-			"delivery", r.DeliveryID, "error", r.Err)
+		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits",
+			kept, r.Err, "delivery", r.DeliveryID)
 	} else {
-		m.log.Warn("supervise: the prompt was lost to the transport; the delivery waits", "delivery", r.DeliveryID, "error", r.Err)
+		m.logFarSideError(ctx, slog.LevelWarn, "supervise: the prompt was lost to the transport; the delivery waits", kept, r.Err, "delivery", r.DeliveryID)
 	}
 	if resend {
 		return m.sendPending(ctx)

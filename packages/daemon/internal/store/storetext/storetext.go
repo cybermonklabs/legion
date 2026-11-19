@@ -6,9 +6,11 @@
 // value (SQLSTATE 22021), and a jsonb value refuses a \u0000 escape and a surrogate escape that is
 // not half of a pair as well (22P05). Much of what the daemon stores comes from outside it — a
 // GitHub event, a Dispatch event, a worker's tool output, a far side's error — so it cannot be
-// refused at its source, and a write that fails on it fails the whole fact. The rule makes such
-// text storable instead (Text, TextBytes, JSON): each run of bytes that reads as no character
-// becomes U+FFFD rather than going, so the stored text still shows where the words were unreadable;
+// refused at its source, and a write that fails on it fails the whole fact. A NUL comes even from
+// a far side that answers in JSON: the `error` Oh My Pi gives a refused prompt is decoded, and a
+// \u0000 escape in it becomes a NUL byte in the daemon's string. The rule makes such text storable
+// instead (Text, TextBytes, JSON): each run of bytes that reads as no character becomes U+FFFD
+// rather than going, so the stored text still shows where the words were unreadable;
 // each NUL becomes U+FFFD as well; and in a JSON value, each \u0000 escape and each lone surrogate
 // escape does. Every other character stays as written, and a text that is already storable is
 // returned as it is, with no allocation, so a caller can give every string it stores through the

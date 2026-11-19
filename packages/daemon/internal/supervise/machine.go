@@ -32,7 +32,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -302,11 +304,14 @@ type Claim struct {
 	// launcher that refused the start, an init container that failed, a pod that never became
 	// ready (launchAfter's error). They are two answers to two questions, kept apart because a
 	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
-	// until another of its own kind replaces it. LastReady is when the agent last said it could be
-	// prompted, which is what says how old either cause is. All three are persisted: the operator
-	// reading a claim after a restart is the one who has to act on them, and the death's cause is
-	// what the record of that death names (endDied, EndedWork), which the restarted worker is told
-	// (RelaunchSentence, interruptedTask).
+	// until another of its own kind replaces it. Both are a far side's text, kept as such:
+	// LastStartFailure as any far side's error text is (storetext.FarSideError, which keeps its
+	// start), and LastDeathCause cleaned and its URL credentials removed under the runtime's own
+	// bound (deathCause). LastReady is when the agent last said it could be prompted, which is what
+	// says how old either cause is. All three are persisted: the operator reading a claim after a
+	// restart is the one who has to act on them, and the death's cause is what the record of that
+	// death names (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
+	// interruptedTask).
 	LastDeathCause   string
 	LastStartFailure string
 	LastReady        time.Time
@@ -2525,7 +2530,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Info("supervise: launch cut short; its context ended", "generation", m.claim.Generation, "error", err)
 			return err
 		}
-		m.claim.LastStartFailure = err.Error()
+		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
@@ -2535,8 +2540,8 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		}
 		err = errors.Join(err, m.stopPrevious(starting))
 		m.claim.Budgets.LaunchFailures++
-		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
-			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
+		m.logFarSideError(ctx, slog.LevelWarn, "supervise: launch failed", storetext.FarSideError(err.Error()), err,
+			"generation", m.claim.Generation, "launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 			return m.failLaunch(ctx, err, fmt.Sprintf("launch failures ran out: %v", err))
 		}
@@ -2634,11 +2639,12 @@ const (
 // outside it — and the same session is started again every minute (relaunchLater) until the store
 // answers. The issue and the controller are told at once and then hourly, since nothing else says
 // why the worker is not running. The process the launch let go is let go already, so the retry
-// lets none go (noEnd).
+// lets none go (noEnd). The store's error is a far side's text: the line, the claim and the
+// notices carry it as the claim keeps one (storetext.FarSideError, logFarSideError).
 func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
-	m.log.Error("supervise: the session store could not answer this start; trying it again every minute, charging nothing",
-		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
+	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
+		storetext.FarSideError(err.Error()), err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
 	return errors.Join(err, m.persist(ctx))
@@ -2657,7 +2663,7 @@ func (m *Machine) tellStoreFault(cause error) {
 		return
 	}
 	m.storeFaultTold = now
-	m.deps.SessionStoreFault(m.current(), cause.Error())
+	m.deps.SessionStoreFault(m.current(), storetext.FarSideError(cause.Error()))
 }
 
 // launchWaits is whether a wake that starts a process waits over this claim: the one wake whose
@@ -2780,12 +2786,15 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost bool)
 // is told its predecessor is gone rather than left to infer it from an empty transcript, and the
 // report to the issue, the architect and the controller goes only once the fresh agent is
 // actually running: a spawn that failed is a launch failure the caller charges, and says nothing
-// yet about the session.
+// yet about the session. The runtime's account of the session is a far side's error text, so the
+// line, the abandoned session and the report all carry it as the claim keeps one
+// (storetext.FarSideError, logFarSideError).
 func (m *Machine) startFresh(ctx context.Context, token string, cause error) (runtime.Locator, error) {
-	m.log.Warn("supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
-		"session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", cause)
+	kept := storetext.FarSideError(cause.Error())
+	m.logFarSideError(ctx, slog.LevelWarn, "supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
+		kept, cause, "session", m.claim.Session, "sessionFile", m.claim.SessionFile)
 	lost := m.claim.Session
-	m.forgetSession(fmt.Sprintf("no session store the runtime could resume it from holds it any more: %v", cause))
+	m.forgetSession("no session store the runtime could resume it from holds it any more: " + kept)
 	spec, err := m.spawnSpec(ctx, token, true)
 	if err != nil {
 		return runtime.Locator{}, err
@@ -2795,7 +2804,7 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause error) (ru
 		return loc, err
 	}
 	if m.deps.SessionLost != nil {
-		m.deps.SessionLost(m.current(), fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %v", lost, cause))
+		m.deps.SessionLost(m.current(), fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %s", lost, kept))
 	}
 	return loc, nil
 }
@@ -2912,12 +2921,16 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the
 // verdict it reached, so a cause reads as a sentence wherever it is repeated. A runtime that gave
-// no detail leaves the verdict alone.
+// no detail leaves the verdict alone. The account is a pod's events and the last lines of its log,
+// so it is made storable (storetext.Text) and loses the credentials a URL in it carries
+// (redact.URLCredentials) before the claim, the state, the store and ended work repeat it. It keeps
+// the runtime's own bound rather than taking FarSideError's: that bound keeps the last lines,
+// which are what name the death, where FarSideError's would keep the start.
 func deathCause(observation runtime.Observation) string {
 	if observation.Detail == "" {
 		return string(observation.Kind)
 	}
-	return fmt.Sprintf("%s: %s", observation.Kind, observation.Detail)
+	return redact.URLCredentials(storetext.Text(fmt.Sprintf("%s: %s", observation.Kind, observation.Detail)))
 }
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
@@ -3023,10 +3036,13 @@ func (m *Machine) sessionGone() {
 // makes a fresh session a recovery the controller can repeat (api's freshSession). Without it a
 // claim that was told once would never be told again until a turn of it ended with no error at
 // all.
+//
+// why is the sentence the abandoned session is recorded under, which can carry a runtime's or a
+// provider's text, so it is kept as a far side's error text is (storetext.FarSideError).
 func (m *Machine) forgetSession(why string) {
 	if m.claim.Session != "" {
 		m.claim.Abandoned = AbandonedSession{
-			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: why, At: m.deps.Clock.Now(),
+			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: storetext.FarSideError(why), At: m.deps.Clock.Now(),
 		}
 		if e := &m.claim.EndedWork; e.Tells() {
 			e.Told, e.ToldBy = true, ""
@@ -3051,7 +3067,13 @@ func (m *Machine) forgetSession(why string) {
 // the episode it named has ended here (Claim.PendingCause). The process it lets go is recorded
 // as ended by the failure, under that sentence (endFailed, recordEnd), unless the decision that
 // failed it already recorded that process's end — a death's (died).
+//
+// why is the failure's sentence, which can carry a launcher's or a provider's error text ("launch
+// failures ran out: …"), so the claim, the store, the state and the record of what the process
+// ended all hold it as a far side's error text is kept (storetext.FarSideError). The line that
+// met that error logs it whole (launchNow's "launch failed", logFarSideError).
 func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) error {
+	why = storetext.FarSideError(why)
 	ended := endFailed(why)
 	if loc := m.claim.Locator; loc != nil {
 		if err := m.endProcess(ctx, ended); err != nil {
@@ -3067,6 +3089,17 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 		"deaths", m.claim.Budgets.Deaths, "promptFailures", m.claim.Budgets.PromptFailures,
 		"promptRetires", m.claim.Budgets.PromptRetires)
 	return m.durableWrite(ctx, StateFailed, m.persist)
+}
+
+// logFarSideError writes msg at level with args and then "error": kept, err's text as the claim
+// keeps a far side's error text (storetext.FarSideError), so the line holds no more of a relayed
+// command's output than the store does and stays within what one log entry takes. Where that
+// bound cut the text, the whole of it, URL credentials removed, follows at Info under the same
+// msg and args (storetext.LogWhole): nothing of the far side's answer is lost, only moved.
+func (m *Machine) logFarSideError(ctx context.Context, level slog.Level, msg, kept string, err error, args ...any) {
+	args = slices.Clip(args)
+	m.log.Log(ctx, level, msg, append(args, "error", kept)...)
+	storetext.LogWhole(m.log, msg, err.Error(), args...)
 }
 
 // release asks the runtime to let go of everything it holds for the claim — the process, when one
