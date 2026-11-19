@@ -78,16 +78,19 @@ function keyFile(mode: number): string {
   writeFileSync(file, "sk-ant-rig-test-0000000000000000\n", { mode });
   return file;
 }
+/** install_model_route with install_provider_route, which starts the bun rig.sh resolves at its
+ *  top (`bun_bin`, the binary of the first bun on PATH): here the Bun that runs this file. */
 function route(dir: string, env: Record<string, string>, model = "") {
   const result = Bun.spawnSync(
     [
       "bash",
       "-c",
-      `route_model_id=claude-opus-4-8\n${fn("install_model_route")}\n${fn("install_provider_route")}\ninstall_model_route "$1" skills-test "$2" "$3"`,
+      `route_model_id=claude-opus-4-8\nbun_bin=$4\n${fn("install_model_route")}\n${fn("install_provider_route")}\ninstall_model_route "$1" skills-test "$2" "$3"`,
       "-",
       root,
       dir,
       model,
+      process.execPath,
     ],
     { env: { ...childEnv, ...env } }
   );

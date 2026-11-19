@@ -76,9 +76,15 @@ stagings.push(() => {
   }
   mkdirSync(stub);
 });
+// run-server.sh's stand-in starts this file's Bun by its path, as the rig starts its own: a `bun`
+// found on PATH is the caller's, maybe a shim (the "asks the first bun on PATH" row below).
 put(
   path.join(co, "packages/dispatch/e2e/run-server.sh"),
-  ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
+  [
+    "#!/usr/bin/env bash",
+    `exec ${JSON.stringify(process.execPath)} "$STUB_DIR/server.ts"`,
+    "",
+  ].join("\n"),
   0o755
 );
 // No DISPATCH_E2E_PORT: the server takes a port of the kernel's choosing and reports it as the Go
@@ -185,8 +191,8 @@ put(
 stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
 // A bun that cannot run, as a mise shim with no version set answers: the stand-in the row below
 // puts ahead of the link above. It answers `--version` with the pinned release, so the rig's check
-// of the release (rig.sh, "refusing to run under Bun") passes and the row reaches load_label's
-// read of the settings, and fails every other call as the shim does.
+// of the release (rig.sh, "refusing to run under Bun") passes, and fails every other call as the
+// shim does: the rig's next call is the one that names the binary it runs on.
 const brokenBun = path.join(scratch, "broken-bun");
 put(
   path.join(brokenBun, "bun"),
@@ -195,6 +201,26 @@ put(
     `if [ "$*" = --version ]; then echo ${readFileSync(path.join(root, ".bun-version"), "utf8").trim()}; exit 0; fi`,
     'echo "No version is set for shim: bun" >&2',
     "exit 1",
+    "",
+  ].join("\n"),
+  0o755
+);
+// A mise shim with no version set, as it answers every call, `--version` among them.
+const failingShim = path.join(scratch, "failing-shim");
+put(
+  path.join(failingShim, "bun"),
+  ["#!/usr/bin/env bash", 'echo "No version is set for shim: bun" >&2', "exit 1", ""].join("\n"),
+  0o755
+);
+// A bun on PATH that runs this file's Bun and records every call it is given: a rig that started
+// `bun` by name after resolving the binary it runs on would show here.
+const countingBun = path.join(scratch, "counting-bun");
+put(
+  path.join(countingBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    'printf \'%s\\n\' "$*" >>"$STUB_DIR/counting-bun.log"',
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
     "",
   ].join("\n"),
   0o755
@@ -478,12 +504,12 @@ test.skipIf(withoutPython)(
   }
 );
 
-// The read of a profile's settings is bun's, and a bun that cannot run says nothing of the key: the
-// rig names bun's failure and its error, and never the key, for a profile that sets the limit and
-// for one that does not. The second is the control of the row above, whose refusal names the key
-// only where bun read the settings.
+// A bun that cannot run says nothing of the key: the rig asks it for the binary it runs on before
+// any label's settings are read, and refuses it there with its own words, for a profile that sets
+// the limit and for one that does not. The second is the control of the "leave the handler limit at
+// its default" row above, whose refusal names the key only where bun read the settings.
 test.skipIf(withoutPython)(
-  "a run whose bun cannot read the profile settings is refused, naming bun's failure and not the key",
+  "a run whose first bun cannot run is refused with that bun's own error, naming neither the key nor a release",
   async () => {
     for (const [name, index] of [
       ["on", "4"],
@@ -493,11 +519,47 @@ test.skipIf(withoutPython)(
         PATH: `${brokenBun}:${env.PATH}`,
       });
       expect(code).toBe(1);
-      expect(stderr).toContain(`label ${name}: bun could not read the profile settings`);
-      expect(stderr).toContain("No version is set for shim: bun");
+      expect(stderr).toContain(
+        `the bun first on PATH (${brokenBun}/bun) could not run to name the binary it runs: No version is set for shim: bun`
+      );
       expect(stderr).not.toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
+      expect(stderr).not.toContain("refusing to run under Bun");
       expect(existsSync(path.join(work, "runs", `askgate-facts-${name}-9`))).toBe(false);
     }
+  }
+);
+
+// A shim that fails even `bun --version`, as mise's does under a HOME whose config names no
+// version: the rig's check of the release reports the shim's own words, not a Bun of no version.
+test.skipIf(withoutPython)(
+  "a run whose first bun fails `bun --version` is refused with that bun's own error",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "10", "4", start], {
+      PATH: `${failingShim}:${env.PATH}`,
+    });
+    expect(code).toBe(1);
+    expect(stderr).toContain(
+      `the bun first on PATH (${failingShim}/bun) could not run \`bun --version\`: No version is set for shim: bun`
+    );
+    expect(stderr).not.toContain("<no version>");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-on-10"))).toBe(false);
+  }
+);
+
+// The rig asks the first bun on PATH twice, for its release and for the binary it runs, and every
+// command after that starts that binary by its path: a run with a recording bun first on PATH
+// finishes, and that bun saw those two calls and no other.
+test.skipIf(withoutPython)(
+  "a run asks the first bun on PATH only for its release and its binary, then runs that binary",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "on", "11", "4", start], {
+      PATH: `${countingBun}:${env.PATH}`,
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(lines(path.join(stub, "counting-bun.log"))).toEqual([
+      "--version",
+      "-e process.stdout.write(process.execPath)",
+    ]);
   }
 );
 
