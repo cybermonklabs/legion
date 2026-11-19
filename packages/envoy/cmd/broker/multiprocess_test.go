@@ -1416,6 +1416,20 @@ func rolloutAccounts(fixer string) string {
 	return strings.Join(entries, " ")
 }
 
+// rolloutRegistrars is BROKER_POD_REGISTRARS for both generations of the rollout:
+// registrarAccount, which registers each pod that asks for a name its entry at the serving
+// process does not fix, listed as the registrar of each of the three accounts' pods, since a
+// row's exchange may be any of the three's. oldEntryAccount is registrarAccount's own account, so
+// that entry pairs an account with itself, as the entry of a daemon registering the sibling pods
+// of its own account does; a registrar's token bound to no pod is refused no pod of its account.
+func rolloutRegistrars() string {
+	entries := make([]string, 0, 3)
+	for _, account := range []string{oldEntryAccount, newEntryAccount, podAccount} {
+		entries = append(entries, registrarAccount+"="+account)
+	}
+	return strings.Join(entries, " ")
+}
+
 // rolloutBroker is one process of the rollout: what its messages call it, the account its
 // configuration fixes rolloutSession for, the process whose log a row reads, and a client of that
 // process's own address.
@@ -1445,12 +1459,13 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 
 	// start starts a process of the generation whose configuration fixes rolloutSession for
 	// fixer, on the one database, living as long as t: exchangeEnv with that generation's
-	// accounts in place of its own, a later value of a variable being the one a process gets, as
-	// startBroker's own Env takes precedence over productionEnv.
+	// accounts, and the registrar listed for each of them, in place of its own, a later value of
+	// a variable being the one a process gets, as startBroker's own Env takes precedence over
+	// productionEnv.
 	start := func(t *testing.T, name, fixer string) rolloutBroker {
 		t.Helper()
 		process := startBroker(t, brokerOptions{Binary: binary, Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
-			"BROKER_EXCHANGE_ACCOUNTS="+rolloutAccounts(fixer), "BROKER_DRAIN_SECONDS=0")})
+			"BROKER_EXCHANGE_ACCOUNTS="+rolloutAccounts(fixer), "BROKER_POD_REGISTRARS="+rolloutRegistrars(), "BROKER_DRAIN_SECONDS=0")})
 		return rolloutBroker{name: fmt.Sprintf("%s (%s)", name, process.Addr), fixer: fixer, process: process, client: newLiveBroker(process.Addr, key)}
 	}
 	// exchange is a pod of account exchanging its projected token at broker for a token under

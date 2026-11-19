@@ -18,7 +18,7 @@ var refusalDirs = []string{apiDir, approvalDir, airlockDir}
 // writerKey names a function of one package as refgen can name it with no type checker: the
 // type its receiver is declared on ("" for a function) and its name. The name alone is not
 // enough: airlockproxy declares Write, Read and Close on more than one type, which is also why
-// source.funcs, keyed by the name, refuses that package.
+// source.funcs, keyed by the name, holds those names as ambiguous and resolves none of them.
 type writerKey struct{ recv, name string }
 
 func (k writerKey) String() string {
@@ -149,7 +149,7 @@ type netRef struct {
 }
 
 // readWrites walks every declaration of src itself, rather than through source.funcs, which
-// refuses a package declaring one method name on two types.
+// resolves no name a package declares on two types.
 func readWrites(src *source) *writes {
 	w := &writes{
 		src:          src,

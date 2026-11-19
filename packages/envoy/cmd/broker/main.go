@@ -540,6 +540,7 @@ func main() {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
 	}
+	logPodRegistrars(cfg)
 	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
 	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
 	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
@@ -662,6 +663,7 @@ func main() {
 	detached := &api.Detached{}
 	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
+		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
@@ -1319,6 +1321,23 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
 
+// logPodRegistrars logs, once at boot, what POST /v1/oauth/exchange/pod-sessions admits: how
+// many registrar and pod account pairs BROKER_POD_REGISTRARS holds, none being a route that admits
+// no registration, and whether BROKER_POD_REGISTRATION_AUDIENCE gives the route a second audience.
+// A registrar BROKER_SERVICE_LOGINS does not list cannot call the route, so it registers nothing.
+// The boot is not refused over one, since the list may be derived from another source than the
+// logins and a refusal would turn a mismatch into an outage; each such registrar gets a WARN line
+// naming it instead.
+func logPodRegistrars(cfg config.Config) {
+	slog.Info("pod-session registrars", "entries", len(cfg.PodRegistrars), "registration_audience", cfg.PodRegistrationAudience != "")
+	for _, registrar := range cfg.PodRegistrars.Registrars() {
+		if _, login := cfg.ServiceLogins[registrar]; !login {
+			slog.Warn("pod-session registrar cannot log in", "registrar", registrar,
+				"detail", "BROKER_POD_REGISTRARS names this account and BROKER_SERVICE_LOGINS does not list it, so it registers no pod")
+		}
+	}
+}
+
 // googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
 // where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
 // where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
@@ -1352,6 +1371,10 @@ type verifiers struct {
 	Pod enroll.PodVerifier
 	// K8sKeys is the cluster issuer's published keys, nil where Pod is.
 	K8sKeys *oidc.Keys
+	// PodRegistration verifies a registration's pod token at BROKER_POD_REGISTRATION_AUDIENCE, on
+	// the cluster's key set Pod verifies with, nil on a broker with no such audience. Only the
+	// registration route reads it (api.Deps.PodRegistrationTokens).
+	PodRegistration enroll.PodVerifier
 	// GoogleKeys is the Google issuer's published keys, nil on a broker with no Google audience,
 	// which registers no Google subject token type.
 	GoogleKeys *oidc.Keys
@@ -1366,12 +1389,13 @@ type verifiers struct {
 // in production) and builds a verifier on each: the cluster's (BROKER_K8S_OIDC_ISSUER and
 // BROKER_K8S_OIDC_AUDIENCE), one verifier for both a pod's enrollment token and a service's login
 // token, which are the same cluster's projected tokens for the same audience, whose key set it
-// also answers for the RFC 8693 exchange; and Google's (BROKER_GOOGLE_OIDC_ISSUER), for a
-// machine's identity token, only when BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the
-// exchange resolves a machine's subject token against, logging one line that names the issuer,
-// the audience, the machine services and how many machine entries the exchange holds. With no
-// Google audience it reads and logs nothing about Google, and answers no Google keys, so the
-// broker registers no Google subject token type.
+// also answers for the RFC 8693 exchange, and on that key set a second where
+// BROKER_POD_REGISTRATION_AUDIENCE is set, for a registration's pod token of that audience; and
+// Google's (BROKER_GOOGLE_OIDC_ISSUER), for a machine's identity token, only when
+// BROKER_GOOGLE_OIDC_AUDIENCE is set, whose key set the exchange resolves a machine's subject
+// token against, logging one line that names the issuer, the audience, the machine services and
+// how many machine entries the exchange holds. With no Google audience it reads and logs nothing
+// about Google, and answers no Google keys, so the broker registers no Google subject token type.
 func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc) (verifiers, error) {
 	var found verifiers
 	if cfg.K8sOIDCIssuer != "" {
@@ -1381,6 +1405,9 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 		}
 		found.K8sKeys = keys
 		found.Pod = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.K8sOIDCAudience, keys)}
+		if cfg.PodRegistrationAudience != "" {
+			found.PodRegistration = enroll.K8sPodVerifier{Verifier: oidc.NewWithKeys(cfg.K8sOIDCIssuer, cfg.PodRegistrationAudience, keys)}
+		}
 	}
 	if cfg.GoogleOIDCAudience == "" {
 		return found, nil

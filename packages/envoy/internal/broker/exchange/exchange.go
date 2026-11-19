@@ -595,7 +595,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 		if strings.TrimSpace(entry.Service) == "" {
 			return nil, fmt.Errorf("exchange: %s: the service is required, since a read entry's token names its service and no person", where)
 		}
-		if !validSession(entry.Session) {
+		if !ValidSession(entry.Session) {
 			return nil, fmt.Errorf("exchange: %s: the session is required, since a read entry fixes the session its token names, and %s", where, sessionRule)
 		}
 		if _, listed := set.reads[entry.Account]; listed {
@@ -660,7 +660,7 @@ func NewSet(accounts []AccountEntry, reads []ReadEntry, workflows []WorkflowEntr
 			if err := checkGrant(where, entry.Project, entry.Person, entry.Session, false); err != nil {
 				return nil, err
 			}
-		} else if entry.Session != "" && !validSession(entry.Session) {
+		} else if entry.Session != "" && !ValidSession(entry.Session) {
 			return nil, fmt.Errorf("exchange: %s: %s", where, sessionRule)
 		}
 		if _, listed := set.google[entry.Account]; listed {
@@ -754,7 +754,7 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 	if strings.TrimSpace(person) == "" {
 		return fmt.Errorf("exchange: %s: the person is required, since every token acts for someone", where)
 	}
-	if session != "" && !validSession(session) {
+	if session != "" && !ValidSession(session) {
 		return fmt.Errorf("exchange: %s: %s", where, sessionRule)
 	}
 	return nil
@@ -873,7 +873,7 @@ func (s *Set) Registration(account, podUID, session string) error {
 	if fixed := listing.fixed(); fixed != "" {
 		return fmt.Errorf("%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", ErrSessionFixed, account, fixed)
 	}
-	if !validSession(session) {
+	if !ValidSession(session) {
 		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), sessionRule)
 	}
 	return nil
@@ -1204,7 +1204,7 @@ func LaunchedBy(accountPrincipal, launcher string) string {
 
 // sessionRule is the one sentence that says what a session name may be, so an entry refused at
 // build time and a request refused at exchange time are refused in the same words, and the cap it
-// quotes is the cap validSession applies.
+// quotes is the cap ValidSession applies.
 var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, and is at most %d bytes", MaxSessionBytes)
 
 // resolveSession answers the session claim for an entry whose fixed session is fixed and a request
@@ -1225,15 +1225,18 @@ func resolveSession(fixed, named, identity string) (string, error) {
 	if named == "" {
 		return "", fmt.Errorf("%w: %s is listed with no session of its own, so the request names one", ErrSessionRequired, identity)
 	}
-	if !validSession(named) {
+	if !ValidSession(named) {
 		return "", fmt.Errorf("%w: %s named a session of %d bytes; %s", ErrSessionInvalid, identity, len(named), sessionRule)
 	}
 	return named, nil
 }
 
-// validSession reports whether name is usable as a session claim: UTF-8, printable, with no
-// whitespace and at most MaxSessionBytes.
-func validSession(name string) bool {
+// ValidSession reports whether name is usable as a session claim: UTF-8, printable, with no
+// whitespace and at most MaxSessionBytes. A pod-session registration of a name it refuses is
+// refused before it is written (Registration), so no registration names one, and a release of
+// registrations (oauthstore.Store.ReleasePodSessions) drops such a name as one that matches
+// nothing rather than refusing it.
+func ValidSession(name string) bool {
 	if name == "" || len(name) > MaxSessionBytes || !utf8.ValidString(name) {
 		return false
 	}

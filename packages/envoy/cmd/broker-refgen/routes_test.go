@@ -155,6 +155,66 @@ func TestTheSignInClassRefusesPastTheRateLimit(t *testing.T) {
 	}
 }
 
+// TestACallOfANameTwoDeclarationsShareIsRefused: refgen runs no type checker and resolves a call
+// by its name alone, so a package may declare one name on two types, as the API package declares
+// UnmarshalJSON on two request bodies, and refgen reads that package while it resolves no call of
+// that name. A handler calling a name declared once is read as before; a call of the shared name,
+// and a route row whose handler is that name, are each refused, naming both declarations, where
+// reading them would follow whichever declaration came first.
+func TestACallOfANameTwoDeclarationsShareIsRefused(t *testing.T) {
+	tree := map[string]string{
+		apiDir + "/bodies.go": `package api
+
+type first struct{}
+
+func (b *first) UnmarshalJSON(data []byte) error { return nil }
+
+type second struct{}
+
+func (b *second) UnmarshalJSON(data []byte) error { return nil }
+`,
+		apiDir + "/handlers.go": `package api
+
+import "net/http"
+
+type server struct{}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {}
+
+func (s *server) refuse(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusBadRequest, "REFUSED", "refused")
+}
+
+func (s *server) decode(w http.ResponseWriter, r *http.Request) {
+	var body first
+	if err := body.UnmarshalJSON(nil); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "the body does not decode")
+	}
+}
+`,
+	}
+	g, err := newGraph(writeTree(t, tree))
+	if err != nil {
+		t.Fatalf("a package declaring UnmarshalJSON on two types is refused before any call of it: %v", err)
+	}
+	if outs, err := g.handlerOutcomes(route{Handler: "refuse", Dir: apiDir, At: "the route row of refuse"}); err != nil || len(outs) != 1 || outs[0].Code != "REFUSED" {
+		t.Errorf("refuse, which calls writeError, a name declared once, is read as %+v, %v; want its one REFUSED", outs, err)
+	}
+	at := func(file, text string) string {
+		return strings.TrimSuffix(lineOf(t, tree, apiDir+"/"+file, text), ": ")
+	}
+	both := at("bodies.go", "(b *first)") + " and " + at("bodies.go", "(b *second)") + " each declare UnmarshalJSON"
+	for _, c := range []struct{ what, handler, at string }{
+		{"a handler's call of UnmarshalJSON", "decode", at("handlers.go", "body.UnmarshalJSON(")},
+		{"a route row whose handler is UnmarshalJSON", "UnmarshalJSON", "the route row of UnmarshalJSON"},
+	} {
+		outs, err := g.handlerOutcomes(route{Handler: c.handler, Dir: apiDir, At: "the route row of " + c.handler})
+		if want := c.at + ": " + both; err == nil || !strings.HasPrefix(err.Error(), want) {
+			t.Errorf("%s is read as %+v, %v; want it refused with an error starting %q", c.what, outs, err, want)
+		}
+	}
+}
+
 // TestTheCarriedRouteNamesItsBodyAndItsRefusals reads the broker's own source, as the docs build
 // does. POST /v1/enrollments/carried reads its body through readCarriedBody, which decodes the
 // list one id at a time rather than through readJSON, so refgen has to know that reader to name
