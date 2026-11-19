@@ -190,6 +190,21 @@ pass
 
 begin fake-envoy
 two_builds_fake_envoy
+# The listener both builds read lists three sessions, so GET /api/v1/agents answers rows and not
+# an empty list, in which no field of a row could differ: one whose credential lists PUB and which
+# holds a role, one whose credential lists PRIV, and one the listener names no projects for, as a
+# listener from before the list sends it. The first two follow their project's first issue, so
+# each issue has a subscriber.
+sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"roles":["legion-planner"],"capabilities":["aside","btw","steer"]}'
+sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
+sessions+=',{"session_id":"ses-no-list","title":"Names no project","capabilities":["btw"]}]'
+curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/sessions" \
+  -d "$sessions" >/dev/null || fail "the fake Envoy refused its sessions"
+interests='[{"session_id":"ses-pub-session","topics":["notifications.dispatch.issue.PUB-1.>"]}'
+interests+=',{"session_id":"ses-priv-session","topics":["notifications.dispatch.issue.PRIV-1.>"]}]'
+curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/interests" \
+  -d "$interests" >/dev/null || fail "the fake Envoy refused its interests"
+note "the fake Envoy lists ses-pub-session (PUB, a role), ses-priv-session (PRIV) and ses-no-list (no list), the first two following their project's first issue"
 pass
 
 two_builds_identity
@@ -229,9 +244,217 @@ seed() {
   seed_objects "$build" PRIV bob
 }
 
+# created BUILD WHAT: the last write answered 200, 201 or 204, else the seed fails naming WHAT.
+created() {
+  [[ "$status" == 20[014] ]] || fail "$1: $2: HTTP $status $(head -c 300 "$work/body")"
+}
+
+# spec_ask_opened BUILD KEY: KEY's asks on BUILD hold the one its spec's `spec_done` block opened,
+# whose id it sets as spec_ask. The block's ask is opened behind the write of the spec.
+spec_ask_opened() {
+  send "$1" carol GET "/api/v1/issues/$2/asks"
+  [ "$status" = 200 ] || return 1
+  spec_ask=$(jq -r '[.[] | select(.question == "Is the spec done?") | .id][0] // empty' "$work/body")
+  [ -n "$spec_ask" ]
+}
+
+# The seed's writes that deliver to a session, each "ROUTE:LABEL", the object PROJECT's label
+# "PROJECT LABEL" names under /api/v1/ROUTE: the shared token's mention, carol's message to the
+# session, alice's replies to the two asks, carol's reply to the seed's comment and alice's reply
+# to the seed's message, each of the last four naming the session too.
+readonly sends=("comments:mention" "messages:targeted" "comments:ask reply" "comments:choice reply" "comments:comment reply" "messages:message reply")
+
+# delivery_settled BUILD PROJECT ITEM: on BUILD, PROJECT's send ITEM (a "ROUTE:LABEL" of sends)
+# holds a delivery attempt, and every attempt is settled (no longer pending). A reply is read
+# through its thread, which the route may answer with the thread's head first, so the send's own
+# row is found by its id. A delivery settles behind its write and touches its object then, so the
+# seed waits for each before it writes on, and each build writes in one order.
+delivery_settled() {
+  local id
+  id=$(recalled "$1" "$2 ${3#*:}")
+  send "$1" carol GET "/api/v1/${3%%:*}/$id"
+  [ "$status" = 200 ] && jq -e --arg id "$id" '[.. | objects | select(.id == $id) | .deliveries[]?.state]
+    | length > 0 and all(. != "pending")' "$work/body" >/dev/null
+}
+
+# settle BUILD PROJECT ITEM waits, bounded, for delivery_settled.
+settle() {
+  until_true 120 "the $1 build to settle the delivery of $2's ${3#*:}" delivery_settled "$1" "$2" "$3"
+}
+
+# remember_envelopes BUILD remembers the envelope id the listener gave each settled attempt of the
+# seed's sends on BUILD, as "PROJECT LABEL envelope <n>". Both builds send through the one fake
+# listener, which numbers its envelopes in the order it takes them (envelope-<n>), so the same
+# attempt carries another id at each build. The longest ids are remembered first: the mask
+# replaces each as text, and envelope-1 is a part of envelope-12.
+remember_envelopes() {
+  local build=$1 project item label value
+  : >"$work/envelopes"
+  for project in PUB PRIV; do
+    for item in "${sends[@]}"; do
+      send "$build" carol GET "/api/v1/${item%%:*}/$(recalled "$build" "$project ${item#*:}")"
+      expect_status 200 "$build: carol reads the $project ${item#*:}"
+      jq -r --arg label "$project ${item#*:} envelope" --arg id "$(recalled "$build" "$project ${item#*:}")" \
+        '[.. | objects | select(.id == $id) | .deliveries[]? | .envelope_id | select(. != null)] | unique | to_entries[]
+         | "\(.value)\t\($label) \(.key + 1)"' "$work/body" >>"$work/envelopes"
+    done
+  done
+  while IFS=$'\t' read -r value label; do
+    remember "$build" "$label" "$value"
+  done < <(awk -F '\t' '{ print length($1) "\t" $0 }' "$work/envelopes" | sort -t $'\t' -k1,1nr | cut -f2-)
+}
+
+# decisions_linked BUILD KEY: KEY's decisions on BUILD hold the section's link to its spec's block
+# and its ask, which the store writes behind the decisions document.
+decisions_linked() {
+  send "$1" carol GET "/api/v1/issues/$2/decisions"
+  [ "$status" = 200 ] && jq -e 'any(.decisions[]; (.links | length > 0) and (.asks | length > 0))' "$work/body" >/dev/null
+}
+
+# seed_lists BUILD writes, through the routes both builds have, a row into every list an answer
+# read below holds, which the seed above leaves empty, so that no field of such a row can differ
+# unseen (the lists check): a priority and the work under it, in flight and parked; each first
+# issue's labels, link, blocker, child (with a link of its own), parent and design gate; each
+# project's gated steps; an ask with options left open and followed, the seed's ask given options,
+# followed and answered with one; replies to both asks, to the seed's comment and to its message,
+# each naming the session; a comment of the shared token's that mentions the session, and a
+# message to it; an issue whose spec holds a question with options, and a decisions document
+# whose section names that question and its block; and a broadcast. Each send is settled before
+# the next write (settle).
+seed_lists() {
+  local build=$1 project key ask edited_at index block
+  send "$build" carol POST /api/v1/priorities '{"id":"blob-work","title":"The blob work"}'
+  created "$build" "carol writes the priority blob-work"
+  for project in PUB PRIV; do
+    key=$project-1
+    send "$build" carol PUT "/api/v1/projects/$project/gated-steps" '{"steps":["decisions","criteria","spec"]}'
+    created "$build" "carol publishes $project's gated steps"
+    send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" --arg k "$key" \
+      '{project: $p, title: ("A child of " + $k), parent: $k, advances: ["blob-work"]}')"
+    created "$build" "carol opens $project-2 under $key"
+    remember "$build" "$project-2 spec" "$(jq -r .primary_artifact_id "$work/body")"
+    # The create takes no external link, so the child is linked as it is parked.
+    send "$build" carol PATCH "/api/v1/issues/$project-2" "$(jq -cn --arg p "$project" \
+      '{status: "backlog", external_links: [{url: ("https://example.com/" + $p + "/child"), kind: "doc"}]}')"
+    created "$build" "carol parks $project-2 and links it"
+    send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" --arg k "$key" '{project: $p, title: ("A blocker of " + $k)}')"
+    created "$build" "carol opens $project-3"
+    remember "$build" "$project-3 spec" "$(jq -r .primary_artifact_id "$work/body")"
+    send "$build" carol PATCH "/api/v1/issues/$project-3" '{"status":"in_progress"}'
+    created "$build" "carol starts $project-3"
+    send "$build" carol PATCH "/api/v1/issues/$key" "$(jq -cn --arg p "$project" \
+      '{labels: ["blob"], blocked_by: [($p + "-3")], advances: ["blob-work"],
+        external_links: [{url: ("https://example.com/" + $p), kind: "doc"}]}')"
+    created "$build" "carol labels $key, links it, blocks it on $project-3 and has it advance blob-work"
+    send "$build" carol PUT "/api/v1/issues/$key/design-gates" "$(jq -cn --arg a "$(recalled "$build" "$project spec")" \
+      '{gates: [{step: "spec", artifact_id: $a}]}')"
+    created "$build" "carol publishes $key's design gates"
+    send "$build" carol POST "/api/v1/issues/$key/asks" '{"question":"Which way?","options":[{"label":"This way"},{"label":"That way"}]}'
+    created "$build" "carol asks on $key with options"
+    remember "$build" "$project choice" "$(jq -r .id "$work/body")"
+    # The seed's ask is given options as it is reworded, so it is answered with one; the choice
+    # keeps its own, so its edit's previous version holds them.
+    send "$build" carol PATCH "/api/v1/asks/$(recalled "$build" "$project ask")" \
+      '{"question":"Is this still the way?","options":[{"label":"This way"},{"label":"That way"}]}'
+    created "$build" "carol rewords the $project ask and gives it options"
+    # The answer below names the wording it answers, the one this edit wrote.
+    edited_at=$(jq -c '.edited_at' "$work/body")
+    send "$build" carol PATCH "/api/v1/asks/$(recalled "$build" "$project choice")" '{"question":"Which way now?"}'
+    created "$build" "carol rewords the $project choice"
+    for ask in "$project ask" "$project choice"; do
+      send "$build" carol PUT "/api/v1/asks/$(recalled "$build" "$ask")/followers/ses-pub-session"
+      created "$build" "carol has ses-pub-session follow the $ask"
+      send "$build" alice POST "/api/v1/issues/$key/comments" "$(jq -cn --arg a "$(recalled "$build" "$ask")" \
+        '{body: "A reply to the ask, for the PUB session.", ask_id: $a, mentions: [{target: "session:ses-pub-session"}], delivery: "btw"}')"
+      created "$build" "alice replies to the $ask, mentioning ses-pub-session"
+      remember "$build" "$ask reply" "$(jq -r .id "$work/body")"
+      settle "$build" "$project" "comments:${ask#"$project "} reply"
+    done
+    send "$build" bob POST "/api/v1/asks/$(recalled "$build" "$project ask")/answer" \
+      "$(jq -cn --argjson e "$edited_at" '{selected: ["This way"], text: "Yes, it is.", expected_edited_at: $e}')"
+    created "$build" "bob answers the $project ask with This way"
+    send "$build" carol POST "/api/v1/issues/$key/comments" "$(jq -cn --arg c "$(recalled "$build" "$project comment")" --arg p "$project" \
+      '{body: ("A reply, naming dispatch://" + $p + "/artifact/playbook-md."), reply_to: $c,
+        mentions: [{target: "session:ses-pub-session"}], delivery: "btw"}')"
+    created "$build" "carol replies to the $project comment, mentioning ses-pub-session"
+    remember "$build" "$project comment reply" "$(jq -r .id "$work/body")"
+    settle "$build" "$project" "comments:comment reply"
+    send "$build" shared POST "/api/v1/issues/$key/comments" "$(with_actor shared \
+      '{"body":"For the PUB session.","mentions":[{"target":"session:ses-pub-session"}],"delivery":"btw"}')"
+    created "$build" "the shared token comments on $key, mentioning ses-pub-session"
+    remember "$build" "$project mention" "$(jq -r .id "$work/body")"
+    settle "$build" "$project" "comments:mention"
+    send "$build" alice POST "/api/v1/issues/$key/messages" "$(jq -cn --arg m "$(recalled "$build" "$project message")" \
+      '{body: "A reply to carol, for the PUB session.", in_reply_to: $m, target: "session:ses-pub-session", delivery: "btw"}')"
+    created "$build" "alice replies to the $project message, to ses-pub-session"
+    remember "$build" "$project message reply" "$(jq -r .id "$work/body")"
+    settle "$build" "$project" "messages:message reply"
+    send "$build" carol POST "/api/v1/issues/$key/messages" '{"body":"For the PUB session.","target":"session:ses-pub-session","delivery":"btw"}'
+    created "$build" "carol sends ses-pub-session a message on $key"
+    remember "$build" "$project targeted" "$(jq -r .id "$work/body")"
+    settle "$build" "$project" "messages:targeted"
+    # A question written as a block of an issue's spec is one of its open questions (decisions),
+    # beside each section of its decisions document. It is written into the spec the issue opens
+    # with: an edit of a spec appends artifact.human_edited once the spec has been quiet for a
+    # window, in each build's own time, so a later write could take its event id at one build only.
+    send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" \
+      '{project: $p, title: "An issue with a question",
+        spec: "# Spec\n\n:::ask{#spec_done urgency=\"med\" multiple=\"false\"}\nIs the spec done?\n\n- Yes: It is.\n- No: Not yet.\n:::\n"}')"
+    created "$build" "carol opens $project-4 with a question in its spec"
+    remember "$build" "$project-4 spec" "$(jq -r .primary_artifact_id "$work/body")"
+    until_true 60 "the $build build to open the ask $project-4's spec writes" spec_ask_opened "$build" "$project-4"
+    remember "$build" "$project spec ask" "$spec_ask"
+    send "$build" carol GET "$(resolve "$build" "/api/v1/artifacts/{$project-4 spec}/blocks")"
+    expect_status 200 "$build: carol reads the blocks of $project-4's spec"
+    index=0
+    while IFS= read -r block; do
+      grep -q -P "\t$block\$" "$work/ids-$build.tsv" && continue
+      index=$((index + 1))
+      remember "$build" "$project-4 block $index" "$block"
+    done < <(jq -r '.[].id' "$work/body")
+    # The section names the question and its block, as decisions_test.go's decisions do, so it
+    # holds an ask and a link to a block of the spec.
+    send "$build" carol POST "/api/v1/issues/$project-4/artifacts" "$(jq -cn --arg p "$project" --arg a "$spec_ask" \
+      '{name: "decisions.md", content: ("# Decisions\n\n## The way\n\nWe go this way. Decided in dispatch://" + $p + "-4/ask/" + $a
+        + ". Shapes dispatch://" + $p + "-4/spec#b-spec%5Fdone.\n")}')"
+    created "$build" "carol writes $project-4's decisions"
+    remember "$build" "$project decisions" "$(jq -r .artifact.id "$work/body")"
+    until_true 60 "the $build build to link $project-4's decision" decisions_linked "$build" "$project-4"
+    # The decision's text_sha256 is the sum of its text as stored, which names this build's own
+    # ask id, so it is remembered as the ids are (decisions_linked read the decisions last).
+    remember "$build" "$project decision sum" "$(jq -r '.decisions[0].text_sha256' "$work/body")"
+    send "$build" carol GET "$(resolve "$build" "/api/v1/artifacts/{$project decisions}/blocks")"
+    expect_status 200 "$build: carol reads the blocks of $project-4's decisions"
+    index=0
+    while IFS= read -r block; do
+      index=$((index + 1))
+      remember "$build" "$project decisions block $index" "$block"
+    done < <(jq -r '.[].id' "$work/body")
+    # A parent above the first issue, so an event of it names its ancestors.
+    send "$build" carol POST /api/v1/issues "$(jq -cn --arg p "$project" --arg k "$key" '{project: $p, title: ("A parent of " + $k)}')"
+    created "$build" "carol opens $project-5"
+    remember "$build" "$project-5 spec" "$(jq -r .primary_artifact_id "$work/body")"
+    send "$build" carol PATCH "/api/v1/issues/$key" "$(jq -cn --arg p "$project" '{parent: ($p + "-5")}')"
+    created "$build" "carol puts $key under $project-5"
+  done
+  send "$build" carol POST /api/v1/broadcasts '{"body":"A broadcast.","delivery":"btw","session_ids":["ses-pub-session"]}'
+  created "$build" "carol broadcasts to ses-pub-session"
+  remember "$build" broadcast "$(jq -r .id "$work/body")"
+  # Each recipient's copy is a message of its own, with an id the answer names.
+  index=0
+  while IFS= read -r block; do
+    grep -q -P "\t$block\$" "$work/ids-$build.tsv" && continue
+    index=$((index + 1))
+    remember "$build" "broadcast copy $index" "$block"
+  done < <(jq -r '.. | strings | select(test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$work/body")
+  remember_envelopes "$build"
+}
+
 begin seed
 seed base
 seed head
+seed_lists base
+seed_lists head
 if [ "$control" = private-pub ]; then
   psql "$head_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PUB'" >/dev/null ||
     fail "the control could not make PUB private in this build's database"
@@ -241,7 +464,12 @@ note "both builds hold PUB-1 and PRIV-1 with a comment, an ask, a message and tw
 pass
 
 # The fixed list, read as every caller. {LABEL} is the id the build's seed recorded under LABEL,
-# so each build is asked for its own object; the route is named as written here.
+# so each build is asked for its own object; the route is named as written here. The repository
+# mappings (GET /api/v1/settings/repo-projects) are not on it: a later change removes their routes,
+# and a repository belongs to the projects whose issues name it. The third search writes a phrase,
+# so its answer's query.operators holds a row. It names no OR: in a run with `"first paragraph" OR
+# remark`, PRIV-1's comment and its spec were answered in one order at one build and in the other
+# at the other, every caller alike.
 readonly reads=(
   /auth/whoami
   /api/v1/whoami
@@ -249,7 +477,6 @@ readonly reads=(
   /api/v1/users
   /api/v1/me/agent-tokens
   /api/v1/settings/project-default-assignees
-  /api/v1/settings/repo-projects
   /api/v1/inbox
   /api/v1/me/answers
   /api/v1/me/replies
@@ -257,6 +484,7 @@ readonly reads=(
   /api/v1/events/log
   "/api/v1/search?q=paragraph"
   "/api/v1/search?q=remark"
+  "/api/v1/search?q=%22first%20paragraph%22"
   /api/v1/agents
   /api/v1/broadcasts
   /api/v1/priorities
@@ -280,11 +508,14 @@ readonly project_reads=(
   "/api/v1/issues/{P}-1/collaborators"
   "/api/v1/issues/{P}-1/subscribers"
   "/api/v1/issues/{P}-1/references"
-  "/api/v1/issues/{P}-1/decisions"
+  "/api/v1/issues/{P}-4/decisions"
   "/api/v1/references?to=dispatch://{P}-1"
   "/api/v1/comments/{{P} comment}"
+  "/api/v1/comments/{{P} mention}"
   "/api/v1/asks/{{P} ask}"
+  "/api/v1/asks/{{P} choice}"
   "/api/v1/messages/{{P} message}"
+  "/api/v1/messages/{{P} targeted}"
   "/api/v1/artifacts/{{P} spec}"
   "/api/v1/artifacts/{{P} spec}/blocks"
   "/api/v1/artifacts/{{P} notes}"
@@ -311,6 +542,22 @@ keep_headers() {
     grep -v -E "$masked_headers" | sort >"$work/answers/$1.headers" || true
 }
 
+# record_lists PATH writes, for every list in this build's last answer to PATH (each JSON array,
+# the answer itself included), one `ROUTE<tab>WHERE<tab>LENGTH` line to $work/lists.tsv. ROUTE is
+# PATH's template: each seeded object's label ({PUB comment}), issue key (PUB-1), project key and
+# person's login is written {}, and the query is dropped, so a list is one list of its route
+# whichever object the route was read for: the mention's deliveries fill the comments route's
+# .comment.deliveries, which the seed's own comment, sent to no one, leaves empty. WHERE names the
+# list by its members with `[]` for each row of a list above it, as `.[].roles`. An answer that is
+# no JSON holds no list. The lists check reads the file.
+record_lists() {
+  local route
+  route=$(sed -E 's/\?.*//; s/\{[^}]*\}/{}/g; s#/(PUB|PRIV)-[0-9]+#/{}#g; s#/projects/(PUB|PRIV)(/|$)#/projects/{}\2#; s#/people/[^/]+/#/people/{}/#' <<<"$1")
+  jq -r --arg route "$route" 'path(.. | arrays) as $at
+    | [$route, ($at | map(if type == "number" then "[]" else "." + tostring end) | join("") | if . == "" then "." else . end),
+       (getpath($at) | length | tostring)] | @tsv' "$work/answers/head.raw" >>"$work/lists.tsv" 2>/dev/null || true
+}
+
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
 # made as CALLER, are the same status and, masked, the same bytes (same_answers), and the same
 # headers but the declared addition. The pair is one answer compared, so however many of these it
@@ -324,6 +571,7 @@ compare() {
     keep_headers "$build"
   done
   same_answers "$caller $method $path" base head
+  [ "$method" != GET ] || record_lists "$path"
   if ! grep -qx "$declared_header" "$work/answers/head.headers"; then
     headers_differ=1
     printf '%s %s %s: this build answered no "%s": %s\n' "$caller" "$method" "$path" "$declared_header" \
@@ -362,10 +610,13 @@ event_log_reaches() {
 
 # spec_blocks_windowed BUILD PROJECT: every block of PROJECT's spec on BUILD, as carol reads it, is
 # in a window of the meaning index: its embedding reads other than "none", which is a block no
-# window covers yet (refs.BlockEmbeddingStates). With no embedder, "pending" is where it stays.
+# window covers yet (refs.BlockEmbeddingStates). With no embedder, "pending" is where it stays. A
+# block inside another one, as the question of the spec's ask block is, is indexed as a part of
+# that block and in no window of its own, so it reads "none" at both builds and is not waited on.
 spec_blocks_windowed() {
   send "$1" carol GET "$(resolve "$1" "/api/v1/artifacts/{$2 spec}/blocks")"
-  [ "$status" = 200 ] && jq -e 'length > 0 and all(.[]; .embedding != "none")' "$work/body" >/dev/null
+  [ "$status" = 200 ] && jq -e 'length > 0 and (. as $all | all(.[]; . as $b | .embedding != "none"
+    or any($all[]; .id != $b.id and .from <= $b.from and .to >= $b.to)))' "$work/body" >/dev/null
 }
 
 begin reads
@@ -377,15 +628,16 @@ begin reads
 # behind the write, in each build's own time: two runs in five read `"embedding":"pending"` at the
 # merge base where this build still read `"none"`. So each spec is read only once every one of its
 # blocks is in a window on that build. A build that never writes them fails the wait, naming it.
+# The seed settled every delivery before it wrote on, so the newest event is read after them.
 for build in base head; do
+  for project in PUB PRIV; do
+    until_true 120 "the $build build to window every block of $project-1's spec" spec_blocks_windowed "$build" "$project"
+  done
   url_var=${build}_database_url
   newest=$(psql "${!url_var}" -X -tAc 'select coalesce(max(id), 0) from events') ||
     fail "$build: could not read the newest event of its database"
   [ "$newest" -gt 0 ] || fail "$build: its database holds no event after the seed"
   until_true 120 "the $build build's event log to reach its newest event, $newest" event_log_reaches "$build" "$newest"
-  for project in PUB PRIV; do
-    until_true 120 "the $build build to window every block of $project-1's spec" spec_blocks_windowed "$build" "$project"
-  done
 done
 for caller in "${callers[@]}"; do
   for path in "${reads[@]}"; do
@@ -402,4 +654,57 @@ no_difference
 [ "$compared" -gt 0 ] || fail "no answer was compared: the fixed list or the callers held none"
 note "$compared answers compared, each the same status and the same masked bytes at both builds;" \
   "by this build's status: $(statuses)"
+pass
+
+# A list that is empty in every answer compares no row, so a field this build added to its rows
+# would pass unseen: on 2026-11-19 a `projects` member on every agents row passed while the
+# listener listed no session. So every list of every answer read above, by route and by where in
+# the answer it stands, must hold a row in at least one caller's answer, or be named in
+# unfillable_lists with why no seed can fill it. Each key is `ROUTE<tab>WHERE`, each half a shell
+# pattern, in which a list's `[]` is written `\[\]`. A list a key names that holds a row fails too,
+# and so does a key that names no list read, so the table cannot keep a reason that stopped being
+# true.
+declare -A unfillable_lists=(
+  ["/api/v1/inbox	\[\].thread.answers"]="the Inbox lists open asks alone, and an answer closes its ask"
+  ["/api/v1/*	\[\].payload.deliveries"]="a comment's or message's event carries it as it was written, before any delivery attempt exists: comment_create.go writes its deliveries as [], and createStoredMessage publishes its event before the send"
+  ["/api/v1/priorities	.work_under_no_priority.issues\[\].advances"]="the first fault's rows advance no live priority, so their advances is the empty list a zero advancesScan answers (priority_queries.go, priorityFaultRow.targets)"
+  ["*	*components.ids"]="a component id must name a component of its project's architecture model, which is read from GitHub, and this run starts no GitHub"
+  ["*	*components.unknown"]="a component the model does not hold is refused at the write (400 COMPONENTS_INPUT), so an issue names none"
+)
+# unfillable KEY-VAR ROUTE WHERE sets KEY-VAR to the unfillable_lists key whose patterns match
+# ROUTE and WHERE, and fails when none does.
+unfillable() {
+  local key
+  for key in "${!unfillable_lists[@]}"; do
+    # shellcheck disable=SC2053 # each half of the key is a pattern
+    if [[ "$2" == ${key%%	*} && "$3" == ${key#*	} ]]; then
+      printf -v "$1" '%s' "$key"
+      return 0
+    fi
+  done
+  return 1
+}
+begin lists
+[ -s "$work/lists.tsv" ] || fail "no answer held a list, so the reads above compared no row"
+awk -F '\t' '{ key = $1 "\t" $2; if (!(key in most) || $3 + 0 > most[key]) most[key] = $3 + 0 }
+  END { for (key in most) print key "\t" most[key] }' "$work/lists.tsv" | sort >"$work/lists-most.tsv"
+empty='' stale='' matched_key=''
+declare -A key_matched=()
+while IFS=$'\t' read -r route where most; do
+  if unfillable matched_key "$route" "$where"; then
+    key_matched[$matched_key]=1
+    [ "$most" -eq 0 ] ||
+      stale+="$route at $where holds $most rows, though unfillable_lists says ${unfillable_lists[$matched_key]}"$'\n'
+  elif [ "$most" -eq 0 ]; then
+    empty+="$route at $where"$'\n'
+  fi
+done <"$work/lists-most.tsv"
+for key in "${!unfillable_lists[@]}"; do
+  [ -n "${key_matched[$key]+set}" ] ||
+    stale+="unfillable_lists names ${key/	/ at }, and no list read above is it"$'\n'
+done
+[ -z "$empty$stale" ] || fail "$(printf '%s' "$empty" | grep -c .) lists were empty in every caller's answer, so no row of theirs was compared:
+$empty${stale:+and unfillable_lists is wrong:
+$stale}"
+note "$(wc -l <"$work/lists-most.tsv") lists read, each holding a row in at least one caller's answer but those unfillable_lists names (${#unfillable_lists[@]} patterns)"
 pass

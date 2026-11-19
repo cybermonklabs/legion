@@ -12,8 +12,9 @@
 #         alice's token that lists PRIV, carol's token that lists no project, and the shared
 #         token. Each project holds an issue whose spec is a document with blocks, a comment, an
 #         ask, a message, an issue document, a project document, an agent session of its own
-#         that the fake Envoy lists, and a repository mapped to it; PRIV also holds ses-priv-worker,
-#         a session main's fake Envoy alone lists, recorded as having acted in PRIV.
+#         that the fake Envoy lists, and a repository its issue names as its own `repo`; PRIV
+#         also holds ses-priv-worker, a session main's fake Envoy alone lists, recorded as having
+#         acted in PRIV.
 #   twin  the same seed with PRIV never written: the same PUB, the same people, carol's token
 #         that lists no project, and alice's token, whose list names PRIV, a project the twin
 #         never holds.
@@ -27,6 +28,9 @@
 #               --private-by-sql, a route that refuses is stood in for by the store write it
 #               makes (`update projects set visibility = 'private'`), so every section below
 #               runs; the stand-in is written to what did not run, so such a run never passes.
+#               With --all-public, PRIV is left public and listed and confined alone run: every
+#               other section prints `not run: <section> (slice A3b, #t-a-36)`, the slice that
+#               makes a project private, and the run passes when those two do.
 #   listed      bob, carol and carol's PRIV token find each object of PRIV.
 #   confined    bob and carol's PRIV token find nothing of PUB, no person (once PRIV is private)
 #               and no agent outside PRIV, and no direct message that is not their own.
@@ -55,7 +59,7 @@
 # Usage, from packages/dispatch:
 #
 #   DATABASE_URL=<a loopback PostgreSQL this run may create databases on> \
-#     bash e2e/acceptance/project-access.sh [--private-by-sql]
+#     bash e2e/acceptance/project-access.sh [--private-by-sql | --all-public]
 #
 # It needs no harness: the run starts every process it reads, and reads DATABASE_URL only for the
 # server it names, on which it makes a database for each of its servers and drops it at the end.
@@ -92,12 +96,16 @@ timeout_hook=''
 . "$(dirname "$0")/access-lib.sh"
 
 private_by_sql=0
+all_public=0
 case "${1:-}" in
   '') ;;
   --private-by-sql) private_by_sql=1 ;;
-  *) fail "unknown argument '$1': this driver takes --private-by-sql alone" ;;
+  --all-public) all_public=1 ;;
+  *) fail "unknown argument '$1': this driver takes --private-by-sql or --all-public, alone" ;;
 esac
-[ $# -le 1 ] || fail "this driver takes --private-by-sql alone"
+[ $# -le 1 ] || fail "this driver takes --private-by-sql or --all-public, alone"
+# A section a run with every project public leaves out, named as --all-public prints it.
+not_run() { echo "not run: $1 (slice A3b, #t-a-36)"; }
 # two_builds_setup reads DATABASE_URL, drops every DISPATCH_*, ENVOY_*, NATS_* and PG* setting the
 # shell inherited, and arms two-builds' teardown, which access_cleanup below runs last.
 two_builds_setup 'project access e2e'
@@ -165,10 +173,12 @@ declare -A missing=(
   [group]=no-such-group
   [agent-token]=00000000-0000-4000-8000-000000000009
   [near-copy-check]=00000000-0000-4000-8000-00000000000a
-  # A name no mapping holds on the GitHub subject lane of PRIV's acme/priv.lane.walk: a mapping
-  # write answers a hidden project's mapping as it answers a neighbour on its lane. Both names
-  # hold a `.`, which the lane spells `_`, so the lane both answers name masks neither fill.
-  [mapped-repository]=priv_lane.walk
+  # A repository no issue of any project names, for a row whose body names an external reference
+  # (write_probes.go's probeMappedRepository). PRIV's is acme/priv-repo, PRIV-1's own.
+  [mapped-repository]=no-such-repo
+  # A step record's id no run holds (write_probes.go's probeStep); the issue the path names decides
+  # what is hidden, so PRIV's side names the same id.
+  [step]=00000000-0000-4000-8000-00000000000b
 )
 # The kinds no project owns: a row that names one reads or writes the same object for every
 # caller, so it has no object of PRIV to hide, and the walk names it rather than compares it.
@@ -217,7 +227,8 @@ priv_object() {
     person) printf '%s' "$bob" ;;
     repository-owner) printf acme ;;
     repository-name) printf priv-repo ;;
-    mapped-repository) printf priv.lane.walk ;;
+    mapped-repository) printf priv-repo ;;
+    step) printf 00000000-0000-4000-8000-00000000000b ;;
   esac
 }
 
@@ -248,9 +259,11 @@ for server in main twin; do
   FAKE_ENVOY_PORT='' start_process "envoy_$server" bun "$root/packages/dispatch/e2e/fake-envoy.ts"
 done
 await_reported fake_github github_port 'fake github listener on 127\.0\.0\.1:' "the fake GitHub"
-# The App is installed on both projects' repositories and on no other.
+# The App is installed on both projects' repositories and on no other. PRIV's holds the commit the
+# seed records PRIV-1's check result at: an issue whose own repository is known has its result's
+# commit read at GitHub (RESULT_COMMIT_UNKNOWN otherwise).
 curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$github_port/__fixture/repos" \
-  -d '{"acme/pub-repo":{"contents":"read","installation_id":71},"acme/priv-repo":{"contents":"read","installation_id":72}}' \
+  -d '{"acme/pub-repo":{"contents":"read","installation_id":71},"acme/priv-repo":{"contents":"read","installation_id":72,"commits":["1111111111111111111111111111111111111111"]}}' \
   >/dev/null || fail "the fake GitHub refused its repositories"
 agent_token=$(openssl rand -hex 24)
 signin_key=$(openssl rand -hex 32)
@@ -316,10 +329,11 @@ mark_restricted() {
     fail "$1: could not make $2 a restricted member"
 }
 
-# map_repository BUILD REPOSITORY PROJECT maps REPOSITORY to PROJECT, as carol at Settings.
-map_repository() {
-  send "$1" carol PUT "/api/v1/settings/repo-projects/$2" "$(jq -cn --arg p "$3" '{project: $p}')"
-  expect_status 200 "$1: carol maps $2 to $3"
+# give_repository BUILD ISSUE REPOSITORY sets ISSUE's own repository, as carol at the issue: a
+# repository belongs to the projects whose issues name it, and no mapping is written.
+give_repository() {
+  send "$1" carol PATCH "/api/v1/issues/$2" "$(jq -cn --arg r "$3" '{repo: $r}')"
+  expect_status 200 "$1: carol names $3 as the repository of $2"
 }
 
 begin seed
@@ -329,7 +343,7 @@ for server in main twin; do
   seed_people "$server"
   make_project "$server" PUB
   seed_objects "$server" PUB alice
-  map_repository "$server" acme/pub-repo PUB
+  give_repository "$server" PUB-1 acme/pub-repo
   mint_token "$server" carol carol-token
   send "$server" carol POST /api/v1/agents/ses-pub-session/messages \
     '{"body":"A direct message to the PUB session.","delivery":"btw"}'
@@ -375,8 +389,7 @@ for person in "$bob" "$carol"; do
   expect_status 200 "main: carol names $person on PRIV's list"
 done
 seed_objects main PRIV bob
-map_repository main acme/priv-repo PRIV
-map_repository main acme/priv.lane.walk PRIV
+give_repository main PRIV-1 acme/priv-repo
 send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
 # ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined). Only
@@ -469,37 +482,41 @@ readonly object_reads=(
   "/api/v1/artifacts/{{P} playbook}"
 )
 
-begin private
-# What an operator runs against the database on a deploy that carries private projects, before a
-# project can be made private: the fill of every event's session project, and the scrub of the
-# stored access events. Until each has written its marker row the switch answers 409
-# PRIVATE_PROJECTS_INCOMPLETE (cmd/dispatch README, "Filling the sessions' projects" and
-# "Scrubbing the access events"). Each reads DATABASE_URL alone.
-for command in backfill-session-projects scrub-access-events; do
-  env -i PATH="$PATH" HOME=/nonexistent TMPDIR="$work" DATABASE_URL="$main_database_url" \
-    "$work/bin/dispatch" "$command" >"$work/$command.out" 2>&1 ||
-    fail "main: envoy-dispatch $command failed: $(tail -n 5 "$work/$command.out")"
-  note "main: $(tail -n 1 "$work/$command.out")"
-done
-send main carol PATCH /api/v1/projects/PRIV/access '{"visibility":"private"}'
-if [ "$status" = 200 ]; then
-  priv_private=1
-  note "PRIV is private"
+priv_private=0
+if [ "$all_public" = 1 ]; then
+  not_run private
 else
-  priv_private=0
-  refusal="PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body")"
-  if [ "$private_by_sql" = 1 ]; then
-    psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
-      fail "main: the stand-in could not make PRIV private"
+  begin private
+  # What an operator runs against the database on a deploy that carries private projects, before a
+  # project can be made private: the fill of every event's session project, and the scrub of the
+  # stored access events. Until each has written its marker row the switch answers 409
+  # PRIVATE_PROJECTS_INCOMPLETE (cmd/dispatch README, "Filling the sessions' projects" and
+  # "Scrubbing the access events"). Each reads DATABASE_URL alone.
+  for command in backfill-session-projects scrub-access-events; do
+    env -i PATH="$PATH" HOME=/nonexistent TMPDIR="$work" DATABASE_URL="$main_database_url" \
+      "$work/bin/dispatch" "$command" >"$work/$command.out" 2>&1 ||
+      fail "main: envoy-dispatch $command failed: $(tail -n 5 "$work/$command.out")"
+    note "main: $(tail -n 1 "$work/$command.out")"
+  done
+  send main carol PATCH /api/v1/projects/PRIV/access '{"visibility":"private"}'
+  if [ "$status" = 200 ]; then
     priv_private=1
-    unrun "PRIV was made private by the store write, not the route: $refusal"
-    note "PRIV is private by the stand-in (--private-by-sql); the route answered HTTP $status"
+    note "PRIV is private"
   else
-    unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
-    note "PRIV is not private: HTTP $status"
+    refusal="PATCH /api/v1/projects/PRIV/access {visibility: private} answered HTTP $status $(head -c 300 "$work/body")"
+    if [ "$private_by_sql" = 1 ]; then
+      psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 -c "update projects set visibility = 'private' where key = 'PRIV'" >/dev/null ||
+        fail "main: the stand-in could not make PRIV private"
+      priv_private=1
+      unrun "PRIV was made private by the store write, not the route: $refusal"
+      note "PRIV is private by the stand-in (--private-by-sql); the route answered HTTP $status"
+    else
+      unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
+      note "PRIV is not private: HTTP $status"
+    fi
   fi
+  pass
 fi
-pass
 
 begin listed
 # Each listed caller reads each object of PRIV: 200, and the answer names the object.
@@ -961,8 +978,11 @@ if [ "$priv_private" = 1 ]; then
   send main carol GET /api/v1
   expect_status 200 "main: carol reads the route index"
   jq -c '.routes[]' "$work/body" >"$work/routes"
-  probes_read=0
-  if go -C "$root/packages/envoy" run ./internal/dispatch/api/cmd/routeprobes >"$work/probes.json" 2>"$work/probes.err"; then
+  probes_read=0 probes_status=0
+  # On a line of its own, so .github/scripts/ci_job_reads.py pins the go command to the whole line.
+  go -C "$root/packages/envoy" run ./internal/dispatch/api/cmd/routeprobes >"$work/probes.json" 2>"$work/probes.err" ||
+    probes_status=$?
+  if [ "$probes_status" = 0 ]; then
     probes_read=1
     walk_rows 'select(.method == "GET")'
     note "walked $walked GET rows that name an object and $lists lists, as each unseeing caller"
@@ -1087,6 +1107,10 @@ if [ "$priv_private" = 1 ]; then
     [ "$walked" -gt 0 ] || unrun "the write walk compared no write row that names an object: the route index carol read, or the Probes, held none"
   fi
   pass
+elif [ "$all_public" = 1 ]; then
+  for section in walk search sockets proxy writes; do
+    not_run "$section"
+  done
 fi
 
 begin verdict

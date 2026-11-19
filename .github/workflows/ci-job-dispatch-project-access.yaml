@@ -7,13 +7,16 @@ name: CI job dispatch-project-access
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The private-projects blob driver (verification v17's c-blob-unchanged), from packages/dispatch.
-# project-access-blob.sh builds the merge base beside this tree through
+# The private-projects acceptance drivers, from packages/dispatch. project-access.sh --all-public
+# (verification's c-a-private-reads) seeds PUB and PRIV, every project public, and holds bob,
+# carol and carol's PRIV token to finding each object of PRIV and nothing of PUB, no agent outside
+# PRIV and no direct message that is not their own; the sections that need a private project are
+# printed as not run, since the switch answers 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus
+# writer it needs is in the tree, and they join this job with that writer. project-access-blob.sh
+# (c-blob-unchanged) builds the merge base beside this tree through
 # scripts/e2e/lib/two-builds.sh, seeds each alike on a database of its own with every project
-# public, and fails on any answer a caller reads differently at the two. project-access.sh
-# (c-private-unseen) is not run here: it makes a project private through the route, which answers
-# 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus writer the switch needs is in the tree, and its
-# stand-in (--private-by-sql) fails the run on purpose, so it joins this job with that writer.
+# public, and fails on any answer a caller reads differently at the two, and on any list it reads
+# that holds no row.
 # The merge base is the commit this run tests the change against: the merge group's base, else
 # the first parent of the commit checked out, which on a pull request is the merge commit's base
 # and on a dispatched run the commit before main's tip. two-builds.sh takes its tree with
@@ -81,6 +84,9 @@ jobs:
         run: |
           psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_project_access'
           psql "$DATABASE_URL" -c 'create extension vector'
+      - name: Read PRIV's objects as its listed callers, every project public
+        run: bash e2e/acceptance/project-access.sh --all-public
+        working-directory: packages/dispatch
       - name: Compare what every caller reads at the merge base and at this tree
         run: |
           base=$(jq -r '.merge_group.base_sha // empty' "$GITHUB_EVENT_PATH")

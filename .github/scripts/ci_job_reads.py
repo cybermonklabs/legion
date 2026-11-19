@@ -1969,9 +1969,15 @@ GUARD_SCRIPT = ("go test -count=1 -run "
                 f"{GUARD_PACKAGE}")
 
 # The private-projects acceptance job, the step that runs c-blob-unchanged's driver, and the build
-# of this tree that the driver's two-build harness makes (its whole line, so the pin is exact).
+# of this tree that the driver's two-build harness makes (its whole line, so the pin is exact); the
+# step that runs project-access.sh --all-public, and the two go commands that driver holds.
 PROJECT_ACCESS = "dispatch-project-access"
 PROJECT_ACCESS_BLOB_STEP = "Compare what every caller reads at the merge base and at this tree"
+PROJECT_ACCESS_STEP = "Read PRIV's objects as its listed callers, every project public"
+PROJECT_ACCESS_DRIVER = "packages/dispatch/e2e/acceptance/project-access.sh"
+PROJECT_ACCESS_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/" ./cmd/dispatch ./internal/testnats/cmd/natsd ||'
+PROJECT_ACCESS_PROBES = ('go -C "$root/packages/envoy" run ./internal/dispatch/api/cmd/routeprobes '
+                         '>"$work/probes.json" 2>"$work/probes.err" ||')
 TWO_BUILDS = "scripts/e2e/lib/two-builds.sh"
 TWO_BUILDS_HEAD_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/dispatch-head" ./cmd/dispatch ||'
 
@@ -3221,17 +3227,25 @@ GATES = [
     gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
          exact=[two_builds_go_step(), two_builds_same_step()], reads=two_builds_go_reads()),
 
-    # The private-projects blob driver. The step runs project-access-blob.sh, which sources
-    # scripts/e2e/lib/two-builds.sh, whose head build compiles this tree's ./cmd/dispatch; its base
-    # build compiles the merge base's tree, taken out of git history, so it reads no file of this
-    # one.
+    # The private-projects acceptance drivers. The blob step runs project-access-blob.sh, which
+    # sources scripts/e2e/lib/two-builds.sh, whose head build compiles this tree's ./cmd/dispatch;
+    # its base build compiles the merge base's tree, taken out of git history, so it reads no file
+    # of this one. The --all-public step runs project-access.sh, which builds this tree's
+    # ./cmd/dispatch and NATS, and holds the run of the route Probes its walk reads.
     gate("dispatch_project_access", PROJECT_ACCESS, runs=[
         script_run(TWO_BUILDS, TWO_BUILDS_HEAD_BUILD, f"run by {at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)} "
                    "through packages/dispatch/e2e/acceptance/project-access-blob.sh's two_builds_build",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
+        script_run(PROJECT_ACCESS_DRIVER, PROJECT_ACCESS_BUILD, f"run by {at(PROJECT_ACCESS, PROJECT_ACCESS_STEP)}",
+                   ENVOY, ["./cmd/dispatch", "./internal/testnats/cmd/natsd"], mode="build"),
+        script_run(PROJECT_ACCESS_DRIVER, PROJECT_ACCESS_PROBES, f"run by {at(PROJECT_ACCESS, PROJECT_ACCESS_STEP)}'s walk",
+                   ENVOY, ["./internal/dispatch/api/cmd/routeprobes"], mode="build"),
         ceiling_run(PROJECT_ACCESS),
     ], reads=reads(
         ("packages/dispatch/e2e/acceptance/project-access-blob.sh", at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)),
+        (PROJECT_ACCESS_DRIVER, at(PROJECT_ACCESS, PROJECT_ACCESS_STEP)),
+        ("packages/dispatch/e2e/fake-github.ts", f"{PROJECT_ACCESS_DRIVER}'s services section runs it with bun"),
+        ("packages/dispatch/e2e/acceptance/socket-access.ts", f"{PROJECT_ACCESS_DRIVER}'s sockets section runs it with bun"),
         ("packages/dispatch/e2e/fake-envoy.ts", f"{TWO_BUILDS}'s two_builds_fake_envoy runs it with bun"),
         ("packages/dispatch/e2e/harness-ports.ts", "packages/dispatch/e2e/fake-envoy.ts:3 imports it"),
         ("packages/dispatch/e2e/acceptance/access-lib.sh", "packages/dispatch/e2e/acceptance/project-access-blob.sh sources it"),
