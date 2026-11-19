@@ -15,7 +15,7 @@ import (
 )
 
 // takeoverUnrecordedLine and takeoverUnrecordedSeries are what an operator reads of a takeover
-// claim that went on with no record (takeoverBeforeTry).
+// claim that went on with no record (takeoverTries.landed).
 const (
 	takeoverUnrecordedLine   = "listener role claim goes on with no takeover record: the stream is full, so the previous holder's unread role messages are not copied for the role's next holder"
 	takeoverUnrecordedSeries = "envoy_role_takeover_unrecorded_total"
@@ -122,6 +122,49 @@ func TestATakeoverClaimLandsWhenTheStreamIsFullAndSaysSo(t *testing.T) {
 		}
 		if len(records) != 0 {
 			t.Fatalf("the stream holds %d takeover records of %s, want none: the stream refused the record", len(records), role)
+		}
+	})
+
+	t.Run("a takeover claim on the full stream that never lands logs nothing and counts nothing", func(t *testing.T) {
+		const role = "full-stream-never-lands"
+		if recorder := claim(previous, role); recorder.Code != http.StatusOK {
+			t.Fatalf("the previous holder's claim: %d %s", recorder.Code, recorder.Body.String())
+		}
+		bucket, err := client.JS().KeyValue(bus.RoleClaimBucket)
+		if err != nil {
+			t.Fatalf("open the role bucket: %v", err)
+		}
+		// The previous holder renews its claim before every try, so every try's write meets a
+		// conflict, and the request ends after the third: the claim never replaces its holder,
+		// although each try's record met the full stream.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tries := 0
+		setTakeoverFaults(t, takeoverFaultSet{beforeClaimTry: func(r, _ string, _ int) error {
+			if r != role {
+				return nil
+			}
+			tries++
+			if err := crashRenew(bucket, role); err != nil {
+				t.Errorf("the previous holder's renewal: %v", err)
+			}
+			if tries == 3 {
+				cancel()
+			}
+			return nil
+		}})
+		before := unrecorded()
+		recorder := httptest.NewRecorder()
+		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+			strings.NewReader(`{"session_id":"`+claimant+`","role":"`+role+`"}`)).WithContext(ctx))
+		if recorder.Code == http.StatusOK || holder(role) != previous || tries != 3 {
+			t.Fatalf("the contended claim did not run as the row needs: %d %s, holder %q, %d tries", recorder.Code, recorder.Body.String(), holder(role), tries)
+		}
+		if lines := linesIn(rig.harness.logs.String(), takeoverUnrecordedLine, map[string]any{"role": role}); len(lines) != 0 {
+			t.Fatalf("found %d lines %q for a claim that took no role, want none", len(lines), takeoverUnrecordedLine)
+		}
+		if got := unrecorded() - before; got != 0 {
+			t.Fatalf("%s rose by %d for a claim that took no role, want 0", takeoverUnrecordedSeries, got)
 		}
 	})
 }

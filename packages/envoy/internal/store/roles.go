@@ -852,6 +852,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			if rollbackErr := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); rollbackErr != nil {
 				return Interest{}, errors.Join(err, holderErr, rollbackErr)
 			}
+			r.restoreClaimTopic(cleanup, req, roleTopic)
 		}
 		if holderErr != nil {
 			return Interest{}, errors.Join(err, holderErr)
@@ -873,6 +874,21 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	}
 	oldSessionID = oldClaim.HolderSessionID
 	r.setOwnRoleHolder(req.Role, req.SessionID, revision, epoch)
+	// A claim of another process of this session that wrote nothing can have taken the topic back
+	// off the record between this claim's merge of it and its write: its rollback decides on a read
+	// of the claim made before that write landed (restoreClaimTopic). The topic is merged again,
+	// which writes nothing while the record carries it; a merge that fails is logged and changes
+	// nothing the claim answers, since the claim record, which every role route reads, stands.
+	ensureCtx, cancelEnsure := context.WithTimeout(context.WithoutCancel(ctx), claimCleanupWindow)
+	if ensured, ensureErr := r.UpsertWithin(ensureCtx, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic}); ensureErr == nil {
+		item = ensured
+	} else {
+		r.logger().Warn("registry role claim could not confirm its role topic on the claimant's interest record",
+			slog.String("role", req.Role),
+			slog.String("session_id", req.SessionID),
+			slog.String("error", ensureErr.Error()))
+	}
+	cancelEnsure()
 	if oldSessionID != "" && oldSessionID != req.SessionID {
 		err := r.removeInterestTopics(ctx, oldSessionID, []string{roleTopic})
 		switch {
@@ -923,6 +939,28 @@ func (r *Registry) rollBackClaimTopic(ctx context.Context, req RoleClaimRequest,
 	}
 	if err := r.removeInterestTopics(cleanup, req.SessionID, []string{roleTopic}); err != nil {
 		r.logger().Warn("registry role claim that wrote nothing left its claimant's role topic",
+			slog.String("role", req.Role),
+			slog.String("session_id", req.SessionID),
+			slog.String("error", err.Error()))
+		return
+	}
+	r.restoreClaimTopic(cleanup, req, roleTopic)
+}
+
+// restoreClaimTopic merges the role's lane topic back into the claimant's interest record after a
+// rollback removed it, when the claim record now names the claimant's session. One interest record
+// serves every process of a session, and the rollback decided on a read of the claim made before
+// its removal: another process of the same session can have claimed the role in between, and that
+// claim's record must keep the topic of the role it holds. A claim of that process that lands after
+// this read merges the topic itself once its write lands (SetRoleWithPrevious), so between the two
+// the topic is back whichever lands last. A read or a merge that fails is logged at WARN.
+func (r *Registry) restoreClaimTopic(ctx context.Context, req RoleClaimRequest, roleTopic string) {
+	current, err := r.RoleClaim(ctx, req.Role)
+	if err != nil || current.HolderSessionID != req.SessionID {
+		return
+	}
+	if _, err := r.UpsertWithin(ctx, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic}); err != nil {
+		r.logger().Warn("registry role claim rollback could not restore the role topic another process of its session holds",
 			slog.String("role", req.Role),
 			slog.String("session_id", req.SessionID),
 			slog.String("error", err.Error()))

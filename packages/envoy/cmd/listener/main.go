@@ -1493,7 +1493,7 @@ func main() {
 		roleDeadLetters:     roleDeadLetters,
 		roleKeptUndecodable: roleKeptUndecodable,
 		// A takeover claim that went on with no record because the stream was full
-		// (takeoverBeforeTry).
+		// (takeoverTries.landed).
 		roleTakeoverUnrecorded: roleTakeoverUnrecorded,
 		publishDeadLetter:      client.PublishStoredAs,
 

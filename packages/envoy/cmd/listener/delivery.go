@@ -95,7 +95,7 @@ type listenerDeliveryHandlerConfig struct {
 	roleKeptUndecodable *metrics.Counter
 	// roleTakeoverUnrecorded counts the role claims that took a role from another session with no
 	// takeover record, because the stream refused the record for want of room
-	// (envoy_role_takeover_unrecorded_total, takeoverBeforeTry): each is a takeover whose previous
+	// (envoy_role_takeover_unrecorded_total, takeoverTries.landed): each is a takeover whose previous
 	// holder's unread role messages are not copied for the role's next holder. nil in a test that
 	// builds a config without it, which counts nothing.
 	roleTakeoverUnrecorded *metrics.Counter

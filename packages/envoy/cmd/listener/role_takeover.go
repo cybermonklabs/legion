@@ -111,42 +111,71 @@ func faults() *takeoverFaultSet {
 	return &takeoverFaultSet{}
 }
 
-// takeoverBeforeTry is the claim route's hook on each try of a claim's write
-// (store.RoleClaimRequest.BeforeTry): when the claim record that try read names a holder other than
-// the claimant, it writes a takeover record for that holder first, so a claim that lands has its
-// record. A record the stream refused because it holds its byte limit (bus.ErrStreamFull) lets the
-// claim go on with no record, with one Error line naming the role, the previous holder and the
-// claimant, counted on envoy_role_takeover_unrecorded_total: a full stream refuses every write
-// until it has room, the copies of the previous holder's messages included, so refusing the claim
-// too would hold the role with a holder that may have stopped for as long as the stream stays
-// full. Every other record that did not store ends the claim with nothing written, which the claim
-// route answers 503, and its client claims again.
-func takeoverBeforeTry(cfg listenerDeliveryHandlerConfig, claimant, role string) func(context.Context, store.RoleClaim) error {
-	try := 0
-	return func(ctx context.Context, read store.RoleClaim) error {
-		previous := read.HolderSessionID
-		defer func() { try++ }()
-		if previous == "" || previous == claimant {
-			return nil
-		}
-		if err := publishTakeover(ctx, cfg, role, previous); err != nil {
-			if !errors.Is(err, bus.ErrStreamFull) {
-				return err
-			}
-			if cfg.roleTakeoverUnrecorded != nil {
-				cfg.roleTakeoverUnrecorded.Inc()
-			}
-			cfg.logger.Error("listener role claim goes on with no takeover record: the stream is full, so the previous holder's unread role messages are not copied for the role's next holder",
-				slog.String("role", role),
-				slog.String("previous_session_id", previous),
-				slog.String("session_id", claimant),
-				slog.String("error", err.Error()))
-		}
-		if hook := faults().beforeClaimTry; hook != nil {
-			return hook(role, previous, try)
-		}
+// takeoverTries is the claim route's hook on each try of one claim's write
+// (store.RoleClaimRequest.BeforeTry, beforeTry) and what it learned, for the route to report once
+// the claim lands (landed).
+type takeoverTries struct {
+	cfg      listenerDeliveryHandlerConfig
+	claimant string
+	role     string
+	try      int
+	// unrecorded is the previous holder named by the last try's read when the stream refused that
+	// try's takeover record because it holds its byte limit, and refused the error it gave; empty
+	// when the last try wrote its record or read no other holder.
+	unrecorded    string
+	unrecordedErr error
+}
+
+// newTakeoverTries is the hook state of one claim of role by claimant.
+func newTakeoverTries(cfg listenerDeliveryHandlerConfig, claimant, role string) *takeoverTries {
+	return &takeoverTries{cfg: cfg, claimant: claimant, role: role}
+}
+
+// beforeTry runs before each try of the claim's write: when the claim record that try read names a
+// holder other than the claimant, it writes a takeover record for that holder first, so a claim
+// that lands has its record. A record the stream refused because it holds its byte limit
+// (bus.ErrStreamFull) lets the try go on with no record, and the claim, if this try is the one
+// that lands, is reported then (landed): a full stream refuses every write until it has room, the
+// copies of the previous holder's messages included, so refusing the claim too would hold the role
+// with a holder that may have stopped for as long as the stream stays full. Every other record that
+// did not store ends the claim with nothing written, which the claim route answers 503, and its
+// client claims again.
+func (t *takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
+	previous := read.HolderSessionID
+	defer func() { t.try++ }()
+	t.unrecorded, t.unrecordedErr = "", nil
+	if previous == "" || previous == t.claimant {
 		return nil
 	}
+	if err := publishTakeover(ctx, t.cfg, t.role, previous); err != nil {
+		if !errors.Is(err, bus.ErrStreamFull) {
+			return err
+		}
+		t.unrecorded, t.unrecordedErr = previous, err
+	}
+	if hook := faults().beforeClaimTry; hook != nil {
+		return hook(t.role, previous, t.try)
+	}
+	return nil
+}
+
+// landed reports a claim that landed on a try whose takeover record the full stream refused: one
+// Error line naming the role, the previous holder and the claimant, counted on
+// envoy_role_takeover_unrecorded_total, since that previous holder's unread role messages are not
+// copied for the role's next holder. A try that met a conflict and a claim that did not land report
+// nothing, so each count is one takeover that happened.
+func (t *takeoverTries) landed() {
+	if t.unrecorded == "" {
+		return
+	}
+	if t.cfg.roleTakeoverUnrecorded != nil {
+		t.cfg.roleTakeoverUnrecorded.Inc()
+	}
+	t.cfg.logger.Error("listener role claim goes on with no takeover record: the stream is full, so the previous holder's unread role messages are not copied for the role's next holder",
+		slog.String("role", t.role),
+		slog.String("previous_session_id", t.unrecorded),
+		slog.String("session_id", t.claimant),
+		slog.String("error", t.unrecordedErr.Error()))
 }
 
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
@@ -247,13 +276,18 @@ const takeoverRecordRefresh = time.Hour
 // runs.
 //
 // It first reads the role's claim (readRoleClaimHolder). While the claim names the record's
-// previous holder - its claim did not land, or the role went back to it - the pass copies nothing
-// and leaves the record's sequence where it is: that holder receives its role messages from its own
-// session consumer (sessionRelays.takeOverFrame delivers a role message to the session the claim
-// names), and a copy would go back to the subject it was taken from, as a new frame the next pass
-// would copy again. Such a pass writes the record again only once its last write is
-// takeoverRecordRefresh old, and marks it finished once the record's life has passed. A claim read
-// that failed ends the pass with nothing written.
+// previous holder - its claim did not land yet or at all, or the role went back to it - the pass
+// copies nothing: that holder receives its role messages from its own session consumer
+// (sessionRelays.takeOverFrame delivers a role message to the session the claim names), and a copy
+// would go back to the subject it was taken from, as a new frame the next pass would copy again.
+// The first such pass of a record that had found where to start sets it back to finding it again
+// (Next 0, FloorMissed clear): the messages that holder reads while it holds the role are behind
+// its floor when it loses the role again, so a later pass starts from that floor, as a new
+// takeover's record does, and does not copy them from the sequence this record had reached. A
+// record that never moved keeps its state, since a claim of its own still pending lands with
+// nothing read yet. Such a pass writes the record again only when it sets it back, once its last
+// write is takeoverRecordRefresh old, or to mark it finished once the record's life has passed. A
+// claim read that failed ends the pass with nothing written.
 //
 // Otherwise, on the record's first pass it finds where to start (takeoverStart): the floor of the
 // previous holder's session consumer, else the floor the listener recorded when it deleted that
@@ -286,6 +320,10 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 	if holder == record.Previous {
 		if lifeOver {
 			record.Finished = true
+			return written(record, true, nil)
+		}
+		if record.Next != 0 || record.FloorMissed {
+			record.Next, record.FloorMissed = 0, false
 			return written(record, true, nil)
 		}
 		if started.Sub(stored.Written) >= takeoverRecordRefresh {
