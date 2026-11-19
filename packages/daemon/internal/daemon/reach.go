@@ -208,12 +208,20 @@ func (k *reachKeeper) recordOf(c supervise.Claim) supervise.Reach {
 // recorded counts from the claim's generation as c holds it. That launch can land at a later
 // generation than that first read: its own loop retries a refused start, a store that did not
 // answer has it tried again at the probe interval, or a daemon that ended mid-start spawns the
-// claim once more. So the generation the launch records later is taken in too, while the episode
-// has told no exit, and no launch of the relaunch's own is told as one.
+// claim once more. Each try moves the claim's generation before any of them records it, so while
+// the relaunch's launch has recorded no generation every launch of the claim is a try of that
+// launch, and its generation is taken in; once the launch records one, that one is. Either is
+// taken in while the episode has told no exit, and no launch of the relaunch's own is told as one.
 func relaunchTakenIn(c supervise.Claim, rec supervise.Reach) supervise.Reach {
 	if !c.LastRelaunch.After(rec.RelaunchedAt) {
-		if c.LastRelaunch.Equal(rec.RelaunchedAt) && rec.Relaunched && !rec.ExitTold && c.LastRelaunchGeneration > rec.Generation {
-			rec.Generation = c.LastRelaunchGeneration
+		if c.LastRelaunch.Equal(rec.RelaunchedAt) && rec.Relaunched && !rec.ExitTold {
+			launched := c.LastRelaunchGeneration
+			if launched == 0 {
+				launched = c.Generation
+			}
+			if launched > rec.Generation {
+				rec.Generation = launched
+			}
 		}
 		return rec
 	}

@@ -792,7 +792,8 @@ func TestEachPerClaimNoticeOfAnUnreachableClaimIsSentOnce(t *testing.T) {
 // launch then lands at a later generation than that first read. Three paths make it so: the
 // launch's own loop retries a refused start; the launch is tried again at the probe interval after
 // a store that did not answer; and a daemon that ends mid-start comes back with the claim
-// launch_uncertain and spawns it once more. Each is the relaunch's own launch, so none is an exit
+// launch_uncertain and spawns it once more. Each path is read too while that later try is still
+// starting and has recorded no generation. Each is the relaunch's own launch, so none is an exit
 // of the claim's.
 func TestARelaunchsLaunchAtALaterGenerationIsNoExit(t *testing.T) {
 	type read struct {
@@ -805,16 +806,19 @@ func TestARelaunchsLaunchAtALaterGenerationIsNoExit(t *testing.T) {
 	}{
 		{name: "the launch retries a refused start", reads: []read{
 			{generation: 4, state: supervise.StateLaunching},
+			{generation: 5, state: supervise.StateLaunching},
 			{generation: 5, recorded: 5, state: supervise.StateLaunching},
 			{generation: 5, recorded: 5, state: supervise.StateIdle},
 		}},
 		{name: "the launch is tried again at the probe interval", reads: []read{
 			{generation: 3, state: supervise.StateLaunching},
 			{generation: 3, state: supervise.StateLaunching},
+			{generation: 4, state: supervise.StateLaunching},
 			{generation: 4, recorded: 4, state: supervise.StateIdle},
 		}},
 		{name: "a restart spawns the launch_uncertain claim again", reads: []read{
 			{generation: 4, state: supervise.StateLaunchUncertain},
+			{generation: 5, state: supervise.StateLaunching},
 			{generation: 5, recorded: 5, state: supervise.StateLaunching},
 			{generation: 5, recorded: 5, state: supervise.StateIdle},
 		}},
