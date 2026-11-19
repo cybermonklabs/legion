@@ -88,7 +88,7 @@ The real Oh My Pi and Claude Code suites skip without a word unless `LEGION_TEST
 
 - `main` takes squash merges through GitHub's merge queue, and the pull request's title becomes the commit's subject, so write it as a conventional commit subject.
 
-- Nine jobs of `ci.yaml` are held back on a pull request and run in the merge queue (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`).
+- `ci.yaml` holds back on a pull request each job whose `if:` tests a `changes` output that carries the `full-ci` term, and runs it in the merge queue.
   The label `full-ci` runs them on the pull request, and puts the browser suite on its full lane.
 
 - Add `full-ci` to check a fix for a slow-suite failure that took the pull request out of the queue, when a check of the issue names a held-back job as its `ci_check`, when a person asks, or, before the approval, when the change touches `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`.
