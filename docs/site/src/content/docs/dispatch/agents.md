@@ -270,6 +270,8 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   list**, and the line says so.
   A turn the session still streams changes neither of the last two, and a lost connection to
   Dispatch does not remove the line.
+  When Dispatch cannot read the session list for a while (it is refilling or unreachable), the
+  page keeps what the list last said: the header does not go back to **Live**, and the line stays.
   The page reads the session list every 15 seconds, and Dispatch's copy of that list is at most
   5 seconds old, so a session that leaves the list shows it within about 20 seconds.
   The list marks a session as missing its heartbeats once its last one is older than the live
