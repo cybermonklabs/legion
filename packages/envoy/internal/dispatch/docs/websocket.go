@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
@@ -1279,13 +1280,14 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	// took it, and a catch-up's is the stored row itself, so neither is stored again - unless the
 	// commit carries more than its writer stored: the drain of the room's pending queue the apply
 	// ended with landed content a browser's frame had parked behind the clocks the write supplied,
-	// and that content is in no row (carriesBeyond). Such a commit is the room's to store, as a
-	// browser's is, and the browser whose frame it landed is resynced only once it is stored
-	// (resyncLanded), so its applied answer follows the store. The write's own part is stored a
-	// second time beside it, which a load integrates as the nothing it is. Every other update only
-	// the room holds, so it names its instance and is listed there until its append has returned.
-	stored := published && !carriesBeyond(logged.Update, origin.written) ||
-		remote && !carriesBeyond(logged.Update, catchUp.written)
+	// and that content is in no row (writtenApply.landedBeyond). Such a commit is the room's to
+	// store, as a browser's is, and the browser whose frame it landed is resynced only once it is
+	// stored (resyncLanded), so its applied answer follows the store. The write's own part is
+	// stored a second time beside it, which a load integrates as the nothing it is. Every other
+	// update only the room holds, so it names its instance and is listed there until its append
+	// has returned.
+	stored := published && !origin.landedBeyond(logged.Update) ||
+		remote && !catchUp.landedBeyond(logged.Update)
 	if !stored {
 		class.instance = instance
 	}
@@ -1301,32 +1303,91 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	return true, contentChanged, !remote
 }
 
+// writtenApply is what the origin of a server write's apply to a room - a published live write's
+// (liveWriteOrigin) or a catch-up's (remoteUpdateOrigin) - keeps for the room's update observer to
+// hold the apply's commit against (classifyDrained): written, the update the writer stored, and
+// checks, how many times the room's apply check ran on the apply (renderCheck.check), counted under
+// the document's lock before the commit is logged.
+type writtenApply struct {
+	written []byte
+	checks  atomic.Int32
+}
+
+// landedBeyond reports whether update, the room's commit of the apply, carries content the writer
+// did not store, which the room then stores itself (classifyDrained). Only the drain of the room's
+// pending queue the apply ends with lands such content, and ygo runs the room's apply check on a
+// remote apply once for what its update changed, where it changed anything, and once more where
+// that drain landed anything (crdt.WithApplyCheck). An update that changed the room leaves a clock
+// of written in the commit, a struct it integrated or a deletion it made; so a commit that shares
+// a clock with written, of an apply the check ran on once, is one whose drain landed nothing. It
+// carries written and only what written's own changes reach in the room: the deletion of what the
+// room held under what written deletes or replaces - the text another editor typed, after the
+// write's fork read, into the paragraph the write removes - and of written's structs that land
+// under what the room had deleted. No row of written holds those deleted clocks, and a load makes
+// the same deletions wherever the rows holding the clocks are stored, so that commit is stored by
+// its writer's rows. Taken as carrying more, it was stored again, classed as the change the write
+// had made, at a place in the history where it changes nothing
+// (TestStoredOrderEditAfterTheForkReadIntoADeletedParagraph). Every other commit is held against
+// written clock by clock (carriesBeyond): one the check ran on twice, whose drain landed
+// something; one sharing no clock with written, whose update changed nothing, so that the one run
+// was the drain's; and one the check never ran on, which only a room without the check makes.
+func (w *writtenApply) landedBeyond(update []byte) bool {
+	beyond, shares := heldAgainst(update, w.written)
+	return beyond && (w.checks.Load() != 1 || !shares)
+}
+
+// writtenApplyOf is what origin, a server write's apply origin, keeps of its apply, and nil for
+// any other origin.
+func writtenApplyOf(origin any) *writtenApply {
+	switch write := origin.(type) {
+	case *liveWriteOrigin:
+		return &write.writtenApply
+	case *remoteUpdateOrigin:
+		return &write.writtenApply
+	}
+	return nil
+}
+
 // carriesBeyond reports whether update, the update a server write's commit made in a room, holds a
-// struct's clocks or a deleted clock that written, the update the writer stored, does not: what
-// the drain of the room's pending queue the commit ended with landed, a browser's frame parked
-// behind the clocks the write supplied, which no row holds (classifyDrained). A commit carries
-// what its apply integrated of written and what its drain landed, so without a drain it holds
-// nothing written does not: each clock of its structs among the clocks of written's, and each
-// deleted clock among written's deleted clocks. Both are compared clock by clock, so a struct the
-// drain landed inside a gap of written's own clocks for a client - where written holds a Skip -
-// is beyond it, as one past their end is. They are read from the two updates' structs and delete
-// sets, one pass over each, with no content decoded (eachV1Range), which costs a server write
-// the two passes over its bytes; a browser's keystroke never reaches it. An update either of them
-// cannot read is answered as carrying more, which has the room store the commit itself: a row
-// too many, and nothing lost.
+// struct's clocks or a deleted clock that written, the update the writer stored, does not. Each
+// clock of update's structs is held against the clocks of written's, and each deleted clock
+// against written's deleted clocks, clock by clock, so a struct the drain landed inside a gap of
+// written's own clocks for a client - where written holds a Skip - is beyond it, as one past their
+// end is. What the drain of the room's pending queue the commit ended with landed, a browser's
+// frame parked behind the clocks the write supplied, is beyond written, and no row holds it
+// (classifyDrained). So is a deletion written's own changes reach in the room, which is no content
+// of the commit's own, so a commit whose drain landed nothing is not asked this
+// (writtenApply.landedBeyond). The two updates are read from their structs and delete sets, one
+// pass over each, with no content decoded (eachV1Range), which costs a server write's commit the
+// two passes over its bytes; a browser's keystroke never reaches it. An update either of them
+// cannot read is answered as carrying more, which has the room store the commit itself: a row too
+// many, and nothing lost.
 func carriesBeyond(update, written []byte) bool {
+	beyond, _ := heldAgainst(update, written)
+	return beyond
+}
+
+// heldAgainst reads update's structs and deleted clocks against written's, as carriesBeyond
+// says: beyond, whether update holds a clock written does not, and shares, whether it holds one
+// written does. An update either of them cannot read is beyond and shares nothing.
+func heldAgainst(update, written []byte) (beyond, shares bool) {
 	held, deleted := crdt.NewIDSet(), crdt.NewIDSet()
 	if !eachV1Range(written, held.Add, deleted.Add) {
-		return true
+		return true, false
 	}
-	heldRanges, deletedRanges := rangesByClient(held), rangesByClient(deleted)
-	beyond := false
-	read := eachV1Range(update, func(client crdt.ClientID, clock, length uint64) {
-		beyond = beyond || !rangesCover(heldRanges[client], clock, length)
-	}, func(client crdt.ClientID, clock, length uint64) {
-		beyond = beyond || !rangesCover(deletedRanges[client], clock, length)
-	})
-	return beyond || !read
+	against := func(ranges map[crdt.ClientID][]crdt.IDRange) func(crdt.ClientID, uint64, uint64) {
+		return func(client crdt.ClientID, clock, length uint64) {
+			if beyond && shares {
+				return
+			}
+			covered, met := rangesHold(ranges[client], clock, length)
+			beyond, shares = beyond || !covered, shares || met
+		}
+	}
+	if !eachV1Range(update, against(rangesByClient(held)), against(rangesByClient(deleted))) {
+		return true, false
+	}
+	return beyond, shares
 }
 
 // rangesByClient is set's ranges by client, sorted and merged as the set keeps them.
@@ -1339,11 +1400,11 @@ func rangesByClient(set *crdt.IDSet) map[crdt.ClientID][]crdt.IDRange {
 	return ranges
 }
 
-// rangesCover reports whether ranges, sorted and merged as an IDSet keeps them, cover every clock
-// from clock to clock+length.
-func rangesCover(ranges []crdt.IDRange, clock, length uint64) bool {
+// rangesHold reports whether ranges, sorted and merged as an IDSet keeps them, hold every clock
+// from clock to clock+length (covered), and whether they hold any of them (met).
+func rangesHold(ranges []crdt.IDRange, clock, length uint64) (covered, met bool) {
 	if length == 0 {
-		return true
+		return true, false
 	}
 	at, _ := slices.BinarySearchFunc(ranges, clock, func(r crdt.IDRange, clock uint64) int {
 		switch {
@@ -1354,7 +1415,10 @@ func rangesCover(ranges []crdt.IDRange, clock, length uint64) bool {
 		}
 		return 0
 	})
-	return at < len(ranges) && ranges[at].Clock <= clock && clock+length <= ranges[at].Clock+ranges[at].Len
+	if at == len(ranges) || ranges[at].Clock >= clock+length {
+		return false, false
+	}
+	return ranges[at].Clock <= clock && clock+length <= ranges[at].Clock+ranges[at].Len, true
 }
 
 // soleConnectedActor is the one actor connected to a room, and whether more than one distinct

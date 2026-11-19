@@ -208,6 +208,12 @@ func newRenderCheck(live *crdt.Doc, weighing *roomWeighing, paths *renderPathCou
 // that takes that lock. A panic in the render is recovered here and refuses the apply as a render
 // error does, rather than reaching the peer's read loop.
 func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
+	if write := writtenApplyOf(origin); write != nil {
+		// A server write's apply is weighed by rules of its own, and passed here; that the check
+		// ran on it again says its drain landed something (writtenApply.landedBeyond).
+		write.checks.Add(1)
+		return nil
+	}
 	running := c.weighing.applies().checking(origin)
 	if running == nil {
 		return nil
