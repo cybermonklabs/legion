@@ -289,6 +289,13 @@ with any key of that pod, and its route refuses a body naming `thumbprint` or `g
 `400`, so the daemon's registrations fail. Unset `exchange_audience` in every Legion daemon before
 you roll the broker back past this release.
 
+Rolling the broker back past the release in which each key says who decides its requests leaves
+the column `requests.judge_until` in place, which an older broker never reads, so a request the
+newer broker held for the judge is an ordinary card on the older one. An older broker also refuses
+a rules file that gives an entry `guidance` or no `hosts` (`unknown field "guidance"`, or the
+entry's `no host`) and does not start with one. Put the rules file back to one without either
+before you roll the broker back past this release.
+
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
 create `serviceaccounts/token` for it, or exec into the daemon's pod and read its token file can
@@ -803,7 +810,15 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   without which `agent-secrets` writes no typed secret
   ([People who manage secrets](#people-who-manage-secrets)).
   It names no Kubernetes exchange audience: a pod's trade mints no launcher credential, so no
-  machine could register a session under it.
+  machine could register a session under it. When the airlock rules give the model judge
+  seconds of any secret it also answers `judge_keys`: each such name with its judge seconds and its
+  `guidance` — the rules file's own words, never a value. It is the rules' answer, the same on a
+  broker that runs no judge, and `agent-secrets secret show` reads it to say who decides a request
+  for a secret and what the judge looks for. An administrator's secret is listed there when the
+  rules give it seconds, and its person decides it all the same; `secret show` reads its tag and
+  says so. The route answers any caller, so it tells anyone who can reach the broker which secrets
+  the judge may take and on what guidance, as the reread already tells any caller which names
+  exist. Guidance is no secret: write nothing in it that a caller of the broker may not read.
   `POST /v1/secrets/{name}/reread` makes the broker read one secret from the store at once,
   and answers whether it now serves it, as which type (`type`: `github-app`, `google-login`,
   `azure-login` or `google-service-account`, absent for a stored secret) and, if not, why.
