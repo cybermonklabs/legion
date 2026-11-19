@@ -48,6 +48,16 @@ body: |-
   `BROKER_JUDGE_MODEL_AUDIENCE`) is named through `redact.URL` in every error that reads or mints
   one, and a failed read of the metadata server names the identity path it asked and the cause's
   class, never the URL it asked, whose query holds the audience.
+
+  A failed Postgres connect names the server's answer by its severity and SQLSTATE alone, never
+  its words, which name the user (`password authentication failed for user ...`). Every pool of
+  the Dispatch store, the separate pools of the document rooms, their appends, compaction, the
+  event horizon and the leases among them, and the server process registry name a connect that
+  fails after boot the same way, without `DATABASE_URL`'s user.
+
+  `DISPATCH_AZURE_EMBED_ENDPOINT`, `DISPATCH_AZURE_CHAT_ENDPOINT` and `DISPATCH_CHAT_ENDPOINT` are
+  refused at boot by their length when net/url reads their user part apart, as `ENVOY_URL` is:
+  net/url would read a piece of the user part as the host the boot line names.
 time: 2026-11-19T07:20:34Z
 custom:
     Issue: pr4314
