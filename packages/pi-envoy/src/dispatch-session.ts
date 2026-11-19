@@ -19,16 +19,18 @@ export interface DispatchSession {
 
 /**
  * The session's Dispatch as `file` and the configuration under `cwd` resolve it (a checkout's own
- * `.envoy/envoy.json` names its own server), with `signal` on every request of it, so the caller's
- * stop or timeout ends each one; undefined when Dispatch is not configured. A configuration that
- * cannot be read throws, as `activeDispatchSettings` does. `session` is the session this plugin
- * instance is acting as, read at each call, which a broker trade writes under: the token this
- * session presents names this session and no other of this process.
+ * `.envoy/envoy.json` names its own server), with `limit` on every request of it: a caller's
+ * `signal` (its stop) ends each one, and a `deadlineMs` of its own budget is the client's deadline,
+ * which its credential is given less the request's reserve (`DispatchClient`'s `deadlineMs`);
+ * undefined when Dispatch is not configured. A configuration that cannot be read throws, as
+ * `activeDispatchSettings` does. `session` is the session this plugin instance is acting as, read
+ * at each call, which a broker trade writes under: the token this session presents names this
+ * session and no other of this process.
  */
 export function sessionDispatchClient(
   file: SessionConfigFile,
   cwd: string,
-  signal: AbortSignal,
+  limit: { readonly signal?: AbortSignal; readonly deadlineMs?: number },
   session: () => string
 ): DispatchSession | undefined {
   const config = activeDispatchSettings(
@@ -37,7 +39,7 @@ export function sessionDispatchClient(
   return config === null
     ? undefined
     : {
-        client: new DispatchClient(config.url, config.credential, fetch, { signal }),
+        client: new DispatchClient(config.url, config.credential, fetch, limit),
         serverUrls: dispatchServerUrls(config),
       };
 }

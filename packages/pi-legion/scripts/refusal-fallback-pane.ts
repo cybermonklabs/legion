@@ -49,6 +49,7 @@ import {
   serveStandin,
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
@@ -457,6 +458,10 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
   // stand-in's `claims/register` too.
   const registered: Record<string, unknown> = JSON.parse(await readFile(registerFixture, "utf8"));
   let grants = 0;
+  // The pane's registration secret and boot token: random, as the daemon's are, since the pane
+  // holds each and scrubs it from every line it prints (`@legion/contracts/held-secrets`).
+  const registrationSecret = fixtureSecret("reg");
+  const bootToken = fixtureSecret("boot");
 
   const record = (at: number, model: string, what: string): void => {
     pane.served.push({ at, model, answer: what });
@@ -492,7 +497,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         issue: run.key,
         role: "architect",
         generation: 1,
-        secret: `${run.label}-secret`,
+        secret: registrationSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -541,7 +546,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
         LEGION_TREE: run.key,
         LEGION_ISSUE: run.key,
         LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: `${run.label}-boot`,
+        LEGION_BOOT_TOKEN: bootToken,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_REFUSAL_COOLDOWN_MS: String(cooldownMs),

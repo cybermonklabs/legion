@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import { LegionStateResponse } from "@legion/contracts/legion-api"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
 
@@ -166,6 +167,9 @@ const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
  * works this phase and the `Stop` earns its reminder. */
 const ISSUE = "LEGION-208"
 const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg")
+const BOOT_TOKEN = fixtureSecret("boot")
 
 /** The package root, whose `scripts/build.ts` builds the plugin a worker loads. */
 const PACKAGE = resolve(import.meta.dir, "..")
@@ -330,7 +334,7 @@ async function runWorker(options: {
   await mkdir(configDir, { recursive: true })
   await mkdir(workspace, { recursive: true })
   const tokenFile = join(root, "boot-token")
-  await writeFile(tokenFile, "boot-token-from-the-pane\n")
+  await writeFile(tokenFile, `${BOOT_TOKEN}\n`)
 
   const broker = new FakeNatsServer()
   cleanup.push(() => broker.stop())
@@ -368,7 +372,7 @@ async function runWorker(options: {
         issue: ISSUE,
         role: "implementer",
         generation: 1,
-        secret: "Y2xhdWRlLXBhbmU=",
+        secret: REGISTRATION_SECRET,
       })
     }
     if (url.pathname === "/legion/v1/claims/ready") {
@@ -455,7 +459,7 @@ async function runWorker(options: {
         CLAUDE_CODE_DISABLE_CRON: "1",
         // The stand-in Anthropic API drives the model, and nothing else may reach a real one.
         ANTHROPIC_BASE_URL: base,
-        ANTHROPIC_API_KEY: "standin-key",
+        ANTHROPIC_API_KEY: fixtureSecret("standin"),
         ANTHROPIC_MODEL: "standin-model",
         DISABLE_AUTOUPDATER: "1",
         DISABLE_TELEMETRY: "1",

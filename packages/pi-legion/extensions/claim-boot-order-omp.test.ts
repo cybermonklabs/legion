@@ -16,6 +16,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -61,6 +62,10 @@ const ROLE = "implementer";
 const TREE = "INFRA-1573";
 const ISSUE = "INFRA-1573";
 const CLAIM_TOKEN = "legion-claim-boot-order-infra-1573-implementer";
+
+/** The registration secret the stand-in daemon answers, and the boot token the worker starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /** The daemon's assignment, written to the worker as one RPC `prompt`, as the shim writes it
  * (packages/daemon/internal/shimwire `Prompt`). */
@@ -227,7 +232,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "claim-boot-order-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") {
@@ -302,7 +307,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
         LEGION_TREE: TREE,
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
-        LEGION_BOOT_TOKEN: "claim-boot-order-boot",
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         LEGION_CLAIM_FIRST_TURN_BOUND_MS: String(options.boundMs),

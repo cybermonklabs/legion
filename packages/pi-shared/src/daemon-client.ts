@@ -452,6 +452,7 @@ function parseBody<T>(
   try {
     json = JSON.parse(body);
   } catch {
+    // The parser's message quotes the word it stopped at, which whatever answered chose.
     return { problem: "not JSON" };
   }
   const parsed = schema.safeParse(json);
@@ -535,6 +536,8 @@ export function createLegionDaemonClient(
         refusal.value.error
       );
     }
+    // A body that is not the daemon's refusal was written by something in its place, which can
+    // echo the request back: it is named by its length alone (`unreadableBody`), never quoted.
     throw new LegionDaemonApiError(
       method,
       path,

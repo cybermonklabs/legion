@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { legion } from "../package.json" with { type: "json" }
@@ -108,7 +109,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
   await new Promise<void>((listening) => inbox.listen(inboxPath, listening))
   await mkdir(configDir, { recursive: true })
   const tokenFile = join(root, "boot-token")
-  await writeFile(tokenFile, "boot-token-from-the-pane\n")
+  const bootToken = fixtureSecret("boot")
+  await writeFile(tokenFile, `${bootToken}\n`)
 
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
@@ -164,7 +166,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "boot-token-from-the-pane",
+          bootToken,
           sessionId: SESSION,
           ompSessionFile: transcript,
           agentId: SESSION,

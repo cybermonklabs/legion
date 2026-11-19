@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import * as legionApi from "@legion/contracts/legion-api";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import * as ts from "typescript";
 import { z } from "zod";
 import {
@@ -55,8 +56,13 @@ function daemon(respond: (url: URL) => Response): {
  * below set the contract the daemon states against it. */
 const CONTRACT = 60;
 
+/** A claim's secret, as the claim wire's requests below carry it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+/** The boot token the pane hands a registering session. */
+const BOOT_TOKEN = fixtureSecret("boot");
+
 const registration = {
-  bootToken: "boot-token-from-the-pane",
+  bootToken: BOOT_TOKEN,
   sessionId: "ses_architect_208",
   ompSessionFile: "/state/home/.omp/agent/sessions/ses_architect_208.jsonl",
   agentId: "ses_architect_208",
@@ -124,6 +130,35 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
   expect((refused as LegionDaemonApiError).detail).toContain("not the daemon's refusal");
 });
 
+// The coordinator's ruling on the review of 81d860a8f7: a body that is not the daemon's refusal
+// was written by something in its place, which can echo the request back, so it is never named
+// whole; nor does a parser's message quote a piece of it. This client names such a body by its
+// length alone and quotes none of it (dispatch://INFRA-2694/artifact/verification-md, c9).
+test("a proxy's page in the daemon's place is named by its length, never quoted", async () => {
+  const secret = fixtureSecret("proxy");
+  const page =
+    "<html><head><title>502 Bad Gateway</title></head>\n<body><h1>502 Bad Gateway</h1>\n" +
+    `<pre>Authorization: Bearer ${secret}</pre>\n${"<p>filler</p>\n".repeat(1500)}</body></html>`;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: daemon(
+      () => new Response(page, { status: 502, headers: { "Content-Type": "text/html" } })
+    ).fetch,
+  });
+
+  const refused = await client.register(registration).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(LegionDaemonApiError);
+  expect(refused).toMatchObject({ status: 502, code: undefined });
+  const { detail, message } = refused as LegionDaemonApiError;
+  expect(detail).toStartWith(
+    `a body of ${new TextEncoder().encode(page).length} bytes is not the daemon's refusal shape (not JSON).`
+  );
+  expect(message).not.toContain("502 Bad Gateway");
+  expect(message).not.toContain(secret);
+  expect(message).not.toContain("\n");
+  expect(message.length).toBeLessThan(400);
+});
+
 test("ready and exit post the claim wire's requests and accept only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
   const client = createLegionDaemonClient("http://daemon.test", {
@@ -133,7 +168,7 @@ test("ready and exit post the claim wire's requests and accept only the empty 20
   const ready = {
     claimToken: "legion-legion-legion-208-architect",
     sessionId: "ses_architect_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     generation: 3,
   };
 
@@ -164,7 +199,7 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     activity: {
       at: "2026-11-01T12:00:00.000Z",
       backgroundWork: { running: true, kinds: ["async-job"] },
@@ -230,7 +265,7 @@ test("the release records are read by a POST carrying the claim's token and secr
   // authenticate the read, and the secret rides in the body rather than a query string.
   const window = {
     claimToken: "legion-legion-legion-208-implementer",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     since: "2026-11-01T12:00:00Z",
   };
 
@@ -380,7 +415,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     [
       "grant",
       "/legion/v1/grants",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-209" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-209" },
       "grant.json",
     ],
     // An implementing round's completion names the Dispatch handoff record and the pushed tip,
@@ -524,7 +559,8 @@ test("a controller registers on the claim route with its capability and reads th
     pluginContract: CONTRACT,
     fetch,
   });
-  const capability = { ...registration, bootToken: "controller-capability" };
+  const controllerCapability = fixtureSecret("ctl");
+  const capability = { ...registration, bootToken: controllerCapability };
 
   await expect(client.registerController(capability)).resolves.toEqual(issued as never);
   expect(requests).toEqual([
@@ -551,15 +587,16 @@ test("the registered controller mints its grant with the session form that names
     pluginContract: CONTRACT,
     fetch,
   });
+  const registrationSecret = fixtureSecret("reg");
 
   await expect(
-    client.controllerGrant({ sessionId: "ses_controller", secret: "registration-secret" })
+    client.controllerGrant({ sessionId: "ses_controller", secret: registrationSecret })
   ).resolves.toEqual(daemonFixture("grant.json") as never);
   expect(requests).toEqual([
     {
       method: "POST",
       url: "http://daemon.test/legion/v1/grants",
-      body: { sessionId: "ses_controller", secret: "registration-secret" },
+      body: { sessionId: "ses_controller", secret: registrationSecret },
     },
   ]);
 });
@@ -584,7 +621,7 @@ test("the registration, the grant and the handoff completion are read whole when
 
   const grant = await client.grant({
     sessionId: "ses_208",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     tree: "LEGION-208",
     issue: "LEGION-209",
   });

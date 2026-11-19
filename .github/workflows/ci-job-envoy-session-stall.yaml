@@ -77,6 +77,14 @@ jobs:
       - name: Stall test of envoy-client's NATS connection options
         run: bun test src/__tests__/nats-stall.test.ts
         working-directory: packages/envoy-client
+      # A session's broker-token credential on a real natsd behind the real NATS auth service
+      # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
+      # while the stub broker is away, every reconnect refused and the connection admitted again
+      # once a token is live (slice E2, t-e-9); and a session switch that subscribes
+      # the new session's subject only once the connection is admitted with its token (t-e-10).
+      - name: Broker credential tests on a hub behind the auth service
+        run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
+        working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
       # this one as a file because of the leading "./".
       - name: Session state rig of a stalled session

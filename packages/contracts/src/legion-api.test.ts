@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import * as legionApi from "./legion-api";
 import {
@@ -50,6 +51,9 @@ import {
 import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
+
+/** A claim's secret, as the requests below carry it. */
+const CLAIM_SECRET = fixtureSecret("claim");
 
 /** Every fixture the Go golden test writes, with the schema that must accept it. A new fixture
  * with no entry here fails the first test rather than going unchecked. */
@@ -1548,7 +1552,7 @@ test("every request the plugin sends parses and names its required fields", () =
   const activityRequest = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     activity,
   };
   // A route and a body it must accept, whose first key is a field the schema requires.
@@ -1556,7 +1560,7 @@ test("every request the plugin sends parses and names its required fields", () =
     [
       "grant",
       LegionGrantRequest,
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-209" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-209" },
     ],
     [
       "controller grant",
@@ -1631,7 +1635,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionReleaseRecordsRequest,
       {
         claimToken: "legion-legion-legion-208-implementer",
-        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+        secret: CLAIM_SECRET,
         since: "2026-11-01T12:00:00Z",
       },
     ],
@@ -2040,7 +2044,7 @@ test("a session's activity report carries its reading, its work and its wake", (
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     activity: {
       at: "2026-11-01T12:00:00.000Z",
       backgroundWork: { running: true, kinds: ["async-job", "subagent"] },
@@ -2146,7 +2150,7 @@ test("the release records carry a release, a resume and a hold", () => {
 test("the release records are read with the claim credential in the body", () => {
   const request = {
     claimToken: "legion-legion-legion-208-implementer",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     since: "2026-11-01T12:00:00Z",
   };
   expect(LegionReleaseRecordsRequest.safeParse(request).error?.issues ?? []).toEqual([]);

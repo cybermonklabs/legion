@@ -18,6 +18,7 @@ import {
   type StallWatchdog,
   type StallWatchdogTeller,
 } from "@legion/pi-shared/stall-watchdog";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // The import above is this file's merge-base check: on the merge base there is no
 // `./stall-evidence`, so every test here fails to resolve rather than passing vacuously.
 import type { LegionSessionKind } from "./classify";
@@ -90,11 +91,12 @@ async function until(ready: () => Promise<boolean>): Promise<void> {
 }
 
 test("the tree names every process of the agent, read from this pod's own /proc", async () => {
+  const claimSecret = fixtureSecret("claim");
   const pid = await child({
     PI_TOOL_CALL_ID: "toolu_stuck",
     // A credential of the kind an environment routinely holds: the reader keeps two names and
     // this is not one of them, so nothing downstream can write it anywhere.
-    LEGION_CLAIM_SECRET: "a-secret-nothing-may-record",
+    LEGION_CLAIM_SECRET: claimSecret,
   });
 
   const scan = await readStallProcesses();
@@ -126,7 +128,7 @@ test("the tree names every process of the agent, read from this pod's own /proc"
   // What the evidence carries: the same processes, with no environment and no parent.
   const tree = stallProcessTree(scan);
   if (!tree.read) throw new Error("the tree was read and then reported unread");
-  expect(JSON.stringify(tree)).not.toContain("a-secret-nothing-may-record");
+  expect(JSON.stringify(tree)).not.toContain(claimSecret);
   expect(tree.processes.find((candidate) => candidate.pid === pid)).toEqual({
     pid,
     command: found?.command as string,
@@ -188,6 +190,9 @@ function evidenceOf(over: Partial<StallEvidence> = {}): StallEvidence {
   };
 }
 
+/** The claim's registration secret: random, as the daemon's is, since the pane holds it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+
 function claimOf(over: Partial<ClaimCapability> = {}): ClaimCapability {
   return {
     sessionID: "ses_worker",
@@ -196,7 +201,7 @@ function claimOf(over: Partial<ClaimCapability> = {}): ClaimCapability {
     tree: "INFRA-1000",
     issue: "INFRA-1274",
     role: "implementer",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     ...over,
   };
 }

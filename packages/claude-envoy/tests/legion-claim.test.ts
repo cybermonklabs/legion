@@ -5,6 +5,7 @@ import { join, resolve } from "node:path"
 import { SESSION_HEARTBEAT_MS, SESSION_LIVE_WINDOW_MS } from "@legion/contracts"
 import type { SetRoleInput, SetRoleResult } from "@legion/envoy-client/transport"
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
@@ -74,7 +75,8 @@ test("a session with no boot token is no Legion pane", () => {
 test("a Legion pane reads its boot token from the file the daemon named, and needs its address and directory", async () => {
   const dir = await tempDir()
   const tokenFile = join(dir, "boot")
-  await writeFile(tokenFile, "boot-token-from-the-file\n")
+  const bootToken = fixtureSecret("boot")
+  await writeFile(tokenFile, `${bootToken}\n`)
   expect(
     legionPane({
       LEGION_BOOT_TOKEN_FILE: tokenFile,
@@ -84,7 +86,7 @@ test("a Legion pane reads its boot token from the file the daemon named, and nee
     }),
   ).toEqual({
     daemonUrl: "http://daemon.test",
-    bootToken: "boot-token-from-the-file",
+    bootToken,
     configDir: dir,
     launcherSaves: false,
   })
