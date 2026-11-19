@@ -78,11 +78,10 @@ const TWO_STEPS: readonly string[] = [
  */
 const COOLDOWN_MS = 4_000;
 
-/** The cooldown the killed-and-resumed case arms, which is what its return is measured against:
- * long enough that a restored arming is still running when the replacement pane is relaunched,
- * short enough for the return to come while the case watches. The relaunch's own boot is not
- * covered by it and is not meant to be - the case measures the return from the resumed life's
- * first served turn, and reads the restored arming from where that turn went (below). */
+/** The cooldown the killed-and-resumed case arms: long enough that a restored arming is still
+ * running when the replacement pane is relaunched on an unloaded machine. The relaunch's own boot
+ * is not covered by it and need not be: the case reads the restored arming from where the resumed
+ * life's turns went on either side of the due time, not from how long anything took (below). */
 const RESUME_COOLDOWN_MS = 12_000;
 
 const cleanup: Cleanup = [];
@@ -450,24 +449,35 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a pane whose process is gone resumes its own transcript's arming, and comes back no earlier than it says",
   async () => {
-    /** When the resumed life's long turn must stop pinging the gateway. */
-    let until = 0;
+    /** Set when the pane is relaunched: the restored due time, and the second life's turns that
+     *  arrived at or after it on the weaker model. */
+    let relaunch: { readonly dueAt: number; weakAfterDue: number } | undefined;
     const pane = await fallbackPane({
       cooldownMs: RESUME_COOLDOWN_MS,
       // The second assignment is a tool-call turn: its own entries carry the arming written at
       // the end of the refused turn to disk, which is where the resumed life reads it.
       prompt: ["Start FALL-1.", "Note that."],
-      answer: (_model, nth) => {
+      answer: (model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
         if (nth === 2) return replies([call("bash", { command: "echo noted" })], `msg_${nth}`);
         if (nth === 3) return replies([{ type: "text", text: "Noted." }], `msg_${nth}`);
-        return Date.now() < until
-          ? replies([sleeps(2)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        if (relaunch === undefined) return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        // The second life's turn keeps calling `sleep` until the session is back on the stronger
+        // model past the due time, which ends it. Past the due time two turns on the weaker
+        // model are the host's: one it built before the due time that arrives after it, and the
+        // one whose request runs the restore, which the host applies from its next request. A
+        // third means the restored wait did not end at its due time, and the turn ends there
+        // too, for the assertions below to name. Only the host's own turns are waited on.
+        const pastDue = Date.now() >= relaunch.dueAt;
+        if (pastDue && model !== "strong-model") relaunch.weakAfterDue += 1;
+        return (pastDue && model === "strong-model") || relaunch.weakAfterDue > 2
+          ? replies([{ type: "text", text: "Done." }], `msg_${nth}`)
+          : replies([sleeps(2)], `ping_${nth}`);
       },
     });
 
-    const armed = (await pane.cooldowns()).at(-1)?.arming;
+    const firstLifeStates = await pane.cooldowns();
+    const armed = firstLifeStates.at(-1)?.arming;
     expect(armed).toMatchObject({ restoreTo: STRONG, cause: "refusal" });
     const dueAt = armed?.dueAt ?? 0;
     expect(dueAt).toBeGreaterThan(Date.now());
@@ -475,42 +485,33 @@ test.skipIf(skip)(
 
     // The daemon relaunches the worker: a fresh process whose only memory of the fallback is the
     // transcript it resumes.
-    until = dueAt + 2 * 1_000;
+    relaunch = { dueAt, weakAfterDue: 0 };
     await pane.resume([], "Carry on after the relaunch.");
 
     const resumed = pane.served.slice(firstLife);
-    expect(resumed.length).toBeGreaterThan(1);
+    console.log(
+      `the resumed life's turns, ms from the due time: ${resumed.map((turn) => `${turn.model} ${turn.at - dueAt}`).join(", ")}`
+    );
     // That the arming was restored, and not dropped or started again, is read from where this
-    // life's own turns went. Which half says it depends on whether the relaunch's boot outran the
-    // cooldown, and both are assertions: a filter over the turns before the due time proves
-    // nothing when there are none, which is what a loaded box gives.
-    const beforeDue = resumed.filter((turn) => turn.at < dueAt);
-    if (beforeDue.length > 0) {
-      // The life was serving while the restored wait still ran, so every one of those turns went
-      // to the weaker model.
-      expect(beforeDue.map((turn) => turn.model)).not.toContain("strong-model");
-    } else {
-      // The boot outran the wait, so this life's first turn is already past the due time: it
-      // must be the return itself. A life that had started the wait again would have spent a
-      // whole cooldown on the weaker model first, and a life that had dropped the arming would
-      // never leave it.
-      expect(resumed[0]?.model).toBe("strong-model");
-      expect(pane.returnedAt(dueAt)).toBe(resumed[0]?.at);
-    }
-    // And the return did come, which is what says the arming survived at all: a life that had
-    // restored nothing would have stayed on the weaker model for good.
+    // life's own turns went and from what it recorded, never from how long its boot took: on a
+    // loaded box that boot can outrun the whole cooldown, and then no turn of it comes before
+    // the due time.
     //
-    // Measured from this life's own first served turn rather than from the restored due time: a
-    // relaunched pane pays its whole boot before it serves anything - the process start, a NATS
-    // connect, its subscribes, the claim's registration and the consumer answer that registration
-    // waits on - and under parallel load that boot alone can outlast the cooldown, which would
-    // red this row with nothing wrong behind it. What the bound is for is the return itself: once
-    // this life is serving turns, the restored arming must give the stronger model back inside
-    // one cooldown rather than holding the weaker one for good.
-    const resumedFrom = Math.max(dueAt, resumed[0]?.at ?? 0);
-    const returned = pane.returnedAt(dueAt);
-    expect(returned).toBeDefined();
-    expect((returned ?? 0) - resumedFrom).toBeLessThan(RESUME_COOLDOWN_MS);
+    // No turn before the due time went to the stronger model: the restored wait held.
+    expect(resumed.filter((turn) => turn.at < dueAt).map((turn) => turn.model)).not.toContain(
+      "strong-model"
+    );
+    // The session did come back past the due time, within the host's two turns there: a life
+    // that had restored nothing would have stayed on the weaker model for good.
+    expect(pane.returnedAt(dueAt)).toBeDefined();
+    expect(relaunch.weakAfterDue).toBeLessThanOrEqual(2);
+    // And it waited for the arming it restored, not for one of its own: every arming this life
+    // recorded is the one the first life wrote, and it recorded the return.
+    const resumedStates = (await pane.cooldowns()).slice(firstLifeStates.length);
+    expect(
+      resumedStates.filter((state) => state.arming !== undefined && state.arming.dueAt !== dueAt)
+    ).toEqual([]);
+    expect(resumedStates.at(-1)?.arming).toBeUndefined();
   },
   300_000
 );
