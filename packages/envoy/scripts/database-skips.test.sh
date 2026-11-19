@@ -16,10 +16,13 @@
 #      skips, one where a named package with test files passed with no test or is missing, a
 #      missing and an empty report, and an EXPECTED_SKIPS line whose test the report does not
 #      hold; a report holding a failed test fails, and one holding a data race report filed under
-#      a subtest that passed prints that report and no passed test's own line; a package spelled
-#      other than canonically (`./cmd/./broker/`, `.//cmd/broker/`, `./cmd/broker/../broker/`) is
-#      still counted; and a report of the broker's tests whose only skips are the expected ones
-#      passes;
+#      a subtest that passed prints that report and no passed test's own line; a test the binary
+#      runs twice under one name (a TestMain that calls m.Run twice) that fails in one run and
+#      passes in the other has its failure's lines printed, whichever run failed, and none of the
+#      passing run's own, and one that passed in the first run and was running when the second
+#      timed out is printed as unfinished; a package spelled other than canonically
+#      (`./cmd/./broker/`, `.//cmd/broker/`, `./cmd/broker/../broker/`) is still counted; and a
+#      report of the broker's tests whose only skips are the expected ones passes;
 #   4. --timeout 1s on ./internal/broker/api/, beside a planted parallel test that runs three
 #      seconds and one that passes first, ends the package's binary on its timeout: the counter
 #      prints a go_test_exit that is not 0, the timeout's panic (which test2json files under the
@@ -230,6 +233,46 @@ count raced bash "$COUNTER" --report "$WORK/raced.json" ./internal/broker/api/
 judge "$([ "$(code raced)" = 1 ] && said raced 'WARNING: DATA RACE' && said raced 'Write at 0x00c000 by goroutine 7:' &&
   ! said raced 'a line TestPassedBeside printed itself' && echo 0 || echo 1)" \
   "control 3: a data race report filed under a subtest that passed is printed, and a passed test's own output is not" "$(seen raced)"
+# A test the binary runs twice under one name, as internal/broker/airlockproxy's TestMain runs its
+# whole suite once per protocol: test2json reports both runs under that name. The run that failed
+# has its failure's lines printed though the other run passed, whichever run failed, and the run
+# that passed has none of its own lines printed; read by the name alone, the counter printed none
+# of the failure in CI job 135597604679. A test that passed in the first run and was running when
+# the binary timed out in the second is unfinished.
+pev() { jq -nc --arg p "$brokerapi" --arg o "$1" '{Action: "output", Package: $p, Output: $o}'; }
+twice() { # FAILED_RUN: TestTwice in two runs of one binary, failing in run FAILED_RUN (1 or 2)
+  local run
+  for run in 1 2; do
+    pev "the suite's run $run of 2"$'\n'
+    ev run "$brokerapi" TestTwice; oev TestTwice '=== RUN   TestTwice'$'\n'
+    if [ "$run" = "$1" ]; then
+      oev TestTwice "    log_masking_test.go:282: the failure of run $run"$'\n'; oev TestTwice '--- FAIL: TestTwice (0.00s)'$'\n'
+      ev fail "$brokerapi" TestTwice; pev 'FAIL'$'\n'
+    else
+      oev TestTwice 'a line TestTwice printed in the run that passed'$'\n'; oev TestTwice '--- PASS: TestTwice (0.00s)'$'\n'
+      ev pass "$brokerapi" TestTwice; pev 'PASS'$'\n'
+    fi
+  done
+  ev fail "$brokerapi"
+}
+for failed_run in 1 2; do
+  twice "$failed_run" >"$WORK/twice-$failed_run.json"
+  count "twice-$failed_run" bash "$COUNTER" --report "$WORK/twice-$failed_run.json" ./internal/broker/api/
+  judge "$([ "$(code "twice-$failed_run")" = 1 ] && said "twice-$failed_run" "FAIL $brokerapi TestTwice" &&
+    said "twice-$failed_run" "log_masking_test.go:282: the failure of run $failed_run" &&
+    ! said "twice-$failed_run" 'a line TestTwice printed in the run that passed' && echo 0 || echo 1)" \
+    "control 3: a test run twice under one name that fails in run $failed_run and passes in the other has its failure's lines printed, and none of the passing run's own" \
+    "$(seen "twice-$failed_run"); stderr $(tr '\n' '|' <"$WORK/twice-$failed_run.err")"
+done
+{ ev run "$brokerapi" TestSlow; oev TestSlow '=== RUN   TestSlow'$'\n'; oev TestSlow '--- PASS: TestSlow (0.00s)'$'\n'
+  ev pass "$brokerapi" TestSlow; pev 'PASS'$'\n'
+  ev run "$brokerapi" TestSlow; oev TestSlow '=== RUN   TestSlow'$'\n'; oev TestSlow 'panic: test timed out after 1s'$'\n'
+  ev fail "$brokerapi"; } >"$WORK/twice-unfinished.json"
+count twice-unfinished bash "$COUNTER" --report "$WORK/twice-unfinished.json" ./internal/broker/api/
+judge "$([ "$(code twice-unfinished)" = 1 ] && said twice-unfinished "UNFINISHED $brokerapi TestSlow" &&
+  said twice-unfinished 'panic: test timed out after 1s' && echo 0 || echo 1)" \
+  "control 3: a test that passed in the first run and was running when the second run's binary timed out is printed as unfinished" \
+  "$(seen twice-unfinished); stderr $(tr '\n' '|' <"$WORK/twice-unfinished.err")"
 { ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev skip "$cmdbroker" TestPlantedSkip; ev pass "$cmdbroker"; } >"$WORK/spelled.json"
 for spelling in ./cmd/./broker/ .//cmd/broker/ ./cmd/broker/../broker/; do
   count spelled bash "$COUNTER" --report "$WORK/spelled.json" "$spelling"

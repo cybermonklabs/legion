@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/roleholder"
 )
 
 // ErrUnavailable reports that the Envoy listener could not serve a request.
@@ -69,6 +70,21 @@ var ErrReceiptTimeout = errors.New("envoy listener did not answer the send in ti
 
 // ErrNotFound reports that the listener has no record of the requested session.
 var ErrNotFound = errors.New("envoy listener: session not found")
+
+// ErrNoRoleHolder reports the listener's own answer to a role lookup that no live session holds the
+// role: a 404 whose refusal names no claim (roleholder.Unclaimed) or a holder that has lapsed and
+// that this client did not resolve to a record (roleholder.HolderLapsed). Every such error matches
+// it under errors.Is and reads as the listener's own reason. It is the one decided "nobody" a role
+// lookup answers: a status the listener chose otherwise - a 500 for a claim record it cannot read -
+// and every ErrUnavailable say nothing about who holds the role.
+var ErrNoRoleHolder = errors.New("envoy listener: no live session holds the role")
+
+// noRoleHolderError is an ErrNoRoleHolder carrying the listener's own reason as its text, so a
+// caller that records the failure records the words it recorded before.
+type noRoleHolderError struct{ reason string }
+
+func (e noRoleHolderError) Error() string        { return e.reason }
+func (e noRoleHolderError) Is(target error) bool { return target == ErrNoRoleHolder }
 
 // ErrRefilling reports a list read (Sessions, ListInterests) the listener refused because its
 // copy of the bucket cannot be served yet: it has not completed a read of the bucket, or has not
@@ -484,7 +500,11 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 			return Session{}, err
 		}
 	}
-	return Session{}, listenerRefusal(response, refusal.Error)
+	err := listenerRefusal(response, refusal.Error)
+	if roleholder.IsNoHolderReason(string(refusal.Reason)) && !errors.Is(err, ErrUnavailable) {
+		return Session{}, noRoleHolderError{reason: err.Error()}
+	}
+	return Session{}, err
 }
 
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the

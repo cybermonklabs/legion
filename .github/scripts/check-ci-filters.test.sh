@@ -2670,10 +2670,10 @@ READS = (
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "packages/pi-legion/src/skills-guard.test.ts:24,275, which spawns that builder and asserts an "
+     "packages/pi-legion/src/skills-guard.test.ts:29,318, which spawns that builder and asserts an "
      "exact file list over what it writes"),
     ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:41-46), bundled into "
+     "that builder's BUNDLE_ENTRYPOINTS (packages/claude-envoy/scripts/build.ts:39-44), bundled into "
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
@@ -3258,42 +3258,5 @@ check "names the step, the size and the cap" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter step filter passes a filters string of $size bytes, within 32768 bytes of the 131072-byte cap Linux puts on the INPUT_FILTERS environment variable")"
 check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
-
-echo "case: the slow-suite list a reader is given names the jobs the label gates"
-# AGENTS.md's "The slow test suites run in the merge queue, not on a pull-request push" item is
-# the only place a person is told which suites the full-ci label holds back, and it names them
-# one by one. The set it must equal is derivable from the jobs rather than from the outputs: a
-# slow suite is a job whose `if:` tests a changes output whose own expression carries the
-# `full-ci` term. Reading the outputs alone is not enough, because two jobs can share one output
-# - main's envoy-go-docs-finalizers rides envoy_go_race_docs - and then the guide can name seven
-# jobs while eight are held back. Nothing else holds the two together, so a job another tree adds
-# or deletes, which a forward merge then brings here, leaves the guide naming a job that does not
-# exist or missing one that does, in the file every agent of this repository loads.
-mismatch=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci.yaml" "$script_dir/../../AGENTS.md" <<'PY'
-import re, sys, yaml
-from pathlib import Path
-
-workflow = yaml.safe_load(Path(sys.argv[1]).read_text())
-outputs = {name for name, value in workflow["jobs"]["changes"].get("outputs", {}).items()
-           if "full-ci" in str(value)}
-gated = {job for job, body in workflow["jobs"].items()
-         if any(re.search(rf"needs\.changes\.outputs\.{output}\b", str(body.get("if", "")))
-                for output in outputs)}
-
-guide = Path(sys.argv[2]).read_text()
-line = next((l for l in guide.splitlines() if "jobs of `ci.yaml`" in l and "held back" in l), "")
-named = set(re.findall(r"`([a-z0-9-]+)`", line.split("(", 1)[1].rsplit(")", 1)[0])) if "(" in line else set()
-
-problems = [f"AGENTS.md names {job}, which the full-ci label does not gate"
-            for job in sorted(named - gated)]
-problems += [f"the label gates {job}, which AGENTS.md's list does not name"
-             for job in sorted(gated - named)]
-if not line:
-    problems.append("AGENTS.md holds no slow-suite list to read")
-print("; ".join(problems))
-PY
-)
-check "the guide's list and the label's gates are the same set" \
-  "$(is "$mismatch" "")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

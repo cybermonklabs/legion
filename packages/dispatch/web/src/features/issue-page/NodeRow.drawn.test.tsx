@@ -79,7 +79,8 @@ const NOBODY_RECORDED: Author = {
  *  `author` is who made it, as the tree names them (`AgentText.author`); `answerer` the person
  *  whose answer an ask carries; `expanded` and `folded` its fold, for a node that holds any;
  *  `focused` whether it holds the tree's focus. It is drawn inside `NoTooltips`, as the page's
- *  slots draw every row, so an author is named as the page names one. */
+ *  slots draw every row, so an author is named as the page names one. `redraw` draws the same
+ *  row of another node, as a later read of the tree does. */
 function renderRow(
   drawn: TreeNode,
   {
@@ -101,7 +102,7 @@ function renderRow(
   } = {}
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const row = (shown: TreeNode) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <NoTooltips>
@@ -116,7 +117,7 @@ function renderRow(
             focused={focused}
             isClosed={false}
             level={1}
-            node={drawn}
+            node={shown}
             onFocus={() => {}}
             onPin={() => {}}
             onToggle={() => {}}
@@ -129,6 +130,8 @@ function renderRow(
       </MemoryRouter>
     </QueryClientProvider>
   );
+  const view = render(row(drawn));
+  return Object.assign(view, { redraw: (next: TreeNode) => view.rerender(row(next)) });
 }
 
 beforeAll(async () => {
@@ -1156,12 +1159,18 @@ test("a link in a row's words to the address the reader is at replaces it", asyn
 
 /** Lays every element out `height` px tall for the rows drawn until the answer is called: no
  *  DOM of a unit test lays anything out, and the cut reads the words' own boxes
- *  (`clamp-measurer.ts`'s `measureClamp`). */
-function layOut(height: number): () => void {
+ *  (`clamp-measurer.ts`'s `measureClamp`). An element's words run `height` px, or what `words`
+ *  gives for it. */
+function layOut(
+  height: number,
+  words: (element: HTMLElement) => number = () => height
+): () => void {
   const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
     configurable: true,
-    get: () => height,
+    get(this: HTMLElement) {
+      return words(this);
+    },
   });
   // On Element, which owns the method, for the reason the press case above gives.
   const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
@@ -1232,6 +1241,55 @@ test("more is drawn on a cut row and never beside words a body draws whole", asy
       expect(person.container.querySelector("[data-node-more]")).toBeNull();
     } finally {
       person.unmount();
+    }
+  } finally {
+    near.restore();
+    restore();
+  }
+});
+
+// Decision 263: a row in view is cut before the page paints it, also where its words arrive
+// after the row. A statement is drawn from its document's blocks before the coverage read
+// brings its words, so its row mounts in view with none: the mount measures it whole, and the
+// batch its coming near starts holds it in view at that length. The commit that brings its words
+// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
+// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
+// whole for the 59 frames recorded after.
+test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
+  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+  // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
+  const restore = layOut(9600, (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600));
+  const near = installIntersectionObserver();
+  try {
+    const statement = { id: "spec#b-r1", type: "requirement" } as const;
+    const row = renderRow(node({ ...statement, text: "" }), { body: false });
+    try {
+      await measureNearWords(near);
+      expect(
+        row.container.querySelector("[data-node-more]"),
+        "a row with no words was cut"
+      ).toBeNull();
+      const frames: FrameRequestCallback[] = [];
+      const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      try {
+        await act(async () => {
+          row.redraw(node({ ...statement, text, tree: displayTree(text) }));
+        });
+        expect(
+          row.container.querySelector("[data-node-more]")?.textContent,
+          "the words that arrived were drawn whole in view"
+        ).toBe(`${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`);
+        expect(row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
+          "144px"
+        );
+      } finally {
+        frame.mockRestore();
+      }
+    } finally {
+      row.unmount();
     }
   } finally {
     near.restore();

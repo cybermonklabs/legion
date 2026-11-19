@@ -10,8 +10,9 @@ import { subsetRanges } from "../../fonts/inter/subset-script";
  * character outside UNICODES is drawn in a face of the reader's own machine, at that face's
  * width, or in none. So every string, template and JSX text of the page's own source - each file
  * of this directory but its tests and fixtures, `page-words.ts` among them - holds only
- * characters UNICODES keeps. A comment is not text the page draws, and neither is a regular
- * expression.
+ * characters UNICODES keeps. A JSX text or attribute string is read as JSX draws it, so a
+ * character reference there is the character it names. A comment is not text the page draws,
+ * and neither is a regular expression.
  *
  * A shape the page draws as an inline svg is named by a character it never draws as text:
  * `SHAPE_NAMES` lists each such character with the files that name it, and is held to them.
@@ -25,11 +26,46 @@ const SHAPE_NAMES: Readonly<Record<string, readonly string[]>> = {
 
 const ranges = subsetRanges();
 
-/** A character of the page's text that UNICODES does not keep, and where it stands. */
+/** A character of the page's text that UNICODES does not keep, or a reference this check does
+ *  not read, and where it stands. */
 interface Finding {
   character: string;
   line: number;
   path: string;
+}
+
+/** XML's five named references, which every JSX compiler reads as these ASCII characters. */
+const XML_REFERENCES = new Map([
+  ["amp", "&"],
+  ["apos", "'"],
+  ["gt", ">"],
+  ["lt", "<"],
+  ["quot", '"'],
+]);
+
+/** What a JSX text or a JSX attribute's string draws, one character at a time. The parser keeps a
+ *  character reference there as the source writes it, while JSX draws the character it names:
+ *  `&#9662;` and `&#x25BE;` draw ▾. A named reference other than XML's five stays whole, as one
+ *  entry the scan refuses: this check holds no table of HTML's names, so it cannot tell what
+ *  `&blacktriangledown;` draws, and the page writes such a character in a string instead. So does
+ *  a numeric reference past the last code point. */
+function jsxCharacters(text: string): string[] {
+  const characters: string[] = [];
+  let at = 0;
+  for (const reference of text.matchAll(/&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));/gi)) {
+    const [whole, hex, decimal, name] = reference;
+    characters.push(...text.slice(at, reference.index));
+    if (name !== undefined) {
+      characters.push(XML_REFERENCES.get(name) ?? whole);
+    } else {
+      const point =
+        hex === undefined ? Number.parseInt(decimal ?? "", 10) : Number.parseInt(hex, 16);
+      characters.push(point <= 0x10ffff ? String.fromCodePoint(point) : whole);
+    }
+    at = reference.index + whole.length;
+  }
+  characters.push(...text.slice(at));
+  return characters;
 }
 
 /** Each character UNICODES does not keep in the strings, template parts and JSX text of
@@ -46,11 +82,13 @@ function charactersOutside(path: string, source: string): Finding[] {
   );
   const found: Finding[] = [];
   const visit = (node: ts.Node): void => {
-    if (ts.isStringLiteral(node) || ts.isTemplateLiteralToken(node) || ts.isJsxText(node)) {
+    const jsx = ts.isJsxText(node) || (ts.isStringLiteral(node) && ts.isJsxAttribute(node.parent));
+    if (jsx || ts.isStringLiteral(node) || ts.isTemplateLiteralToken(node)) {
       const line = file.getLineAndCharacterOfPosition(node.getStart()).line + 1;
-      for (const character of node.text) {
+      for (const character of jsx ? jsxCharacters(node.text) : node.text) {
         const point = character.codePointAt(0) ?? 0;
-        if (!ranges.some(([first, last]) => first <= point && point <= last)) {
+        const reference = [...character].length > 1;
+        if (reference || !ranges.some(([first, last]) => first <= point && point <= last)) {
           found.push({ character, line, path });
         }
       }
@@ -61,8 +99,12 @@ function charactersOutside(path: string, source: string): Finding[] {
   return found;
 }
 
-/** A finding as a failure lists it: its file and line, the character and its code point. */
+/** A finding as a failure lists it: its file and line, the character and its code point, or the
+ *  reference as the source writes it. */
 function reading({ character, line, path }: Finding): string {
+  if ([...character].length > 1) {
+    return `${path}:${line}: ${character} (a reference this check does not read)`;
+  }
   const point = (character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0");
   return `${path}:${line}: ${character} (U+${point})`;
 }
@@ -110,5 +152,24 @@ test("a character named only in a comment is not the page's text, and one in a s
   ].join("\n");
   expect(charactersOutside("inline.tsx", source).map(reading)).toEqual([
     "inline.tsx:3: ⋯ (U+22EF)",
+  ]);
+});
+
+// JSX draws a character reference as the character it names, so `&#x25BE;` in JSX text is ▾,
+// which the typeface lacks, while the same characters in a script's string are plain ASCII.
+test("a character reference in JSX text or a JSX attribute is read as the character JSX draws", () => {
+  const source = [
+    "export const Mark = () => (",
+    '  <span aria-label="&blacktriangledown;" title="&#9662;">',
+    "    &#x25BE; &blacktriangledown; &amp; &apos;",
+    "  </span>",
+    ");",
+    'export const WRITTEN = "&#9662; &blacktriangledown;";',
+  ].join("\n");
+  expect(charactersOutside("inline.tsx", source).map(reading)).toEqual([
+    "inline.tsx:2: &blacktriangledown; (a reference this check does not read)",
+    "inline.tsx:2: ▾ (U+25BE)",
+    "inline.tsx:3: ▾ (U+25BE)",
+    "inline.tsx:3: &blacktriangledown; (a reference this check does not read)",
   ]);
 });

@@ -1,10 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { stubMatchMedia } from "../margin/margin-fixture";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymap } from "../shell/keymap";
+import { useDialog } from "../shell/useDialog";
 import { IssuePresets } from "./IssuePresets";
 import { presetPath } from "./issue-address";
 import { PRESET_NAMES, type Preset } from "./page-words";
@@ -175,6 +178,73 @@ test("a press on the one control leaves the focus where it is, then opens its me
     expect(document.activeElement, "the menu opened with the focus off the view that is on").toBe(
       menuItem("spec")
     );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+/** A dialog over the row that `useDialog` holds open, opened by `?` as the list of keys is. It
+ *  names itself no `aria-modal`, so only `useDialog`'s registry says that it is open. */
+function DialogOverTheRow(): ReactNode {
+  const [open, setOpen] = useState(false);
+  useKeymap("global", [
+    { id: "over-the-row", keys: "?", label: "A dialog over the row", run: () => setOpen(true) },
+  ]);
+  const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
+  return open ? (
+    <div aria-label="Over the row" ref={dialog.containerRef} role="dialog">
+      <button type="button">in the dialog</button>
+    </div>
+  ) : null;
+}
+
+// Escape closes the innermost layer. A dialog open over the menu takes it even before its focus
+// has moved in, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
+// answer (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and
+// that Details' drawer asks too, so a dialog's markup does not change it.
+test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubMatchMedia(true);
+  const view = render(
+    <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
+      <KeymapProvider>
+        <IssuePresets active="spec" issueKey="CORE-1" signals={SIGNALS} />
+        <DialogOverTheRow />
+      </KeymapProvider>
+    </MemoryRouter>
+  );
+  try {
+    const chooser = screen.getByRole("button", { name: /^Spec\b/ });
+    chooser.focus();
+    await user.keyboard("{Enter}");
+    expect(document.activeElement, "Enter left the focus off the view that is on").toBe(
+      menuItem("spec")
+    );
+    const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
+
+    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
+    // Escape lands on the menu's item.
+    const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      await user.keyboard("?");
+      expect(dialog(), "? drew no dialog").not.toBeNull();
+      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(
+        menuItem("spec")
+      );
+      await user.keyboard("{Escape}");
+    } finally {
+      frames.mockRestore();
+    }
+    expect(dialog(), "Escape before the dialog took the focus left it open").toBeNull();
+    expect(
+      screen.queryByRole("menu"),
+      "that Escape closed the menu under the dialog"
+    ).not.toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu"), "the next Escape left the menu open").toBeNull();
+    expect(document.activeElement, "that Escape left the focus off the control").toBe(chooser);
   } finally {
     view.unmount();
     restoreMatchMedia();

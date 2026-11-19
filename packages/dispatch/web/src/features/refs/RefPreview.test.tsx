@@ -424,11 +424,15 @@ test("Escape closes the open card", async () => {
   }
 });
 
-// The Escape that ends an IME composition is the composition's: the open card stays open, and an
-// Escape after the composition closes it.
+// The Escape that ends an IME composition is the composition's (decision 325): the open card stays
+// open and the key goes on to the page, which the card's capture listener on `document` would
+// stop. An Escape after the composition closes the card and stops there.
 test("an Escape that ends an IME composition leaves the open card open", () => {
   const getIssue = mockIssues();
   jest.useFakeTimers();
+  const behind: KeyboardEvent[] = [];
+  const hearBehind = (event: KeyboardEvent) => behind.push(event);
+  window.addEventListener("keydown", hearBehind);
   const view = render(<Harness />);
   try {
     const first = screen.getByRole("link", { name: "first" });
@@ -453,14 +457,17 @@ test("an Escape that ends an IME composition leaves the open card open", () => {
       screen.queryByRole("tooltip"),
       "the Escape that ended a composition closed the card"
     ).toBeInTheDocument();
+    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
     act(() => {
       document.dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
       );
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(behind.length, "the card's Escape reached the page").toBe(1);
   } finally {
     view.unmount();
+    window.removeEventListener("keydown", hearBehind);
     getIssue.mockRestore();
   }
 });

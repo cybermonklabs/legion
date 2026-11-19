@@ -49,6 +49,8 @@ PROGRAMS = [
      at("test", "Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)")),
     ("test", "scripts/approval-eval",
      at("test", "Typecheck the approval-eval statistics (bunx tsc --noEmit -p scripts/approval-eval)")),
+    ("test", "scripts/e2e/lib",
+     at("test", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's

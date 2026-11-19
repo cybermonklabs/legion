@@ -2672,14 +2672,20 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
   });
 });
 
+/** One CSS selector for the element axe names by `target`: axe writes one part for each frame
+ *  the element is inside, and a part that reaches into a shadow root as a list of its own. */
+function axeSelector(target: readonly unknown[]): string {
+  return target.map((part) => (Array.isArray(part) ? part.join(" ") : String(part))).join(" ");
+}
+
 /** What axe's `target-size` rule (WCAG 2.2's 2.5.8) says of the crumbs the page draws: a line for
  *  each crumb it fails or leaves for review, with the crumb's box and axe's own summary, and how
  *  many crumbs it passed. A crumb is a button the reader presses to zoom out, so it is a target
  *  whatever its tab index, but axe leaves an undersized target outside the tab order for review
- *  rather than failing it, and every crumb is outside it (`tabIndex={-1}`): at 1440 by 900 px
- *  the head's 16 px crumbs were no violation, each "incomplete", with axe's own words "Safe
- *  clickable space has a diameter of 16px instead of at least 24px. Is this a target?". So a
- *  crumb left for review is a fault here as one that fails is. */
+ *  rather than failing it, and every crumb is outside it (`tabIndex={-1}`): at 1440 by 900 px,
+ *  16 px crumbs with no padding of their own were no violation, each "incomplete", with axe's
+ *  own words "Safe clickable space has a diameter of 16px instead of at least 24px. Is this a
+ *  target?". So a crumb left for review is a fault here as one that fails is. */
 async function crumbTargets(
   page: Page
 ): Promise<{ readonly faults: readonly string[]; readonly passed: number }> {
@@ -2691,9 +2697,7 @@ async function crumbTargets(
     [...violations, ...incomplete]
       .flatMap((result) => result.nodes)
       .map(async (node) => {
-        const selector = node.target
-          .map((part) => (Array.isArray(part) ? part.join(" ") : String(part)))
-          .join(" ");
+        const selector = axeSelector(node.target);
         const box = await page.locator(selector).evaluate((crumb) => {
           const drawn = crumb.getBoundingClientRect();
           return `${Math.round(drawn.width)} by ${Math.round(drawn.height)} px at ${Math.round(drawn.left)}, ${Math.round(drawn.top)}`;
@@ -2709,13 +2713,18 @@ async function crumbTargets(
  *  fails none, leaves none for review and passes each one, so a line it read no crumb of fails
  *  too. */
 async function expectCrumbTargets(page: Page, where: string): Promise<void> {
+  let read: Awaited<ReturnType<typeof crumbTargets>> | undefined;
   await expect
-    .poll(async () => (await crumbTargets(page)).faults, {
-      message: `at ${where} axe's target-size rule (WCAG 2.2's 2.5.8) fails a crumb`,
-    })
+    .poll(
+      async () => {
+        read = await crumbTargets(page);
+        return read.faults;
+      },
+      { message: `at ${where} axe's target-size rule (WCAG 2.2's 2.5.8) fails a crumb` }
+    )
     .toEqual([]);
   expect(
-    (await crumbTargets(page)).passed,
+    read?.passed,
     `at ${where} axe's target-size rule passed fewer crumbs than the line draws`
   ).toBe(await page.locator("[data-crumb]").count());
 }
@@ -2739,14 +2748,26 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     const reply = comments.find((one) => one.id === seeded.comments.replies[0]);
     const thread = comments.find((one) => one.id === reply?.reply_to);
     expect(thread, "the server holds no thread the seeded reply answers").toBeDefined();
-    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
-    await expect
-      .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
-      .toBe(seeded.comments.replies[0] ?? "");
-    await page.keyboard.press(".");
     const crumbs = tree(page).locator("xpath=..").locator("[data-crumb]");
-    await expect.poll(() => crumbs.count(), { message: "no crumb is drawn" }).toBeGreaterThan(1);
+    /** Loads the reply's address at `size`, waits until the reply has the focus, and zooms into
+     *  it, waiting until the zoom draws more than one crumb. */
+    const zoomIntoReply = async (
+      size: { readonly height: number; readonly width: number },
+      at: string
+    ): Promise<void> => {
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the reply's address does not focus its row${at}`,
+        })
+        .toBe(seeded.comments.replies[0] ?? "");
+      await page.keyboard.press(".");
+      await expect
+        .poll(() => crumbs.count(), { message: `no crumb is drawn${at}` })
+        .toBeGreaterThan(1);
+    };
+    await zoomIntoReply({ height: PHONE.height, width: PHONE.width }, "");
     // The poll above waited until the zoom drew more than one crumb, so this read holds the
     // thread's crumb and the loop below walks at least it.
     const texts = (await crumbs.allInnerTexts()).map((crumb) => crumb.trim());
@@ -2825,21 +2846,11 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
 
     // WCAG 2.2's 2.5.8 as axe reads it (`target-size`), on this zoom two levels deep: at the
     // iPhone 13's 390 by 664 px, and at 1440 by 900 px, zoomed the same way from the reply's
-    // address. At 1440 px, where `dispatch-inline-link` sets no padding, each crumb of the head
-    // was its 16 px line alone, 34 by 16 and 125 by 16 px, which axe left for review.
+    // address. At 1440 px, where `dispatch-inline-link` sets no padding, a crumb with no padding
+    // of its own is its 16 px line alone, 34 by 16 and 125 by 16 px, which axe left for review.
     await page.setViewportSize({ height: 664, width: 390 });
     await expectCrumbTargets(page, "390 by 664 px");
-    await page.setViewportSize(DESKTOP);
-    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
-    await expect
-      .poll(() => focusedNodeId(page), {
-        message: "the reply's address does not focus its row at 1440 px",
-      })
-      .toBe(seeded.comments.replies[0] ?? "");
-    await page.keyboard.press(".");
-    await expect
-      .poll(() => crumbs.count(), { message: "no crumb is drawn at 1440 px" })
-      .toBeGreaterThan(1);
+    await zoomIntoReply(DESKTOP, " at 1440 px");
     await expectCrumbTargets(page, "1440 by 900 px");
   });
 });
@@ -3240,17 +3251,57 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
 
     // z cycles the whole tree: first lines, first lines with bodies to depth two, everything.
     await focusThePage(page);
-    const firstLines = await visibleIds(page);
+    const atFirst = await drawnRows(page);
+    const firstLines = atFirst.filter((row) => row.visible).map((row) => row.id ?? "<no id>");
+    const openAtFirst = new Set(
+      atFirst.filter((row) => row.expanded === "true").map((row) => row.id)
+    );
     await page.keyboard.press("z");
     expect(
       await nodeBodies(page).count(),
       "the second state of the cycle draws no bodies"
     ).toBeGreaterThan(1);
     await page.keyboard.press("z");
+    const everything = await drawnRows(page);
     expect(
-      (await visibleIds(page)).length,
+      everything.filter((row) => row.visible).length,
       "the third state of the cycle draws no more rows than the first"
     ).toBeGreaterThan(firstLines.length);
+    // In that state Left on an open row folds that branch at once, and every other row stays
+    // drawn: it recorded a fold the state did not draw, which changed nothing on the page. The
+    // branch is one the first state draws folded, so the cycle still comes back to its lines.
+    const atBranch = everything.findIndex(
+      (row) => row.visible && row.expanded === "true" && !openAtFirst.has(row.id)
+    );
+    const foldedBranch = everything[atBranch];
+    expect(
+      foldedBranch,
+      "the third state of the cycle draws no branch the first draws folded"
+    ).toBeTruthy();
+    // Every open branch outside the rows the branch holds is one the fold must leave open.
+    const outside = [
+      ...everything.slice(0, atBranch),
+      ...everything.slice(atBranch + 1 + heldIn(everything, foldedBranch?.id ?? "")),
+    ];
+    const stillOpen = outside
+      .filter((row) => row.visible && row.expanded === "true")
+      .map((row) => row.id);
+    await focusRow(page, foldedBranch?.id ?? "");
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, foldedBranch?.id ?? "").first(),
+      "Left on an open row in the cycle's third state drew the branch still open"
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(await focusedRow(page), "Left moved off the row it folded").toBe(foldedBranch?.id ?? "");
+    const afterFold = await drawnRows(page);
+    expect(
+      afterFold.filter((row) => row.visible).length,
+      "the fold drew no fewer rows"
+    ).toBeLessThan(everything.filter((row) => row.visible).length);
+    expect(
+      afterFold.filter((row) => row.visible && row.expanded === "true").map((row) => row.id),
+      "the fold closed another branch of the third state"
+    ).toEqual(stillOpen);
     await page.keyboard.press("z");
     expect(await visibleIds(page), "the cycle did not come back to the first lines").toEqual(
       firstLines
@@ -3660,11 +3711,7 @@ test("Tab from the focused row stops on its code block and its table, then leave
           (
             await new AxeBuilder({ page }).withRules(["scrollable-region-focusable"]).analyze()
           ).violations.flatMap((violation) =>
-            violation.nodes.map((node) =>
-              node.target
-                .map((part) => (Array.isArray(part) ? part.join(" ") : String(part)))
-                .join(" ")
-            )
+            violation.nodes.map((node) => axeSelector(node.target))
           ),
         {
           message:
@@ -3861,10 +3908,9 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       nodeRow(page, seeded.answeredAsk).first().locator("[data-row-report]"),
       "the key's report is not drawn at the row it was pressed on"
     ).toHaveCount(1);
-    expect(
-      await issuePage(page).locator("[data-row-report]").count(),
-      "the key's report is drawn at more than one place"
-    ).toBe(1);
+    expect(await pageStatus(page).count(), "the key's report is drawn at more than one place").toBe(
+      1
+    );
     expect(
       (await issuePage(page).getByRole("status").allInnerTexts()).filter(
         (words) => words.trim() !== ""
@@ -3872,10 +3918,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       "the key's report is drawn a second time away from the row"
     ).toBe(1);
     await page.keyboard.press("j");
-    await expect(
-      issuePage(page).locator("[data-row-report]"),
-      "the report stays after the reader moved on"
-    ).toHaveCount(0);
+    await expect(pageStatus(page), "the report stays after the reader moved on").toHaveCount(0);
     /** The report of the key pressed `after` is drawn at the focused row, in `words`, and
      *  nowhere else on the page. */
     const reportedAt = async (after: string, words: string): Promise<void> => {
@@ -3885,7 +3928,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
         `${after} says nothing at the row`
       ).toHaveText(words);
       await expect(
-        issuePage(page).locator("[data-row-report]"),
+        pageStatus(page),
         `the report of ${after} is drawn at more than one place`
       ).toHaveCount(1);
     };
@@ -3895,7 +3938,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
     await reportedAt("Home on the first row", KEY_REPORTS.first_row);
     await page.keyboard.press("j");
     await expect(
-      issuePage(page).locator("[data-row-report]"),
+      pageStatus(page),
       "the report of Home on the first row stays after the reader moved on"
     ).toHaveCount(0);
     await pressToOutlineEnd(page, "End");
@@ -3903,7 +3946,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
     await reportedAt("End on the last row", KEY_REPORTS.last_row);
     await page.keyboard.press("k");
     await expect(
-      issuePage(page).locator("[data-row-report]"),
+      pageStatus(page),
       "the report of End on the last row stays after the reader moved on"
     ).toHaveCount(0);
     const leaf =
@@ -3938,10 +3981,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
     // `.` on the zoom's own row asks for the zoom the tree holds already: it says so at the row,
     // and zooms nowhere.
     await page.keyboard.press(".");
-    await expect(
-      nodeRow(page, seeded.head).first().locator("[data-row-report]"),
-      ". on the row the tree is zoomed to says nothing at the row"
-    ).toHaveText(KEY_REPORTS.already_zoomed);
+    await reportedAt(". on the row the tree is zoomed to", KEY_REPORTS.already_zoomed);
     await expect(crumbs, ". on the row the tree is zoomed to zoomed elsewhere").toHaveCount(1);
     expect(await focusedNodeId(page), ". on the zoom's own row moved the focus").toBe(seeded.head);
     await page.keyboard.press("ArrowLeft");

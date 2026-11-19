@@ -4,8 +4,10 @@ import { join } from "node:path";
 /**
  * subset.sh's values as the checks read them: the font file's SHA-256 and the characters it keeps
  * (UNICODES), which `subset.test.ts` holds the shipped file and the face's `unicode-range` to and
- * `features/issue-page/page-typeface.test.ts` holds the page's own text to. One reading, so no
- * check reads the script another way.
+ * `features/issue-page/page-typeface.test.ts` holds the page's own text to. One other check reads
+ * the script itself: `main`'s `features/issue-page/shared-controls.tooltips.test.tsx`, in its case
+ * "inside NoTooltips no shared control draws a character the page's typeface lacks", with its own
+ * pattern for an entry, which takes four to six hex digits where `subsetRanges` takes one to six.
  */
 
 const subsetSh = readFileSync(join(import.meta.dir, "subset.sh"), "utf8");
