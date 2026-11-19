@@ -417,7 +417,7 @@ test("The names are read in one batched request, after every other read has answ
         await out.promise;
       });
       // The read sends no reading of the task, so the name the page publishes for it is the
-      // page's word for its kind, as a chip naming it draws (`targetNames`).
+      // page's word for its kind, as a chip naming it draws (`targetNaming`).
       await waitFor(() => expect(view.result.current.name).toBe(NODE_TYPE_NAMES.plan_task));
       expect(asked, `one names read after the ${read} read answers`).toHaveLength(1);
       expect(asked[0]).toContain(TASK_REF);
@@ -609,7 +609,7 @@ test("one publisher leaving keeps the names and ambiguous references another pub
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
 // link that reads the page's published names draws the name as it is, so the page publishes the
-// question's plain words, the name a chip naming the ask draws (`targetNames`).
+// question's plain words, the name a chip naming the ask draws (`targetNaming`).
 test("a published name of an ask is its question's plain words, never its markdown", async () => {
   const cited = `dispatch://${KEY}/ask/ask-9`;
   const stubs = stubTreeReads(
@@ -915,7 +915,7 @@ test("A plan with no role that the issue names by its id has its blocks read and
 
 // The batched read names a typed block by its stored excerpt, which opens on the block's
 // directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the name a chip naming the block draws (`targetNames`): the first line of
+// the page publishes the name a chip naming the block draws (`targetNaming`): the first line of
 // the server's reading where the read sends one, and the page's word for the block's kind where
 // it sends none - never the directive line.
 test("A published name of a typed block is never its directive line", async () => {

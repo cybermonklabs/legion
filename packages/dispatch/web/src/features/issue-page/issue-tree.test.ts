@@ -25,7 +25,6 @@ import type {
 import { askResolutionBadge } from "../refs/actor";
 import { agentsOnlyItem } from "./issue-address";
 import {
-  ambiguousTargets,
   buildIssueTree,
   drawnLine,
   FIRST_LINE_LIMIT,
@@ -35,7 +34,7 @@ import {
   lineWordsRaw,
   nodeWords,
   type TreeNode,
-  targetNames,
+  targetNaming,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
@@ -624,9 +623,9 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
 });
 
 // An ambiguous short reference has no name, as a gone target has none, so the page publishes
-// neither among its names (`targetNames`); it publishes the ambiguous one among the references
-// it read as ambiguous (`ambiguousTargets`), by the chip's own rule, so a link draws it as
-// written and links nothing, where it reads a gone one's own.
+// neither among its names (`targetNaming`'s `names`); it publishes the ambiguous one among the
+// references it read as ambiguous (its `ambiguous`), by the chip's own rule, so a link draws
+// it as written and links nothing, where it reads a gone one's own.
 test("the page publishes an ambiguous short reference as ambiguous, and a gone target nowhere", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -649,8 +648,9 @@ test("the page publishes an ambiguous short reference as ambiguous, and a gone t
     ] satisfies ReferenceTarget[],
   };
 
-  expect([...ambiguousTargets(reads)]).toEqual([ambiguous]);
-  expect([...targetNames(reads)]).toEqual([[named, title]]);
+  const naming = targetNaming(reads);
+  expect([...naming.ambiguous]).toEqual([ambiguous]);
+  expect([...naming.names]).toEqual([[named, title]]);
 });
 
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
@@ -910,7 +910,7 @@ test("a task needed by a pinned and an unpinned pointer is one needs chip", () =
 
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
-// which is the chip's by one rule (`targetNames`) - draws its plain words and no `**`, backtick
+// which is the chip's by one rule (`targetNaming`) - draws its plain words and no `**`, backtick
 // or link mark. An issue's name is its title, which is no markdown, and stands as written.
 test("a chip naming an ask, a comment or a message draws its plain words, an issue its title", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -941,7 +941,7 @@ test("a chip naming an ask, a comment or a message draws its plain words, an iss
       { name: "Hold the deploy until the plan lands", ref },
       { name: title, ref: issueRef },
     ]);
-    expect([...targetNames(reads)], kind).toEqual([
+    expect([...targetNaming(reads).names], kind).toEqual([
       [ref, "Hold the deploy until the plan lands"],
       [issueRef, title],
     ]);
@@ -3119,7 +3119,7 @@ test("a bare address in a node's line reads as its target's short form, from a r
 
 // R22: a comment's body is stored markdown, which a chip naming the comment draws
 // read to plain words (`plainWords`), so a bare address in the body reads as its target's short
-// form in the chip's name and in the name the page publishes for it (`targetNames`). A link
+// form in the chip's name and in the name the page publishes for it (`targetNaming`). A link
 // whose target is an address reads as its words, as it did.
 test("a chip naming a comment whose body holds a bare address names it by the short form", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -3136,7 +3136,7 @@ test("a chip naming a comment whose body holds a bare address names it by the sh
 
   const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
   expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([{ name, ref }]);
-  expect([...targetNames(reads)]).toEqual([[ref, name]]);
+  expect([...targetNaming(reads).names]).toEqual([[ref, name]]);
 });
 
 // R1 and R21: a stored text read to plain words holds the words the server's reading of the
@@ -3185,7 +3185,7 @@ test("a stored text read to plain words holds the words of the server's reading 
   };
   const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
   expect(chips?.map(({ name }) => name)).toEqual(["Hold the deploy."]);
-  expect([...targetNames(reads)]).toEqual([[ref, "Hold the deploy."]]);
+  expect([...targetNaming(reads).names]).toEqual([[ref, "Hold the deploy."]]);
 });
 
 // The body draws a node's whole words, the words filter matches them and the batched reference

@@ -254,7 +254,7 @@ export function coverageStatements(
 /**
  * The reads as every builder reads them. `lineOf` is the one line a place that draws one line
  * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
- * `targetNames` give R1's rule over the words of the reading's first block (`chipLine`, which
+ * `targetNaming` give R1's rule over the words of the reading's first block (`chipLine`, which
  * is `drawnLine(firstLineOf(…))` of what `lineWords` reads), which this module cannot import,
  * since `issue-tree.ts` imports it. Every caller hands one in, so no chip names a block by
  * anything but the line its caller chose: a default would name it by its whole reading.
@@ -1256,13 +1256,7 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   // The newest result that stands for something at the commit the server names for the check:
   // over the check's words now and at its basis (`standingCommit`). A check with no result has
   // none, and one with no `pass_stands` is read before it.
-  const here =
-    check.pass_stands === undefined
-      ? undefined
-      : standing.find(
-          (result) =>
-            result.check_words_moved !== true && result.commit_stands?.answer === "at_basis"
-        );
+  const here = check.pass_stands === undefined ? undefined : standing.find(standsAtBasis);
   if (here !== undefined) {
     return { stands: here, state: here.verdict === "pass" ? "passed" : "failed" };
   }
@@ -1271,6 +1265,16 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   // its results here.
   const stands = state === "passed" ? undefined : standing[0];
   return { state, ...(stands === undefined ? {} : { stands }) };
+}
+
+/** Whether `result` stands at its check's basis: recorded against the check's words now
+ *  (`check_words_moved`) and at the commit the server names for the check (`commit_stands` is
+ *  `at_basis`), as the server's `standingCommit` reads it. It is the one reading of "this result
+ *  stands at its check's basis" that a check's state (`checkStanding`) and its body's mark
+ *  (`statement-state.ts`'s `atBasis`) share, so the two never disagree. Whether anybody withdrew
+ *  the result is no part of it: both read it only of a result that stands (`standingResults`). */
+export function standsAtBasis(result: CheckResult): boolean {
+  return result.check_words_moved !== true && result.commit_stands?.answer === "at_basis";
 }
 
 /** Every result of `check` nobody withdrew, which is every result that stands as evidence: the

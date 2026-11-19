@@ -14,13 +14,12 @@ import type { IssueDetails, ReferenceTarget } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
-  ambiguousTargets,
   buildIssueTree,
   type DocumentBlocks,
   type IssueTreeReads,
   nodeWords,
   type TreeNode,
-  targetNames,
+  targetNaming,
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
@@ -343,28 +342,21 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // link in a document, in a decision's card or in a comment's preview shows, and a row's
   // in-place chip too (`reference-names.tsx`, R20). Every one of those draws the name it is
   // given as it is, so the name published for a target is the name a chip of the tree draws
-  // for it, by the one rule both read (`targetNames`): a block's drawn first line, a whole
+  // for it, by the one rule both read (`targetNaming`): a block's drawn first line, a whole
   // document's word on the page, a question's or a comment's words with no markup. Beside the
-  // names go the references the read answered ambiguous (`ambiguousTargets`), by that same
-  // rule: a short reference two targets carry has no name, as a gone one has none, and a link
-  // draws it as written and links nothing where it reads a gone one's own, which the names alone
-  // would not tell it. A chip's name is read from the issue, the documents'
-  // blocks and the names alone (`treeContext`), so the map and the set are built from those and
-  // nothing else: an answer of any other read - an ask, a comment, the coverage, the reader's
-  // login - publishes nothing new, which would draw every link beside the tree again. Until the
-  // names answer there is nothing to publish.
-  const names = useMemo(
+  // names go the references the read answered ambiguous, read with them by that same rule: a
+  // short reference two targets carry has no name, as a gone one has none, and a link draws it
+  // as written and links nothing where it reads a gone one's own, which the names alone would
+  // not tell it. A chip's name is read from the issue, the documents' blocks and the names alone
+  // (`treeContext`), so the map and the set are built from those and nothing else: an answer of
+  // any other read - an ask, a comment, the coverage, the reader's login - publishes nothing
+  // new, which would draw every link beside the tree again. Until the names answer there is
+  // nothing to publish.
+  const { ambiguous, names } = useMemo(
     () =>
       named === undefined
-        ? NO_TARGET_NAMES
-        : targetNames({ documents: documents.blocks, issue, targets: named }),
-    [documents.blocks, issue, named]
-  );
-  const ambiguous = useMemo(
-    () =>
-      named === undefined
-        ? NO_AMBIGUOUS_TARGETS
-        : ambiguousTargets({ documents: documents.blocks, issue, targets: named }),
+        ? { ambiguous: NO_AMBIGUOUS_TARGETS, names: NO_TARGET_NAMES }
+        : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
   usePublishReferenceNames(names, ambiguous);

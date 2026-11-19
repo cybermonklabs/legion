@@ -95,7 +95,7 @@ export interface NodeChip {
    *  reference names: two or more carry the id it writes short, and the read answers it gone and
    *  ambiguous (`ReferenceTarget.ambiguous`). The chip draws the reference as written, and the
    *  page publishes the reference as ambiguous for every link beside the tree to draw so too
-   *  (`ambiguousTargets`). Absent for every other reference. */
+   *  (`targetNaming`). Absent for every other reference. */
   readonly ambiguous?: true;
   /** Whether the batched reference read has answered for this reference. A target it answered
    *  with no text of its own (`name` empty, or `gone`) is told apart from one whose answer is
@@ -116,7 +116,7 @@ export interface NodeChip {
    *  an ask's, a comment's and a message's stored text read to plain words (`plainWords`); and
    *  anything else's name as that read answers it. `""` for a block and for anything else
    *  until the read answers, and for a target that is gone. The page publishes this same name
-   *  for every link beside the tree to draw (`targetNames`). */
+   *  for every link beside the tree to draw (`targetNaming`). */
   readonly name: string;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -552,42 +552,38 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
 }
 
 /**
- * The name of each target of the batched reference read (`reads.targets`) that something answers
- * to now, by its address: the name a chip naming it draws (`NodeChip.name`), by the same rule
- * (`namingContext`), which the page publishes for every link beside the tree to draw
- * (`reference-names.tsx`). A link and a chip naming one target so never disagree. A target whose
- * name is `""` is left out: a target that is gone, which its chip names by `""` (`treeContext`),
- * and another issue's block the read sent no reading for, where a link that finds no name reads
- * its own (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by
- * `""` too and the page publishes among its ambiguous references instead (`ambiguousTargets`).
+ * What the page publishes from the targets of the batched reference read (`reads.targets`) for
+ * every link beside the tree to draw (`reference-names.tsx`), each read by the rule a chip naming
+ * the target draws by (`namingContext`), so a link and a chip naming one target never disagree.
+ * Both are read from one context in one walk over the targets, so they cannot disagree either.
+ *
+ * - **`names`**: the name of each target that something answers to now, by its address: the
+ *   name a chip naming it draws (`NodeChip.name`). A target whose name is `""` is left out: a
+ *   target that is gone, which its chip names by `""` (`treeContext`), and another issue's block
+ *   the read sent no reading for, where a link that finds no name reads its own
+ *   (`useKnownReferenceName`), and an ambiguous short reference, which its chip names by `""`
+ *   too and the page publishes in `ambiguous` instead.
+ * - **`ambiguous`**: the references the read answered ambiguous: each writes short an id two or
+ *   more targets carry, so it names none of them, and a chip naming it says so
+ *   (`NodeChip.ambiguous`). The page publishes them beside its names, so a link tells an
+ *   ambiguous reference from a gone one, which has no name either: it draws the first as its
+ *   author wrote it and links nothing, where it reads the second's own.
+ *
+ * No reference is in both: an ambiguous chip's name is `""`.
  */
-export function targetNames(reads: IssueTreeReads): ReadonlyMap<string, string> {
-  const context = namingContext(reads);
-  const names = new Map<string, string>();
-  for (const target of reads.targets ?? []) {
-    const name = context.chipOf(target.ref).name;
-    if (name !== "") names.set(target.ref, name);
-  }
-  return names;
-}
-
-/**
- * The references of the batched reference read's targets (`reads.targets`) the read answered
- * ambiguous: each writes short an id two or more targets carry, so it names none of them, and a
- * chip naming it says so (`NodeChip.ambiguous`). The page publishes them beside its names
- * (`reference-names.tsx`), so a link tells an ambiguous reference from a gone one, which has no
- * name either: it draws the first as its author wrote it and links nothing, where it reads the
- * second's own. They are read by the chip's rule (`namingContext`), as `targetNames` reads
- * the names, so the two cannot disagree, and no reference is in both: an ambiguous chip's
- * name is `""`.
- */
-export function ambiguousTargets(reads: IssueTreeReads): ReadonlySet<string> {
+export function targetNaming(reads: IssueTreeReads): {
+  readonly ambiguous: ReadonlySet<string>;
+  readonly names: ReadonlyMap<string, string>;
+} {
   const context = namingContext(reads);
   const ambiguous = new Set<string>();
+  const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
-    if (context.chipOf(target.ref).ambiguous === true) ambiguous.add(target.ref);
+    const chip = context.chipOf(target.ref);
+    if (chip.ambiguous === true) ambiguous.add(target.ref);
+    if (chip.name !== "") names.set(target.ref, chip.name);
   }
-  return ambiguous;
+  return { ambiguous, names };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */
