@@ -2309,7 +2309,8 @@ A block of kind 6 runs to the first blank line as kind 7 does and is not exempt,
 A block of kind 7, one complete tag and nothing else, interrupts a paragraph in neither parser, so a lone tag continuing one, lazily or not, is read as inline HTML and refused nowhere;
 the refusal is a document's, so a textblock's inline markdown, which lands inside a paragraph the document already holds, keeps such a line (`dropHTMLFlowLines`).
 A task list item's marker (`[ ]`, `[x]` or `[X]` opening a list item's first paragraph) is read as the browser editor's parser reads it (`taskList`):
-followed by a space or a tab and then more text on the line, or by a line ending the paragraph continues past, and it takes only the one space, tab or line ending after it.
+followed by a space or a tab and then more text on the line, or by a line ending the paragraph continues past.
+With text after it, it takes the one space or tab after it; at a line ending, it takes the rest of the line and the line ending, unless two or more spaces stand before the ending, which it leaves to the paragraph as a hard break.
 Goldmark's took the marker with anything after it, so it read a link opening a list item (`- [x](https://…)`) as a checked task.
 
 Front matter is read as the browser editor's parser reads it (`pmdoc.parseFrontmatterBlock`):
