@@ -254,10 +254,12 @@ test("an argument far longer than the bound is cut to it rather than written who
   expect(digest).not.toContain(tail);
   expect(digest.startsWith('command="xxxx')).toBe(true);
   // The cut digest carries its marker: the one number in it is the length the whole argument
-  // held, read from the same digest with no bound, and the cut fills the bound exactly.
+  // held, read from the same digest with no bound, the marker's words name no unit (the length
+  // counts UTF-16 code units, not characters), and the cut fills the bound exactly.
   const whole = stallArgumentsDigest(input, Number.POSITIVE_INFINITY);
   expect(whole).toContain(tail);
   expect(digest.match(/\d+/g)).toEqual([String(whole.length)]);
+  expect(digest).toEndWith(`… (${whole.length} long in all)`);
   expect(digest.length).toBe(STALL_DIGEST_LIMIT);
 
   // The bound is a bound, whatever it is set to, and the marker is counted against it.
