@@ -392,6 +392,21 @@ PATH="$fail_dir:$PATH" key_run
 check "a section git's diff cannot copy into its entry's patch: exits 2" "$(is "$status" 2)"
 check "says UNKNOWN and names the section it could not copy" \
   "$(contains "$out" "UNKNOWN: GitHub returned no patch for file 1 of commit ${pr_sha:0:12}, and git could not read it either (section 1 of git's diff could not be copied into entry 1's patch)")"
+# A split of git's diff into its sections that fails: an `awk` ahead of the real one on PATH fails
+# for the split alone, the one call handed `dir=<stage>/sections`. The commit is UNKNOWN and
+# refused, with the cause named.
+split_dir="$work/failing-awk"
+mkdir -p "$split_dir"
+# The script's own "$@" and $a are for the fake awk to expand, not this harness.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nfor a in "$@"; do case $a in dir=*/sections) echo "awk: refused $a" >&2; exit 1 ;; esac; done\nexec %q "$@"\n' \
+  "$(command -v awk)" > "$split_dir/awk"
+chmod +x "$split_dir/awk"
+unpatched_head "$(printf 'line one\nline two, as %s said' "$planted_key")"
+PATH="$split_dir:$PATH" key_run
+check "a split of git's diff that fails: exits 2" "$(is "$status" 2)"
+check "says UNKNOWN and names the failed split" \
+  "$(contains "$out" "UNKNOWN: GitHub returned no patch for file 1 of commit ${pr_sha:0:12}, and git could not read it either (git's diff could not be split into its file sections)")"
 # A file that becomes a directory: git's diff of that commit lists the rename of the file and the
 # file added under the directory of its old name, and each gets its own patch, so the key the
 # commit moves into the new file is carried once, not counted twice.
