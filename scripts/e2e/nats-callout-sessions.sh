@@ -156,12 +156,49 @@ refuse() {
   echo "nats-callout-sessions: $*" >&2
   exit 2
 }
+# ---- the sessions and the controls, decided once ----------------------------------------------
+# The Codex sessions, by label: one for each way a Codex session can be told its credential.
+codex_labels=(codex-env codex-file)
+# How each session is told to use its broker token: `env`, NATS_AUTH=broker in its environment, or
+# `file`, `natsAuth: broker` in its envoy.json. Every launcher reads it through `told`.
+declare -A told_by=([omp]=env [claude]=file [codex-env]=env [codex-file]=file)
+# What each control changes, and nothing else does: `told_nothing`, no session is told at all;
+# `withheld`, the sessions whose stand-in takes each delivery and never answers it; and
+# `manifest_drops`, the variables taken out of the Codex plugin's manifest's env_vars.
+told_nothing=false
+withheld=()
+manifest_drops=()
 case $control in
-  "" | seedless | manifest-drops-nats-auth) ;;
-  withhold-ack) [ "$hosts" = plugins ] || refuse "the withhold-ack control runs in the default mode alone: a real host's inbox is the bridge's" ;;
-  withhold-ack-codex) [ "$hosts" = plugins ] || refuse "the withhold-ack-codex control runs in the default mode alone: a real Codex stores what codex queue hands it" ;;
+  "") ;;
+  seedless) told_nothing=true ;;
+  withhold-ack) withheld=(claude) ;;
+  withhold-ack-codex) withheld=("${codex_labels[@]}") ;;
+  manifest-drops-nats-auth) manifest_drops=(NATS_AUTH) ;;
   *) refuse "NATS_CALLOUT_SESSIONS_CONTROL is \"$control\"; the controls are seedless, withhold-ack, withhold-ack-codex and manifest-drops-nats-auth" ;;
 esac
+[ "${#withheld[@]}" = 0 ] || [ "$hosts" = plugins ] ||
+  refuse "the $control control runs in the default mode alone: a real host answers what it is handed"
+# told LABEL: sets told_env, the assignments that tell that session in its environment (none, or
+# NATS_AUTH=broker), and told_file, whether its envoy.json tells it (natsAuth: broker).
+told() {
+  told_env=()
+  told_file=false
+  [ "$told_nothing" = false ] || return 0
+  case ${told_by[$1]} in
+    env) told_env=(NATS_AUTH=broker) ;;
+    file) told_file=true ;;
+  esac
+}
+# withholds LABEL: whether that session's stand-in takes each delivery and never answers it.
+withholds() {
+  local label
+  for label in "${withheld[@]}"; do
+    [ "$label" != "$1" ] || return 0
+  done
+  return 1
+}
+# shellcheck source=scripts/e2e/lib/codex-host.sh
+source "$root/scripts/e2e/lib/codex-host.sh"
 [ -n "$pg_dsn" ] || refuse "name a Postgres server it may create databases on: LEGION_TEST_PG_DSN or DATABASE_URL"
 for tool in bun psql curl jq python3; do
   command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
@@ -254,14 +291,11 @@ scenario_pids=()
 scenario_fds=()
 # The real hosts' transcripts, which the teardown keeps in the evidence.
 transcripts=()
-# The Codex sessions, by label: codex-env is told NATS_AUTH=broker in its environment alone,
-# codex-file `natsAuth: broker` in its envoy.json.
-codex_labels=(codex-env codex-file)
 # The real Codex sessions' tmux servers, each one session named codex, which the teardown quits.
 codex_tmux_sockets=()
 cleanup_running=false
 cleanup() {
-  local status=$1 pid fd sock label log transcript
+  local status=$1 pid fd
   # Once: a repeated INT or TERM, or the EXIT after one, finds the stop already running. Both are
   # ignored from here on rather than put back on their default, which a repeat would then end the
   # run by, before the stack stopped and dropped its databases.
@@ -270,26 +304,7 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM
   set +e
-  # Each real Codex's terminal as it stands, whole, for the evidence: Codex keeps no log of its own
-  # unless asked.
-  [ "${#codex_tmux_sockets[@]}" = 0 ] || mkdir -p "$evidence/sessions"
-  for sock in "${codex_tmux_sockets[@]}"; do
-    "$tmux_bin" -S "$sock" capture-pane -p -S - -t codex >"$evidence/sessions/${sock##*/}-pane.txt" 2>&1
-  done
-  # A real Codex quits on two ^Cs, which closes its plugin's MCP server's stdin, so the server
-  # deregisters its session; a Codex still up 15 s later goes with its tmux server.
-  for sock in "${codex_tmux_sockets[@]}"; do
-    "$tmux_bin" -S "$sock" send-keys -t codex C-c 2>/dev/null
-    sleep 0.5
-    "$tmux_bin" -S "$sock" send-keys -t codex C-c 2>/dev/null
-  done
-  for sock in "${codex_tmux_sockets[@]}"; do
-    for _ in $(seq 1 75); do
-      "$tmux_bin" -S "$sock" has-session -t codex 2>/dev/null || break
-      sleep 0.2
-    done
-    "$tmux_bin" -S "$sock" kill-server 2>/dev/null
-  done
+  codex_stop
   # A client's input ending is its host going away: each closes the end this shell holds of every
   # fifo before it starts, so it sees the end here, runs its shutdown (deregistering its session)
   # and exits; one still running 5 s later is killed with its process group.
@@ -313,10 +328,7 @@ cleanup() {
   for out in "$work"/*.out; do
     [ -f "$out" ] && cp "$out" "$evidence/client-logs/"
   done
-  # The stand-in Codex sessions' transcripts, which the plugin read.
-  for transcript in "$work"/codex-*/codex-home/sessions/*/*/*/rollout-*.jsonl; do
-    [ -f "$transcript" ] && cp "$transcript" "$evidence/client-logs/"
-  done
+  codex_clean
   if [ -n "${claude_home:-}" ] && declare -F claude_transcript >/dev/null; then
     file=$(claude_transcript) && transcripts+=("$file")
   fi
@@ -338,12 +350,6 @@ cleanup() {
   esac
   case ${stack_tmp:-} in
     /tmp/ncs-stack.*) rm -rf -- "$stack_tmp" ;;
-  esac
-  case ${codex_root:-} in
-    */ncs-codex.??????) rm -rf -- "$codex_root" ;;
-  esac
-  case ${codex_tmux_dir:-} in
-    /tmp/ncs-codex-tmux.*) rm -rf -- "$codex_tmux_dir" ;;
   esac
   echo "nats-callout-sessions: evidence kept in $evidence"
   exit "$status"
@@ -391,48 +397,7 @@ if [ "$hosts" = real ]; then
   note "Claude Code $claude_reported from $claude_pin; $omp_reported ($omp_real) as .omp-pin names; $codex_reported ($codex_bin); pi-envoy packed, claude-envoy built, legion built"
 fi
 
-# ---- the Codex plugin, built and packed as the release packs it ------------------------------
-# release.yaml's claude_envoy_build: scripts/build.ts --codex-out, then `bun pm pack` of that
-# directory. Each Codex session installs it from a marketplace of the run's own: the repository's
-# (.agents/plugins/marketplace.json) with the package's npm source swapped for the unpacked
-# tarball, so the plugin is installed under a release's name and keeps a release's state directory.
-marketplace=$root/.agents/plugins/marketplace.json
-jq -e 'any(.plugins[]?; .name == "codex-envoy")' "$marketplace" >/dev/null ||
-  refuse "$marketplace names no codex-envoy plugin"
-mkdir -p "$work/codex-pack" "$work/codex-market/.agents/plugins" "$work/codex-market/plugins/codex-envoy"
-(cd "$root/packages/claude-envoy" && bun scripts/build.ts --codex-out "$work/codex-envoy") \
-  >"$work/logs/build-codex-envoy.log" 2>&1 || refuse "codex-envoy did not build; see $work/logs/build-codex-envoy.log"
-(cd "$work/codex-envoy" && bun pm pack --destination "$work/codex-pack") >"$work/logs/pack-codex-envoy.log" 2>&1 ||
-  refuse "codex-envoy did not pack; see $work/logs/pack-codex-envoy.log"
-codex_tarballs=("$work"/codex-pack/*.tgz)
-{ [ "${#codex_tarballs[@]}" = 1 ] && [ -f "${codex_tarballs[0]}" ]; } ||
-  refuse "packing codex-envoy left no one tarball in $work/codex-pack"
-codex_plugin=$work/codex-market/plugins/codex-envoy
-tar xzf "${codex_tarballs[0]}" -C "$codex_plugin" --strip-components=1
-codex_manifest=$codex_plugin/.codex-plugin/plugin.json
-{ [ -r "$codex_manifest" ] && [ -r "$codex_plugin/dist/envoy-channel.js" ]; } ||
-  refuse "the packed codex-envoy holds no .codex-plugin/plugin.json and dist/envoy-channel.js"
-if [ "$control" = manifest-drops-nats-auth ]; then
-  jq '.mcpServers.envoy.env_vars -= ["NATS_AUTH"]' "$codex_manifest" >"$work/codex-manifest.json"
-  mv "$work/codex-manifest.json" "$codex_manifest"
-fi
-codex_market_name=$(jq -r .name "$marketplace")
-jq '.plugins |= map(if .name == "codex-envoy" then .source = {source: "local", path: "./plugins/codex-envoy"} else . end)' \
-  "$marketplace" >"$work/codex-market/.agents/plugins/marketplace.json"
-codex_plugin_version=$(jq -r .version "$codex_manifest")
-if jq -e '.mcpServers.envoy.env_vars | index("NATS_AUTH")' "$codex_manifest" >/dev/null; then
-  codex_names_nats_auth=true
-else
-  codex_names_nats_auth=false
-fi
-echo "   codex-envoy $codex_plugin_version packed; its manifest names NATS_AUTH among env_vars: $codex_names_nats_auth"
-if [ "$hosts" = plugins ]; then
-  # The stand-in `codex`, a binary of that name: the plugin's hooks find their codex process by
-  # its name, and the plugin runs `codex queue` with that process's own binary.
-  (cd "$root" && bun build --compile "$drivers/codex-client.ts" --outfile "$work/codex-bin/codex") \
-    >"$work/logs/build-codex-client.log" 2>&1 ||
-    refuse "the stand-in codex did not build; see $work/logs/build-codex-client.log"
-fi
+codex_pack
 
 # wait_for SECONDS COMMAND...: runs COMMAND every 0.2 s until it succeeds; 1 once SECONDS passed.
 wait_for() {
@@ -542,8 +507,8 @@ client_reply_timeout=60
 # shellcheck source=packages/pi-envoy/scripts/role-takeover/clients.sh
 source "$drivers/clients.sh"
 
-omp_auth=(NATS_AUTH=broker)
-[ "$control" != seedless ] || omp_auth=()
+told omp
+omp_auth=("${told_env[@]}")
 
 # close_held_fifos: closes, in a client's own subshell, the end this shell holds of every client's
 # fifo, so the client sees its input end when this shell closes its own (a child that held one
@@ -593,8 +558,9 @@ send omp "$(jq -cn --arg s "$omp_session" '{op: "start", session: $s}')"
 claude_config=$work/claude-config
 claude_state=$work/claude-state
 mkdir -p "$claude_config" "$claude_state"
-jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --arg control "$control" \
-  '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $control == "seedless" then {} else {natsAuth: "broker"} end)),
+told claude
+jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$told_file" \
+  '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
     dispatch: {enabled: false}}' >"$claude_config/envoy.json"
 printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
 # The inbox socket goes in a short directory of its own: a unix socket path past 107 bytes is
@@ -602,7 +568,7 @@ printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
 claude_tmp=$(mktemp -d /tmp/ncs-claude.XXXXXX)
 client_fifo claude
 claude_flags=()
-[ "$control" != withhold-ack ] || claude_flags=(--withhold-inbox-answers true)
+! withholds claude || claude_flags=(--withhold-inbox-answers true)
 (close_held_fifos && cd -- "$root/packages/claude-envoy" &&
   exec env -i PATH="$PATH" HOME="$work/bun-home" TMPDIR="$scratch" \
     bun "$drivers/claude-client.ts" --server "$channel_server" --session "$claude_session" \
@@ -652,8 +618,9 @@ else
   # The bridge's TMPDIR is short and of its own: it binds its inbox socket there, and a unix socket
   # path past 107 bytes is refused, which a run's nested scratch directory can pass.
   claude_tmp=$(mktemp -d /tmp/ncs-claude.XXXXXX)
-  jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --arg control "$control" \
-    '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $control == "seedless" then {} else {natsAuth: "broker"} end)),
+  told claude
+  jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$told_file" \
+    '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
       dispatch: {enabled: false}}' >"$claude_home/config/envoy.json"
   jq -n --arg bun "$(command -v bun)" --arg entry "$claude_plugin/dist/envoy-channel.js" \
     --arg data "$claude_home/config/envoy-plugin-data" \
@@ -686,139 +653,8 @@ else
   note "Claude Code session $claude_session"
 fi
 
-# ---- the two Codex sessions -------------------------------------------------------------------
-# Each in a Codex home of its own with the plugin installed as a release's, and its Envoy in the
-# envoy.json of its own HOME (~/.config/legion/envoy.json, which a Codex session reads where no
-# ENVOY_CONFIG_FILE names another). codex-env is told NATS_AUTH=broker in its environment alone,
-# codex-file `natsAuth: broker` in that file; under the seedless control neither is.
-declare -A codex_transcript=()
-# codex_envoy LABEL HOME: that label's envoy.json under HOME.
-codex_envoy() {
-  local named=false
-  [ "$1" != codex-file ] || [ "$control" = seedless ] || named=true
-  mkdir -p "$2/.config/legion"
-  jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$named" \
-    '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
-      dispatch: {enabled: false}}' >"$2/.config/legion/envoy.json"
-}
-if [ "$hosts" = plugins ]; then
-  # Each under the stand-in `codex`, the plugin copied where Codex installs it
-  # (<CODEX_HOME>/plugins/cache/<marketplace>/<plugin>/<version>), whose MCP server it starts with
-  # the manifest's env_vars alone, so NATS_AUTH in its environment reaches codex-env's server only
-  # through the manifest.
-  codex_flags=()
-  [ "$control" != withhold-ack-codex ] || codex_flags=(--withhold-queue-answers true)
-  for label in "${codex_labels[@]}"; do
-    base=$work/$label
-    installed=$base/codex-home/plugins/cache/$codex_market_name/codex-envoy/$codex_plugin_version
-    mkdir -p "$installed" "$base/home" "$base/cwd"
-    cp -R "$codex_plugin/." "$installed/"
-    codex_envoy "$label" "$base/home"
-    auth=()
-    [ "$label" != codex-env ] || [ "$control" = seedless ] || auth=(NATS_AUTH=broker)
-    client_fifo "$label"
-    (close_held_fifos && cd -- "$base/cwd" &&
-      exec env -i PATH="$PATH" HOME="$base/home" TMPDIR="$scratch" CODEX_HOME="$base/codex-home" \
-        ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${auth[@]}" \
-        "$work/codex-bin/codex" --plugin "$installed" --cwd "$base/cwd" \
-        --stderr "$work/logs/$label-server.err" --hook-log "$work/logs/$label-hooks.jsonl" \
-        "${codex_flags[@]}") \
-      <"$work/$label.stdin" >"${client_out[$label]}" 2>"$work/logs/$label.err" &
-    scenario_pids+=($!)
-  done
-  # The session's first prompt: the plugin's SessionStart hook records its id for the server.
-  for label in "${codex_labels[@]}"; do
-    wait_for 120 client_ready "$label" ||
-      refuse "the $label Codex client did not start: $(tail -n 10 "$work/logs/$label.err") $(tail -n 10 "$work/logs/$label-server.err" 2>/dev/null)"
-    send "$label" "$(jq -cn --arg s "${codex_session[$label]}" '{op: "start", session: $s}')"
-  done
-else
-  # The pinned Codex CLI's terminal in a tmux server of its own, the plugin installed from the run's
-  # marketplace with Codex's own commands, into a Codex home outside TMPDIR. Codex calls the model
-  # route the run was given through a provider of its own, whose key is in the variable it names
-  # (env_key), so the key is in Codex's environment and never in an argv or a file of Codex's.
-  tmux_bin=$(command -v tmux)
-  codex_cache=${XDG_CACHE_HOME:-$HOME/.cache}
-  mkdir -p "$codex_cache"
-  codex_root=$(mktemp -d "$codex_cache/ncs-codex.XXXXXX")
-  case $codex_root/ in
-    "${TMPDIR:-/tmp}"/* | /tmp/*)
-      refuse "the Codex homes would be under $codex_root, a temporary directory, where Codex refuses its helper binaries: set XDG_CACHE_HOME to a directory outside it"
-      ;;
-  esac
-  # The tmux sockets go in a short directory of their own: a unix socket path past 107 bytes is
-  # refused.
-  codex_tmux_dir=$(mktemp -d /tmp/ncs-codex-tmux.XXXXXX)
-  for label in "${codex_labels[@]}"; do
-    base=$codex_root/$label
-    mkdir -p "$base/codex-home" "$base/home" "$base/cwd" "$base/tmp"
-    codex_envoy "$label" "$base/home"
-    jq -rn --arg model "$codex_model" --arg url "$codex_base_url" --arg cwd "$base/cwd" '
-      "model = \($model | tojson)",
-      "model_provider = \"ncs\"",
-      "approval_policy = \"never\"",
-      "sandbox_mode = \"read-only\"",
-      "[model_providers.ncs]",
-      "name = \"ncs\"",
-      "base_url = \($url | tojson)",
-      "wire_api = \"responses\"",
-      "env_key = \"NCS_CODEX_MODEL_KEY\"",
-      "requires_openai_auth = false",
-      "[projects.\($cwd | tojson)]",
-      "trust_level = \"trusted\""' >"$base/codex-home/config.toml"
-    (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" -- \
-      "$codex_bin" plugin marketplace add "$work/codex-market") >>"$work/logs/$label-install.log" 2>&1 ||
-      refuse "codex plugin marketplace add failed for $label; see $work/logs/$label-install.log"
-    (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" -- \
-      "$codex_bin" plugin add "codex-envoy@$codex_market_name") >>"$work/logs/$label-install.log" 2>&1 ||
-      refuse "codex plugin add failed for $label; see $work/logs/$label-install.log"
-    installed=$base/codex-home/plugins/cache/$codex_market_name/codex-envoy/$codex_plugin_version
-    cmp -s "$codex_manifest" "$installed/.codex-plugin/plugin.json" ||
-      refuse "codex plugin add installed no copy of the packed manifest at $installed; see $work/logs/$label-install.log"
-    auth=()
-    [ "$label" != codex-env ] || [ "$control" = seedless ] || auth=(NATS_AUTH=broker)
-    sock=$codex_tmux_dir/$label
-    (isolated PATH="$PATH" HOME="$base/home" CODEX_HOME="$base/codex-home" TMPDIR="$base/tmp" \
-      TERM=xterm-256color LANG=C.UTF-8 NCS_CODEX_MODEL_KEY="$(<"$work/codex-model-key")" \
-      ENVOY_HEARTBEAT_MS="$heartbeat_ms" "${broker_env[@]}" "${auth[@]}" -- \
-      "$tmux_bin" -S "$sock" -f /dev/null new-session -d -s codex -x 200 -y 50 -c "$base/cwd" \
-      "$codex_bin" --dangerously-bypass-hook-trust) >>"$work/logs/$label-tmux.log" 2>&1 ||
-      refuse "tmux did not start Codex for $label; see $work/logs/$label-tmux.log"
-    codex_tmux_sockets+=("$sock")
-  done
-  # codex_composer SOCKET: Codex's terminal shows its prompt and has loaded its model, so it takes
-  # what is typed: a prompt typed while the header still says `model: loading` is lost (measured on
-  # 0.154.0).
-  codex_composer() {
-    local pane
-    pane=$("$tmux_bin" -S "$1" capture-pane -p -t codex 2>/dev/null) || return 1
-    grep -q 'Ask Codex' <<<"$pane" && ! grep -qE 'model: +loading' <<<"$pane"
-  }
-  # codex_record LABEL: the record the plugin's SessionStart hook wrote for that session.
-  codex_record() {
-    compgen -G "$codex_root/$1/codex-home/plugins/data/codex-envoy-$codex_market_name/codex-sessions/*.json"
-  }
-  for label in "${codex_labels[@]}"; do
-    sock=$codex_tmux_dir/$label
-    wait_for 120 codex_composer "$sock" ||
-      refuse "Codex showed no prompt for $label: $("$tmux_bin" -S "$sock" capture-pane -p -t codex 2>&1 | tail -n 15)"
-    # One turn of its own first: Codex runs SessionStart at a session's first prompt.
-    "$tmux_bin" -S "$sock" send-keys -t codex -l 'Reply with the one word: ready.'
-    sleep 0.5
-    "$tmux_bin" -S "$sock" send-keys -t codex Enter
-  done
-  for label in "${codex_labels[@]}"; do
-    wait_for 120 codex_record "$label" >/dev/null ||
-      refuse "Codex's SessionStart hook recorded no session for $label: $("$tmux_bin" -S "$codex_tmux_dir/$label" capture-pane -p -t codex 2>&1 | tail -n 15)"
-    record=$(codex_record "$label" | head -n 1)
-    codex_session[$label]=$(jq -r '.session_id' "$record")
-    codex_transcript[$label]=$(jq -r '.transcript_path' "$record")
-    transcripts+=("${codex_transcript[$label]}")
-    # Its plugin trades under this name once the pod is registered for it.
-    register_session "${codex_session[$label]}"
-    note "Codex session ($label) ${codex_session[$label]}"
-  done
-fi
+# ---- the two Codex sessions (lib/codex-host.sh) -----------------------------------------------
+codex_start
 
 # ---- the checks ---------------------------------------------------------------------------------
 ran=0
@@ -896,9 +732,7 @@ received() {
   elif [ "$1" = claude ]; then
     file=$(claude_transcript) && jq -rnR "$claude_entries" "$file" 2>/dev/null | grep -qF -- "$2"
   else
-    # A real Codex's own transcript: the turn `codex queue` started, or the hook's text inside a
-    # running turn, each a line that names the message.
-    grep -qF -- "$2" "${codex_transcript[$1]}" 2>/dev/null
+    codex_received "$1" "$2"
   fi
 }
 # not_received LABEL MARKER: why received found no MARKER: the host's own error, where its last
@@ -910,12 +744,6 @@ not_received() {
   else
     printf "the host shows no message naming '%s'" "$2"
   fi
-}
-# manifest_gap LABEL: for codex-env, whose credential is named in its environment alone, that the
-# installed plugin's manifest does not hand NATS_AUTH to its server, where it does not.
-manifest_gap() {
-  { [ "$1" = codex-env ] && [ "$codex_names_nats_auth" = false ]; } || return 0
-  printf '; the installed codex-envoy manifest names no NATS_AUTH among its env_vars, so Codex hands the plugin'"'"'s server none and it dials with no credential'
 }
 
 # consumer SESSION: the hub's own record of the session's consumer (`s-<id>`, as the listener names
@@ -975,7 +803,7 @@ message_each() {
     elif admitted_as "$session"; then
       failed "$step ($label)" "admitted as session/$session, but the message (send answered $code) did not arrive within 45 s"
     else
-      failed "$step ($label)" "not admitted: the hub lists no connection admitted as session/$session (send answered $code)$(manifest_gap "$label")"
+      failed "$step ($label)" "not admitted: the hub lists no connection admitted as session/$session (send answered $code)$(codex_manifest_gap "$label")"
     fi
   done
 }

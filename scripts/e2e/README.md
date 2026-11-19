@@ -5939,7 +5939,7 @@ the caller does, with its work directory, `<key-dir>` unconditionally and `<dest
 
 ## lib/model-endpoint.sh
 
-The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), whose own `note` and `fail` it calls, by [`parked-decision-devbox.sh`](#parked-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, and by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh).
+The model endpoint a Claude Code backend proof's key file is for, sourced by [`claude-backend-tmux.sh`](#claude-backend-tmuxsh) and [`claude-backend-sandbox.sh`](#claude-backend-sandboxsh), whose own `note` and `fail` it calls, by [`parked-decision-devbox.sh`](#parked-decision-devboxsh), which checks `LEGION_E2E_MODEL_BASE_URL` with `model_base_url_refusal`, by [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh), and by [`nats-callout-sessions.sh`](#nats-callout-sessionssh), which also holds Codex's route to its key with `responses_key_preflight`.
 `anthropic_base_url` is Anthropic's own endpoint, the one a run with no `LEGION_E2E_MODEL_BASE_URL` calls.
 `model_base_url_refusal URL` prints why `URL` cannot be a model base URL, and nothing when it can:
 an `http://` or `https://` URL of letters, digits and `:/._~-` alone (so it carries no user or password, and stays a plain YAML scalar), ending in neither a colon nor a slash.
@@ -5950,6 +5950,17 @@ With `BASE` named it also asks `GET /v1/models` with no key, which must not answ
 the code a refusal gave is noted), and `GET /key/info` with the key (a LiteLLM proxy serves key management at its root, not under `/v1`), whose `key_alias` (the proxy's non-secret name for the key, at the top level or under `info`) is noted as `the model key is <alias>`, or that the endpoint names no alias, never failing on it.
 Every call sends `anthropic-version: 2023-06-01`;
 the key reaches curl in `HEADER`, a 0600 header file removed before it returns (the callers' cleanup removes it too, after a `fail`), never an argv, and neither the key nor a response body is printed.
+
+`responses_key_preflight BASE KEY HEADER WHAT MODEL` holds an OpenAI Responses-compatible endpoint `BASE` (a Codex model provider's `base_url`, its `/v1` included) to the key in `KEY` the same way, sent as a bearer:
+`GET /models` with the key must answer 200 and list `MODEL`, and `GET /models` with no key must not answer 200.
+
+## lib/codex-host.sh
+
+The Codex CLI sessions of [`nats-callout-sessions.sh`](#nats-callout-sessionssh), which sources it; it keeps the Codex sessions' lifecycle, and the script keeps the checks and the one table of how each session is told its credential and what each control changes (`told`, `withholds`, `manifest_drops`), which it reads.
+`codex_pack` builds and packs the Codex plugin as the release does (`scripts/build.ts --codex-out`, `bun pm pack`) into a marketplace of the run's own, takes the control's variables out of its manifest's `env_vars`, and in the default mode compiles the stand-in `codex` (`packages/pi-envoy/scripts/role-takeover/codex-client.ts`).
+`codex_start` starts each Codex session and makes its first prompt: under the stand-in in the default mode, and as the pinned Codex CLI in a tmux server of its own with `--real-hosts`.
+`codex_stop` keeps each real Codex's terminal in the evidence and quits it, and `codex_clean` keeps the stand-in transcripts and removes the real sessions' Codex homes and sockets.
+Sourced, never run: it defines functions and starts nothing of its own.
 
 ## lib/install-box-login-route.sh
 
