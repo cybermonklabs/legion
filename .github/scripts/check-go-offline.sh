@@ -10,28 +10,52 @@
 # one is written, in Go, TypeScript, Python or shell, so this program asks every such place for
 # its answer instead. It checks two things.
 #
-# 1. Every go command a file starts runs with GOPROXY=off, or says why it need not. A site is a
-#    place that starts `go` with a subcommand that can load a module (build, run, list, install,
-#    get, mod, test, vet, env, generate, work, version: env and version too, since a go.mod's
-#    toolchain line can make either fetch a toolchain), or that resolves the go binary a later
-#    line starts:
-#      Go          exec.Command("go", ...), exec.CommandContext(ctx, "go", ...),
-#                  exec.LookPath("go"), filepath.Join(..., "bin", "go")
-#      TypeScript  Bun.spawn, Bun.spawnSync, spawn, spawnSync, execFile, execFileSync, execa and
-#                  their Async forms with "go" as the command, an argv array that starts "go" and
-#                  a subcommand (or "-C", a directory and a subcommand), Bun's $`go ...` and
-#                  exec("go ...")
-#      Python      an argv list or tuple that starts "go", and subprocess's string form
-#      shell       `go <subcommand>` or `go -C <directory> <subcommand>`, the directory quoted
-#                  or not, or a path ending /go, as a command: outside a quoted string (a $(...)
-#                  inside double quotes is a command) and outside a heredoc's body
+# 1. Every go command a file starts runs with GOPROXY=off, or says why it need not. Each file is
+#    read whole, a statement at a time, as its language parses it (a call's arguments across
+#    lines, Python through its ast module, shell as simple commands with continued lines joined),
+#    so an argv Biome writes one element a line is one argv. The go binary is "go", a path ending
+#    /go ("/usr/local/go/bin/go", "$GOROOT/bin/go"), filepath.Join or path.join(..., "go"),
+#    exec.LookPath("go"), Bun.which("go"), shutil.which("go"), or a name bound to one of those
+#    earlier in the same function (Go), file (TypeScript), function or module (Python) or script
+#    (shell, a variable set to it or to $(command -v go)). A site is where it starts:
+#      Go          exec.Command and exec.CommandContext of the go binary, with any arguments; of
+#                  `env SETTING... go`; of a shell's -c (`bash -c "go build"`), whose script is
+#                  read as shell; and an exec.LookPath("go") or filepath.Join(..., "bin", "go")
+#                  that no exec.Command of the same function starts
+#      TypeScript  Bun.spawn, Bun.spawnSync (an argv, or `cmd:`), spawn, spawnSync, execFile,
+#                  execFileSync, execFileAsync, execa and execaSync of the go binary, of `env
+#                  SETTING... go` or of a shell's -c; exec, execSync and execAsync of a shell
+#                  string; Bun's $`...` (a substitution that names the go binary reads as go,
+#                  any other as a word), each read as shell; and any argv array that starts the
+#                  go binary and a subcommand (or -C, a directory and a subcommand)
+#      Python      an argv list or tuple, or a call's own arguments, that start the go binary,
+#                  `env SETTING... go` or a shell's -c; a string os.system, os.popen or any
+#                  subprocess function is given, read as shell (an f-string's {...} as a word);
+#                  and a shutil.which("go") no argv of the same function starts
+#      shell       a word that is the go binary followed by a subcommand that can load a module
+#                  (build, run, list, install, get, mod, test, vet, env, generate, work, version:
+#                  env and version too, since a go.mod's toolchain line can make either fetch a
+#                  toolchain), after an optional -C DIR, anywhere in a simple command (after
+#                  `env`, `xargs` or a function of its own), in a $(...) or `...`, in the script
+#                  of a shell's -c, in what eval runs, and in a heredoc a shell with no script
+#                  operand reads; one word that quotes a whole command (echo "go build"), a
+#                  comment, and any other heredoc's body start nothing
 #    Comments and the text of string literals are not read for sites, so a fixture or a message
 #    that spells a go command starts nothing here. A site passes when it carries one of:
-#      the offline rule in its own text: "GOPROXY=off" (Go, Python, shell), GOPROXY: "off"
-#        (TypeScript) or Python's "GOPROXY": "off", on its line or within the lines after it that
-#        set its environment (4 for Go and Python, 6 for TypeScript); in shell on the command
-#        itself, backslash continuations included, or an `export GOPROXY=off` line earlier in
-#        the file;
+#      the offline rule in its own environment, where the last setting of GOPROXY, after the
+#        environment it inherits, is off: in Go the Env of the same *exec.Cmd variable (the last
+#        `X.Env = ...` after the call; append(os.Environ(), "GOPROXY=off") passes,
+#        append([]string{"GOPROXY=off"}, os.Environ()...) does not); in TypeScript the call's own
+#        options' env object, GOPROXY: "off" after every spread (Bun's $ reads a .env({...})
+#        chained to it); in Python the call's env= (a dict display after every ** spread, dict()
+#        or a name bound to one); in shell the command's own NAME=value prefix or the settings of
+#        an `env` before the go, or an `export GOPROXY=off` before it at the top level of the
+#        script or in the function or subshell that holds it (one in another function counts
+#        for nothing), with no later `unset`, `env -u GOPROXY` or other GOPROXY. A command of a
+#        pipeline has its own environment: in `GOPROXY=off go list | xargs go build` the build is
+#        online. A command inside a shell's -c, an eval or a heredoc a shell reads starts with the
+#        environment of the command that runs it. A "GOPROXY=off" in a comment, a neighbour's
+#        environment or a string no command is given counts for nothing;
 #      a reason: a comment holding `go-offline: <why>` on its line or within the 5 lines above
 #        it, saying why the command reads no module, why it is no test, or which job alone runs
 #        it, for a reader to judge;
@@ -39,9 +63,15 @@
 #        lines, which this refuses in a test file and in any file a required workflow names
 #        (ci.yaml and every local workflow it calls, whose jobs ci-ok judges), so no file a
 #        required job runs can wave its sites through at once.
+#    Its limits, each a form this reads as no site: a go binary handed to a function from another
+#    function, or held in a struct field or a map; an argv built by spreading another array or
+#    joined at run time ([...base, "build"], "go " + verb), but for a string a shell runs; an
+#    *exec.Cmd made as a struct literal; and a call inside a template literal's ${...}. A shell
+#    function an `export GOPROXY=off` in another function feeds reads as online, and is refused.
+#    A Python file its ast module cannot parse is refused, since none of its go commands is seen.
 #    Files under a directory named testdata, node_modules, dist, .git or .jj are not read: they
 #    are a test's inputs, and the test that runs one is itself a site. Which file is source, in
-#    which language, and how each language is read without its comments and string text, is
+#    which language, and how each language is read, statement by statement, is
 #    .github/scripts/source_scan.py's, which check-omp-offline.sh reads files with too.
 #
 # 2. Every job that runs a test built through testbuild fetches, in a step before, what that build
@@ -74,6 +104,7 @@ scripts=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 cd "$(dirname "$0")/../.."
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
+import ast
 import os
 import re
 import sys
@@ -83,66 +114,391 @@ import yaml
 
 import source_scan as scan
 
-SUBCOMMANDS = r"(?:build|run|list|install|get|mod|test|vet|env|generate|work|version)"
+SUBCOMMANDS = {"build", "run", "list", "install", "get", "mod", "test", "vet", "env", "generate", "work", "version"}
 REASON = re.compile(r"\bgo-offline:\s*\S")
 FILE_REASON = re.compile(r"\bgo-offline-file:\s*\S")
 FILE_REASON_LINES = 40
-# The string literals that stay code: the words a go command is spelled with, and a string that is
-# a go command itself (`"go build ..."`). Every other string's text is blanked.
-GO_WORDS = {"go", "-C", "bin"} | set(SUBCOMMANDS[3:-1].split("|"))
-GO_COMMAND_TEXT = re.compile(r"go\s+" + SUBCOMMANDS + r"\b")
+SETTING = re.compile(r"[A-Za-z_]\w*=")
 
 
-def go_literal(value):
-    return value in GO_WORDS or bool(GO_COMMAND_TEXT.match(value))
+def offline(elements):
+    """Whether the last element that can set GOPROXY sets it to off: a later GOPROXY, the inherited
+    environment or one nothing here can read after it leaves the command online."""
+    for element in reversed(elements):
+        if element[0] != "set":
+            return False
+        if element[1] == "GOPROXY":
+            return element[2] == "off"
+    return False
 
 
-SITE = {
-    "go": re.compile(
-        r'\bexec\.Command(?:Context)?\(\s*(?:[\w.]+(?:\(\))?\s*,\s*)?"go"\s*[,)]'
-        r'|\bexec\.LookPath\(\s*"go"\s*\)'
-        r'|\bfilepath\.Join\([^)]*"bin"\s*,\s*"go"\s*\)'),
-    "ts": re.compile(
-        r"\b(?:Bun\.spawn(?:Sync)?|spawn(?:Sync)?|execFile(?:Sync|Async)?|execa(?:Sync)?)\s*\(\s*\[?\s*([\"'`])go\1"
-        r"|\[\s*([\"'`])go\2\s*,\s*(?:([\"'`])-C\3\s*,\s*[^,\]]+,\s*)?([\"'`])" + SUBCOMMANDS + r"\4"
-        r"|\$`\s*go\s+" + SUBCOMMANDS + r"\b"
-        r"|\bexec(?:Sync)?\(\s*([\"'`])go\s+" + SUBCOMMANDS + r"\b"),
-    "py": re.compile(
-        r"[\[(]\s*([\"'])go\1\s*[,\])]"
-        r"|\bsubprocess\.\w+\(\s*([\"'])go\s+" + SUBCOMMANDS + r"\b"),
-    # A quoted -C directory is blanked to spaces by shell_code, so the directory's word may be absent.
-    "sh": re.compile(r"(?<![\w./$-])(?:go|[\w./${}-]*/go)(?=\s+(?:-C(?:=\S*\s+|\s+(?:\S+\s+)?))?"
-                     + SUBCOMMANDS + r"\b)"),
-}
-OFFLINE = {
-    "go": (re.compile(r'"GOPROXY=off"'), 4),
-    "ts": (re.compile(r"GOPROXY\s*:\s*[\"'`]off[\"'`]|GOPROXY=off"), 6),
-    "py": (re.compile(r"[\"']GOPROXY[\"']\s*:\s*[\"']off[\"']|GOPROXY=off"), 4),
-}
+def goish_text(text):
+    """Whether a program's name, as text with each expansion as \\x00, is the go binary: go, or a
+    path ending /go (`/usr/local/go/bin/go`, `$GOROOT/bin/go`)."""
+    return text == "go" or bool(re.fullmatch(r"[\w.\x00/~@+-]*/go", text))
 
 
-def code_lines(text, lang):
-    if lang == "sh":
-        return scan.shell_code(text)
-    return scan.code(text, lang, go_literal)
+def go_subcommand(values, k):
+    """Whether the words after a go at k are an optional -C DIR and a subcommand that loads a module."""
+    rest = values[k + 1:]
+    j = 2 if rest[:1] == ["-C"] else 1 if rest and rest[0].startswith("-C=") else 0
+    return j < len(rest) and rest[j] in SUBCOMMANDS
 
 
-def sites_of(raw, code, lang):
-    """(index, offline) for each site of a file."""
-    found, exported = [], False
-    for index, line in enumerate(code):
-        if lang == "sh" and re.match(r"^\s*export\s+GOPROXY=off\b", line):
-            exported = True
-        if not SITE[lang].search(line):
-            continue
-        if lang == "sh":
-            found.append((index, exported or "GOPROXY=off" in scan.continued(raw, index)))
-            continue
-        offline, after = OFFLINE[lang]
-        # The site's line and the next `after` lines of code after it, comments passed over.
-        window = [raw[k] for k in range(index, len(raw)) if code[k].strip()][:after + 1]
-        found.append((index, any(offline.search(l) for l in window)))
+def env_words(values):
+    """(index of the program after `env` and its settings, the settings) of an argv that starts with
+    env, else (0, [])."""
+    if not values or values[0] is None or values[0].rsplit("/", 1)[-1] != "env":
+        return 0, []
+    k, settings = 1, []
+    while k < len(values) and values[k] is not None and (values[k].startswith("-") or SETTING.match(values[k])):
+        if SETTING.match(values[k]):
+            settings.append(("set", *values[k].split("=", 1)))
+        elif values[k] in ("-u", "--unset") and k + 1 < len(values):
+            settings.append(("set", values[k + 1], None))
+            k += 1
+        elif values[k] in ("-i", "-"):
+            settings.append(scan.CLEAR)
+        k += 1
+    return k, settings
+
+
+def shell_c(values):
+    """The index of the script after a shell's -c in an argv, else None."""
+    if not values or values[0] is None or values[0].rsplit("/", 1)[-1] not in scan.SHELLS:
+        return None
+    j, takes_c = 1, False
+    while j < len(values) and values[j] is not None and values[j].startswith("-"):
+        takes_c |= bool(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", values[j]))
+        j += 2 if re.fullmatch(r"[-+][a-zA-Z]*[oO]", values[j]) else 1
+    return j if takes_c and j < len(values) else None
+
+
+# --- Shell: each simple command, its own settings, and the shell it hands more shell to.
+
+def shell_sites(text, line=0, base=(), depth=0):
+    """(line, offline) of each go command a shell text starts. Its environment: base (what a
+    command that ran this text gave it), each `export` or `unset` of GOPROXY before it at the top
+    level or in the function or subshell that holds it, its own NAME=value prefix and the settings
+    of an `env` before the go."""
+    commands = scan.shell_script(text, line)
+    go_names, exports, assigned = set(), [], {}
+    for order, command in enumerate(commands):
+        values = command.values()
+        settings = list(command.assigns) if not values else []
+        if values and values[0] in ("local", "declare", "typeset", "readonly", "export"):
+            for word in command.words[1:]:
+                name, eq, _ = word.value().partition("=")
+                if eq and re.fullmatch(r"[A-Za-z_]\w*", name):
+                    rest = list(word.parts)
+                    rest[0] = ("lit", rest[0][1].partition("=")[2], None) if rest and rest[0][0] == "lit" else rest[0]
+                    settings.append((name, scan.ShWord(rest, word.start, word.line)))
+        for name, value in settings:
+            assigned[name] = value
+            inner = [c for kind, _, nested in value.parts if kind == "cmd" for c in nested or ()]
+            if goish_text(value.value()) or any(c.values()[:1] in (["which"], ["command"], ["type"])
+                                                 and c.values()[-1:] == ["go"] for c in inner):
+                go_names.add(name)
+        if values and values[0] in ("export", "unset") or values[:2] in (["declare", "-x"], ["export", "-n"]):
+            unset = values[0] == "unset" or values[1:2] == ["-n"]
+            for word in command.words[1:]:
+                name, eq, value = word.value().partition("=")
+                if name == "GOPROXY":
+                    if unset:
+                        element = ("set", name, None)
+                    elif eq:
+                        element = ("set", name, value if word.static else None)
+                    else:  # GOPROXY=off; export GOPROXY
+                        held = assigned.get(name)
+                        element = ("set", name, held.value() if held is not None and held.static else None)
+                    exports.append((order, command.frames, element))
+    found = []
+    for order, command in enumerate(commands):
+        values = command.values()
+        scope = [e for at, frames, e in exports if at < order and command.frames[:len(frames)] == frames]
+        for k, word in enumerate(command.words):
+            named = len(word.parts) == 1 and word.parts[0][0] == "param" and word.parts[0][1] in go_names
+            if (named or goish_text(word.value())) and go_subcommand(values, k):
+                found.append((word.line, offline([*base, *scope, *scan.shell_env_elements(command, k)])))
+        if depth < 3:
+            for inner, inner_line in scan.shell_inner_scripts(command):
+                own = scan.shell_env_elements(command, len(command.words))
+                found += shell_sites(inner, inner_line, (*base, *scope, *own), depth + 1)
     return found
+
+
+# --- Go: each exec.Command of the go binary, and the Env of the *exec.Cmd it makes.
+
+def go_sites(src):
+    consumed, found = set(), []
+
+    def goish(a, b, depth=0):
+        text = src.string(a, b)
+        if text is not None:
+            return goish_text(text)
+        call = src.call_of(a, b)
+        if call:
+            if (call.callee == "exec.LookPath" and len(call.args) == 1 and src.string(*call.args[0]) == "go") or \
+                    (call.name == "Join" and call.args and src.string(*call.args[-1]) == "go"):
+                consumed.add(call.at)
+                return True
+            return False
+        parts = src.split(a, b, "+")
+        if len(parts) > 1:
+            last = src.string(*parts[-1])
+            return last is not None and last.endswith("/go")
+        name = src.name(a, b)
+        if name and depth < 4:
+            return any([goish(*r, depth + 1) for r in src.bound_all(name, a)])
+        return False
+
+    def text_of(a, b):
+        return "".join(src.string(*p) or "\x00" for p in src.split(a, b, "+"))
+
+    for call in src.calls():
+        first = {"exec.Command": 0, "exec.CommandContext": 1}.get(call.callee)
+        if first is None or len(call.args) <= first:
+            continue
+        argv = call.args[first:]
+        values = [src.string(*r) for r in argv]
+        k, settings = env_words(values)
+        env = src.go_cmd_env(call)
+        env = [scan.INHERIT] if env is None else env
+        if k < len(argv) and goish(*argv[k]):
+            found.append((src.line(call.at), offline(env + settings)))
+            continue
+        script = shell_c(values)
+        if script is not None:
+            found += shell_sites(text_of(*argv[script]), src.line(argv[script][0]), env)
+    for call in src.calls():
+        if call.at in consumed:
+            continue
+        if (call.callee == "exec.LookPath" and len(call.args) == 1 and src.string(*call.args[0]) == "go") or \
+                (call.name == "Join" and len(call.args) >= 2 and src.string(*call.args[-1]) == "go"
+                 and src.string(*call.args[-2]) == "bin"):
+            found.append((src.line(call.at), False))  # resolves the go binary something else starts
+    return found
+
+
+# --- TypeScript: each spawn of the go binary, Bun's $ and exec of a shell, and an argv array.
+
+SPAWNS = {"spawn", "spawnSync", "execFile", "execFileSync", "execFileAsync", "execa", "execaSync"}
+SHELL_CALLS = {"exec", "execSync", "execAsync"}
+
+
+def ts_sites(src):
+    found, handled = [], set()
+
+    def strip_bang(a, b):
+        return (a, b - 1) if b - a > 1 and src.punct(b - 1, "!") else (a, b)
+
+    def goish(a, b, depth=0):
+        a, b = strip_bang(a, b)
+        token = src.tokens[a]
+        if b - a == 1 and token.kind in ("string", "template"):
+            return goish_text(src.template_text(token, lambda sub: "\x00") if token.kind == "template" else token.value)
+        for op in ("??", "||"):
+            parts = [p for p in split_op(a, b, op)]
+            if len(parts) > 1:
+                return any([goish(*p, depth) for p in parts])
+        call = src.call_of(a, b)
+        if call:
+            return (call.name in ("which", "whichSync") and len(call.args) == 1 and src.string(*call.args[0]) == "go") \
+                or (call.name in ("join", "resolve") and bool(call.args) and src.string(*call.args[-1]) == "go")
+        name = src.name(a, b)
+        if name and depth < 4:
+            return any([goish(*r, depth + 1) for r in src.bound_all(name, a)])
+        return False
+
+    def split_op(a, b, op):
+        """[a, b) split at each top-level two-character operator op (?? or ||)."""
+        out, start, i = [], a, a
+        while i < b:
+            if src.tokens[i].kind == "punct" and src.tokens[i].value in ("(", "[", "{") and i in src.partner:
+                i = src.partner[i] + 1
+                continue
+            if i + 1 < b and src.punct(i, op[0]) and src.punct(i + 1, op[1]) \
+                    and src.tokens[i].end == src.tokens[i + 1].start:
+                out.append((start, i))
+                start = i + 2
+                i += 2
+                continue
+            i += 1
+        out.append((start, b))
+        return out
+
+    def substitute(sub):
+        """A template substitution as shell text: go when it names the go binary."""
+        inner = scan.Source(src.text, "ts", sub)
+        name = inner.name(0, len(inner.tokens)) if inner.tokens else None
+        return "go" if name and any([goish(*r) for r in src.bound_all(name, len(src.tokens))]) else "\x00"
+
+    def text_of(a, b):
+        token = src.tokens[a]
+        if b - a == 1 and token.kind == "template":
+            return src.template_text(token, substitute)
+        return "".join(src.string(*p) or "\x00" for p in src.split(a, b, "+"))
+
+    def elements(a, b, depth=0):
+        """The element ranges of an array literal, or of the array a name is bound to, else None."""
+        a, b = strip_bang(a, b)
+        if src.punct(a, "[") and src.partner.get(a) == b - 1:
+            handled.add(a)
+            return src.split(a + 1, b - 1)
+        name = src.name(a, b)
+        if name and depth < 4:
+            bound = src.bound(name, a)
+            if bound:
+                return elements(*bound, depth + 1)
+        return None
+
+    def argv_site(argv, line, env):
+        values = [src.string(*r) for r in argv]
+        k, settings = env_words(values)
+        if k < len(argv) and goish(*argv[k]):
+            found.append((line, offline(env + settings)))
+            return
+        script = shell_c(values)
+        if script is not None:
+            found.extend(shell_sites(text_of(*argv[script]), src.line(argv[script][0]), env))
+
+    for call in src.calls():
+        line = src.line(call.at)
+        if call.tagged:
+            # Bun's $`...`: the template is shell; a .env({...}) after it is its environment.
+            env = [scan.INHERIT]
+            after = call.close + 1
+            if src.punct(after, ".") and after + 2 < len(src.tokens) and src.tokens[after + 1].value == "env" \
+                    and src.punct(after + 2, "(") and after + 2 in src.partner:
+                inner = src.split(after + 3, src.partner[after + 2])
+                env = src.env_elements(*inner[0]) if inner else env
+            found.extend(shell_sites(text_of(call.open, call.open + 1), line, env))
+        elif call.name in SPAWNS and call.args:
+            argv, options = elements(*call.args[0]), 1
+            if argv is None and src.punct(call.args[0][0], "{"):  # Bun.spawn({ cmd: [...], env })
+                a, b = call.args[0]
+                for pa, pb in src.split(a + 1, b - 1):
+                    if src.tokens[pa].value == "cmd" and src.punct(pa + 1, ":"):
+                        argv, options = elements(pa + 2, pb), 0
+            if argv is None:
+                rest = elements(*call.args[1]) if len(call.args) > 1 else None
+                argv, options = [call.args[0]] + (rest or []), 2 if rest is not None else 1
+            env = src.ts_options_env(call, options)
+            # An argv bound to a name is read where it is spelled, as one given in place is.
+            bound = argv and src.name(*call.args[0]) is not None
+            argv_site(argv, src.line(argv[0][0]) if bound else line, [scan.INHERIT] if env is None else env)
+        elif call.name in SHELL_CALLS and call.args and call.callee in (
+                call.name, f"child_process.{call.name}", f"childProcess.{call.name}", f"cp.{call.name}"):
+            env = src.ts_options_env(call, 1)
+            found.extend(shell_sites(text_of(*call.args[0]), line, [scan.INHERIT] if env is None else env))
+    # An argv array no spawn above read, that starts go and a subcommand: its call's options, if any.
+    arguments = {r[0]: call for call in src.calls() for r in call.args}
+    for i, token in enumerate(src.tokens):
+        if not (token.kind == "punct" and token.value == "[" and i in src.partner) or i in handled:
+            continue
+        argv = src.split(i + 1, src.partner[i])
+        values = [src.string(*r) for r in argv]
+        k, settings = env_words(values)
+        if k < len(argv) and goish(*argv[k]) and go_subcommand(values, k):
+            holder = arguments.get(i)
+            env = src.ts_options_env(holder, 1) if holder else None
+            found.append((src.line(i), offline(([scan.INHERIT] if env is None else env) + settings)))
+    return found
+
+
+# --- Python: each argv list or tuple that starts go, each shell string, and a call's env=.
+
+def python_sites(tree):
+    consumed, found = set(), []
+
+    def goish(node, depth=0):
+        text = scan.python_text(node)
+        if text is not None:
+            return goish_text(text)
+        if isinstance(node, ast.Call):
+            callee = ast.unparse(node.func)
+            last = callee.rsplit(".", 1)[-1]
+            args = [scan.python_text(a) for a in node.args]
+            if (last == "which" and args[:1] == ["go"]) or (last == "join" and args and args[-1] == "go"):
+                consumed.add(id(node))
+                return True
+            return False
+        if isinstance(node, ast.Name) and depth < 4:
+            bound = scan.python_bound(node.id, node)
+            return bound is not None and goish(bound, depth + 1)
+        return False
+
+    def text_of(node):
+        return scan.python_text(node, lambda value: "go" if goish(value) else "\x00")
+
+    def env_of(call):
+        if call is None:
+            return [scan.INHERIT]
+        env = next((k.value for k in call.keywords if k.arg == "env"), None)
+        return [scan.INHERIT] if env is None else scan.python_env_elements(env)
+
+    def receiver(node):
+        """The call an argv is given to: the one it is an argument of, or the first call after its
+        assignment to a name that is given that name."""
+        parent = getattr(node, "parent", None)
+        if isinstance(parent, ast.Call) and node in parent.args:
+            return parent
+        if isinstance(parent, ast.Assign) and len(parent.targets) == 1 and isinstance(parent.targets[0], ast.Name):
+            name = parent.targets[0].id
+            for other in ast.walk(scan.python_scope(node)):
+                if isinstance(other, ast.Call) and other.lineno >= parent.lineno and any(
+                        isinstance(a, ast.Name) and a.id == name for a in other.args):
+                    return other
+        return None
+
+    def argv_site(nodes, line, call):
+        values = [scan.python_text(n) for n in nodes]
+        k, settings = env_words(values)
+        if k < len(nodes) and goish(nodes[k]):
+            found.append((line, offline(env_of(call) + settings)))
+            return True
+        script = shell_c(values)
+        if script is not None:
+            found.extend(shell_sites(text_of(nodes[script]) or "", nodes[script].lineno - 1, env_of(call)))
+            return True
+        return False
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            argv_site(node.elts, node.lineno - 1, receiver(node))
+        elif isinstance(node, ast.Call) and node.args:
+            callee = ast.unparse(node.func)
+            first = node.args[0]
+            if callee.rsplit(".", 1)[-1] not in ("which", "join") and not isinstance(first, (ast.List, ast.Tuple)) \
+                    and argv_site(node.args, node.lineno - 1, node):
+                continue
+            text = text_of(first)
+            if text is not None and (callee in ("os.system", "os.popen") or callee.startswith("subprocess.")):
+                found.extend(shell_sites(text, first.lineno - 1, env_of(node)))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and id(node) not in consumed and ast.unparse(node.func).endswith("which") \
+                and [scan.python_text(a) for a in node.args[:1]] == ["go"]:
+            found.append((node.lineno - 1, False))  # resolves the go binary something else starts
+    return found
+
+
+def sites_of(path, text, lang):
+    """(index, offline) of each line of a file that starts a go command: a line is offline when every
+    go command it starts is."""
+    if lang == "sh":
+        found = shell_sites(text)
+    elif lang == "py":
+        tree = scan.python_tree(text)
+        if tree is None:
+            return None
+        found = python_sites(tree)
+    else:
+        source = scan.Source(text, lang)
+        found = go_sites(source) if lang == "go" else ts_sites(source)
+    lines = {}
+    for index, is_offline in found:
+        lines[index] = lines.get(index, True) and is_offline
+    return sorted(lines.items())
 
 
 def reasoned(raw, index, lang):
@@ -180,7 +536,10 @@ for path, lang in scan.sources():
     if "go" not in text:
         continue
     raw = text.split("\n")
-    found = sites_of(raw, code_lines(text, lang), lang)
+    found = sites_of(path, text, lang)
+    if found is None:
+        errors.append((path, 1, "a Python file this check cannot parse, so its go commands are unseen; fix its syntax"))
+        continue
     if not found:
         continue
     file_reason = any(scan.COMMENT[lang].match(l) and FILE_REASON.search(l) for l in raw[:FILE_REASON_LINES])
@@ -194,9 +553,9 @@ for path, lang in scan.sources():
             errors.append((path, 1, f"a go-offline-file reason, which this file may not carry: {refusal}; "
                                     "give each of its go commands its own"))
             file_reason = False
-    for index, offline in found:
+    for index, is_offline in found:
         counts[lang] += 1
-        if offline:
+        if is_offline:
             offline_count += 1
         elif reasoned(raw, index, lang):
             reason_count += 1

@@ -4,9 +4,19 @@
 # with a GitHub annotation, and the offline form and the reasoned form of each pass, over a count
 # that shows the scan saw the command; a reason six lines up is too far; an argv array and a shell
 # command whose go names a directory with -C before its subcommand count too; a go command in a
-# comment, a quoted string or a heredoc's body starts nothing. Its file reason: refused in a test
-# file, and in a file ci.yaml or a workflow ci.yaml calls names, but not in one only a workflow
-# outside that set or a comment names. Its second rule: a job of any workflow that runs
+# comment, a quoted string or a heredoc's body starts nothing. Each form its header names is
+# planted once and refused bare: an argv Biome writes one element a line (Go, TypeScript, Python),
+# exec.CommandContext with a context made by a call, a command beside a neighbour whose Env holds
+# GOPROXY=off, the go binary as filepath.Join(runtime.GOROOT(), "bin", "go"), a path ending /go,
+# exec.LookPath, Bun.which, shutil.which or a variable, a shell's -c, eval, a heredoc fed to bash,
+# os.system, subprocess's string, shell=True and an f-string, execSync and exec, Bun's $`...` with
+# cd before go and with -C and a substitution, env SETTING go in an argv, a "GOPROXY=off" in a
+# trailing comment, GOPROXY=off before the inherited environment or before a later GOPROXY, the
+# later command of a pipeline, an export inside another function, env -u GOPROXY, and a .mts
+# test; and the offline form of the environment each language binds to its own command passes.
+# Its file reason: refused in a test file, and in a file ci.yaml or a workflow ci.yaml calls names,
+# but not in one only a workflow outside that set or a comment names. Its second rule: a job of
+# any workflow that runs
 # internal/daemon's tests, which build envoy commands through testbuild.EnvoyBinary, is refused
 # when no step before that one runs `.github/scripts/go-fetch.sh deps packages/envoy` of every such
 # command - a step with none, one after, one that leaves a command out, one in another job - and
@@ -109,6 +119,28 @@ refused() { # refused <path> <line>: the checks of a site refused with its annot
   check "fails" "$(is "$status" 1)"
   check "names $1:$2" "$(contains "$out" "$1:$2: a go command with no GOPROXY=off and no go-offline reason")"
   check "annotates the line" "$(contains "$out" "::error file=$1,line=$2::")"
+}
+
+# refuses <name> <path> <line> [<sites>]: a fixture holding this harness's stdin at <path> is
+# refused at <line> and nowhere else, over <sites> go commands (1 when not given).
+refuses() {
+  local root
+  root=$(fixture "$1")
+  put "$root" "$2"
+  run_check "$root"
+  refused "$2" "$3"
+  check "refuses it alone, over ${4:-1} go commands" "$(contains "$out" "^1 problems over the ${4:-1} go commands")"
+}
+
+# passes_offline <name> <path>: a fixture holding this harness's stdin at <path> passes, its one go
+# command read as offline.
+passes_offline() {
+  local root
+  root=$(fixture "$1")
+  put "$root" "$2"
+  run_check "$root"
+  check "exits 0" "$(is "$status" 0)"
+  check "reads its one command as offline" "$(contains "$out" 'every one of the 1 go commands .* runs with GOPROXY=off (1)')"
 }
 
 # --- The first rule, in each language ------------------------------------------------------------
@@ -361,6 +393,436 @@ EOF
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "counts no command at all" "$(contains "$out" 'every one of the 0 go commands')"
+
+# --- Each form the header names, read a statement at a time -------------------------------------
+# One plant a case, each bare (no GOPROXY=off, no reason) unless the case says otherwise. The Go
+# plants need not compile: the script reads text.
+
+echo "case: Go: an argv Biome writes one element a line is one site"
+refuses go-biome packages/app/biome_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	list := exec.Command(
+		"go",
+		"list",
+		"-deps",
+		"./...",
+	)
+	_ = list.Run()
+}
+EOF
+
+echo "case: Go: exec.CommandContext whose context is a call"
+refuses go-context packages/app/context_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.CommandContext(ctxOf(t), "go", "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: a command does not borrow the GOPROXY=off of the next one's Env"
+refuses go-neighbour packages/app/neighbour_test.go 4 2 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	list := exec.Command("go", "list", "-deps", "./...")
+	_ = list.Run()
+	build := exec.Command("go", "build", "./...")
+	build.Env = append(os.Environ(), "GOPROXY=off")
+	_ = build.Run()
+}
+EOF
+
+echo "case: Go: the go binary as filepath.Join(runtime.GOROOT(), \"bin\", \"go\")"
+refuses go-goroot packages/app/goroot_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: the go binary as a literal path ending /go"
+refuses go-path packages/app/path_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("/usr/local/go/bin/go", "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: the go binary exec.LookPath found, started in the same function"
+refuses go-lookpath packages/app/lookpath_test.go 8 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = exec.Command(goBin, "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: an exec.LookPath(\"go\") nothing here starts resolves the go a later line starts"
+refuses go-lookpath-alone packages/app/resolve_test.go 4 <<'EOF'
+package app
+
+func goBinary(t *testing.T) string {
+	path, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+EOF
+
+echo "case: Go: a go bound to a variable in the same function"
+refuses go-variable packages/app/variable_test.go 5 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	goBin := "go"
+	_ = exec.Command(goBin, "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: a shell's -c whose script runs go"
+refuses go-bash-c packages/app/bash_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("bash", "-c", "cd sub && go build ./...").Run()
+}
+EOF
+
+echo "case: Go: go after env in an argv, with its own settings"
+refuses go-env-argv packages/app/env_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("env", "GOFLAGS=-mod=mod", "go", "build", "./...").Run()
+}
+EOF
+passes_offline go-env-argv-offline packages/app/env_test.go <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	_ = exec.Command("env", "GOPROXY=off", "go", "build", "./...").Run()
+}
+EOF
+
+echo "case: Go: a \"GOPROXY=off\" in a trailing comment sets nothing"
+refuses go-comment packages/app/comment_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	build := exec.Command("go", "build", "./...") // "GOPROXY=off"
+	_ = build.Run()
+}
+EOF
+
+echo "case: Go: GOPROXY=off before the inherited environment, or before a later GOPROXY, is overridden"
+refuses go-before-environ packages/app/before_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	build := exec.Command("go", "build", "./...")
+	build.Env = append([]string{"GOPROXY=off"}, os.Environ()...)
+	_ = build.Run()
+}
+EOF
+refuses go-later-goproxy packages/app/later_test.go 4 <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	build := exec.Command("go", "build", "./...")
+	build.Env = append(os.Environ(), "GOPROXY=off", "GOPROXY=https://proxy.golang.org")
+	_ = build.Run()
+}
+EOF
+
+echo "case: Go: an Env bound to a variable that ends in GOPROXY=off is offline"
+passes_offline go-bound-env packages/app/bound_test.go <<'EOF'
+package app
+
+func TestDeps(t *testing.T) {
+	env := append(os.Environ(), "GOPROXY=off")
+	build := exec.Command("go", "build", "./...")
+	build.Env = env
+	_ = build.Run()
+}
+EOF
+
+echo "case: TypeScript: the cmd of a Bun.spawnSync Biome writes one element a line"
+refuses ts-biome-cmd packages/web/biome.test.ts 2 <<'EOF'
+test("build", () => {
+  Bun.spawnSync({
+    cmd: [
+      "go",
+      "build",
+      "./cmd/listener",
+    ],
+  });
+});
+EOF
+
+echo "case: TypeScript: an argv Biome writes one element a line"
+refuses ts-biome-argv packages/web/argv.test.ts 2 <<'EOF'
+test("deps", () => {
+  Bun.spawnSync(
+    [
+      "go",
+      "list",
+      "-deps",
+      "./...",
+    ],
+    { cwd: dir }
+  );
+});
+EOF
+
+echo "case: TypeScript: a spawn does not borrow the next one's GOPROXY: \"off\""
+refuses ts-neighbour packages/web/neighbour.test.ts 2 2 <<'EOF'
+test("deps", () => {
+  Bun.spawnSync(["go", "list", "-deps", "./..."]);
+  Bun.spawnSync(["go", "build", "./..."], {
+    env: { ...process.env, GOPROXY: "off" },
+  });
+});
+EOF
+
+echo "case: TypeScript: GOPROXY: \"off\" before a spread of the environment is overridden"
+refuses ts-before-spread packages/web/spread.test.ts 2 <<'EOF'
+test("build", () => {
+  Bun.spawnSync(["go", "build", "./..."], {
+    env: { GOPROXY: "off", ...process.env },
+  });
+});
+EOF
+
+echo "case: TypeScript: execSync of a shell string that runs go after cd"
+refuses ts-execsync packages/web/execsync.test.ts 2 <<'EOF'
+test("build", () => {
+  execSync("cd sub && go build ./...");
+});
+EOF
+
+echo "case: TypeScript: exec of a go command (Node's child_process)"
+refuses ts-exec packages/web/exec.test.ts 2 <<'EOF'
+test("deps", () => {
+  exec("go list -deps ./...", () => {});
+});
+EOF
+
+echo "case: TypeScript: Bun's \$\`go ...\`"
+refuses ts-bun-shell packages/web/shell.test.ts 2 <<'EOF'
+test("deps", async () => {
+  await $`go list -deps ./...`;
+});
+EOF
+
+echo "case: TypeScript: Bun's \$\` with cd before go, and with -C and a substitution"
+refuses ts-bun-shell-cd packages/web/shellcd.test.ts 2 <<'EOF'
+test("build", async () => {
+  await $`cd ${dir} && go build ./...`;
+});
+EOF
+refuses ts-bun-shell-chdir packages/web/shellchdir.test.ts 2 <<'EOF'
+test("build", async () => {
+  await $`go -C ${dir} build ./cmd/listener`;
+});
+EOF
+
+echo "case: TypeScript: Bun's \$\` with a .env({...}) that ends in GOPROXY: \"off\" is offline"
+passes_offline ts-bun-shell-env packages/web/shellenv.test.ts <<'EOF'
+test("deps", async () => {
+  await $`go list -deps ./...`.env({ ...process.env, GOPROXY: "off" });
+});
+EOF
+
+echo "case: TypeScript: a go Bun.which found, bound to a name"
+refuses ts-which packages/web/which.test.ts 3 <<'EOF'
+test("build", () => {
+  const go = Bun.which("go");
+  Bun.spawn([go!, "build", "./..."]);
+});
+EOF
+
+echo "case: TypeScript: go after env in an argv, and a shell's -c"
+refuses ts-env-argv packages/web/env.test.ts 2 <<'EOF'
+test("build", () => {
+  Bun.spawnSync(["env", "GOFLAGS=-mod=mod", "go", "build", "./..."]);
+});
+EOF
+refuses ts-bash-c packages/web/bash.test.ts 2 <<'EOF'
+test("build", () => {
+  Bun.spawnSync(["bash", "-c", "go build ./..."]);
+});
+EOF
+
+echo "case: TypeScript: Node's spawnSync(\"go\", [...]) with GOPROXY: \"off\" in its own env is offline"
+passes_offline ts-node-spawn packages/web/node.test.ts <<'EOF'
+test("deps", () => {
+  spawnSync("go", ["list", "./..."], { env: { ...process.env, GOPROXY: "off" } });
+});
+EOF
+
+echo "case: TypeScript: a .mts test is read"
+refuses ts-mts packages/web/deps.test.mts 2 <<'EOF'
+test("deps", () => {
+  Bun.spawnSync(["go", "list", "-deps", "./..."]);
+});
+EOF
+
+echo "case: Python: an argv Biome-style, one element a line"
+refuses py-multiline tools/test_multiline.py 6 <<'EOF'
+import subprocess
+
+
+def test_deps():
+    subprocess.run(
+        [
+            "go",
+            "list",
+            "-deps",
+        ]
+    )
+EOF
+
+echo "case: Python: os.system, subprocess's string, shell=True and an f-string"
+refuses py-system tools/test_system.py 5 <<'EOF'
+import os
+
+
+def test_deps():
+    os.system("go list -deps ./...")
+EOF
+refuses py-string tools/test_string.py 5 <<'EOF'
+import subprocess
+
+
+def test_deps():
+    subprocess.run("go list -deps ./...")
+EOF
+refuses py-shell tools/test_shell.py 5 <<'EOF'
+import subprocess
+
+
+def test_build():
+    subprocess.run("cd sub && go build ./...", shell=True)
+EOF
+refuses py-fstring tools/test_fstring.py 5 <<'EOF'
+import subprocess
+
+
+def test_deps(pkg):
+    subprocess.run(f"go list -deps {pkg}", shell=True)
+EOF
+
+echo "case: Python: GOPROXY off before a ** spread is overridden; dict(os.environ, GOPROXY=\"off\") is offline"
+refuses py-before-spread tools/test_spread.py 5 <<'EOF'
+import os, subprocess
+
+
+def test_deps():
+    subprocess.run(["go", "list"], env={"GOPROXY": "off", **os.environ})
+EOF
+passes_offline py-dict tools/test_dict.py <<'EOF'
+import os, subprocess
+
+
+def test_deps():
+    subprocess.run(["go", "list"], env=dict(os.environ, GOPROXY="off"))
+EOF
+
+echo "case: Python: a shell's -c in an argv, go after env, and a go shutil.which found"
+refuses py-bash-c tools/test_bash.py 5 <<'EOF'
+import subprocess
+
+
+def test_build():
+    subprocess.run(["bash", "-c", "go build ./..."])
+EOF
+refuses py-env-argv tools/test_env.py 5 <<'EOF'
+import subprocess
+
+
+def test_build():
+    subprocess.run(["env", "GOFLAGS=-mod=mod", "go", "build"])
+EOF
+refuses py-which tools/test_which.py 6 <<'EOF'
+import shutil, subprocess
+
+
+def test_build():
+    go = shutil.which("go")
+    subprocess.run([go, "build", "./..."])
+EOF
+
+echo "case: shell: bash -c, eval, and a heredoc a shell reads"
+refuses sh-bash-c tools/bash.test.sh 2 <<'EOF'
+#!/usr/bin/env bash
+bash -c 'go list -deps ./...'
+EOF
+refuses sh-eval tools/eval.test.sh 2 <<'EOF'
+#!/usr/bin/env bash
+eval "go list -deps ./..."
+EOF
+refuses sh-heredoc tools/heredoc.test.sh 3 <<'EOF'
+#!/usr/bin/env bash
+bash <<'SCRIPT'
+go list -deps ./...
+SCRIPT
+EOF
+
+echo "case: shell: the later command of a pipeline needs its own GOPROXY=off"
+refuses sh-pipeline tools/pipeline.test.sh 3 2 <<'EOF'
+#!/usr/bin/env bash
+GOPROXY=off go list -deps ./... |
+  xargs go build
+EOF
+
+echo "case: shell: an export GOPROXY=off inside a function covers that function alone"
+refuses sh-function-export tools/function.test.sh 6 <<'EOF'
+#!/usr/bin/env bash
+setup() {
+  export GOPROXY=off
+}
+setup
+go list -deps ./...
+EOF
+passes_offline sh-same-function tools/function.test.sh <<'EOF'
+#!/usr/bin/env bash
+build() {
+  export GOPROXY=off
+  go build ./...
+}
+EOF
+
+echo "case: shell: the go binary as a path ending /go, and as a variable set to it"
+refuses sh-goroot tools/goroot.test.sh 2 <<'EOF'
+#!/usr/bin/env bash
+"$GOROOT/bin/go" list -deps ./...
+EOF
+refuses sh-variable tools/variable.test.sh 3 <<'EOF'
+#!/usr/bin/env bash
+GO=$(command -v go)
+"$GO" build ./...
+EOF
+
+echo "case: shell: env -u GOPROXY and a later GOPROXY undo an earlier GOPROXY=off"
+refuses sh-env-unset tools/unset.test.sh 3 <<'EOF'
+#!/usr/bin/env bash
+export GOPROXY=off
+env -u GOPROXY go list -deps ./...
+EOF
+refuses sh-later tools/later.test.sh 2 <<'EOF'
+#!/usr/bin/env bash
+GOPROXY=off GOPROXY=direct go list -deps ./...
+EOF
 
 # --- The file reason ------------------------------------------------------------------------------
 

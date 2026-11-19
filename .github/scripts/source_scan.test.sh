@@ -134,12 +134,164 @@ check "the quoted text blanks and its \$(...) stays" \
 check "the heredoc's body is blank" "$(is "$(sed -n 3p <<<"$out" | tr -d ' ')" "")"
 check "a double-quoted path ending /go is the word go" "$(is "$(sed -n 5p <<<"$out")" 'go             build ./...')"
 
-echo "case: a continued shell line, and the words of a line"
-check "the line and the lines its backslashes continue" \
-  "$(is "$(py 'print(scan.continued(["a \\", "  b \\", "  c", "d"], 0))')" $'a \\\n  b \\\n  c')"
+echo "case: the words of a shell line"
 check "operators are words of their own and the comment is dropped" \
   "$(is "$(py 'print("|".join(scan.shell_words(sys.argv[1])))' 'cd "a b" && go test ./x; echo ok # c')" \
     'cd|a b|&&|go|test|./x|;|echo|ok')"
+
+# src_of <lang> <statements>: runs the statements with this harness's stdin read as `src`, a
+# scan.Source of that language.
+src_of() {
+  py "src = scan.Source(sys.stdin.read(), sys.argv[1])
+$2" "$1"
+}
+
+echo "case: Go: a call's arguments across lines, its comments left out"
+out=$(src_of go 'c = next(c for c in src.calls() if c.callee == "exec.Command")
+print(src.line(c.at) + 1, len(c.args), [src.string(*a) for a in c.args])' <<'EOF'
+package x
+cmd := exec.Command(
+	"go",
+	"list", // the subcommand
+)
+EOF
+)
+check "one call on its first line, two arguments" "$(is "$out" "2 2 ['go', 'list']")"
+
+echo "case: TypeScript: a template tagged by \$ or Bun.\$ is a call"
+out=$(src_of ts 'print(" ".join(c.callee for c in src.calls() if c.tagged))' <<'EOF'
+await $`go build`;
+await Bun.$`ls`;
+EOF
+)
+check "both tags" "$(is "$out" '$ Bun.$')"
+
+echo "case: Go: the Env of a Cmd is that variable's own, read after it"
+out=$(src_of go 'calls = [c for c in src.calls() if c.callee == "exec.Command"]
+print(src.go_cmd_env(calls[0]), src.go_cmd_env(calls[1]))' <<'EOF'
+package x
+
+func f() {
+	list := exec.Command("go", "list")
+	_ = list.Run()
+	build := exec.Command("go", "build")
+	build.Env = append(os.Environ(), "A=b", "GOPROXY=off")
+}
+EOF
+)
+check "none for the first, the inherited environment then each setting for the second" \
+  "$(is "$out" "None [('inherit',), ('set', 'A', 'b'), ('set', 'GOPROXY', 'off')]")"
+out=$(src_of go 'print(src.go_cmd_env(next(c for c in src.calls() if c.callee == "exec.Command")))' <<'EOF'
+package x
+
+func f() {
+	env := append([]string{"GOPROXY=off"}, os.Environ()...)
+	cmd := exec.Command("go", "build")
+	cmd.Env = env
+	cmd.Env = append(cmd.Env, "X=1")
+}
+EOF
+)
+check "through a name it is bound to, and an append to its own Env" \
+  "$(is "$out" "[('set', 'GOPROXY', 'off'), ('inherit',), ('set', 'X', '1')]")"
+out=$(src_of go 'print([src.go_cmd_env(c) for c in src.calls() if c.callee == "exec.Command"])' <<'EOF'
+package x
+
+func f() {
+	cmd := exec.Command("go", "list")
+	_ = cmd.Run()
+	cmd = exec.Command("go", "build")
+	cmd.Env = append(os.Environ(), "GOPROXY=off")
+}
+EOF
+)
+check "an Env set after the variable is assigned again is the new command's alone" \
+  "$(is "$out" "[None, [('inherit',), ('set', 'GOPROXY', 'off')]]")"
+
+echo "case: TypeScript: a call's own options' env, given in place or by a name"
+out=$(src_of ts 'print([src.ts_options_env(c, 1) for c in src.calls() if c.callee == "Bun.spawn"])' <<'EOF'
+Bun.spawn(["go"], { cwd: x, env: { ...process.env, GOPROXY: "off" } });
+const env = { GOPROXY: "off" };
+Bun.spawn(["go"], { env });
+Bun.spawn(["go"]);
+EOF
+)
+check "each spawn's own" \
+  "$(is "$out" "[[('unknown',), ('set', 'GOPROXY', 'off')], [('set', 'GOPROXY', 'off')], None]")"
+
+echo "case: a name is bound to the value of its nearest assignment, a statement ending at its line"
+out=$(src_of ts 'print(src.text_of_tokens(*src.bound("go", len(src.tokens))), src.text_of_tokens(*src.bound("x", len(src.tokens))))' <<'EOF'
+const go = Bun.which("go");
+const x: string = "y"
+run(x)
+EOF
+)
+check "TypeScript, a type annotation passed over" "$(is "$out" 'Bun.which("go") "y"')"
+out=$(src_of go 'print(src.text_of_tokens(*src.bound("goBin", len(src.tokens) - 1)))' <<'EOF'
+package x
+
+func f() {
+	goBin, err := exec.LookPath("go")
+	goBin = "go"
+	_ = run(goBin, err)
+}
+EOF
+)
+check "Go, the nearest of two" "$(is "$out" '"go"')"
+
+echo "case: Python: an env= built by dict(), a ** spread and assignments to its keys"
+out=$(py 'import ast
+tree = scan.python_tree(sys.stdin.read())
+call = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "run"][0]
+print(scan.python_env_elements(call.keywords[0].value), scan.python_env_elements(call.keywords[1].value))' <<'EOF'
+def f():
+    env = dict(os.environ, GOPROXY="off")
+    env["X"] = "1"
+    run(env=env, other={**os.environ, "GOPROXY": "off"})
+EOF
+)
+check "in the order they are made" \
+  "$(is "$out" "[('unknown',), ('set', 'GOPROXY', 'off'), ('set', 'X', '1')] [('unknown',), ('set', 'GOPROXY', 'off')]")"
+check "an f-string's text, each {...} as a placeholder" \
+  "$(is "$(py 'import ast; print(repr(scan.python_text(ast.parse(sys.argv[1]).body[0].value)))' 'f"go list {pkg}"')" "'go list \\x00'")"
+
+echo "case: shell: simple commands, nested ones, continued lines joined, and no heredoc body"
+out=$(py 'for c in scan.shell_script(sys.stdin.read()):
+    print(":".join([str(c.line + 1), c.function or "-", str(c.pipe), " ".join(w.source() for w in c.words),
+                    " ".join(n for n, _ in c.assigns)]))' <<'EOF'
+x=$(cd a && GOPROXY=off go build ./... \
+  -o out)
+f() {
+  go list | xargs go vet
+}
+cat <<TEXT
+go build
+TEXT
+case $1 in a) go test ;; esac
+for w in go build; do [[ $w == go ]]; done
+EOF
+)
+check "each command once, in order, with its function, its pipeline index and its prefix" \
+  "$(is "$out" "$(printf '%s\n' '1:-:0::x' '1:-:0:cd a:' '1:-:0:go build ./... -o out:GOPROXY' '4:f:0:go list:' '4:f:1:xargs go vet:' '6:-:0:cat:' '9:-:0:go test:')")"
+
+echo "case: shell: a command's own settings, and the shell it hands more shell to"
+out=$(py 'c = scan.shell_script(sys.argv[1])[0]
+print(scan.shell_env_elements(c, c.values().index("go")))' 'GOPROXY=off env -u A B=c go build')
+check "its prefix, then env's -u and NAME=value before the go" \
+  "$(is "$out" "[('set', 'GOPROXY', 'off'), ('set', 'A', None), ('set', 'B', 'c')]")"
+out=$(py 'print([s for c in scan.shell_script(sys.stdin.read()) for s in scan.shell_inner_scripts(c)])' <<'EOF'
+bash -euo pipefail -c 'go vet'
+eval go build
+sh <<SCRIPT
+go mod download
+SCRIPT
+cat <<TEXT
+go list
+TEXT
+EOF
+)
+check "a -c script, what eval runs, and a heredoc a shell reads, each with its line" \
+  "$(is "$out" "[('go vet', 0), ('go build', 1), ('go mod download', 3)]")"
 
 echo "case: a reason counts on the line, or on a comment line within five above"
 reasoned() { py 'import re

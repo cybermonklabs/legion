@@ -38,6 +38,8 @@ go_version="$("$go_cmd" env GOVERSION)"
 tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
+  # go-offline: a build's notices step runs this (lint's, envoy-go-checks' pack step, the releases
+  # and the image builds), no test: the install of the notices tool is that build's own fetch.
   (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
     "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
 fi
@@ -51,6 +53,8 @@ packages="$*"
 
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
+# go-offline: a build's notices step runs this (lint's, envoy-go-checks' pack step, the releases
+# and the image builds), no test, over the modules that build already loaded.
 # One --ignore per module path; module paths hold no whitespace, so the split is the list.
 # shellcheck disable=SC2046
 set -- "$@" $("$go_cmd" list -m -f '--ignore={{.Path}}')
@@ -75,6 +79,8 @@ fi
 # Each replaced module the packages compile in, and what replaces it: `go.mod`'s `replace` makes the
 # build take a module's source from another path (a fork), so that path, not the module's own, is
 # where its source is.
+# go-offline: a build's notices step runs this (lint's, envoy-go-checks' pack step, the releases
+# and the image builds), no test, over the modules that build already loaded.
 # shellcheck disable=SC2086
 "$go_cmd" list -deps -f '{{with .Module}}{{with .Replace}}{{$.Module.Path}}{{"\t"}}{{.Path}}{{with .Version}}@{{.}}{{end}}{{end}}{{end}}' $packages |
   awk 'NF' | LC_ALL=C sort -u >"$scratch/replacements.tsv"

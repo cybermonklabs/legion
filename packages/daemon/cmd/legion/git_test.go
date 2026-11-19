@@ -419,7 +419,6 @@ func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
 // toolchain that runs the tests.
 func goGitProgram(t *testing.T, source string) string {
 	t.Helper()
-	// go-offline: the build is of a module of its own that requires nothing, so it loads no module.
 	goTool, err := exec.LookPath("go")
 	if err != nil {
 		goTool = filepath.Join(runtime.GOROOT(), "bin", "go")
@@ -432,6 +431,7 @@ func goGitProgram(t *testing.T, source string) string {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "git")
+	// go-offline: the build is of a module of its own that requires nothing, so it loads no module.
 	build := exec.Command(goTool, "build", "-o", out, ".")
 	build.Dir = src
 	if output, err := build.CombinedOutput(); err != nil {
