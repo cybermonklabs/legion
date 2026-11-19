@@ -49,11 +49,6 @@ services:
       DISPATCH_NATS_DISABLED: ${DISPATCH_NATS_DISABLED:-}
       ENVOY_URL: ${ENVOY_URL:-http://127.0.0.1:9020}
       ENVOY_TOKEN: ${ENVOY_TOKEN:-}
-      # Optional boot seed for mappings absent from the dashboard. Stored
-      # repository mappings are authoritative; DISPATCH_DEFAULT_PROJECT catches
-      # external repositories with no stored mapping.
-      DISPATCH_REPO_PROJECTS: ${DISPATCH_REPO_PROJECTS:-}
-      DISPATCH_DEFAULT_PROJECT: ${DISPATCH_DEFAULT_PROJECT:-}
       # Session cookies are Secure by default; set this when serving the
       # OAuth dashboard over plain HTTP (local/tailnet use).
       DISPATCH_INSECURE_COOKIE: ${DISPATCH_INSECURE_COOKIE:-}

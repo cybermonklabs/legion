@@ -13,9 +13,9 @@
 # plan-approve`, refused on a spec, and `dispatch request-approval`, refused on a plan; and the one
 # request that names a spec and its Verification document together; a person's review and the CLI
 # pin the fetched version's UTF-8 bytes, even after the latest version changes; and, with a
-# repository mapped, every result of a check read whole — all forty characters of each commit,
-# so a commit that only reads like the head is told apart from it — beside a result at a commit
-# that repository does not hold refused.
+# default repository set, every result of a check read whole — all forty characters of each
+# commit, so a commit that only reads like the head is told apart from it — beside a result at a
+# commit that repository does not hold refused.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), and optionally FAKE_GITHUB_PORT (the
@@ -31,23 +31,25 @@
 # jar; with DEV_SIGNIN_LOGIN unset each prints one `SKIP: … POST /api/v1/artifacts/{id}/reviews
 # needs a person's credential holding the approve scope …` line and every other section runs.
 #
-# The run reads PROJECT's repository mappings once, in its setup, since every result it records
-# names a commit the repository of its issue must hold. It reads each mapping under the name its
-# repository is called today: a mapping may carry `renamed_to`, the full `owner/name` the
-# repository was renamed to, and Dispatch canonicalises every repository through it, so that is
-# the name Dispatch asks GitHub about and the name this run must drive. The rename rule is one
-# step, so a mapping's own name is the canonical one only where it names no rename. Where PROJECT
-# maps no default repository, its issues resolve to none, nothing is ever asked about them, and
-# the commits are the synthetic ones below, the reading section mapping a repository of its own
-# for the one check that needs a pull request. Where PROJECT already maps one, every issue this
-# script writes resolves to that repository, so the setup reads the repository's default-branch
-# head from GitHub with gh and every result is recorded at that head: no check stands down. A
-# repository gh cannot read fails the run, naming it. Where FAKE_GITHUB_PORT is set the setup
-# gives the fake, once and for the whole run, the one repository the run drives — the mapped one,
-# or the reading section's own — with that head, a look-alike of it and a pull request, since a
-# server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no
-# such seeding, and a fake-backed run proves this script's fixture and its count rather than a
-# server talking to GitHub.
+# The server must be a Dispatch release that lists `default_repo` on GET /api/v1/projects and
+# serves PUT /api/v1/projects/{key}/default-repository (dispatch://INFRA-4402). An earlier release
+# lists no default repository and refuses that write, so the run fails against it.
+#
+# The run reads PROJECT's default repository once, in its setup (`default_repo` on GET
+# /api/v1/projects), since every result it records names a commit the repository of its issue
+# must hold. Dispatch stores a default repository under the name the repository is called today,
+# which is the name Dispatch asks GitHub about and the name this run must drive. Where PROJECT has
+# no default repository, its issues resolve to none, nothing is ever asked about them, and the
+# commits are the synthetic ones below. The reading section then sets a repository of its own as
+# PROJECT's default for the one check that needs a pull request, and the cleanup clears it again.
+# Where PROJECT already has one, every issue this script writes resolves to that repository, so
+# the setup reads the repository's default-branch head from GitHub with gh and every result is
+# recorded at that head: no check stands down. A repository gh cannot read fails the run, naming
+# it. Where FAKE_GITHUB_PORT is set the setup gives the fake, once and for the whole run, the one
+# repository the run drives — PROJECT's default, or the reading section's own — with that head, a
+# look-alike of it and a pull request, since a server reading the fake asks the fake and not
+# GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this
+# script's fixture and its count rather than a server talking to GitHub.
 #
 # It writes four issues in PROJECT — a root, a child of it, a sibling in another tree and one more
 # whose spec and Verification document are approved together — with a spec, a Verification document
@@ -75,7 +77,7 @@ Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE 
        section, which replaces every repository that fake served; unset, it is skipped;
        DEV_SIGNIN_LOGIN, on a server with dev sign-in alone, records the two human reviews as that
        person; unset, those two sections are skipped;
-       a PROJECT that maps a default repository needs gh, which reads that repository's
+       a PROJECT that has a default repository needs gh, which reads that repository's
        default-branch head: every result is recorded at it)
 USAGE
 }
@@ -115,11 +117,11 @@ work_dir
 cli_env
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
-# The issues the run writes, each cleared from the list once it is closed, and the repository
-# mapping the reading section adds.
+# The issues the run writes, each cleared from the list once it is closed, and whether the reading
+# section set PROJECT's default repository, which the cleanup clears again.
 written=()
 closed=()
-mapped=""
+set_default=0
 seeded_github=0
 
 # close_written ISSUE: closes ISSUE, an issue this script wrote, from cleanup.
@@ -135,12 +137,12 @@ cleanup() {
     issue="${written[$index]}"
     [[ "${closed[$index]}" == 1 ]] || close_written "$issue"
   done
-  if [[ -n "$mapped" ]]; then
-    send DELETE "/api/v1/settings/repo-projects/$mapped" \
-      "$(jq -cn --arg s "$session" '{actor: {kind: "session", id: $s}}')"
+  if [[ "$set_default" == 1 ]]; then
+    send PUT "/api/v1/projects/$project/default-repository" \
+      "$(jq -cn --arg s "$session" '{actor: {kind: "session", id: $s}, repo: null}')"
     [[ "$status" == 2?? ]] ||
-      printf 'verification.sh: could not remove the repository mapping %s: HTTP %s: %s\n' \
-        "$mapped" "$status" "$(body)" >&2
+      printf 'verification.sh: could not clear the default repository of %s: HTTP %s: %s\n' \
+        "$project" "$status" "$(body)" >&2
   fi
   if [[ "$seeded_github" == 1 ]]; then
     curl -sS -o /dev/null -X PUT -H 'Content-Type: application/json' --data-binary '{}' \
@@ -312,9 +314,9 @@ refused_result() {
   expect "$1" "$2 is refused $want_code" "\"$want_code\"" '.code'
 }
 
-# The commits the run records at, where PROJECT maps no default repository: no issue this script
+# The commits the run records at, where PROJECT has no default repository: no issue this script
 # writes resolves to a repository then, so no result's commit is ever asked about, and these are
-# the script's own. Where one is mapped, the setup below replaces all three with that
+# the script's own. Where PROJECT has one, the setup below replaces all three with that
 # repository's default-branch head, which GitHub holds, and a look-alike of that head, which only
 # the fake GitHub the setup seeds holds.
 commit_one=1111111111111111111111111111111111111111
@@ -330,20 +332,18 @@ readonly commit_unknown=4444444444444444444444444444444444444444
 
 # --- setup ---------------------------------------------------------------------------------------
 
-# PROJECT's default repository, read once and read by every section that records a result, under
-# the name it is called today: where the mapping carries `renamed_to`, that is the repository's
-# canonical name, the one Dispatch asks GitHub about, and GitHub answers 404 for the installation
-# of a name a repository was renamed away from. The rename rule is one step, so the mapping's own
-# name stands only where it names no rename. With one mapped, every issue of the project resolves
-# to it, so Dispatch asks GitHub whether it holds the commit each result names and refuses the
-# ones it does not. This run therefore records every result at that repository's own
-# default-branch head, which gh reads from GitHub below: no check stands down, and a repository
-# gh cannot read fails the run by name rather than skipping it.
-get "/api/v1/settings/repo-projects"
-want_status 200 setup "the repository mappings answer"
+# PROJECT's default repository, read once and read by every section that records a result. Dispatch
+# stores it under the name the repository is called today, the one Dispatch asks GitHub about:
+# GitHub answers 404 for the installation of a name a repository was renamed away from. With one
+# set, every issue of the project resolves to it, so Dispatch asks GitHub whether it holds the
+# commit each result names and refuses the ones it does not. This run therefore records every
+# result at that repository's own default-branch head, which gh reads from GitHub below: no check
+# stands down, and a repository gh cannot read fails the run by name rather than skipping it.
+get "/api/v1/projects"
+want_status 200 setup "the projects answer"
 default_repo="$(jq -r --arg p "$project" \
-  'first(.[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
-  fail setup "read the repository mappings" "$(body)"
+  'first(.[] | select(.key == $p) | .default_repo // empty) // ""' "$work/body")" ||
+  fail setup "read $project's default repository" "$(body)"
 readonly default_repo
 
 if [[ -n "$default_repo" ]]; then
@@ -418,17 +418,17 @@ issue setup "Verification rules, approved with its proof" "$work/both-spec.md"
 both="$key"
 readonly both
 
-# The repository the run drives on the fake: the one PROJECT maps, where it maps one, since every
-# issue this script writes then resolves to that repository, and otherwise one of this run's own,
-# which the reading section maps as PROJECT's default.
+# The repository the run drives on the fake: PROJECT's default repository, where it has one, since
+# every issue this script writes then resolves to that repository, and otherwise one of this run's
+# own, which the reading section sets as PROJECT's default.
 driven_repo="${default_repo:-acme/verification-$$}"
 readonly driven_repo
 
 # A server reading the harness's fake GitHub asks the fake, not GitHub, whether that repository
 # holds a result's commit, so the fake is given the repository here, once and for the whole run:
-# the head (the one gh named, where PROJECT maps a repository, and this script's own otherwise),
-# the look-alike beside it, and pull request 7 of the root issue, which is what the reading
-# section's results are compared with. A server reading the real GitHub needs
+# the head (the one gh named, where PROJECT has a default repository, and this script's own
+# otherwise), the look-alike beside it, and pull request 7 of the root issue, which is what the
+# reading section's results are compared with. A server reading the real GitHub needs
 # no seeding of any kind — it reads the same repository gh did — and a fake-backed run proves
 # this script's fixture and its count rather than a server talking to GitHub.
 if [[ -n "$fake_github_port" ]]; then
@@ -804,16 +804,16 @@ if [[ -z "$fake_github_port" ]]; then
   skip reading "a result at the pull request's head: FAKE_GITHUB_PORT is unset; only a server reading the harness's fake GitHub can be told a pull request's head"
 else
   if [[ -z "$default_repo" ]]; then
-    # PROJECT maps no repository of its own, so this section maps the one the setup gave the fake
-    # — that repository, the head, the look-alike and pull request 7 — and every issue this run
-    # wrote resolves to it from here on. Where PROJECT maps one, it is already this section's, so
-    # nothing is mapped here.
-    send PUT "/api/v1/settings/repo-projects/$driven_repo" \
-      "$(jq -cn --arg s "$session" --arg p "$project" \
-        '{actor: {kind: "session", id: $s}, project: $p, default: true}')"
-    want_status 200 reading "map $driven_repo as $project's default repository"
-    mapped="$driven_repo"
-    pass reading "mapped $driven_repo as $project's default repository"
+    # PROJECT has no default repository, so this section sets the one the setup gave the fake —
+    # that repository, the head, the look-alike and pull request 7 — as PROJECT's default, and
+    # every issue this run wrote resolves to it from here on. Where PROJECT has one, it is already
+    # this section's, so nothing is set here.
+    send PUT "/api/v1/projects/$project/default-repository" \
+      "$(jq -cn --arg s "$session" --arg r "$driven_repo" \
+        '{actor: {kind: "session", id: $s}, repo: $r}')"
+    want_status 200 reading "set $driven_repo as $project's default repository"
+    set_default=1
+    pass reading "set $driven_repo as $project's default repository"
   fi
 
   # The incident, driven: a result at a commit that reads like the head, and then the head's

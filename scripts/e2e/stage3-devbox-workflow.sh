@@ -300,10 +300,10 @@ nats_urls:
   - nats://127.0.0.1:$port_nats
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml. `production_check: tester` is the word that names the role a merge's production check
-# is handed to, written out here rather than left to the default, so the run proves the setting is
-# read; Stage 4b's rig names no key and proves the default.
+# The project's repository is its default repository on Dispatch (the PUT below sets $repo), not a
+# key of legion.yaml. `production_check: tester` is the word that names the role a merge's
+# production check is handed to, written out here rather than left to the default, so the run
+# proves the setting is read; Stage 4b's rig names no key and proves the default.
 projects:
   $project: {production_check: tester}
 gates:
@@ -737,7 +737,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 # This is the production Envoy ingress bridge, subscribe-only from its perspective. GitHub events
 # are observed, never manufactured, and only the smoke repository is forwarded to this run's NATS.
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \

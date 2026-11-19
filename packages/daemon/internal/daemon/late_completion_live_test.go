@@ -194,7 +194,7 @@ func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
 }
 
 // newLateCompletionLive readies everything the panes need before the daemon boots: the real
-// Dispatch with the project, its repository mapping and the issue; the `legion` binary and the
+// Dispatch with the project, its default repository and the issue; the `legion` binary and the
 // two plugins built from this checkout; an Oh My Pi profile routed to the stand-ins; the panes'
 // jj workspace at the implementer's pushed head; GitHub's stand-in at that head; the store
 // seeded; and the daemon booted over the local runtime.
@@ -287,18 +287,18 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
-	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
+	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.key, r.cfg.DispatchURL)
 	return r
 }
 
-// setUpDispatch creates the run's project on Dispatch, maps liveRepo to it as its default, and
-// creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
+// setUpDispatch creates the run's project on Dispatch, sets liveRepo as its default repository,
+// and creates the issue, in progress and carrying the legion label, as a running daemon leaves it.
 func (r *lateCompletionLive) setUpDispatch() {
 	t := r.t
 	t.Helper()
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Late completion live proof"}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	var created struct {
 		Key string `json:"key"`
 	}

@@ -687,8 +687,8 @@ nats_urls:
   - nats://$host:$port_nats
 dispatch_url: $pod_dispatch_url
 dispatch_token_file: $work/dispatch-token
-# The project's repository is Dispatch's mapping (the PUT below makes $repo its default), not a key of
-# legion.yaml.
+# The project's repository is its default repository on Dispatch (the PUT below sets $repo), not a
+# key of legion.yaml.
 projects:
   $project: {}
 gates:
@@ -1373,7 +1373,7 @@ note "container $session_db_container: database sessions on $bind_host:$port_ses
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Claude backend sandbox proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code sandbox backend proof instructions
 

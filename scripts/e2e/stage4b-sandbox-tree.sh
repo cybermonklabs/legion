@@ -75,6 +75,9 @@
 #   Dispatch, the production Envoy listener and production NATS, by the operator's fully-qualified
 #   names for them: an https:// URL, an http(s):// URL and a nats://host:port, none with a path. The
 #   repository carries none of them, and the run never prints them.
+#   Production Dispatch must be a release that serves PUT /api/v1/projects/{key}/default-repository
+#   and lists default_repo on GET /api/v1/projects (dispatch://INFRA-4402). The run reads and sets
+#   its project's default repository through them, and an earlier release refuses that write.
 # - LEGION_E2E_DISPATCH_TOKEN_FILE (required) names a file only its owner can read (no group or
 #   other permission bits) holding a bearer of the Dispatch agents' client, the one an agent
 #   session's Dispatch configuration resolves (DISPATCH_TOKEN_FILE, DISPATCH_TOKEN, or envoy.json's
@@ -3422,15 +3425,15 @@ for key in $stale; do
   note "moved stale todo issue $key to backlog"
 done
 [ -z "$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[].key')" ] || fail "$project still holds todo issues"
-# The project's repository is Dispatch's mapping, not a key of legion.yaml: the daemon boots only
-# on a project with a repository mapped, and records an issue on the repository Dispatch resolves
-# for it, so $repo is mapped to $project as its default before the daemon starts. A mapping already
-# so is left as it is; the write names $project alone.
-if ! dispatch_get settings/repo-projects | jq -e --arg repo "$repo" --arg project "$project" \
-  'any(.[]; .repo == $repo and .project == $project and .default == true)' >/dev/null; then
-  dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null ||
-    fail "map $repo to $project as its default repository in production Dispatch"
-  note "mapped $repo to $project as its default repository"
+# The project's repository is its default repository on Dispatch, not a key of legion.yaml: the
+# daemon records an issue on the repository Dispatch resolves for it, and an issue that names no
+# repository resolves to its project's default. So $repo is set as $project's default repository
+# before the daemon starts. A project that has that default already is left as it is.
+if ! dispatch_get projects | jq -e --arg repo "$repo" --arg project "$project" \
+  'any(.[]; .key == $project and .default_repo == $repo)' >/dev/null; then
+  dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null ||
+    fail "set $repo as $project's default repository in production Dispatch"
+  note "set $repo as $project's default repository"
 fi
 # The configured stream carries both halves of the workflow's intake. Each `last` call reads one
 # ordered-consumer message under its 20-second budget instead of draining every matching subject.

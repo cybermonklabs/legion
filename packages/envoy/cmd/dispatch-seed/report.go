@@ -39,7 +39,7 @@ func (r *seedRun) buildTermStatistics(ctx context.Context) error {
 
 // reportTables are the tables the command prints a row count for, in the order it prints them.
 var reportTables = []string{
-	"projects", "repo_projects", "issues", "issue_links", "issue_components",
+	"projects", "issues", "issue_links", "issue_components",
 	"issue_component_members", "priority_nodes", "priority_tuples",
 	"architecture_snapshots", "components", "component_depends",
 	"artifacts", "artifact_versions", "document_blocks", "document_block_texts",

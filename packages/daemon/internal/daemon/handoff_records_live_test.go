@@ -10,9 +10,9 @@
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
 // daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
-// booted with dispatch_url at that server, so every Dispatch read and write it makes - the
-// repository mapping, the issue list, its status writes and messages, and the read of the record a
-// completion names - goes to the real routes. The worker side is the real `dispatch` CLI
+// booted with dispatch_url at that server, so every Dispatch read and write it makes - the issue
+// list, its status writes and messages, and the read of the record a completion names - goes to
+// the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
 // the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
 // side a completion's commit comes from is the real `findHandoffReport`
@@ -70,8 +70,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// handoffRecordsUser is the person the driver sets Dispatch up as: the project, its repository
-// mapping and the issues, through the trusted identity header the scratch server takes.
+// handoffRecordsUser is the person the driver sets Dispatch up as: the project, its default
+// repository and the issues, through the trusted identity header the scratch server takes.
 const handoffRecordsUser = "legion-e2e"
 
 // handoffBodyMax is Dispatch's handoff body cap (contracts DISPATCH_HANDOFF_BODY_MAX).
@@ -115,8 +115,9 @@ func TestHandoffRecordsLive(t *testing.T) {
 	r.step("a10-dispatch-restarted-the-retried-write-and-the-completion-land", r.a10Restarted)
 }
 
-// newHandoffRecordsLive starts Dispatch, sets up its project, mapping and issues, seeds the
-// daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
+// newHandoffRecordsLive starts Dispatch, sets up its project, default repository and issues,
+// seeds the daemon's store with those issues where each step starts them, and boots the daemon at
+// Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
 	r := startOnDispatch(t, "scripts/e2e/handoff-records.sh", "HR", "Handoff records live proof")
@@ -129,8 +130,8 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 // startOnDispatch readies a whole-daemon proof over the real Dispatch, for this driver and for
 // review_range_live_test.go's, which embeds what it returns. It starts Dispatch, writes its agent
 // token where the daemon reads it and names it the daemon's dispatch_url, and creates the run's
-// project, prefix and six characters of the run's own, titled name, with liveRepo mapped to it as
-// its default. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
+// project, prefix and six characters of the run's own, titled name, with liveRepo as its default
+// repository. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
 // and boots the daemon (boot).
 func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsLive {
 	t.Helper()
@@ -169,7 +170,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": name}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	return r
 }
 
@@ -180,7 +181,7 @@ func (r *handoffRecordsLive) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
-	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
+	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }
 
