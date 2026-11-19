@@ -58,8 +58,9 @@ func implementerEnd(actor map[string]any, result string, at time.Time) map[strin
 	return body
 }
 
-// withStepFields is the step body with the fields of more set over it, and body itself unchanged.
-func withStepFields(body map[string]any, more map[string]any) map[string]any {
+// withFields is body with the fields of more set over it, and body itself unchanged: a step's, a
+// rating's or a plan's.
+func withFields(body map[string]any, more map[string]any) map[string]any {
 	merged := maps.Clone(body)
 	maps.Copy(merged, more)
 	return merged
@@ -160,14 +161,14 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, report := uuid.NewString(), uuid.NewString()
-	identity := withStepFields(stepIdentity(daemonSessionOf("LEG")), map[string]any{"generation": 2})
-	started := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+	identity := withFields(stepIdentity(daemonSessionOf("LEG")), map[string]any{"generation": 2})
+	started := putStepOK(t, handler, issue, id, withFields(identity, map[string]any{
 		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart,
 	}))
 	if started.Session != "" || started.Model != "" {
 		t.Fatalf("the start answers %s, want no session and no model yet", asJSON(t, started))
 	}
-	ended := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+	ended := putStepOK(t, handler, issue, id, withFields(identity, map[string]any{
 		"result": "failed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5",
 		"session": "ses_implementer_run", "report": strings.ToUpper(report), "returned_to": 1,
 	}))
@@ -182,7 +183,7 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	if got := asJSON(t, ended); got != asJSON(t, want) {
 		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, asJSON(t, want))
 	}
-	again := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+	again := putStepOK(t, handler, issue, id, withFields(identity, map[string]any{
 		"result": "failed", "ended_at": stepEnd, "session": "ses_a_later_session",
 	}))
 	if got := asJSON(t, again); got != asJSON(t, want) {
@@ -204,7 +205,7 @@ func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 	putStepOK(t, handler, issue, first, implementerEnd(daemon, "stopped", stepEnd))
 
 	againStart, againEnd := stepEnd.Add(time.Minute), stepEnd.Add(time.Hour)
-	started := putStepOK(t, handler, issue, second, withStepFields(implementerStart(daemon), map[string]any{"started_at": againStart}))
+	started := putStepOK(t, handler, issue, second, withFields(implementerStart(daemon), map[string]any{"started_at": againStart}))
 	if started.Attempt != 2 || started.Generation != 1 {
 		t.Fatalf("the second run's start answers %s, want attempt 2 of generation 1", asJSON(t, started))
 	}
@@ -380,35 +381,35 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		body     map[string]any
 		field    string
 	}{
-		{"a kind that is no kind", "", withStepFields(start, map[string]any{"kind": "phase"}), "kind"},
-		{"a result that is no result", "", withStepFields(start, map[string]any{"result": "done", "ended_at": stepEnd}), "result"},
-		{"an end with no result", "", withStepFields(start, map[string]any{"ended_at": stepEnd}), "ended_at"},
-		{"a result with no end", "", withStepFields(start, map[string]any{"result": "passed"}), "result"},
-		{"a step returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
-		{"a retro returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
-		{"a returned_to below 0", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": stepEnd, "returned_to": -1}), "returned_to -1"},
-		{"a step returned to by a write that names no result", "", withStepFields(start, map[string]any{"returned_to": 2}), `this write's result is ""`},
+		{"a kind that is no kind", "", withFields(start, map[string]any{"kind": "phase"}), "kind"},
+		{"a result that is no result", "", withFields(start, map[string]any{"result": "done", "ended_at": stepEnd}), "result"},
+		{"an end with no result", "", withFields(start, map[string]any{"ended_at": stepEnd}), "ended_at"},
+		{"a result with no end", "", withFields(start, map[string]any{"result": "passed"}), "result"},
+		{"a step returned to by a run that passed", "", withFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
+		{"a retro returned to by a run that passed", "", withFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
+		{"a returned_to below 0", "", withFields(start, map[string]any{"result": "failed", "ended_at": stepEnd, "returned_to": -1}), "returned_to -1"},
+		{"a step returned to by a write that names no result", "", withFields(start, map[string]any{"returned_to": 2}), `this write's result is ""`},
 		{"a first write with no task", "", without("task"), "does not name its task:"},
 		{"a first write with no kind", "", without("kind"), "does not name its kind:"},
 		{"a first write with no step", "", without("step"), "does not name its step:"},
 		{"a first write with no role", "", without("role"), "does not name its role:"},
 		{"a first write with no generation", "", without("generation"), "does not name its generation:"},
-		{"a generation that is no run", "", withStepFields(start, map[string]any{"generation": 0}), "generation"},
-		{"a place below 0", "", withStepFields(without("kind"), map[string]any{"step": -1}), "0 or more"},
-		{"a step of kind step at place 0", "", withStepFields(start, map[string]any{"step": 0}), "count from 1"},
-		{"a retro at a step's place", "", withStepFields(start, map[string]any{"kind": "retro", "type": ""}), "its step is 0"},
-		{"a merge at a step's place", "", withStepFields(start, map[string]any{"kind": "merge", "type": "", "role": "merger"}), "its step is 0"},
-		{"a role that is no role", "", withStepFields(start, map[string]any{"role": "Implementer"}), "role"},
-		{"a type that is no type", "", withStepFields(start, map[string]any{"type": "Review"}), "type"},
-		{"a retro with a type", "", withStepFields(start, map[string]any{"kind": "retro", "step": 0}), "type"},
-		{"a merge with a type", "", withStepFields(start, map[string]any{"kind": "merge", "step": 0, "role": "merger"}), "type"},
-		{"a report that is no uuid", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
-		{"a task that is no task id", "", withStepFields(start, map[string]any{"task": "Default"}), "task"},
+		{"a generation that is no run", "", withFields(start, map[string]any{"generation": 0}), "generation"},
+		{"a place below 0", "", withFields(without("kind"), map[string]any{"step": -1}), "0 or more"},
+		{"a step of kind step at place 0", "", withFields(start, map[string]any{"step": 0}), "count from 1"},
+		{"a retro at a step's place", "", withFields(start, map[string]any{"kind": "retro", "type": ""}), "its step is 0"},
+		{"a merge at a step's place", "", withFields(start, map[string]any{"kind": "merge", "type": "", "role": "merger"}), "its step is 0"},
+		{"a role that is no role", "", withFields(start, map[string]any{"role": "Implementer"}), "role"},
+		{"a type that is no type", "", withFields(start, map[string]any{"type": "Review"}), "type"},
+		{"a retro with a type", "", withFields(start, map[string]any{"kind": "retro", "step": 0}), "type"},
+		{"a merge with a type", "", withFields(start, map[string]any{"kind": "merge", "step": 0, "role": "merger"}), "type"},
+		{"a report that is no uuid", "", withFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "report": "plan-1"}), "report"},
+		{"a task that is no task id", "", withFields(start, map[string]any{"task": "Default"}), "task"},
 		{"an id that is no uuid", "not-a-uuid", start, "id"},
-		{"a start before the UTC year range", "", withStepFields(start, map[string]any{"started_at": "0000-01-01T00:00:00+01:00"}), "started_at"},
-		{"a start after the UTC year range", "", withStepFields(start, map[string]any{"started_at": "9999-12-31T23:59:59-01:00"}), "started_at"},
-		{"an end before the UTC year range", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": "0000-01-01T00:00:00+01:00"}), "ended_at"},
-		{"an end after the UTC year range", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": "9999-12-31T23:59:59-01:00"}), "ended_at"},
+		{"a start before the UTC year range", "", withFields(start, map[string]any{"started_at": "0000-01-01T00:00:00+01:00"}), "started_at"},
+		{"a start after the UTC year range", "", withFields(start, map[string]any{"started_at": "9999-12-31T23:59:59-01:00"}), "started_at"},
+		{"an end before the UTC year range", "", withFields(start, map[string]any{"result": "failed", "ended_at": "0000-01-01T00:00:00+01:00"}), "ended_at"},
+		{"an end after the UTC year range", "", withFields(start, map[string]any{"result": "failed", "ended_at": "9999-12-31T23:59:59-01:00"}), "ended_at"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := cmp.Or(row.id, uuid.NewString())
@@ -443,7 +444,7 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 		{"9999-12-31T22:59:59-01:00", "9999-12-31T23:59:59Z"},
 	} {
 		id := uuid.NewString()
-		written := putStepOK(t, handler, issue, id, withStepFields(implementerStart(daemonSessionOf("LEG")), map[string]any{"started_at": row.input}))
+		written := putStepOK(t, handler, issue, id, withFields(implementerStart(daemonSessionOf("LEG")), map[string]any{"started_at": row.input}))
 		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
 			t.Fatalf("the write of %s answers %s, want start %s", row.input, asJSON(t, written), row.want)
 		}
@@ -541,8 +542,8 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 				"actor": daemonSessionOf("LEG"), "task": "default", "step": 0, "kind": "merge",
 				"role": "merger", "type": "", "agent": "legion-leg-leg-1-merger", "generation": 1,
 			}
-			start := withStepFields(identity, map[string]any{"started_at": stepStart})
-			end := withStepFields(identity, map[string]any{"ended_at": stepEnd, "result": "failed", "returned_to": 0})
+			start := withFields(identity, map[string]any{"started_at": stepStart})
+			end := withFields(identity, map[string]any{"ended_at": stepEnd, "result": "failed", "returned_to": 0})
 			if !endFirst {
 				started := putStepOK(t, handler, issue, id, start)
 				if started.ReturnedTo != nil {
@@ -556,7 +557,7 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 			if endFirst {
 				putStepOK(t, handler, issue, id, start)
 			}
-			again := putStepOK(t, handler, issue, id, withStepFields(end, map[string]any{"returned_to": 2}))
+			again := putStepOK(t, handler, issue, id, withFields(end, map[string]any{"returned_to": 2}))
 			if again.ReturnedTo == nil || *again.ReturnedTo != 0 {
 				t.Fatalf("the later end answers %s, want the first return to place 0", asJSON(t, again))
 			}

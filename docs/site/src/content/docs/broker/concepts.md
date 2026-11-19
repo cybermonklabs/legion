@@ -123,7 +123,9 @@ live on the day the carry ships, so each of those ends as it always did and the 
 replaces it carries.
 A dormant enrollment proves nothing from the moment it goes dormant, as any ended enrollment proves
 nothing, and its next renewal is refused `ENROLLMENT_NOT_LIVE`; what it holds waits for the next
-enrollment of that session name under the same principal to take.
+enrollment of that session name under the same principal, or under a service account paired with
+it whose pod a login of the same account enrols ([Requests and grants](#requests-and-grants)), to
+take.
 An approval given while the box is gone still mints a grant: the broker hangs it off the row the
 carry is keeping for that session, and the session's next enrollment takes it with the rest
 (`packages/envoy/internal/broker/requests/machine_state.go`, `ApplyDecision`).
@@ -699,14 +701,26 @@ The broker evaluates every name
 - Otherwise it is **pending**: the request carries a reason, and the broker writes a
   credential-request record for the approver to
   decide. A session has at most one pending request for each secret: an identical request from the
-  same session while one is pending (the same names and the same lifetime, or none) joins it rather
-  than asking twice, and any other
-  request naming one of its secrets, with or without `--ttl`, is refused `REQUEST_PENDING`, naming
-  the pending request. The session waits for that request to be decided, or cancels it
-  (`agent-secrets cancel`) and asks again. The broker's answer names the approver the record names
-  and the request's page on the broker (`approve_url`), and `agent-secrets` prints both, so the
-  agent can tell that person where to approve it; while the [model judge](#the-model-judge)
-  decides a request, its answer carries `judge_deciding: true` in place of a page. The record
+  same session while one is pending (the same names and the same lifetime, or none) joins it
+  rather than asking twice, and any other request naming one of its secrets, with or without
+  `--ttl`, is refused `REQUEST_PENDING`, naming the pending request. The session waits for that
+  request to be decided, or cancels it (`agent-secrets cancel`) and asks again. The one exception
+  is a pending request whose record is signed for another broker address, another
+  `BROKER_PUBLIC_URL`, such as a broker the session's box asked before it moved to this one: no
+  person and no judge here can decide it, so when its session asks this broker again for one of
+  its names, the broker ends it, cancelled by the broker with a detail that says the broker moved,
+  whatever its age. That end holds for an ask that waits for a decision, the judge's or a
+  person's, for an ask the broker decides at once and for one a live grant answers, and for an ask
+  that waits for a decision the rule then applies to what is left. A request whose deadline has
+  passed is expired rather than pending, whichever broker address it is signed for: the ask
+  neither joins it nor is refused for it, and the broker's sweep ends it. An ask refused before
+  the broker writes a request (an unknown name, a lifetime over the secret's maximum, two
+  approvers) ends nothing, and a request signed for another broker address that no such ask
+  reaches waits for its expiry.
+  The broker's answer names the approver the record names and the request's page on the broker
+  (`approve_url`), and `agent-secrets` prints both, so the agent can tell that person where to
+  approve it; while the [model judge](#the-model-judge) decides a request, its answer carries
+  `judge_deciding: true` in place of a page. The record
   fixes its approver when the request is made, and the request stays in that
   person's Inbox after the secret's tags change, though they may then be unable to approve it
   ([what an owner change does](#approvals)).
@@ -761,9 +775,9 @@ moved, and one `grant.moved` row per grant, naming the grant, the enrollment hol
 one it came from.
 
 Three things take nothing.
-A session name another principal holds is refused outright: the enrollment is refused
-`SESSION_HELD`, naming the session and no holder, and writes nothing
-(`enroll.go`, `bindSessionName`).
+A session name another principal holds is refused, unless that principal is a service account
+paired with the enrolling pod's (below): the enrollment is refused `SESSION_HELD`, naming the
+session and no holder, and writes nothing (`enroll.go`, `bindSessionName`).
 A token exchange under that name is refused the same way, on the same row, so the name stays its
 principal's for 90 days past the last lease or token under it
 (`packages/envoy/internal/broker/oauthstore/exchange.go`, `ErrSessionHeld` and `SessionRetention`).
@@ -775,6 +789,33 @@ revoked credential does not authenticate, and an enrollment already under way fi
 revoked and is refused `LAUNCHER_INVALID`.
 A session enrolling under a name of its own has no earlier enrollment of that pair, so it starts with
 nothing but the grants it asks for.
+
+Two Kubernetes service accounts can be paired so that either takes a session name the other holds:
+`BROKER_SESSION_ACCOUNT_PAIRS`, which an operator sets before moving a deployment's pods from one
+account to the other ([Operate](/legion/broker/operate/#what-to-run)).
+A pod's principal is the account its projected token proves, so without the pair a role's next
+pod, on the new account, is refused its own session name, and what the name carries stays behind.
+With the pair, the claim takes the name, whether an enrollment or a token exchange makes it
+(`oauthstore/exchange.go`, `BindSession`).
+An enrollment under the name then takes what the other account's enrollments of it still hold, by
+the rule above for a successor under the same principal: the grants, the pending requests and the
+withheld names (`enroll.go`, `adopt`).
+A pod's grants follow its account and the account of the login that enrolled it, so the take
+reaches only the other account's pods that a login of the same account enrolled: a pair moves a
+session between the two accounts one daemon runs its pods as, and never from a pod another daemon
+enrolled.
+A pair works both ways, so pods moved back take the names back the same way.
+A pair does not chain: a claim reads the claimant's own pairs, and every pair works both ways, so
+with A paired with B and B with C, C takes a name B holds and never one A holds.
+No pair takes a name an entry of the token exchange fixes.
+A take holds the name for the taker's own claim, 90 days past its own lease or token, and not for
+what was left of the holder's.
+Two claims racing for one name end with one holder.
+The broker logs each take at WARN once it has committed:
+`broker: an enrollment took a session name from the account paired with its own`, naming the
+session, the principal it took the name from (`from`), the one that took it (`to`) and the
+enrollment, or `broker: the token exchange took a session name from the account paired with its
+own`, naming the session, `from` and `to`.
 
 A grant that moves still ends, three ways.
 It ends when its own lifetime runs out, whichever box holds it by then.
@@ -805,7 +846,7 @@ A pod that states no claim is its own pod's, and each slot of it, one role proce
 is its own slot's, so the roles of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
 (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
-(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerOf`): a person reads their
+(`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerAndState`): a person reads their
 request from another box, the next pod of a claim cancels what the pod before it asked for, and a
 second machine of the same fleet, or another role of the same issue, reads neither.
 An enrollment that records no owner, every one made before the broker recorded owners, reads and
@@ -852,10 +893,22 @@ session was approved for, with no approval of its own.
 Within one principal what stands between a caller and a secret is the sign-in on a box, or the
 account, and never the session name.
 Three things bound it.
-Another principal is refused the name outright, and a pod of another daemon, which shares the
-account the name is held under, is admitted under it and takes none of what the session holds.
+Another principal is refused the name, but for a service account paired with the holder's (below),
+and a pod of another daemon, which shares the account the name is held under, is admitted under it
+and takes none of what the session holds.
 Every adoption is in the audit record, naming both enrollments.
 And a person's revoke ends the grant at once.
+
+The broker cannot tell an operator moving pods from one account to another from an attack, so a
+pair of service accounts is the operator's word that the move is intended.
+While it stands, a pod of either account can claim any session name the other holds, not only its
+own role's, so a pod of one project's account can claim a name a shared account holds for another
+project's role.
+It takes none of what that session holds, because a pair moves what a session holds only between
+the two accounts' pods one daemon launched (`enroll.go`, `adopt`).
+Two things bound this for Legion's pods: the daemon gives each role only its own name, and a name
+leaves the shared account once its role's pod has moved.
+Remove a pair once no live pod runs as the old account.
 
 A claim is asserted the same way: it rides in the enrollment's body, and it is the launcher's word,
 so a holder of the Legion daemon's login can state any claim of the daemon's service and take what a
@@ -1241,7 +1294,11 @@ exchange's reads of a person's project access are the last, at `BROKER_PROJECT_A
 ([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
 ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at
 the endpoint its settings name, presenting the broker machine's own Google identity token for the
-audience they name. Those settings are all-or-none, and the
+audience they name, or, where `BROKER_JUDGE_MODEL_ACCOUNT` names a Google service account, that
+account's identity token for the same audience, which the broker mints at IAM Service Account
+Credentials with the pod's own credential. A mint that fails hands the request to its person, and
+the broker never presents its own token in that account's place. The judge's other settings are
+all-or-none, and the
 [configuration reference](/legion/broker/reference/config/) gives each one.
 
 ## The audit record
@@ -1276,10 +1333,10 @@ answers this row to the accounts that read the grant log),
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
 a grant already revoked, naming under `withheld` the secrets it withheld from the session),
-`request.judged` (one row for every judge run that reached a verdict, its referrals and the runs
-a check stopped included: each check and its result, the model, whether the model was asked, the
-verdict, the reason, the token counts, that it priced nothing, and the raw answer where it did
-not parse) and
+`request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person
+and the runs a check stopped included: each check and its result, the model, whether the model was
+asked, the verdict, the reason, the token counts, that it priced nothing, and the raw answer where
+it did not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the

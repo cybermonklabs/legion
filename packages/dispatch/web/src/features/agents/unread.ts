@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Message,
   MessageRead,
@@ -80,13 +81,15 @@ export function useUnreadAtOpen(
 }
 
 /** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
- *  every badge and row reads it at once. */
+ *  every badge and row reads it at once, over any read of that query still out: such a read was
+ *  asked before the PUT answered, and would put back the count the answer cleared
+ *  (`replaceQueryData`). */
 export function storeAgentState(
   queryClient: QueryClient,
   sessionId: string,
   next: UserAgentState
 ): void {
-  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+  replaceQueryData<UserAgentStates>(queryClient, userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));

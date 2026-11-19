@@ -61,8 +61,12 @@ const (
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
-	// record of that step (StepRecord).
+	// record of that step, or the rating a retro gave the plan onto the retro's record
+	// (StepRecord).
 	OutboxKindStepRecord OutboxKind = "step_record"
+	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
+	// (PlanRecord).
+	OutboxKindPlanRecord OutboxKind = "plan_record"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
@@ -91,10 +95,11 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
-// The record lane runs the writes of the issue's step records (step_record) on a lane of its own,
-// so a Dispatch that is slow to take a record, or one that backs a record off until it has the
-// route, delays no status write, notice or start of that issue: a record is history, and the work
-// it records never waits for it.
+// The record lane runs the writes of the records of the issue's work — each step's record and the
+// rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
+// their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
+// has the route, delays no status write, notice or start of that issue: a record is history, and
+// the work it records never waits for it.
 type OutboxLane string
 
 const (
@@ -112,7 +117,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneRecord:      {OutboxKindStepRecord},
+	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
 
 // LaneOf is the lane that runs kind.
@@ -1409,9 +1414,60 @@ type StepRecord struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
+	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
+	// it is the retro's rating, which Dispatch takes on the record's rating route
+	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
+	// members are members of the payload itself, written together and left out together when it is
+	// nil (validateOutboxPayload holds a stored row to that).
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
+// github.com/sjawhar/envoy/steprecord holds (RatingLeast, the plan cost the work, to RatingMost,
+// the plan fit the work), and Reason, why. The two are one value, so a step record carries a
+// rating with its reason or no rating. It mirrors dispatch.PlanRating, which the publication
+// converts it to (publishStepRecord), because the dispatch package imports no record of the daemon's;
+// internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
+
+// PlanRecord is the plan one run of an issue carries out, written onto Dispatch (PUT
+// /api/v1/issues/{key}/plans/{id}) when the run's work starts. ID is the plan's id, a uuid of the
+// issue and its run, and the row's issue column is the issue. Each other field is a field of the
+// route's body under the same name: the run (record.Issue.Generation), where the plan came from
+// (default, the steps Legion runs when the owner gave none, or owner), the owner's document with
+// its version, which a plan of the source default leaves out, and each task with its steps in
+// order. Dispatch sets each field once, so a plan sent again changes nothing.
+type PlanRecord struct {
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	// PlanDocument is embedded, so its two members are members of the payload itself, written
+	// together and left out together when it is nil.
+	*PlanDocument
+	Tasks []PlanRecordTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from: the artifact and
+// the version of it Legion took. The two are one value, so a plan names its document with its
+// version or no document. It mirrors dispatch.PlanDocument, which the publication converts it to
+// (publishPlanRecord), because the dispatch package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
+}
+
+// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+type PlanRecordTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -1675,6 +1731,20 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		issue, repo, p.Number, p.Head, unread)
 }
 
+// retryBackoffDoublings is how many times a row's backoff doubles before it stops at
+// RetryBackoffMost.
+const retryBackoffDoublings = 6
+
+// RetryBackoffMost is the longest a row waits to run again after a failed run: the backoff's cap.
+const RetryBackoffMost = time.Second << retryBackoffDoublings
+
+// RetryBackoff is how long a row waits to run again after a failed run, given its attempts before
+// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most
+// RetryBackoffMost. The daemon's outbox sets a retried row's next run by it.
+func RetryBackoff(attempts int) time.Duration {
+	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(issue, payload); err != nil {
@@ -1853,6 +1923,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindStepRecord:
 		value := StepRecord{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindPlanRecord:
+		value := PlanRecord{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -2173,11 +2249,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
-	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
+	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
-	// …", the one answer the row waits on for ever, and a write without the step's identity is
+	// …", the one answer the row waits on for ever; and a write without the step's identity is
 	// refused only when it is the record's first, so the same defect would make a record on one
 	// run and none on another.
+	// A rating is held whole here too, though Dispatch's rating route would refuse half of one: the
+	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
+	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
+	// the daemon, refused where it is queued rather than found by a warning after the completion
+	// that carried it committed.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -2192,6 +2273,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Result != nil && !slices.Contains([]string{steprecord.ResultPassed, steprecord.ResultFailed, steprecord.ResultStopped}, *value.Result) {
 			return fmt.Errorf("a step record's result %q is no result of a run", *value.Result)
+		}
+		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
+			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
+				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
+	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
+	// same reason a step record's is.
+	case PlanRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)

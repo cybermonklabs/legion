@@ -162,6 +162,14 @@ on:
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
+    inputs:
+      # The commit main pointed at before the push the bypass check read: envoy-go-checks compares
+      # every migration it holds with this run's tree, the range the push landed. A dispatch
+      # without it fails that check, which cannot tell what the run lands.
+      migration-base:
+        description: The commit main pointed at before the push this run tests.
+        type: string
+        required: false
 
 # A newer push to a pull request cancels its older run, waiting or running. On pull_request the key
 # is the pull request's number: tests-closed.yaml joins this same group when the pull request
@@ -858,6 +866,7 @@ jobs:
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
               - 'packages/daemon/internal/reviewround/*'
+              - 'packages/daemon/internal/rolefile/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -1076,6 +1085,7 @@ jobs:
               - '!packages/daemon/internal/daemon/localruntime_live_test.go'
               - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
               - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
+              - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
@@ -1175,6 +1185,7 @@ jobs:
               - '!packages/daemon/internal/daemon/localruntime_live_test.go'
               - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
               - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
+              - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
@@ -1210,6 +1221,7 @@ jobs:
               - '!packages/daemon/internal/record/**/*_test.go'
               - '!packages/daemon/internal/registry/**/*_test.go'
               - '!packages/daemon/internal/repocache/**/*_test.go'
+              - '!packages/daemon/internal/rolefile/**/*_test.go'
               - '!packages/daemon/internal/runtime/**/*_test.go'
               - '!packages/daemon/internal/sessionproxy/**/*_test.go'
               - '!packages/daemon/internal/shim/**/*_test.go'
@@ -1298,6 +1310,9 @@ jobs:
               - 'packages/envoy-client/test/**'
               # tests/ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, and tsc
+              # puts that file in this job's program.
+              - 'packages/pi-shared/test/daemon-state.ts'
               # tests/envoy-channel-server.test.ts holds the marketplace entry to this package's
               # own name, to no `version` of its own, and to a source range that leaves out the
               # 0.0.0 placeholder and admits the first release. No step of the test job runs that
@@ -1311,7 +1326,7 @@ jobs:
               - '.github/workflows/ci-job-contracts.yaml'
               - *bun_install
               - 'packages/contracts/**'
-              # src/dispatch-tools.test.ts:60-61,1044 reads these skills.
+              # src/dispatch-tools.test.ts:64,1565 reads these skills.
               - 'skills/dispatch/SKILL.md'
               - 'skills/dispatch-writing-specs/SKILL.md'
               # The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts:49-53 and
@@ -2384,9 +2399,9 @@ jobs:
               # extensions/legion.test.ts:121 and legion-role-claim.test.ts:61 load the Envoy
               # plugin's entry beside this one, and the typecheck reaches its sources.
               - 'packages/pi-envoy/**'
-              # src/skills-guard.test.ts:24,275 spawns packages/claude-envoy/scripts/build.ts and
+              # src/skills-guard.test.ts:29,318 spawns packages/claude-envoy/scripts/build.ts and
               # asserts an exact file list over the tree it writes, so this job reads that whole
-              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:41-46) that
+              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
               # lives outside it. A spawn carries no import, so no derivation of this repository
               # sees the reach: both patterns are hand-kept, with their declared reads in
               # ci_job_reads.py.
@@ -2423,7 +2438,7 @@ jobs:
               - 'skills/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
-              # src/skills-guard.test.ts:24,144 reads the daemon's prompts and sweeps
+              # src/skills-guard.test.ts:144-150 reads the daemon's prompts and :204-208 sweeps
               # packages/daemon/internal, and scripts/skill-scenarios/daemon-pane.ts:27 runs
               # daemon-pane.go inside the daemon module in workspace mode.
               - 'packages/daemon/internal/**'
@@ -2450,7 +2465,7 @@ jobs:
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/steprecord/*'
               - *go_workspace
-              # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
+              # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:194-202).
               - 'AGENTS.md'
               - 'README.md'
               - 'docs/kubernetes.md'
@@ -2627,6 +2642,7 @@ jobs:
               - 'packages/contracts/src/dispatch-tools.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
+              - 'packages/contracts/src/go-blank.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
@@ -2862,13 +2878,14 @@ jobs:
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The store's migrations, which the text checks read through migrations.All to hold
-              # the guide to them: its list of those above the phase entry, and its way back of the
-              # step records, to the block the roll forward's header carries.
+              # The store's migrations, which the text checks read through migrations.All and
+              # migrations.WayBack to hold the guide to them: its list of those above the phase
+              # entry, and its way backs of the step records and of the plan ratings, to the block
+              # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
               # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
-              # backs' (way_back_doc_test.go:110) and the troubleshooting page's refusal table's
+              # backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
               # own check reads it. They are .txt files, which the module's `**/*.go` above does
               # not match.
@@ -2900,8 +2917,8 @@ jobs:
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,277 and
-              # way_back_doc_test.go:132).
+              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281 and
+              # way_back_doc_test.go:181).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:32-38).
@@ -2945,6 +2962,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -2983,6 +3001,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3053,6 +3072,7 @@ jobs:
               - 'packages/contracts/src/dispatch-tools.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
+              - 'packages/contracts/src/go-blank.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
@@ -3151,6 +3171,7 @@ jobs:
               - 'packages/contracts/src/dispatch-tools.ts'
               - 'packages/contracts/src/envelope.ts'
               - 'packages/contracts/src/envoy-session.ts'
+              - 'packages/contracts/src/go-blank.ts'
               - 'packages/contracts/src/going.ts'
               - 'packages/contracts/src/held-secrets.ts'
               - 'packages/contracts/src/index.ts'
@@ -3209,9 +3230,8 @@ jobs:
               - *listener_command
               # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
               # not, so listener_command, which is that build closure, leaves them to the jobs
-              # that run the tests: the chat client, the redirect table and the router.
+              # that run the tests: the chat client and the router.
               - 'packages/envoy/going/*'
-              - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/routing/*'
               # The two listener pod specs cmd/listener/pod_grace_period_test.go:23,28 read: it
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
@@ -3528,11 +3548,6 @@ jobs:
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # src/__tests__/ask-reply-recipients.test.ts renders the copies this fixture holds.
               - 'packages/contracts/fixtures/ask-reply-recipients.json'
-              # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
-              # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
-              # an edit of the list alone must start both jobs, or the side it disagrees with
-              # stays green.
-              - 'packages/contracts/fixtures/go-unicode-isspace.json'
               # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
               # reads the Dispatch server's decision-block table, which the Go API test reads too.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
@@ -3609,12 +3624,15 @@ jobs:
               # internal/cistore/settlement_fixture_test.go:57,
               # internal/dispatch/legion/golden_state_test.go:29 (the daemon's state golden, which
               # packages/daemon/internal/api/state_golden_test.go writes, so a change to the
-              # daemon's state shape must start this job as well as the daemon's).
+              # daemon's state shape must start this job as well as the daemon's),
+              # internal/contracts/plan_rating_test.go:21 (the daemon's verdicts on the ratings,
+              # which Dispatch's one rule of a rating must take as the daemon does).
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
               - 'packages/contracts/fixtures/daemon-api/state.json'
+              - 'packages/contracts/fixtures/daemon-api/plan-rating-cases.json'
               # The API package's test binary, whose xid window tests the race-impossible step runs
               # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT) and which the skip counter's test runs too:
               # its live-feed fixtures (internal/dispatch/api/delivery_live_diff_test.go:1016), the
@@ -3629,7 +3647,7 @@ jobs:
               # change to that one file must start this job as well as the daemon's.
               - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
               # internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
-              # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
+              # list, which packages/contracts holds goBlankPattern to: an edit of the list
               # alone must start both jobs, or the side it disagrees with stays green.
               - 'packages/contracts/fixtures/go-unicode-isspace.json'
               - '.github/actions/pull-test-images/**'
@@ -4303,6 +4321,7 @@ jobs:
               - 'packages/daemon/internal/registry/*'
               - 'packages/daemon/internal/repocache/*'
               - 'packages/daemon/internal/reviewround/*'
+              - 'packages/daemon/internal/rolefile/*'
               - 'packages/daemon/internal/runtime/*'
               - 'packages/daemon/internal/runtime/sandbox/*'
               - 'packages/daemon/internal/runtime/shellprefix/*'
@@ -5453,6 +5472,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+      migration-base: ${{ inputs.migration-base }}
 
   # The slow half: the unit tests of every package of the envoy module, the container-backed NATS
   # matrix and the integration suite, all against this job's Postgres. Its format, generated-code,
