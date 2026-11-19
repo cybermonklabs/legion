@@ -120,9 +120,12 @@ return undefined;                                 // neither `command` nor `env`
   imitates" from "the plugin's tool dropped the field". Two permanent debug lines make this measurable forever: an
   instance id on `extension instance loaded`, and one `legion tool_call hook` line per invocation (one small
   secret-free line per tool call).
-- **Run against the production plugin tree.** Sami's decision after 1.17.1 (2026-09-13): pre-merge proof runs
-  on a rig that loads the real `legion` profile's plugins, `secretsd` included (`RIG_PLUGINS=production` in the
-  grant rig), never the extension alone. That is how #974 shipped broken.
+- **Run against the production plugin tree.** Sami wrote on 2026-09-13 at 00:48Z (relayed verbatim in
+  https://github.com/cybermonklabs/legion/blob/e9d8333e3aacc125137212bf88fd402496bb3759/docs/solutions/best-practices/rehearse-infra-on-a-dev-slot-before-the-production-apply.md#L35):
+  "They need to test everything in a production-like environment before merging, and it is the agent that develops
+  the feature that is responsible for doing that." For a plugin change, production-like means a rig that loads the
+  real `legion` profile's plugins, `secretsd` included (`RIG_PLUGINS=production` in the grant rig), never the
+  extension alone. That is how #974 shipped broken.
 - **Run both legs.** A headless `omp --mode rpc` worker and an interactive `omp` under a private tmux server. The
   evidence that reopened the imitation bug came from a terminal session; a fix proven only headless is half proven.
 - **Reproduce on the unfixed code first**, from a read-only export of `main`'s tree and the released plugin builds

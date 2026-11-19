@@ -103,9 +103,12 @@ Whoever next changes those lines for a real reason picks the notes up then.
 LEGION-53's pull request (#1028) was accepted by the merge queue with its `Fast-follow:` line reading
 `none` while the reviewer's final review named twelve cleanup items — two of them behaviour (a
 test handoff could reject the implementer's proof and record no failure; a whitespace-only proof
-field passed), the rest wording and duplicated tests. Sami's rule is no deferrals, and a line nobody
-owns is a deferral, so the LEGION-53 architect opened LEGION-131 as a **child issue of LEGION-53**
-with the twelve items as its spec — a spec a phone reader can follow, `Decisions needed: None` — and
+field passed), the rest wording and duplicated tests. Sami's rule is no deferrals ("My rule is no
+deferrals.", 2026-09-11, relayed verbatim in
+https://github.com/cybermonklabs/legion/blob/d07086e1ee952fb7b93fd86396b73f05e068a64b/skills/legion-worker/SKILL.md#L237),
+and a line nobody owns is a deferral, so the LEGION-53 architect opened LEGION-131 as a **child
+issue of LEGION-53** with the twelve items as its spec — a spec a phone reader can follow,
+`Decisions needed: None` — and
 it landed as one pull request (#1106) of three path-scoped commits: the schema and its tests, the two
 duplicated test halves removed, the wording in four role prompts, two skills, and this document. Its
 own `Fast-follow:` line read `none — this PR is LEGION-53's fast-follow; anything the review finds

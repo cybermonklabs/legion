@@ -61,7 +61,10 @@ whether the bundles stay committed; until then, this is the procedure.
 
 ## Why it is a necessary rebase, not a forbidden one
 
-Sami's rule (2026-09-11) forbids rebasing to pick up `main` or refresh CI because the queue is slow.
+Sami asked on 2026-09-11 (relayed verbatim in
+https://github.com/cybermonklabs/legion/blob/d07086e1ee952fb7b93fd86396b73f05e068a64b/skills/legion-worker/SKILL.md#L232):
+"Please don't do unnecessary rebases (i.e. unless there are merge conflicts). The CI queue is too
+long and slow."
 Here the branch predates #1103, so it has neither `scripts/build.ts` nor a `dist/` to rebuild: no
 commit on the old base can produce the bundles the merge ref is checked against. The fix commit
 can only be built from a tree that carries `main`'s plugin sources, and it costs one CI run either

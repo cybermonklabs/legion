@@ -59,7 +59,10 @@ have `sleeps` to call. Tell the two apart by the same three checks with the firs
 
 ## The decision: the rebase is necessary and costs nothing the rule protects
 
-Sami's rule (2026-09-11) exists because the CI queue is slow: an unnecessary rebase spends a run.
+Sami's request of 2026-09-11 ("Please don't do unnecessary rebases (i.e. unless there are merge
+conflicts). The CI queue is too long and slow.", relayed verbatim in
+https://github.com/cybermonklabs/legion/blob/d07086e1ee952fb7b93fd86396b73f05e068a64b/skills/legion-worker/SKILL.md#L232)
+exists because the CI queue is slow: an unnecessary rebase spends a run.
 When the merge ref does not compile, three facts make the rebase the cheaper path, and the
 architect recorded the exception on those grounds:
 

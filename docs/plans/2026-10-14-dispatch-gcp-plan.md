@@ -67,7 +67,7 @@ clean, tests beside the code, CI's exact commands pass locally before every push
 
 ## Decisions carried from the design conversation
 
-Sami's decisions (2026-10-14), recorded in the spec: Dispatch runs on GKE Autopilot; its database is
+Decisions recorded in the spec (2026-10-14): Dispatch runs on GKE Autopilot; its database is
 Cloud SQL for PostgreSQL; it is reached only over the deploying organization's tailnet, which is
 closed (a member reaches their own devices and the Envoy services, nothing else); anyone with a
 verified account of the organization's Workspace domain signs in (the Google sign-in mode is the

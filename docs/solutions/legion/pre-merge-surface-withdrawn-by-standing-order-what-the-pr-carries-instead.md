@@ -1,5 +1,5 @@
 ---
-title: "When the production-like surface is withdrawn by a standing order, the E2E line names the withdrawn surface, the unit red/green that stands in, the release, and the operator's post-deploy command"
+title: "When the smoke rig is shut down, the E2E line names the surface it would have used, the unit red/green that stands in, the release, and the operator's post-deploy command"
 category: legion
 tags:
   - legion
@@ -18,7 +18,7 @@ related_issues:
   - "sjawhar/legion#1083"
 ---
 
-# When the production-like surface is withdrawn by a standing order, the E2E line names the withdrawn surface, the unit red/green that stands in, the release, and the operator's post-deploy command
+# When the smoke rig is shut down, the E2E line names the surface it would have used, the unit red/green that stands in, the release, and the operator's post-deploy command
 
 > **Corrected 2026-09-14 19:41Z (Sami, LEGION-25 spec v21).** The 09-13 order below is superseded
 > in one respect: a worker may build a throwaway instance of its own — its own cluster, containers,
@@ -34,11 +34,14 @@ related_issues:
 `skills/legion-retro` step 1 says: if the PR's `E2E` line links only a unit suite, the retro's first
 durable learning is that gap. LEGION-109's `E2E` lines link only the unit suite. The surface the
 change is reached through — the installed pi-envoy plugin's delivery pump under a live Envoy
-listener — was withdrawn for every worker by Sami's standing order of 2026-09-13 (via the operator,
-19:00Z): no smoke rig of any kind, no scratch or stand-in daemon, no throwaway NATS container or
-tmux server, no throwaway OMP profile or scratch plugin tree, no `scripts/smoke-delivery.sh`, and
-`~/.omp/profiles/legion` / `~/.omp/plugins` are the operator's alone. The deployment instructions
-say a Sami decision wins over a skill default, so the issue does **not** go back to the tester; the
+listener — was not used: on 2026-09-13 at 19:00Z Sami told the operator "Please shutdown the
+goddamn legion smoke. It's pointless and it has led to destructive actions twice now." (relayed
+verbatim in https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554). The
+operator then barred every worker from any smoke rig, scratch or stand-in daemon, throwaway NATS
+container or tmux server, throwaway OMP profile or scratch plugin tree, and
+`scripts/smoke-delivery.sh`, and kept `~/.omp/profiles/legion` / `~/.omp/plugins` to itself. The
+deployment instructions say a Sami decision wins over a skill default, so the issue does **not**
+go back to the tester; the
 gap is real, it is accepted by order, and the record has to say so in a way the merge queue and
 the operator can act on.
 
@@ -48,8 +51,11 @@ Both `E2E` paragraphs (implementer's and tester's) and the `Release` paragraph o
 sjawhar/legion#1083 carry five things, and a reviewer verified each against GitHub:
 
 1. **The surface, named, and why it is unreachable pre-merge** — "the installed plugin's delivery
-   pump under a live listener; pre-merge access withdrawn by Sami's standing order of 2026-09-13
-   (LEGION-109 acceptance 5)". Not "n/a", not a unit suite described as the surface.
+   pump under a live listener; its pre-merge smoke run (LEGION-109 acceptance 5) withdrawn when Sami
+   had the smoke rig shut down on 2026-09-13 ("Please shutdown the goddamn legion smoke. It's
+   pointless and it has led to destructive actions twice now", relayed in
+   https://github.com/cybermonklabs/legion/pull/1075)". Not "n/a", not a unit suite described as
+   the surface.
 2. **The unit proof as red/green, not as a count** — the exact `bun test … -t '…'` selection, the
    recorded call sequences it observed, and that the same selection was **5 fail / 0 pass on the
    pre-fix code**. A green count alone is the thing the skill warns is not proof; a test that
@@ -74,8 +80,7 @@ reviewer had one text to check against instead of each deciding what "withdrawn"
 - It does not make the unit suite a production-like surface. The word "withdrawn" in the `E2E`
   line is what keeps the record honest; do not paraphrase it away into "verified".
 - It does not remove the post-merge duty. The implementer is still sent back after the merge to
-  record the production observation (`Production:` line, PR comment, `dispatch message`); the
-  standing order withdrew pre-merge rigs, not the production check.
+  record the production observation (`Production:` line, PR comment, `dispatch message`).
 - It does not apply to an issue that *has* a reachable surface. A daemon change still needs the
   smoke rig or a scratch daemon unless the order covers it; ask the architect which order applies
   before writing "withdrawn".

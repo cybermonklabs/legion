@@ -76,7 +76,7 @@ The correction (#1033, one commit) was a reframing, not a revert:
 
 And the deferral was recorded where it will be carried: a comment on LEGION-19 ("Legion on
 Kubernetes") stating the requirement the pod boundary must now satisfy — App keys mounted into the
-daemon pod only, rotation at the cutover — with the ask reference and Sami's answer as provenance.
+daemon pod only, rotation at the cutover — with the ask reference as provenance.
 The LEGION-77 spec kept its deferred acceptance items in place, each marked deferred with that
 provenance, rather than deleting them; the record of what was asked and decided stays with the issue
 that asked.

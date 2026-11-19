@@ -1,5 +1,5 @@
 ---
-title: "Proving an in-cluster daemon feature on a throwaway kind instance of your own: the standing order's correction, the branch image by digest, a short resync, one relayed root event, an inert controller, and a teardown that leaves nothing"
+title: "Proving an in-cluster daemon feature on a throwaway kind instance of your own: the 2026-09-13 order's correction, the branch image by digest, a short resync, one relayed root event, an inert controller, and a teardown that leaves nothing"
 category: testing
 tags:
   - kind
@@ -40,7 +40,7 @@ applies_when:
 
 ## The order and its correction
 
-Sami's standing order of 2026-09-13 (19:00Z, via the operator) withdrew every pre-merge rig:
+The operator's order of 2026-09-13 (19:00Z) withdrew every pre-merge rig:
 no smoke rig, no scratch daemon, no throwaway NATS or tmux server, no throwaway OMP profile —
 [pre-merge-surface-withdrawn-by-standing-order](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md)
 records how a pull request carries its proof when the surface is withdrawn. On 2026-09-14 at

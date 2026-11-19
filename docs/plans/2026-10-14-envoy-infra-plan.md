@@ -1377,9 +1377,7 @@ are gone, they read them from this command.
   - They must create, update, replace or delete no cloud resource, and stack outputs must not
     change. The only creates allowed are those the Global constraints name.
   - The previews use this branch's plugin, built by path, under the deployment's pinned Pulumi
-    CLI. Sami ruled on 2026-10-14 that they run locally rather than from the devbox, under his own
-    AWS SSO session, granted for this migration only: its staging profile for staging, its
-    production profile for production and dispatch.
+    CLI.
   - The record goes on that repository's draft PR, opened early for it. This PR gets operation
     counts by resource type only.
   - Ran with the plugin at `ec0ea342`, and the deployment's gate passed all three: staging and
