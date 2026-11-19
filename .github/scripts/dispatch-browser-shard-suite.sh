@@ -47,7 +47,7 @@ lane=$2
 connections=$3
 
 # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
-# makes (mkdtempSync in os.tmpdir(), e2e/harness-pool.ts:255) among it, which is what
+# makes (mkdtempSync in os.tmpdir(), in e2e/harness-pool.ts's startPool) among it, which is what
 # the upload steps below read. TMPDIR is exported on the command line, not in this
 # step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget gives.
