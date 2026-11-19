@@ -56,8 +56,11 @@
 #     (packages/daemon/docker/worker.Dockerfile), each of which must be there, judged by the commit
 #     that build ran at, which the image's own /opt/legion/bin/legion prints (`legion version`),
 #     never by its manifests' versions. A sessions/ stack or pin it cannot read is UNKNOWN by name.
-#     The pins are what the gate reads: a session launched with an image of its own (`--image`)
-#     runs clients outside them.
+#     The pins are what the gate reads, not running pods: a session launched with an image of its
+#     own (`--image`) runs clients outside them, and a pod keeps the image it started with until it
+#     is rolled or repinned, so right after a pin moves, GATE OPEN speaks for the pins while running
+#     sessions may still load the older pi-envoy. An image not pinned by digest is UNKNOWN and never
+#     run: under a tag, docker runs whatever image it holds by that name.
 #   - for each running project's daemon, its `daemonImage`, else its `image`: no session loads the
 #     clients of a daemon's own container, but the daemon installs `@sjawhar/pi-envoy@<version>`
 #     into a kept session pod on a stale-plugin relaunch (packages/daemon/internal/daemon/

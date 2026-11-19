@@ -248,6 +248,19 @@ check "refuses UNKNOWN naming the pin" \
   "$(has_line "UNKNOWN: sessions image: sessions/Pulumi.prod.yaml sets ${sessions_project}:image to --privileged ${session_image}, which is no image reference")"
 check "never runs docker with it" "$(lacks "--privileged" "$calls")"
 
+# An image is read only by digest: under a tag, docker would run whatever image it holds by that name,
+# which need not be the one deployed. The deployment pins by digest, and the gate holds it to that.
+echo "case: --clients, a sessions/ pin by tag, not by digest"
+new_case clients-sessions-tag
+clients_open
+sessions_stack "ghcr.io/cybermonklabs/agent-session:latest"
+worker_image "ghcr.io/cybermonklabs/agent-session:latest" "$ahead_rev"
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN saying the image is not pinned by digest" \
+  "$(grep -qF "UNKNOWN: sessions image: cannot run ghcr.io/cybermonklabs/agent-session:latest: ghcr.io/cybermonklabs/agent-session:latest is not pinned by digest" "$out" && echo true || echo false)"
+check "never runs docker with it" "$(lacks "--entrypoint cat ghcr.io/cybermonklabs/agent-session:latest" "$calls")"
+
 # The daemon's pi-envoy: the rendered legion.yaml's runtime.kubernetes.plugins.pi_envoy when it sets
 # one, else the pair `legion version` names on its second line, each judged by its release tag and
 # never by the image's build commit.

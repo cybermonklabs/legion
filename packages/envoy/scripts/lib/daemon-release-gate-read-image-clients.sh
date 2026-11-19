@@ -28,9 +28,15 @@ print("".join(shown(c) for c in sys.argv[1]))
 # no network, a read-only root, no capability and no gain of privileges, quiet so a pull of <ref>
 # adds nothing to its answer, and docker's exit status: 125 when docker could not run the container
 # at all. The error, into $work/err, is the last line of docker's or the command's that is not blank
-# and not docker's `Run 'docker run --help'` hint.
+# and not docker's `Run 'docker run --help'` hint. A <ref> not pinned by digest is never run (125):
+# under a tag, docker runs whatever image it holds by that name, which need not be the one deployed,
+# and the deployment pins every image by digest.
 in_image() {
   local status=0
+  if ! [[ $1 =~ @sha256:[0-9a-f]+$ ]]; then
+    printf '%s is not pinned by digest, so the image docker holds under that name need not be the one deployed\n' "$1" >"$work/err"
+    return 125
+  fi
   docker run --rm --quiet --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
     --entrypoint "$2" "$1" "${@:3}" </dev/null 2>"$work/run.err" || status=$?
   awk '!/^Run \047/ && NF { line = $0 } END { print line }' "$work/run.err" >"$work/err"

@@ -720,9 +720,10 @@ in silence:
   build ran at, which `/opt/legion/bin/legion version` in the same image prints (`legion <version>
   commit <sha>`). A manifest's version names no build: claude-envoy's keeps its source's static
   version, and pi-envoy's names a release only when a release build sets it. A `sessions/` stack
-  or pin the gate cannot read prints `UNKNOWN` by name. The gate reads pins: a session launched
-  with an image of its own (a per-launch `--image`) runs clients outside them, and the gate does
-  not see it.
+  or pin the gate cannot read prints `UNKNOWN` by name. The gate reads pins, not running pods: a
+  session launched with an image of its own (a per-launch `--image`) runs clients outside them, and
+  a pod keeps the image it started with until it is rolled or repinned, so right after a pin moves,
+  `GATE OPEN` speaks for the pins while running sessions may still load the older pi-envoy.
 - For each running project's daemon, its `daemonImage`, else its `image`. No session loads the
   clients of the daemon's own container, but the daemon installs `@sjawhar/pi-envoy@<version>` into
   a kept session pod on a stale-plugin relaunch (`packages/daemon/internal/daemon/kubernetes.go`,
@@ -739,9 +740,12 @@ in silence:
   line that names no pi-envoy version print `UNKNOWN`. A project with no `daemonImage` runs its
   daemon from its `image`, which is then judged both ways.
 - Each command runs in the image with `docker run --rm --quiet --network none --read-only
-  --cap-drop ALL --security-opt no-new-privileges --entrypoint`, which pulls an image docker does
-  not hold, and every text read from an image is printed with its control characters written as
-  `\x<hh>`, so no image can print a line of the gate's own. A project on a tmux host prints
+  --cap-drop ALL --security-opt no-new-privileges --entrypoint`, and every text read from an image
+  is printed with its control characters written as `\x<hh>`, so no image can print a line of the
+  gate's own. An image not pinned by digest prints `UNKNOWN` and is never run: under a tag, docker
+  runs whatever image it holds by that name. `docker run` pulls an image docker does not hold, and
+  the gate leaves it there; each worker image is several gigabytes, so remove the ones a run pulled
+  (`docker image rm <ref>@sha256:<digest>`) when you are done. A project on a tmux host prints
   `UNKNOWN`: its sessions run the host's clients.
 - On this developer box, under `--dotfiles` (default `~/.dotfiles`): the `@sjawhar/pi-envoy` pin of
   `omp/plugins/package.json` and, where it differs, the copy installed beside it; each
