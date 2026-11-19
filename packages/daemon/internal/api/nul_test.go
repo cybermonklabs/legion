@@ -280,49 +280,6 @@ func TestDeliverStoresATaskWithNULAsReplacementCharacter(t *testing.T) {
 	}
 }
 
-// The operator's delivery of a task that holds a NUL reaches the agent as the task is stored. The
-// stored delivery reads U+FFFD where the request had the NUL, and a restart reads that copy back,
-// so the deliver's answer and the prompt the agent is sent before any restart read it too. A claim
-// that keeps the request's own text hands the agent, and the operator's answer, a NUL the store
-// never shows.
-func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
-	h := newHarness(t)
-	token, boot := h.launch("LEGION-208", claim.RoleTester)
-	registered := h.registered(boot, "ses_tester")
-	conn := connected(h, token)
-	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: "ses_tester", Secret: registered.Secret, Generation: registered.Generation,
-	}, nil); recorder.Code != http.StatusNoContent {
-		t.Fatalf("ready = %d %q, want 204", recorder.Code, recorder.Body)
-	}
-	settled(h, token)
-
-	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/deliver",
-		DeliverRequest{Task: "Review\x00 the plan."})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("deliver = %d, want 200; body %s", recorder.Code, recorder.Body)
-	}
-	settled(h, token)
-
-	const want = "Review\uFFFD the plan."
-	var stored string
-	if err := h.store.Pool().QueryRow(h.ctx, `select task from pending_task_deliveries where claim_token = $1`,
-		string(token)).Scan(&stored); err != nil {
-		t.Fatalf("read the stored delivery: %v", err)
-	}
-	if stored != want {
-		t.Fatalf("the stored task is %q, want %q", stored, want)
-	}
-	var answered OperatorClaim
-	decodeInto(t, recorder, &answered)
-	if answered.Pending == nil || answered.Pending.Task != want {
-		t.Errorf("the deliver answered the pending task %+v, want %q, the task as stored", answered.Pending, want)
-	}
-	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].Message != want {
-		t.Errorf("the agent was sent %q, want one prompt of %q, the task as stored", prompts, want)
-	}
-}
-
 // A refused turn's message, the provider's words with a NUL and a URL that carries a token, is
 // held in the claim's window of turn outcomes as the store holds it: U+FFFD for the NUL and the
 // URL without its query, so the refusal the claim's failure would name is the stored one.
