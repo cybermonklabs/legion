@@ -502,13 +502,17 @@ resume lane. Every claim writes with the revision of the claim record it read, a
 claim reads again and writes again on a conflict until its request's budget ends, then answers
 `503` with `Retry-After: 1` and writes nothing, so the record names the holder the claim really
 replaced. A record the stream refuses because it holds its byte limit lets the claim land with no
-record, under the Error line `listener role claim goes on with no takeover record` naming the
-role, the previous holder and the claimant, counted on `envoy_role_takeover_unrecorded_total`:
-that takeover copies nothing for the role's next holder. Any other record failure writes no claim
-and answers `503`. A pass of a record first reads the role's claim. While it names the record's previous
-holder - the claim did not land, or the role went back to it - the pass copies nothing, since
-that holder receives its role messages from its own consumer and a copy would come back to the
-subject it was taken from as a new frame. Otherwise the pass reads the previous holder's subject
+record. A claim that lands so writes the Error line `listener role claim goes on with no takeover
+record`, naming the role, the previous holder and the claimant, once, counted on
+`envoy_role_takeover_unrecorded_total`: that takeover copies nothing for the role's next holder. A
+try that met a conflict and a claim that did not land count nothing. Any other record failure
+writes no claim and answers `503`. A pass of a record first reads the role's claim. While it names
+the record's previous holder - the claim did not land yet or at all, or the role went back to it -
+the pass copies nothing, since that holder receives its role messages from its own consumer and a
+copy would come back to the subject it was taken from as a new frame. The first such pass of a
+record that had moved sets it back to reading that holder's floor anew, so the messages the holder
+reads while it holds the role are not copied when it loses the role again. Otherwise the pass reads
+the previous holder's subject
 from the acknowledgement floor of its session consumer on (or the floor the listener recorded when
 it deleted that consumer, or, with neither, from an hour before the claim, on the sweep's next
 pass), and copies each role message of that role stored less than an hour before the claim or
