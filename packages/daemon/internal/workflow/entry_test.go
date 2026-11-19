@@ -229,8 +229,8 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 		Entry: seededEntry, EntryRaisedAt: seededRaisedAt, EntryMovedBack: true})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return engine.StartPromotedWorker(t.Context(), tx, issue, claim.RoleImplementer)
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")

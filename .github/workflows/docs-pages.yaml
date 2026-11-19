@@ -142,6 +142,7 @@ on:
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
+      - 'packages/envoy/steprecord/*'
       # ci.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'
@@ -192,6 +193,7 @@ on:
       - 'packages/envoy/internal/dispatch/text/*'
       - 'packages/envoy/internal/dispatch/texttreefill/*'
       - 'packages/envoy/internal/dispatch/texttrees/*'
+      - 'packages/envoy/internal/dispatch/workflowstore/*'
       - 'packages/envoy/internal/envconf/*'
       - 'packages/envoy/internal/fold/*'
       - 'packages/envoy/internal/githubappjwt/*'

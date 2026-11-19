@@ -33,6 +33,7 @@ test("IssueTabs exposes the Conversation tab at its canonical route", async () =
       "Spec",
       "Verification",
       "Plan",
+      "Steps",
       "Conversation",
       "Children",
       "Artifacts",
@@ -50,6 +51,8 @@ test("IssueTabs exposes the Conversation tab at its canonical route", async () =
     expect(screen.getByTestId("location").textContent).toBe("/issues/CORE-1/verification");
     await user.click(screen.getByRole("tab", { name: "Plan" }));
     expect(screen.getByTestId("location").textContent).toBe("/issues/CORE-1/plan");
+    await user.click(screen.getByRole("tab", { name: "Steps" }));
+    expect(screen.getByTestId("location").textContent).toBe("/issues/CORE-1/steps");
     await user.click(screen.getByRole("tab", { name: "Collaborators" }));
     expect(screen.getByTestId("location").textContent).toBe("/issues/CORE-1/collaborators");
   } finally {
