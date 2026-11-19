@@ -203,6 +203,55 @@ func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
 	}
 }
 
+// newSessionsRoster is three sessions that have written nothing yet, so none has a
+// session_projects pair, as the listener lists them: session-new-priv registered with a token that
+// lists PRIV, session-new-pub with one that lists PUB, and session-new-none with one that lists no
+// project, which the listener sends no projects key for.
+const newSessionsRoster = `[
+	{"session_id":"session-new-priv","title":"New on PRIV","capabilities":["btw"],"projects":["PRIV"],"last_seen":300},
+	{"session_id":"session-new-pub","title":"New on PUB","capabilities":["btw"],"last_seen":200,"projects":["PUB"]},
+	{"session_id":"session-new-none","title":"New, no list","capabilities":["btw"],"last_seen":100}
+]`
+
+// TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee (K6): a session with no history is
+// judged by its listener record's projects (access.SessionClause), so GET /api/v1/agents leaves out,
+// for an open viewer that does not see PRIV (alice, carol's token that lists no project, the shared
+// token), session-new-priv, whose listener names PRIV alone, and lists session-new-pub, whose
+// listener names PUB, and session-new-none, whose listener names no project. carol, who sees PRIV,
+// lists all three; bob and carol's token that lists PRIV list session-new-priv alone; alice's token
+// that lists PRIV, which sees no project, lists none.
+//
+// Control: the clause before its listener-record arms (access.SessionClause passing every session
+// with no pair to an open viewer); alice then lists session-new-priv, and the test fails naming it.
+func TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee(t *testing.T) {
+	listener, _ := newBroadcastListener(t, newSessionsRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	public := []string{"session-new-pub", "session-new-none"}
+	for _, test := range []struct {
+		caller privateCaller
+		want   []string
+	}{
+		{callerAlice, public},
+		{callerCarolToken, public},
+		{callerSharedToken, public},
+		{callerCarol, []string{"session-new-priv", "session-new-pub", "session-new-none"}},
+		{callerBob, []string{"session-new-priv"}},
+		{callerCarolPrivToken, []string{"session-new-priv"}},
+		{callerAlicePrivToken, []string{}},
+	} {
+		response := seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+		got := []string{}
+		for _, row := range decodeBody[[]struct {
+			SessionID string `json:"session_id"`
+		}](t, response) {
+			got = append(got, row.SessionID)
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: GET /api/v1/agents = %v, want %v", test.caller, got, test.want)
+		}
+	}
+}
+
 // TestCIRepairPassesGoToAnOpenViewerOnly (check c-ci-passes-open): GET /api/v1/ci-reconcile/passes
 // reads the whole deployment. A pass covers repositories of many projects and names no issue, so it
 // has no project to hold a viewer to: an open viewer reads every pass, and every other viewer is

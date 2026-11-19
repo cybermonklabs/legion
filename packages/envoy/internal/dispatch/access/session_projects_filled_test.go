@@ -111,39 +111,6 @@ func TestTheFillMarkerIsReadOncePerStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("alice: Resolve: %v", err)
 	}
-	loops := func() (scans, total int) {
-		t.Helper()
-		var plan []map[string]any
-		if err := database.Pool.QueryRow(ctx, `explain (analyze, costs off, timing off, format json)
-			select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"),
-			viewerArg(t, alicePerson)).Scan(&plan); err != nil {
-			t.Fatalf("explain the read over fifty sessions: %v", err)
-		}
-		var walk func(node map[string]any)
-		walk = func(node map[string]any) {
-			if node["Relation Name"] == "session_projects_filled" {
-				scans++
-				loops, _ := node["Actual Loops"].(float64)
-				total += int(loops)
-			}
-			children, _ := node["Plans"].([]any)
-			for _, child := range children {
-				if child, ok := child.(map[string]any); ok {
-					walk(child)
-				}
-			}
-		}
-		for _, root := range plan {
-			if node, ok := root["Plan"].(map[string]any); ok {
-				walk(node)
-			}
-		}
-		if scans == 0 {
-			encoded, _ := json.Marshal(plan)
-			t.Fatalf("the plan reads session_projects_filled nowhere, so this measures nothing:\n%s", encoded)
-		}
-		return scans, total
-	}
 	for _, state := range []struct{ name, sql string }{
 		{"unfilled", `delete from session_projects_filled`},
 		{"filled", `insert into session_projects_filled default values`},
@@ -151,8 +118,78 @@ func TestTheFillMarkerIsReadOncePerStatement(t *testing.T) {
 		if _, err := database.Pool.Exec(ctx, state.sql); err != nil {
 			t.Fatalf("%s: %v", state.name, err)
 		}
-		if scans, total := loops(); total != 1 {
+		if scans, total := planLoops(t, database.Pool, "session_projects_filled",
+			`select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"),
+			viewerArg(t, alicePerson)); total != 1 {
 			t.Errorf("%s: the read over fifty sessions scans session_projects_filled in %d nodes, %d loops in all; want one loop", state.name, scans, total)
+		}
+	}
+}
+
+// planLoops explains sql, run with args, and answers how many of its plan's nodes scan relation and
+// how many loops they ran in all. A plan that scans relation nowhere fails the test, since a count
+// over it would measure nothing.
+func planLoops(t *testing.T, q Querier, relation, sql string, args ...any) (scans, total int) {
+	t.Helper()
+	var plan []map[string]any
+	if err := q.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) `+sql, args...).Scan(&plan); err != nil {
+		t.Fatalf("explain the read: %v", err)
+	}
+	var walk func(node map[string]any)
+	walk = func(node map[string]any) {
+		if node["Relation Name"] == relation {
+			scans++
+			loops, _ := node["Actual Loops"].(float64)
+			total += int(loops)
+		}
+		children, _ := node["Plans"].([]any)
+		for _, child := range children {
+			if child, ok := child.(map[string]any); ok {
+				walk(child)
+			}
+		}
+	}
+	for _, root := range plan {
+		if node, ok := root["Plan"].(map[string]any); ok {
+			walk(node)
+		}
+	}
+	if scans == 0 {
+		encoded, _ := json.Marshal(plan)
+		t.Fatalf("the plan reads %s nowhere, so this measures nothing:\n%s", relation, encoded)
+	}
+	return scans, total
+}
+
+// TestTheListenerRecordIsReadOncePerStatement: SessionClause reads the listener's record of a
+// session with no pair from the route_roster row (listenerProjects), a read that names no column
+// of the row it tests, so a statement reads the row once (an InitPlan), not once per session. A
+// read over fifty sessions the row lists, none with a pair, for an open viewer and for a
+// restricted one of a deployment that holds a private project, scans route_roster in one loop.
+func TestTheListenerRecordIsReadOncePerStatement(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		select true, jsonb_agg(jsonb_build_object('session_id', 'ses_' || n, 'projects', jsonb_build_array(case when n % 2 = 0 then 'PUB' else 'PRIV' end))),
+			now(), now() + interval '1 hour'
+		from generate_series(1, 50) as n;
+	`); err != nil {
+		t.Fatalf("seed the listener's record of fifty sessions: %v", err)
+	}
+	for _, person := range []string{alice, bob} {
+		viewer, err := Resolve(ctx, database.Pool, cookie(person))
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", person, err)
+		}
+		if !viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", person, viewer)
+		}
+		if scans, total := planLoops(t, database.Pool, "route_roster",
+			`select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"),
+			viewerArg(t, viewer)); total != 1 {
+			t.Errorf("%s: the read over fifty sessions scans route_roster in %d nodes, %d loops in all; want one loop", person, scans, total)
 		}
 	}
 }
