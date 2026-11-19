@@ -118,6 +118,7 @@ interface Harness {
   readonly deregistrations: {
     readonly sessionID: string;
     readonly clientInstanceID: string | undefined;
+    readonly timeoutMs?: number;
   }[];
   readonly claims: SetRoleInput[];
   readonly fakeConnection: (name: string) => NatsConnection;
@@ -138,6 +139,7 @@ function createHarness(): Harness {
   const deregistrations: {
     readonly sessionID: string;
     readonly clientInstanceID: string | undefined;
+    readonly timeoutMs?: number;
   }[] = [];
   const claims: SetRoleInput[] = [];
 
@@ -180,6 +182,7 @@ function createHarness(): Harness {
       deregistrations.push({
         sessionID: input.sessionID,
         clientInstanceID: input.clientInstanceID,
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       });
     },
     setRole: async (input) => {
@@ -742,6 +745,16 @@ describe("deregister", () => {
     await state.deregister("ses_a");
     expect(deregistrations).toEqual([
       { sessionID: "ses_a", clientInstanceID: state.clientInstanceID },
+    ]);
+  });
+
+  test("a deregistration with a shutdown's remaining time hands that time to the call", async () => {
+    // A shutdown has 1 s for its DELETE (`SHUTDOWN_DEADLINE_MS`); the call gets what is left, so
+    // its credential waits on that less the request's reserve and the DELETE goes in time.
+    const { state, deregistrations } = createHarness();
+    await state.deregister("ses_a", 750);
+    expect(deregistrations).toEqual([
+      { sessionID: "ses_a", clientInstanceID: state.clientInstanceID, timeoutMs: 750 },
     ]);
   });
 });

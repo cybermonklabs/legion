@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  `scripts/dev-stack.sh` refuses to start under a bash older than 5.1, in one line naming the bash
+  it needs and the one it got, before it creates or starts anything. Its wait for a stopped
+  process (`wait -n -p`) is bash 5.1's, and under bash 5.0 the loop around it spun forever.
+time: 2026-11-18T18:26:18Z
+custom:
+    Issue: pr4140

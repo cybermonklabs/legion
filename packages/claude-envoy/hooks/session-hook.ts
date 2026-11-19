@@ -88,7 +88,9 @@
 
 import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
+import { scrubProcessStreams } from "@legion/contracts/held-secrets"
+import { urlForText } from "@legion/contracts/log-text"
+import { formatOpenAsksSummary, linkBaseOf } from "@legion/envoy-client/dispatch-execute"
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -96,7 +98,7 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory, writeAtomically } from "@legion/envoy-client/dispatch-session-directory"
 import { offWithError } from "@legion/envoy-client/envoy-config"
-import { hasErrnoCode, messageFor, withoutUserinfo } from "@legion/envoy-client/errors"
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors"
 import {
   readSessionAnswers,
   SESSION_ANSWERS_DEADLINE_MS,
@@ -117,6 +119,10 @@ import { claudeProjectDirectory, configuredValue } from "../src/claude-session"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { recordChosenTitle } from "../src/session-state"
 import { parseHookArguments } from "./hook-arguments"
+
+// Every line this hook writes, the context Claude Code hands the model on stdout included, passes
+// the scrub of the secrets it holds (`@legion/contracts/held-secrets`).
+scrubProcessStreams()
 
 const OPEN_ASKS_TIMEOUT_MS = 3_000
 const OpenAsksInput = z.object({
@@ -317,10 +323,10 @@ async function openAsks(raw: unknown): Promise<void> {
   if (dispatch.enabled) {
     try {
       const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
-        signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
+        deadlineMs: OPEN_ASKS_TIMEOUT_MS,
       }).openAsks(input.session_id)
       process.stdout.write(
-        `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
+        `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, linkBaseOf(dispatch.publicUrl ?? dispatch.url))}\n`,
       )
     } catch (error) {
       process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)
@@ -460,10 +466,12 @@ async function refreshedAnswers(
       if (outcome.dispatch_url === dispatchUrl) {
         return { text: outcome.text ?? undefined, notice: outcome.notice ?? undefined }
       }
-      // Compared whole above; the reason reaches the session's context, so it names the URL
-      // without the user and password it may carry.
+      // Compared whole above; the reason reaches the session's context, so it names the URL only
+      // where it is a plain http(s) URL, and by a fixed phrase otherwise (`urlForText`).
       const read =
-        outcome.dispatch_url === null ? "no Dispatch" : withoutUserinfo(outcome.dispatch_url)
+        outcome.dispatch_url === null
+          ? "no Dispatch"
+          : urlForText(outcome.dispatch_url, "another Dispatch URL")
       return {
         reason: `the refresher read ${read}, not the Dispatch envoy.json names now`,
       }

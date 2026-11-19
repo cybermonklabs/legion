@@ -1,5 +1,5 @@
 diff --git a/lib/nats-base-client/protocol.js b/lib/nats-base-client/protocol.js
-index 63fac09631b888081e0b2b2ab4dd24854a6ae286..fba2d5c9634eb558daa9251db39040a7002f7d0a 100644
+index 63fac09631b888081e0b2b2ab4dd24854a6ae286..54da11902968d3bc06ba7a2884481178d3fa7432 100644
 --- a/lib/nats-base-client/protocol.js
 +++ b/lib/nats-base-client/protocol.js
 @@ -363,7 +363,9 @@ class ProtocolHandler {
@@ -13,8 +13,21 @@ index 63fac09631b888081e0b2b2ab4dd24854a6ae286..fba2d5c9634eb558daa9251db39040a7
      }
      reconnect() {
          if (this.connected) {
+@@ -435,7 +437,11 @@ class ProtocolHandler {
+                         }
+                     }
+                     catch (err) {
+-                        console.log("reader closed", err);
++                        // The error's name alone, and on stderr: a parse error's message holds the
++                        // bytes a peer sent, which a peer that is no nats-server can make the
++                        // CONNECT this client sent it, its credential included; and stdout is the
++                        // MCP stream in Claude Code's channel server.
++                        console.error("reader closed", err && err.name);
+                     }
+                 }))().then();
+             }
 diff --git a/lib/src/node_transport.js b/lib/src/node_transport.js
-index 64752b9ff22603b70421170613e7cdac2b50cce2..1081995218c8a360361dbb55ae89a1465f7cf4c8 100644
+index 64752b9ff22603b70421170613e7cdac2b50cce2..818b9e802aedaa4e8c2f82934b51ead3503eed13 100644
 --- a/lib/src/node_transport.js
 +++ b/lib/src/node_transport.js
 @@ -112,6 +112,7 @@ class NodeTransport {
@@ -40,3 +53,13 @@ index 64752b9ff22603b70421170613e7cdac2b50cce2..1081995218c8a360361dbb55ae89a146
              if (this.done)
                  return;
              this.closeError = err;
+@@ -446,7 +450,8 @@ class NodeTransport {
+                 }
+             }
+             catch (err) {
+-                console.log(err);
++                // The error's name alone, and on stderr, as the reader loop's (protocol.js).
++                console.error("transport close", err && err.name);
+             }
+             this.done = true;
+             this.closedNotification.resolve(this.closeError);
