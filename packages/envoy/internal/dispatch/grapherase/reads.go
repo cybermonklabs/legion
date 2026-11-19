@@ -854,6 +854,13 @@ func projectionRows(reference referencingColumn, table string) string {
 // mentions or pointer tuple and its block_refs row), a comment its author is (its authored_by and
 // its author). The erase deletes the tuples into the node, so such a row would go on stating a
 // tuple the store no longer holds, which is a difference `census --store` reads.
+//
+// Each node stating a tuple into this one probes its own row through graph_nodes' primary key,
+// in a subquery behind an offset 0 the planner cannot flatten, so no plan reads graph_nodes
+// again for each such tuple. The tuples are read through graph_tuples_as_of_in, whose predicate
+// the read proves by naming `to_kind <> 'value'` (a value is no node, so nothing points into
+// one), so a plan cached without the node's kind still reaches that index
+// (TestTheBlockersReadProbesEachStatingNodeOnce).
 func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	for _, held := range projectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
@@ -882,10 +889,15 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	rows, err := tx.Query(ctx, `
 		select t.from_kind, t.from_id, t.kind from (
 			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,
-		`t.to_kind = $1 and t.to_id = $2 and not (t.from_kind = $1 and t.from_id = $2)`)+`
+		`t.to_kind = $1 and t.to_id = $2 and t.to_kind <> '`+graphstore.KindValue+`'
+			and not (t.from_kind = $1 and t.from_id = $2)`)+`
 		) t
-		join graph_nodes n on n.kind = t.from_kind and n.id = t.from_id and n.state = $3
-		where t.asserted and (`+strings.Join(projected, " or ")+`)
+		cross join lateral (
+			select n.state from graph_nodes n
+			where n.kind = t.from_kind and n.id = t.from_id
+			offset 0
+		) n
+		where n.state = $3 and t.asserted and (`+strings.Join(projected, " or ")+`)
 		order by 1, 2, 3`, e.Kind, e.ID, graphstore.StateLive)
 	if err != nil {
 		return fmt.Errorf("read the nodes stating a tuple into %s:%s: %w", e.Kind, e.ID, err)

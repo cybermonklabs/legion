@@ -392,6 +392,13 @@ type heldLink struct{ kind, toKind, toID string }
 // graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
 // value kind are written into the text so the planner can prove each index's partial predicate
 // whatever plan it caches.
+//
+// Each member probes its own node through graph_nodes' primary key, in a subquery behind an
+// offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
+// for the index's condition wherever the table's statistics counted few blocks, and read every
+// block node again for each member, its id left to a join filter: on a document of 1,000 blocks
+// that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
+// (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
 	rows, err := q.Query(ctx, `
 		select member.id, held.kind, held.to_kind, held.to_id
@@ -400,8 +407,11 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			where t.to_kind = 'artifact' and t.to_id = $1
 			  and t.kind = '`+TupleInDocument+`' and t.from_kind = '`+BlockNodeKind+`'
 		) member
-		join graph_nodes n on n.kind = '`+BlockNodeKind+`' and n.id = member.id
-			and n.state <> '`+graphstore.StateGone+`'
+		cross join lateral (
+			select n.state from graph_nodes n
+			where n.kind = '`+BlockNodeKind+`' and n.id = member.id
+			offset 0
+		) node
 		left join lateral (
 			select current.kind, current.to_kind, current.to_id
 			from (
@@ -412,6 +422,7 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			) current
 			where current.asserted
 		) held on true
+		where node.state <> '`+graphstore.StateGone+`'
 		order by member.id, held.kind, held.to_kind, held.to_id
 	`, refKey)
 	if err != nil {

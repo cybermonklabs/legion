@@ -258,14 +258,13 @@ func BaseAttributes() []string { return slices.Clone(baseAttributes[:]) }
 // without building the list.
 func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
-// The base attributes a node write states for one node, as its mark carries them (nodeMarks), and
-// markAttributes the room the mark leaves for them.
+// The base attributes a node write states for one node, as its mark carries them (nodeMarks);
+// markSpan is the room the mark leaves for them.
 const (
 	markVisibility = 1 << iota
 	markState
 	markProject
 	markParties
-	markAttributes
 )
 
 // markMade is the attributes a node write states for a node it makes, in the SQL of a select over
@@ -277,7 +276,7 @@ var markMade = strconv.Itoa(markVisibility|markState) +
 
 // nodeMarks draws the mark a node write leaves on each row it made or moved, until the statement
 // that states that write's facts reads it and moves the row onto its cause (queueAppend): a
-// negative source_event, -(mark*markAttributes + attributes), where mark names the write and
+// negative source_event, -(mark*markSpan + attributes), where mark names the write and
 // attributes are the base attributes it states for the node (markVisibility, markState, and
 // markProject and markParties for a node it made carrying them or a node already there it gave
 // them). No event has a negative id, and a row carries the mark only between two statements of
@@ -299,20 +298,26 @@ func nextNodeMark() int64 {
 	return nodeMarks.Add(1)%(1<<40) + 1
 }
 
-// markSQL is the source_event a node write leaves on a row: -(mark*markAttributes + attributes),
-// mark bound as the parameter at markParam.
+// markSpan is how many values the attributes a mark carries can take, every set of
+// markVisibility, markState, markProject and markParties: a mark is spelled
+// mark*markSpan + attributes, so neither part reaches the other.
+const markSpan = (markVisibility | markState | markProject | markParties) + 1
+
+// markSQL is the source_event a node write leaves on a row: -(mark*markSpan + attributes), mark
+// bound as the parameter at markParam.
 func markSQL(markParam, attributes string) string {
-	return `-(` + markParam + `::bigint * ` + strconv.Itoa(markAttributes) + ` + ` + attributes + `)`
+	return `-(` + markParam + `::bigint * ` + strconv.Itoa(markSpan) + ` + ` + attributes + `)`
 }
 
 // markedBy is the condition that row's source_event is the mark the write at markParam left.
 func markedBy(row, markParam string) string {
-	return `(` + row + `.source_event < 0 and (-` + row + `.source_event) / ` + strconv.Itoa(markAttributes) + ` = ` + markParam + `::bigint)`
+	return `(` + row + `.source_event < 0 and (-` + row + `.source_event) / ` + strconv.Itoa(markSpan) + ` = ` + markParam + `::bigint)`
 }
 
-// markedAttributes is the base attributes the mark on row's source_event names.
-func markedAttributes(row string) string {
-	return `((-` + row + `.source_event) % ` + strconv.Itoa(markAttributes) + `)::integer`
+// markAttributes is the base attributes the mark on row's source_event says its write states
+// (markVisibility, markState, markProject, markParties), read where markedBy holds.
+func markAttributes(row string) string {
+	return `((-` + row + `.source_event) % ` + strconv.Itoa(markSpan) + `)::integer`
 }
 
 // queueNodes queues the write of nodes, in statements each of whose rows arrive in ascending
@@ -615,7 +620,7 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 				with ordinality as node(kind, id, visibility, state, project, parties, made_at, made_by, cause, skip, position)
 		),
 		marked as (
-			select written.*, `+markedAttributes("held")+` & ~written.skip as attributes
+			select written.*, `+markAttributes("held")+` & ~written.skip as attributes
 			from written
 			cross join lateral (
 				select g.source_event from graph_nodes g
