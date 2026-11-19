@@ -33,12 +33,14 @@ const sharedPool = "github.com/sjawhar/envoy/internal/dispatch/store.Pool"
 
 // poolStatementReceivers are the types whose statement methods run SQL outside any transaction of
 // the shared pool, so outside the commit step: the shared pool's own bare statements, and every
-// pool or connection handed out beside it, whose transactions the step never joins either.
+// pool or connection handed out beside it, whose transactions the step never joins either: the
+// separate pools (store.SeparatePool) and what pgx hands out.
 var poolStatementReceivers = map[string]bool{
-	sharedPool:                             true,
-	"github.com/jackc/pgx/v5/pgxpool.Pool": true,
-	"github.com/jackc/pgx/v5/pgxpool.Conn": true,
-	"github.com/jackc/pgx/v5.Conn":         true,
+	sharedPool: true,
+	"github.com/sjawhar/envoy/internal/dispatch/store.SeparatePool": true,
+	"github.com/jackc/pgx/v5/pgxpool.Pool":                          true,
+	"github.com/jackc/pgx/v5/pgxpool.Conn":                          true,
+	"github.com/jackc/pgx/v5.Conn":                                  true,
 }
 
 // keyedWriteGuardStops are the functions the guard does not follow, each with the reason what it
@@ -54,9 +56,15 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
-	// The pool itself: its statement methods are what the guard looks for at their call sites.
+	// The pools themselves: their statement methods are what the guard looks for at their call
+	// sites. A separate pool's methods hand each statement to the pgx pool under it, as the
+	// shared pool's do.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",
+	"store.SeparatePool.Exec": "", "store.SeparatePool.Query": "", "store.SeparatePool.QueryRow": "",
+	"store.SeparatePool.SendBatch": "", "store.SeparatePool.CopyFrom": "", "store.SeparatePool.Begin": "",
+	"store.SeparatePool.BeginTx": "", "store.SeparatePool.Acquire": "", "store.SeparatePool.AcquireFunc": "",
+	"store.SeparatePool.Ping": "",
 }
 
 // keyedWriteGuardAllowed are the bare writes a keyed route may make, each with the reason the

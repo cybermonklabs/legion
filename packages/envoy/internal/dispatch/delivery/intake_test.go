@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -58,7 +57,7 @@ const branchCommitsMigration = 20261107234701
 // (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
 // connection of its own, so a test can hold the lease from one caller while an intake tries for it
 // from another.
-func deliveryTestLeases(t *testing.T, pool *store.Pool) *pgxpool.Pool {
+func deliveryTestLeases(t *testing.T, pool *store.Pool) *store.SeparatePool {
 	t.Helper()
 	return storetest.Leases(t, pool)
 }

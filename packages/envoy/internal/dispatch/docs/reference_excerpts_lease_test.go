@@ -6,15 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // excerptLeases is the pool a reconciliation pass takes its lease on, the one cmd/dispatch gives
 // the loop.
-func excerptLeases(t *testing.T, database *store.Store) *pgxpool.Pool {
+func excerptLeases(t *testing.T, database *store.Store) *store.SeparatePool {
 	t.Helper()
 	return storetest.Leases(t, database.Pool)
 }

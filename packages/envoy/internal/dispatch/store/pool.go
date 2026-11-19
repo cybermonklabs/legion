@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/pgsetting"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -160,18 +162,18 @@ type Pool struct {
 	// caller that loses the race is told the pool is closed rather than opening one nothing
 	// will ever close.
 	mu          sync.Mutex
-	rooms       *pgxpool.Pool
-	roomAppends *pgxpool.Pool
-	health      *pgxpool.Pool
-	listen      *pgxpool.Pool
-	leases      *pgxpool.Pool
+	rooms       *SeparatePool
+	roomAppends *SeparatePool
+	health      *SeparatePool
+	listen      *SeparatePool
+	leases      *SeparatePool
 	// leaseCallers is the registry Leases hands out, holding the reservations of the lease
 	// pool above: one registry per pool, so every caller's reservation is counted together.
 	leaseCallers *LeaseCallers
-	outbox       *pgxpool.Pool
-	compaction   *pgxpool.Pool
-	textTrees    *pgxpool.Pool
-	horizon      *pgxpool.Pool
+	outbox       *SeparatePool
+	compaction   *SeparatePool
+	textTrees    *SeparatePool
+	horizon      *SeparatePool
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (separate); healthClosed refuses that one too, once Close has closed every other pool
 	// (healthPool).
@@ -269,7 +271,7 @@ var ErrPoolClosed = errors.New("connection pool is closed")
 // second connection from the shared pool is exactly what deadlocks it (ErrNestedAcquire), so
 // the loads have their own, opened on demand and closed with this pool: one per store, not one
 // per caller who wants to read a document.
-func (p *Pool) Rooms() (*pgxpool.Pool, error) {
+func (p *Pool) Rooms() (*SeparatePool, error) {
 	return p.separate(&p.rooms, RoomsPoolSize, "document rooms", roomsApplicationName)
 }
 
@@ -278,7 +280,7 @@ func (p *Pool) Rooms() (*pgxpool.Pool, error) {
 // and gives it back (roomAppendsPoolSize says why that cannot deadlock). On a pool of their own
 // the appends wait for no request and hold no connection a request could use, and a request
 // waits for none of them.
-func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
+func (p *Pool) RoomAppends() (*SeparatePool, error) {
 	return p.separate(&p.roomAppends, roomAppendsPoolSize, "document room appends", roomAppendsApplicationName)
 }
 
@@ -489,7 +491,7 @@ func (p *Pool) Leases() (*LeaseCallers, error) {
 // reservation, and a reservation passed to a second consumer, are both outside what Complete can
 // see.
 type LeaseCallers struct {
-	pool *pgxpool.Pool
+	pool *SeparatePool
 	// mu guards the reserved names: the server takes them one at a time from the goroutine
 	// that wires it, and a caller reserving from a goroutine of its own must not be lost from
 	// the count.
@@ -498,12 +500,12 @@ type LeaseCallers struct {
 }
 
 // For reserves a connection of the lease pool for the caller named name and returns the pool it
-// takes that connection from: a *pgxpool.Pool is the duty.Leases a lease is taken on and the
+// takes that connection from: a SeparatePool is the duty.Leases a lease is taken on and the
 // duty.Holds a hold's statements run on. Every caller that can be inside a lease or a hold
 // statement while another is reserves a name of its own - one intake's hold is two callers, its
 // renewal goroutine and the intake's own - and a name reserved already is refused, since two
 // callers cannot share one connection.
-func (c *LeaseCallers) For(name string) (*pgxpool.Pool, error) {
+func (c *LeaseCallers) For(name string) (*SeparatePool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if slices.Contains(c.reserved, name) {
@@ -581,7 +583,7 @@ func (p *Pool) Outbox() (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPool(opened), nil
+	return NewPool(opened.pool), nil
 }
 
 // compactionPoolSize bounds the pool a document's compaction reads and writes through. A
@@ -597,7 +599,7 @@ const compactionPoolSize = 2
 // on the rooms pool its read would queue a room's load behind a log it is folding; on a pool of
 // its own it takes neither. Like the rooms pool it is outside the nested-acquire guard, because a
 // separate pool cannot close the cycle the guard prevents.
-func (p *Pool) Compaction() (*pgxpool.Pool, error) {
+func (p *Pool) Compaction() (*SeparatePool, error) {
 	return p.separate(&p.compaction, compactionPoolSize, "document compaction", compactionApplicationName)
 }
 
@@ -627,7 +629,7 @@ func (p *Pool) TextTrees() (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPool(opened), nil
+	return NewPool(opened.pool), nil
 }
 
 // horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The
@@ -648,7 +650,7 @@ const horizonPoolSize = 2
 // use. Like the rooms pool it is outside the nested-acquire guard, because a separate pool cannot
 // close the cycle the guard prevents: none of those statements (each one batch or one row) asks
 // for a second connection while it holds one.
-func (p *Pool) Horizon() (*pgxpool.Pool, error) {
+func (p *Pool) Horizon() (*SeparatePool, error) {
 	return p.separate(&p.horizon, horizonPoolSize, "event horizon", "")
 }
 
@@ -656,7 +658,7 @@ func (p *Pool) Horizon() (*pgxpool.Pool, error) {
 // shared pool. It refuses from the moment Close begins (ErrPoolClosed). Each caller holds mu for
 // the whole check-and-open so two of them cannot open two pools, and one opened after Close would
 // be a pool nobody closes.
-func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+func (p *Pool) separate(field **SeparatePool, size int32, name, applicationName string) (*SeparatePool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -668,7 +670,7 @@ func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName 
 // healthPool is separate for the health probe's pool, whose close rule is its own: it opens and
 // is handed out while Close waits for the other pools' connections, and refuses once Close has
 // closed every other pool (healthClosed), so Healthy answers for as long as Close waits.
-func (p *Pool) healthPool() (*pgxpool.Pool, error) {
+func (p *Pool) healthPool() (*SeparatePool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.healthClosed {
@@ -681,7 +683,7 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 // copied from the shared pool's configuration. Its connections name themselves applicationName in
 // pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
 // checked the pool is not closed for it.
-func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+func (p *Pool) openSeparateLocked(field **SeparatePool, size int32, name, applicationName string) (*SeparatePool, error) {
 	if *field != nil {
 		return *field, nil
 	}
@@ -702,8 +704,8 @@ func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applic
 	if err != nil {
 		return nil, fmt.Errorf("open %s pool: %w", name, err)
 	}
-	*field = opened
-	return opened, nil
+	*field = &SeparatePool{pool: opened}
+	return *field, nil
 }
 
 // Close releases every connection the pool holds, the separate pools' - the document rooms, their
@@ -719,14 +721,14 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
-	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
+	separates := []*SeparatePool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
 	// The registry goes with the pool its reservations were on: a caller after the close is
 	// told the pool is closed rather than handed a reservation on a pool nothing serves.
 	p.leaseCallers = nil
 	p.mu.Unlock()
 	for _, separate := range separates {
 		if separate != nil {
-			separate.Close()
+			separate.pool.Close()
 		}
 	}
 	p.pool.Close()
@@ -735,7 +737,7 @@ func (p *Pool) Close() {
 	health := p.health
 	p.mu.Unlock()
 	if health != nil {
-		health.Close()
+		health.pool.Close()
 	}
 }
 
@@ -760,13 +762,15 @@ func (p *Pool) Use() ConnectionUse {
 	rooms, roomAppends := p.rooms, p.roomAppends
 	p.mu.Unlock()
 	var use ConnectionUse
-	for _, pool := range []*pgxpool.Pool{p.pool, rooms, roomAppends} {
-		if pool == nil {
-			continue
-		}
-		stat := pool.Stat()
+	count := func(stat *pgxpool.Stat) {
 		use.InUse += stat.AcquiredConns()
 		use.Returned += stat.AcquireCount() - int64(stat.AcquiredConns())
+	}
+	count(p.pool.Stat())
+	for _, separate := range []*SeparatePool{rooms, roomAppends} {
+		if separate != nil {
+			count(separate.Stat())
+		}
 	}
 	return use
 }
@@ -801,13 +805,18 @@ func (p *Pool) guard(ctx context.Context) error {
 // with Acquire (the durable append's withRoomLock, marked with HoldsConnection) - and work
 // done inside the loop - a publish, a follower lookup, a write per row - is exactly the shape
 // that wedges the pool.
+//
+// Every method of Pool that takes a connection names a connect that failed under it without
+// DATABASE_URL's user (pgsetting.ConnectFailure): pgxpool dials as its callers need connections,
+// long after Open's ping, and answers a failed dial with pgx's own connect error, which names the
+// user and the server's answer, and a token can stand where the user does.
 func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
 	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, pgsetting.ConnectFailure(err)
 	}
 	release := hold(ctx)
 	if release == nil {
@@ -853,12 +862,13 @@ func (r *trackedRows) Values() ([]any, error) {
 	return values, err
 }
 
-// QueryRow runs a single-row query on a pooled connection.
+// QueryRow runs a single-row query on a pooled connection. pgxpool takes the connection first and
+// answers a failed one at the Scan, which connectFailureRow names without the user.
 func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	return connectFailureRow{p.pool.QueryRow(ctx, sql, args...)}
 }
 
 // Exec runs a statement on a pooled connection.
@@ -866,7 +876,8 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return p.pool.Exec(ctx, sql, args...)
+	tag, err := p.pool.Exec(ctx, sql, args...)
+	return tag, pgsetting.ConnectFailure(err)
 }
 
 // Acquire takes a pooled connection the caller holds until it releases it.
@@ -874,15 +885,26 @@ func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	return p.pool.Acquire(ctx)
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, pgsetting.ConnectFailure(err)
+	}
+	return conn, nil
 }
 
-// AcquireFunc runs fn with a pooled connection.
+// AcquireFunc runs fn with a pooled connection, released when fn returns, as pgxpool's
+// AcquireFunc does: a failure to take the connection is named without the user, and fn's own
+// error is handed on as fn returned it.
 func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) error {
 	if err := p.guard(ctx); err != nil {
 		return err
 	}
-	return p.pool.AcquireFunc(ctx, fn)
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return pgsetting.ConnectFailure(err)
+	}
+	defer conn.Release()
+	return fn(conn)
 }
 
 // AcquireAllIdle takes every idle connection the pool holds.
@@ -903,15 +925,17 @@ func (p *Pool) CopyFrom(
 	if err := p.guard(ctx); err != nil {
 		return 0, err
 	}
-	return p.pool.CopyFrom(ctx, table, columns, source)
+	copied, err := p.pool.CopyFrom(ctx, table, columns, source)
+	return copied, pgsetting.ConnectFailure(err)
 }
 
-// SendBatch runs a batch on a pooled connection.
+// SendBatch runs a batch on a pooled connection. pgxpool takes the connection first and answers a
+// failed one from every result, which connectFailureBatch names without the user.
 func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
 	if err := p.guard(ctx); err != nil {
 		return errBatchResults{err: err}
 	}
-	return p.pool.SendBatch(ctx, batch)
+	return connectFailureBatch{p.pool.SendBatch(ctx, batch)}
 }
 
 // QueueExec queues sql with args into b; its error, wrapped in what as a statement sent alone
@@ -952,7 +976,7 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
-		return nil, err
+		return nil, pgsetting.ConnectFailure(err)
 	}
 	release := hold(ctx)
 	beforeCommit, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
@@ -1025,6 +1049,33 @@ type errRow struct {
 }
 
 func (r errRow) Scan(...any) error { return r.err }
+
+// connectFailureRow is a pgx.Row whose Scan names a connect that failed under it without the user
+// (pgsetting.ConnectFailure), and hands on every other error as it is.
+type connectFailureRow struct{ pgx.Row }
+
+func (r connectFailureRow) Scan(dest ...any) error {
+	return pgsetting.ConnectFailure(r.Row.Scan(dest...))
+}
+
+// connectFailureBatch is pgx.BatchResults whose every error names a connect that failed under it
+// without the user (pgsetting.ConnectFailure), and hands on every other error as it is; the rows
+// and the row it answers hold their connection's errors only, since the batch took its connection
+// before it sent them.
+type connectFailureBatch struct{ pgx.BatchResults }
+
+func (b connectFailureBatch) Exec() (pgconn.CommandTag, error) {
+	tag, err := b.BatchResults.Exec()
+	return tag, pgsetting.ConnectFailure(err)
+}
+
+func (b connectFailureBatch) Query() (pgx.Rows, error) {
+	rows, err := b.BatchResults.Query()
+	return rows, pgsetting.ConnectFailure(err)
+}
+
+func (b connectFailureBatch) QueryRow() pgx.Row { return connectFailureRow{b.BatchResults.QueryRow()} }
+func (b connectFailureBatch) Close() error      { return pgsetting.ConnectFailure(b.BatchResults.Close()) }
 
 // errBatchResults carries a refusal through the batch surface, which has no error return of
 // its own: every result the caller reads is the refusal, and the refused batch begins no

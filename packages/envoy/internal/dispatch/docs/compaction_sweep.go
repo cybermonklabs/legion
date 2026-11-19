@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -105,7 +104,7 @@ func (s *Service) compactionSweepPass(ctx context.Context) {
 // gave a row after their first that no compaction has folded since (appendUpdatesStatement,
 // through appendWrites; writeCompaction). It reads that table alone, so the pass reads no row of a
 // document with nothing to fold, and it drains the list before it returns.
-func compactionCandidates(ctx context.Context, pool *pgxpool.Pool) ([]string, error) {
+func compactionCandidates(ctx context.Context, pool *store.SeparatePool) ([]string, error) {
 	rows, err := pool.Query(ctx, `select artifact_id::text from doc_compaction_owed`)
 	if err != nil {
 		return nil, fmt.Errorf("list the documents to compact: %w", err)
@@ -125,7 +124,7 @@ const warnCompactionForget = "dispatch: take a document with nothing to fold off
 // (lockDocumentRoom), which every append that names a document takes too, so an append committing
 // meanwhile either committed before the delete reads the rows, which then keeps the entry, or
 // names the document again after it.
-func forgetCompactionCandidate(ctx context.Context, pool *pgxpool.Pool, room string) (bool, error) {
+func forgetCompactionCandidate(ctx context.Context, pool *store.SeparatePool, room string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("begin forget the document's compaction entry: %w", err)
