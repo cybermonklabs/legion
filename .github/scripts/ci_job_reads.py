@@ -49,6 +49,7 @@ without Go steps (the Bun packages) are as hand-kept as RULES: the check proves 
 covers them, not that they are complete.
 """
 
+import functools
 import json
 import os
 import re
@@ -56,7 +57,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, repo_files, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
 
@@ -230,13 +231,29 @@ def files_but_tests(directory, suffix=".go", tree=False, skip=()):
     holds no file of the repository. A `<dir>/*` or `<dir>/**` read would count every test file
     of the directory as read, so rule 17 of check-ci-filters.sh would write no `!` pattern for one
     and a change to a test file alone would start the job; no glob leaves the test files out, so
-    the files are listed from the directory as it is on each run, and one added later is declared
-    with no edit here."""
+    the files are listed from the repository as it is on each run, and one added later is declared
+    with no edit here. The repository is repo_files(): a build output a local run leaves in the
+    tree, such as the e2e harness's packages/envoy/out/dispatch-e2e-broker, is in no checkout CI
+    makes, and rule 9 would refuse a read of it as matching no file. They come in the order a
+    top-down walk visits them: a directory's own files, then each directory under it."""
+    prefix, pruned = f"{directory}/", {"node_modules", *skip}
     out = []
-    for current, subdirs, names in os.walk(directory):
-        subdirs[:] = sorted(s for s in subdirs if tree and s not in {"node_modules", *skip})
-        out += [f"{current}/{n}" for n in sorted(names) if n.endswith(suffix) and not n.endswith(TEST_SUFFIX)]
-    return out
+    for path in repository_files():
+        if not path.startswith(prefix):
+            continue
+        *dirs, name = path[len(prefix):].split("/")
+        if dirs and (not tree or pruned.intersection(dirs)):
+            continue
+        if name.endswith(suffix) and not name.endswith(TEST_SUFFIX):
+            out.append(path)
+    return sorted(out, key=lambda path: [(1, part) for part in path.split("/")[:-1]] + [(0, path.rsplit("/", 1)[-1])])
+
+
+@functools.cache
+def repository_files():
+    """repo_files(), read once: the repository does not change while this module builds its tables,
+    and files_but_tests asks for it a dozen times."""
+    return tuple(repo_files())
 
 
 ENVOY_MODULE = "github.com/sjawhar/envoy"
