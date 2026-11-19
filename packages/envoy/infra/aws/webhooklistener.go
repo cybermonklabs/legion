@@ -20,7 +20,8 @@ import (
 const webhookListenerType = "envoy-infra:aws:WebhookListener"
 
 // WebhookListenerArgs are the inputs of an envoy-infra:aws:WebhookListener. Every field that holds
-// a value of the deployment is required and has no default.
+// a value of the deployment is required and has no default, but the sender limit's two, which
+// are optional because an unset rate is how an operator sets no limit.
 type WebhookListenerArgs struct {
 	MachineID string                  `pulumi:"machineId"`
 	NatsUrls  pulumi.StringArrayInput `pulumi:"natsUrls"`
@@ -61,6 +62,12 @@ type WebhookListenerArgs struct {
 	ListenHost     string  `pulumi:"listenHost"`              // ENVOY_LISTEN_HOST
 	NatsReplicas   int     `pulumi:"natsReplicas"`            // ENVOY_NATS_REPLICAS
 	MentionTrigger *string `pulumi:"mentionTrigger,optional"` // ENVOY_GITHUB_MENTION_TRIGGER, with github
+	// ENVOY_SENDER_MESSAGES_PER_MINUTE and ENVOY_SENDER_MESSAGE_BURST, the limit on the messages
+	// each agent session sends through the listener: how many a minute, from 1 to 60000, and how
+	// many at once, at least 1 and only with a rate. A rate with no burst takes the rate as its
+	// burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 
 	AlarmTopicArn   pulumi.StringInput `pulumi:"alarmTopicArn"` // the SNS topic the alarms page and clear on
 	BaseTags        map[string]string  `pulumi:"baseTags"`      // the component adds `service`
@@ -291,7 +298,7 @@ func NewWebhookListener(ctx *pulumi.Context, name string, args *WebhookListenerA
 // validate refuses the inputs NewWebhookListener cannot build a working listener from, each error
 // naming its input: a plain input holding a seed (seededPlainInput), an omitted webhooks, then
 // each webhook's secret ARN against webhooks, then the environment's plain inputs
-// (rendering.ListenerEnv.Check), then the service's.
+// (rendering.ListenerEnv.Check), the sender limit among them, then the service's.
 func (args *WebhookListenerArgs) validate() error {
 	if err := seededPlainInput(*args); err != nil {
 		return err
@@ -328,13 +335,15 @@ func (args *WebhookListenerArgs) webhookSecretArns() map[string]pulumi.StringPtr
 // environment returns the inputs the container's environment is made of, with natsUrls.
 func (args *WebhookListenerArgs) environment(natsUrls []string) rendering.ListenerEnv {
 	return rendering.ListenerEnv{
-		MachineID:      args.MachineID,
-		NatsUrls:       natsUrls,
-		ListenHost:     args.ListenHost,
-		NatsReplicas:   args.NatsReplicas,
-		Webhooks:       args.Webhooks,
-		ReviewerAppId:  args.ReviewerAppId,
-		MentionTrigger: args.MentionTrigger,
+		MachineID:               args.MachineID,
+		NatsUrls:                natsUrls,
+		ListenHost:              args.ListenHost,
+		NatsReplicas:            args.NatsReplicas,
+		Webhooks:                args.Webhooks,
+		ReviewerAppId:           args.ReviewerAppId,
+		MentionTrigger:          args.MentionTrigger,
+		SenderMessagesPerMinute: args.SenderMessagesPerMinute,
+		SenderMessageBurst:      args.SenderMessageBurst,
 	}
 }
 

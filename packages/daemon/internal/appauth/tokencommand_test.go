@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
@@ -49,6 +50,7 @@ printf '%%s|%%s\n' "$LEGION_GITHUB_OWNER" "$LEGION_GITHUB_READ_ONLY" >>%q
 mode=write
 [ -z "$LEGION_GITHUB_READ_ONLY" ] || mode=read
 [ -z "$FAKE_BROKER_FAIL" ] || { echo "broker: refused" >&2; exit 3; }
+[ -z "$FAKE_BROKER_KILLED" ] || { echo "broker: dying" >&2; kill -KILL 0; }
 if [ -n "$FAKE_BROKER_NONE" ]; then
   [ -n "$LEGION_GITHUB_OWNER" ] || { printf '{"installations":{}}'; exit 0; }
   echo "agent-secrets: github app has no installation on $LEGION_GITHUB_OWNER" >&2; exit 1
@@ -257,6 +259,25 @@ func TestTokenModeAnOwnerWithoutAnInstallationIsNotInstalled(t *testing.T) {
 	}
 }
 
+// A command a signal ended (the kernel's out-of-memory kill, say) fails naming the signal, with its
+// stderr, where an exit names its status: it has none, and read as one it was `failed (exit -1)`.
+// It is no more transient than any other failure but exit 75. The fake kills its whole process
+// group, which procgroup.Configure made its own, so the signal reaches the shell the daemon runs.
+func TestTokenModeACommandASignalEndedFailsNamingTheSignal(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	tokens := tokenModeManager(github.serve(t), broker, &now, &bytes.Buffer{})
+	t.Setenv("FAKE_BROKER_KILLED", "1")
+
+	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
+
+	var transient *TransientError
+	if err == nil || errors.As(err, &transient) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (signal: killed): broker: dying") {
+		t.Fatalf("Token with a command a signal ended = %v, want a failure that is not transient naming the signal and the command's stderr", err)
+	}
+}
+
 // What a command prints is never quoted in an error: output that is no release, an entry without
 // a token or with an expired one, all fail naming the field and the account alone.
 func TestTokenModeRefusesAMalformedReleaseWithoutQuotingIt(t *testing.T) {
@@ -278,8 +299,9 @@ func TestTokenModeRefusesAMalformedReleaseWithoutQuotingIt(t *testing.T) {
 }
 
 // No token reaches a log or an error: a token on the command's stderr is redacted in both, a
-// release keyed by something other than a GitHub login is refused without naming the key, and
-// output past releaseLimit ends the command rather than filling memory.
+// release keyed by something other than a GitHub login is refused without naming the key (here a
+// token form tokenPattern names, short enough to pass a login's 39 characters), and output past
+// releaseLimit ends the command rather than filling memory.
 func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -293,8 +315,8 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 		t.Fatalf("daemon stderr = %q, want the line with its token redacted", stderr.String())
 	}
 
-	_, err = parseRelease([]byte(`{"installations":{"ghs_secret_value":{"installation_id":1,"token":"x","expires_at":"2026-11-03T13:00:00Z"}}}`), "f", now)
-	if err == nil || strings.Contains(err.Error(), "ghs_secret_value") {
+	_, err = parseRelease([]byte(`{"installations":{"ghs_secretvalue0123456789":{"installation_id":1,"token":"x","expires_at":"2026-11-03T13:00:00Z"}}}`), "f", now)
+	if err == nil || strings.Contains(err.Error(), "ghs_secretvalue0123456789") {
 		t.Fatalf("parseRelease of a token-shaped key = %v, want a refusal that does not name it", err)
 	}
 
@@ -304,6 +326,44 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	_, err = huge.runTokenCommand(ctx, huge.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err == nil || !strings.Contains(err.Error(), "printed more than") || ctx.Err() != nil {
 		t.Fatalf("a command printing without end = %v (ctx %v), want the over-limit refusal before the deadline", err, ctx.Err())
+	}
+}
+
+// A release is keyed by GitHub account logins as ghrepo reads an owner: a managed user's, which
+// ends in `_<shortcode>`, is read like any other, up to GitHub's 39 characters, under its
+// lowercased login, and so is one that merely opens like a token (`ghs_acme`) while holding no
+// token form. What no login can be is refused without being named: a dot, a slash, a leading
+// hyphen or underscore, 40 characters, the empty key, and a token form tokenPattern names that is
+// shorter than a real token, which the underscore a login now holds would otherwise let through.
+func TestTokenModeReleaseKeysAreGitHubLogins(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	release := func(owner string) []byte {
+		return []byte(fmt.Sprintf(`{"installations":{%q:{"installation_id":7,"token":"ghs_x","expires_at":"2026-11-16T13:00:00Z"}}}`, owner))
+	}
+	for _, owner := range []string{"mona-cat_octo", "Mona-Cat_Octo", "ghs_acme", strings.Repeat("a", 39)} {
+		got, err := parseRelease(release(owner), "github_apps.implement.token_command", now)
+		if entry := got[strings.ToLower(owner)]; err != nil || entry.owner != owner || entry.token != "ghs_x" {
+			t.Errorf("parseRelease of %s's installation = %+v, %v; want it read under its lowercased login", owner, got, err)
+		}
+	}
+	for _, tc := range []struct{ name, owner string }{
+		{"a dot", "a.b"},
+		{"a slash", "a/b"},
+		{"a leading hyphen", "-acme"},
+		{"a leading underscore", "_acme"},
+		{"40 characters, past GitHub's 39", strings.Repeat("a", 40)},
+		{"the empty key", ""},
+		{"a fine-grained token's form, shorter than a real one", "github_pat_0123456789abcdef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseRelease(release(tc.owner), "github_apps.implement.token_command", now)
+			if err == nil || !strings.Contains(err.Error(), "released an installation whose account is not a GitHub login") {
+				t.Fatalf("parseRelease of an installation keyed %q = %v, want the refusal of a key that is no login", tc.owner, err)
+			}
+			if tc.owner != "" && strings.Contains(err.Error(), tc.owner) {
+				t.Fatalf("parseRelease's refusal %q quotes the key %q", err, tc.owner)
+			}
+		})
 	}
 }
 
@@ -350,7 +410,7 @@ func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testin
 // A narrowing the broker refuses is ErrNarrowingRefused, the refusal key mode gives, and the
 // mapping's installation read is the one source of its own answer: it runs the command and reads
 // GitHub however recently a narrowing was refused for the read scope it asks under
-// (listInstallation, ForgetNarrowingRefusal). Served from the Manager's memory instead, an
+// (listInstallation, forgetNarrowingRefusal). Served from the Manager's memory instead, an
 // operator who fixes what the broker refused and saves the mapping inside the five minutes a
 // refusal is remembered for would be told the check failed, while the bundle refreshes behind it
 // kept that memory alive (INFRA-513).
@@ -568,18 +628,25 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "env")
-	t.Setenv("NATS_NKEY_SEED", "seed-value")
-	t.Setenv(TokenCommandOwner, "inherited")
-	t.Setenv(TokenCommandReadOnly, "inherited")
+	// Unique values, so that only a variable they reached can hold one (envlisting).
+	seed, inherited := envlisting.Unique("seed-"), envlisting.Unique("inherited-")
+	t.Setenv("NATS_NKEY_SEED", seed)
+	t.Setenv(TokenCommandOwner, inherited)
+	t.Setenv(TokenCommandReadOnly, inherited)
 	command := fmt.Sprintf(`env >%q; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`, seen, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	if _, err := tokens.runTokenCommand(context.Background(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	env, _ := os.ReadFile(seen)
-	if strings.Contains(string(env), "seed-value") || !strings.Contains(string(env), "\nLEGION_GITHUB_OWNER=acme\n") ||
-		!strings.Contains(string(env), "\nLEGION_GITHUB_READ_ONLY=\n") || strings.Contains(string(env), "inherited") {
-		t.Fatalf("the command's environment:\n%s", env)
+	// Each variable is read whole (envlisting): the daemon's own two can be the listing's first
+	// line, and a variable the test does not set, such as PWD, can contain any word.
+	vars := envlisting.Vars(string(env))
+	if name, leaked := envlisting.Carrying(vars, seed, inherited); leaked {
+		t.Fatalf("the command's environment: %s carries a value the daemon must not pass:\n%s", name, env)
+	}
+	if readOnly, set := vars[TokenCommandReadOnly]; vars[TokenCommandOwner] != "acme" || !set || readOnly != "" {
+		t.Fatalf("the command's environment: want %s=acme and %s set and empty:\n%s", TokenCommandOwner, TokenCommandReadOnly, env)
 	}
 
 	slow := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "sleep 30"}}, Options{})

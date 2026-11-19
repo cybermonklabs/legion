@@ -1,21 +1,24 @@
 package api
 
-// This file is the decision, field by field, about what the daemon's surfaces serve of the two
-// durable records a reader of this wire acts on: `supervise.Claim` and `record.Issue`. It is
-// data and nothing else — no route, no view and no projection reads it at run time — and its
-// readers are the two tests named TestEveryRecordFieldIsServedOrExcluded, one in
-// internal/projection over the agent surfaces, which reflects over both records and fails naming
-// a field that stands in none of the three columns, and one in this package over `operatorView`,
-// which fails naming a field of the operator column that route serves nowhere. A field added to
-// either record later is therefore decided rather than forgotten, and a field moved between the
-// columns is a decision a reviewer sees in the diff, because each entry carries its reason as
-// data (dispatch://INFRA-3083, R3 and R4).
+// This file is the decision, field by field, about what the daemon's surfaces serve of the
+// three durable records a reader of this wire acts on: `supervise.Claim`, `record.Issue` and
+// `record.Assignment`. It is data and nothing else — no route, no view and no projection reads
+// it at run time — and its readers are the two tests named
+// TestEveryRecordFieldIsServedOrExcluded, one in internal/projection over the agent surfaces,
+// which reflects over all three records and fails naming a field that stands in none of the
+// three columns, and one in this package over `operatorView`, which fails naming a field of
+// the operator column that route serves nowhere.
+// A field added to any of the three records later is therefore decided rather than forgotten,
+// and a field moved between the columns is a decision a reviewer sees in the diff, because each
+// entry carries its reason as data (dispatch://INFRA-3083, R3 and R4).
 //
 // The columns are of the agent surfaces: `api.ClaimView`, which `read_record` and `read_state`
-// carry, and `api.Issue`. ColumnAgents is served there; ColumnOperator is the operator route's
-// own and no agent's, with the reason it is not an agent's; ColumnWithheld reaches no surface at
-// all. What a column is not is a judgement of whether a role finds the field useful: that is the
-// reviewer's reading, and this table records only where each field stands and why.
+// carry, `api.Issue`, and `api.AssignmentView`, one of which rides each issue's `assignments`
+// for every experiment answer that applies to it. ColumnAgents is served there; ColumnOperator
+// is the operator route's own and no agent's, with the reason it is not an agent's;
+// ColumnWithheld reaches no surface at all. What a column is not is a judgement of whether a
+// role finds the field useful: that is the reviewer's reading, and this table records only
+// where each field stands and why.
 
 // RecordColumn is one of the three places a field of a durable record stands in.
 type RecordColumn string
@@ -74,6 +77,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},
 		Reason: "the entry the role's claim was last queued a task of, which its issue carries beside the entry that role's phases row stands on (api.Issue.GivenEntry): the pair says whether the daemon has still to send that role the entry's own work"},
 	{Field: "ServedEntry", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "Handshake", Column: ColumnWithheld,
+		Reason: "no claim view carries it: the issue's own view serves its two times as `entryQueuedAt` and `entryConfirmedAt` (api.Issue.EntryQueuedAt), which for a tree's own root are its architect's whatever phase it stands in, and its entry and generation are only what the projection reads to decide which issue shows them"},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastStartRow", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -87,6 +92,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the four counts a failed claim failed with, read against the limits in `settings`; served inside the failure record, which is where a reader acts on them"},
 	{Field: "Failure", Column: ColumnAgents, Keys: []string{"failure.detail"},
 		Reason: "the sentence the site that failed the claim wrote, which names what no one word can"},
+	{Field: "PodEnd", Column: ColumnWithheld,
+		Reason: "the pod end the claim's process was last observed to have died of, which the workflow reads off the claim to name the cluster's cause in a worker-died notice's reason; no claim view carries it under a key"},
 	{Field: "FailureCause", Column: ColumnAgents, Keys: []string{"failure.cause"},
 		Reason: "the one word for what failed the claim, which a retry, an escalation or a re-admission turns on"},
 	{Field: "FailedAt", Column: ColumnAgents, Keys: []string{"failure.at"},
@@ -155,13 +162,16 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
+	{Field: "EndedWork", Column: ColumnWithheld,
+		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in an architect's catch-up, and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld as bookkeeping.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
+// TreeStalledToldAt, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -192,20 +202,39 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Ancestry", Column: ColumnAgents, Keys: []string{"ancestry"},
 		Reason: "the chain that holds a labelled root under an unreleased child, which reaches no other surface"},
 	{Field: "HandedOverFrom", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Awaiting", Column: ColumnAgents, Keys: []string{"waitingOn"},
 		Reason: "what a root in awaiting_person waits on from a person, and whether that person has answered"},
 	{Field: "HandoutSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeclaredSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeclaredAt", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "MemoryGroup", Column: ColumnAgents, Keys: []string{"memoryGroup"},
-		Reason: "the group of the issue's tree, which says whether its roles run with the project's memory overlays"},
-	{Field: "MemoryDrawMode", Column: ColumnAgents, Keys: []string{"memoryDrawMode"},
-		Reason: "the project's memory mode in force when the tree was drawn, which the group is read against"},
-	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
-		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
-	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ReleasedForWaitAt", Column: ColumnWithheld,
+		Reason: "the moment a started issue gave its admission slot back because it waits on another issue, which orders it in the waiting line; a reader acts on what it causes, the issue's place in `admission.waiting` and `admission.blocked` and its own `waitingLine`, and never on the moment itself"},
 	{Field: "MovedAt", Column: ColumnWithheld,
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+}
+
+// AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares
+// them. The keys are `api.AssignmentView`'s, one of which rides each issue's `assignments` for
+// every experiment answer that applies to it; the issue's `memoryGroup`, `memoryDrawMode` and
+// `memoryDrawnAt` are the `memory` row's own arm, mode and instant spelled out for the readers
+// that knew them before any experiment was declared (internal/projection's memoryOf), so they
+// are those three fields read a second way rather than a second decision. No field of it is a
+// secret and none is the operator route's alone, so every entry is served to the agent surfaces
+// or withheld.
+var AssignmentRecordFields = []RecordFieldDecision{
+	{Field: "Experiment", Column: ColumnAgents, Keys: []string{"experiment"},
+		Reason: "the name the project declares the experiment under, which is what names the answer and what a reader of one experiment finds its row by"},
+	{Field: "Unit", Column: ColumnWithheld,
+		Reason: "the projection spends it: a tree's row rides every issue of that tree and an issue's row its own issue, so the answers under an issue are already the ones that apply to it (internal/projection's assignmentViews)"},
+	{Field: "Variant", Column: ColumnAgents, Keys: []string{"variant"},
+		Reason: "the arm the unit was drawn into, which is the answer itself and what the issue's `memoryGroup` is read off for the row named `memory`; it rides empty as well, an experiment at mode off drawing no arm"},
+	{Field: "Mode", Column: ColumnAgents, Keys: []string{"mode"},
+		Reason: "the mode in force when the draw was made, which says what kind of answer the arm is, and what the issue's `memoryDrawMode` carries for the row named `memory`"},
+	{Field: "DrawnAt", Column: ColumnAgents, Keys: []string{"drawnAt"},
+		Reason: "when the draw was made, absent where the row records none: it is how a reader tells a unit a hand-over settled at no arm from one that was drawn, and what the issue's `memoryDrawnAt` carries for the row named `memory`"},
+	{Field: "Carried", Column: ColumnWithheld,
+		Reason: "the record's mark of a row a hand-over wrote rather than a draw: what a reader of the state measures is the arm the unit ran under, and a carried row names that arm as a drawn one does"},
 }

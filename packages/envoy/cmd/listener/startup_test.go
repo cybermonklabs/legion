@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // During a rolling deploy the replacement listener cannot bind its durable consumer until the task
@@ -95,7 +96,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 	if err := json.Unmarshal([]byte(answer), &sent); err != nil {
 		t.Fatalf("decode the send answer %q: %v", answer, err)
 	}
-	message, err = client.JS().GetLastMsg(bus.Stream, contracts.AgentSubject(target))
+	message, err = client.JS().GetLastMsg(bus.Stream, contracts.LegacyAgentSubject(target))
 	if err != nil {
 		t.Fatalf("the sent message is not on the stream: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, want int) {
 	t.Helper()
 	status, answer := callListener(t, listener.port, http.MethodGet, "/v1/sessions", "")
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if status != http.StatusOK || json.Unmarshal([]byte(answer), &rows) != nil || len(rows) != want {
 		t.Fatalf("GET /v1/sessions: status %d %q, want a 200 list of %d\n%s", status, answer, want, listener.Output.String())
 	}
@@ -289,7 +290,7 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 func receiveAsSession(t *testing.T, client *bus.Client, sessionID string) <-chan contracts.Envelope {
 	t.Helper()
 	frames := make(chan contracts.Envelope, 256)
-	subscription, err := client.Conn.Subscribe(contracts.AgentSubject(sessionID), func(msg *natsgo.Msg) {
+	subscription, err := client.Conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(msg *natsgo.Msg) {
 		var envelope contracts.Envelope
 		_ = json.Unmarshal(msg.Data, &envelope)
 		frames <- envelope
@@ -371,7 +372,7 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 	roles, interests := bucket(bus.RoleClaimBucket, 0), bucket(bus.InterestBucket, 0)
 	sessions, records := bucket(bus.SessionBucket, 5*time.Minute), bucket(bus.CIStateBucket, 0)
 	put(roles, "reviewer", store.RoleClaim{HolderSessionID: "ses_live", ClaimedAt: now})
-	put(interests, "ses_live", store.Interest{SessionID: "ses_live", MachineID: "startup-legacy", Topics: []string{contracts.AgentSubject("ses_live")}, UpdatedAt: now})
+	put(interests, "ses_live", store.Interest{SessionID: "ses_live", MachineID: "startup-legacy", Topics: []string{contracts.LegacyAgentSubject("ses_live")}, UpdatedAt: now})
 	// Written straight to the bucket as an earlier build's listener wrote it, serving port and
 	// all: no registration carries a port since dispatch://INFRA-889, and this test is about
 	// what a listener makes of the records it finds on its start.
@@ -569,7 +570,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
@@ -642,4 +643,71 @@ func listenerJSONRecord(t *testing.T, p *listenerProcess, name string) map[strin
 		}
 	}
 	return nil
+}
+
+// bucketGrant is the publish grant a NATS user needs to open a KV bucket, watch it and write it.
+func bucketGrant(bucket string) []string {
+	stream := "KV_" + bucket
+	return []string{
+		"$JS.API.STREAM.INFO." + stream,
+		"$JS.API.STREAM.CREATE." + stream,
+		"$JS.API.DIRECT.GET." + stream + ".>",
+		"$JS.API.STREAM.MSG.GET." + stream,
+		"$KV." + bucket + ".>",
+		"$JS.API.CONSUMER.CREATE." + stream + ".>",
+		"$JS.API.CONSUMER.DELETE." + stream + ".>",
+		"$JS.FC." + stream + ".>",
+	}
+}
+
+// grantBeforeKnownSessions is the grant of a listener whose hub's grant does not carry the
+// known-session bucket: every bucket the listener opens (the legion_agents bucket included, whose
+// denied open would cost the start its own 10-second JetStream wait) except the known-session one.
+func grantBeforeKnownSessions() []string {
+	return append(listenerGrantBeforeSessionConsumers(), bucketGrant(bus.LegionAgentBucket)...)
+}
+
+// v1OpenWithoutTheBucket is how long after it began listening a listener whose NATS user may not
+// open the known-session bucket may take to open /v1. Every caller through the port is refused
+// 503 "service starting" until it does, and a listener runs this way on any hub whose grant does
+// not carry the bucket, so the start must not wait the bucket out: a denied JetStream request is
+// dropped rather than refused, so waiting it out costs the whole JetStream wait. A healthy
+// listener opens /v1 in tens of milliseconds; this bound is well above one attempt's wait
+// (session.OpenKnownSessions) and well below the 10 seconds the default wait cost.
+const v1OpenWithoutTheBucket = 5000
+
+// A listener whose NATS user may not open the known-session bucket opens /v1 without waiting the
+// bucket out, keeps running, and opens the bucket itself once the grant arrives - the order
+// production applies them in - with no restart.
+func TestTheListenerOpensV1AndPicksUpTheBucketItMayNotOpenYet(t *testing.T) {
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, grantBeforeKnownSessions()...)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), grant.URL, "test-machine", "NATS_NKEY_SEED="+seed)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the listener's output:\n%s", listener.Output.String())
+		}
+	})
+
+	listener.WaitForOutput(t, "envoy-listener /v1 open")
+	record := listenerJSONRecord(t, listener, "envoy-listener /v1 open")
+	if record == nil {
+		t.Fatalf("the listener logged no JSON record for its /v1 open:\n%s", listener.Output.String())
+	}
+	opened, ok := record["since_listening_ms"].(float64)
+	if !ok {
+		t.Fatalf("the /v1 open record %v carries no since_listening_ms", record)
+	}
+	if opened > v1OpenWithoutTheBucket {
+		t.Fatalf("/v1 opened %.0f ms after this listener began listening, want within %d: every caller is refused 503 service starting until it does",
+			opened, v1OpenWithoutTheBucket)
+	}
+	t.Logf("/v1 opened %.0f ms after the listener began listening, over a bucket its user may not open", opened)
+	if !strings.Contains(listener.Output.String(), bus.KnownSessionBucket) {
+		t.Fatalf("the listener never named the bucket it could not open, so this test proved nothing about it:\n%s", listener.Output.String())
+	}
+
+	grant.Grant(t, append(grantBeforeKnownSessions(), bucketGrant(bus.KnownSessionBucket)...)...)
+	listener.WaitForOutput(t, "the known-session bucket is open")
 }

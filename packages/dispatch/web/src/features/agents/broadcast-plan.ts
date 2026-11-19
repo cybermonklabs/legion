@@ -9,7 +9,8 @@ import type { AgentPart } from "../refs/AgentName";
  *  `MODE_LABELS`. The server's stored diagnostic keeps the wire name
  *  (`packages/dispatch/AGENTS.md`). */
 export interface BroadcastExclusionPlan {
-  /** The live session the chosen mode leaves out; absent when it has left the registry. */
+  /** The live session the chosen mode leaves out; absent for a session a restored send does not
+   *  name and the registry no longer holds. */
   readonly agent: Agent | undefined;
   readonly reason: string;
   readonly sessionID: string;
@@ -72,28 +73,31 @@ function sessionsById(agents: readonly Agent[]): Map<string, Agent> {
 }
 
 /** That a list could not vouch for a selected session: it would have to claim an absence - that
- *  the session has gone, or that it does not advertise the mode - and its latest read failed. */
+ *  the session is not running, or that it does not advertise the mode - and its latest read
+ *  failed. */
 const UNCHECKED = "unchecked";
 
 /** Why the live registry leaves a selected session out of a send in `delivery`, undefined when
- *  it can take it, or UNCHECKED when only an absence claim would leave it out and the list is
- *  not `current`. A session the list does not hold and a capability its row does not carry are
- *  both absences, and only a current list says either: a refilling list's rows are its last
- *  successful read, which says nothing of what a session advertises now. */
+ *  it can take it, or UNCHECKED when the list is not `current` and does not vouch for it. A
+ *  capability its row does not carry is an absence only a current list says: a refilling list's
+ *  rows are its last successful read, which says nothing of what a session advertises now.
+ *
+ *  A session the live list does not hold is never left out here, however current the list. Envoy
+ *  may still know it and it may simply not be running, and then the send is stored for it and
+ *  reaches it when it runs again; only the listener can tell that session from one it has never
+ *  heard of, so the server decides and the broadcast names what it left out (`no live session`).
+ *  Excluding it here would refuse to send to every session that is merely stopped. A list that is
+ *  not current still calls it UNCHECKED, as it calls every session it cannot vouch for. */
 function liveExclusion(
   sessionID: string,
   agent: Agent | undefined,
   delivery: MessageDeliveryMode,
   current: boolean
 ): BroadcastExclusionPlan | typeof UNCHECKED | undefined {
-  const reason =
-    agent === undefined
-      ? "no live session"
-      : (agent.capabilities ?? []).includes(delivery)
-        ? undefined
-        : `does not advertise ${MODE_LABELS[delivery]}`;
-  if (reason === undefined) return undefined;
-  return current ? { agent, reason, sessionID } : UNCHECKED;
+  if (agent !== undefined && (agent.capabilities ?? []).includes(delivery)) return undefined;
+  if (!current) return UNCHECKED;
+  if (agent === undefined) return undefined;
+  return { agent, reason: `does not advertise ${MODE_LABELS[delivery]}`, sessionID };
 }
 
 /** What the composer says of a selected session a list that is not current cannot vouch for:
@@ -108,14 +112,14 @@ function uncheckedReason(refilling: boolean): string {
 /**
  * What sending the current selection would do: the sessions it reaches, and the selected
  * sessions it leaves out. A session that does not advertise the chosen mode is excluded
- * rather than switched to another one - the mode is part of what the sender said - and a
- * selection kept across a session going away excludes it too, which is exactly the judgment
- * the server repeats against its own registry read when the send arrives. Both are absences,
- * judged only against a `current` list: a selected session missing from a list whose latest read
- * failed (a refilling one, say), or listed there without the mode, is unknown, not left out, so
- * it stays a recipient - `unchecked`, with that unknown as its wording - and the server, which
- * reads each selected id's liveness and capabilities at send time, excludes it then if it really
- * has gone or cannot take the mode.
+ * rather than switched to another one - the mode is part of what the sender said - judged only
+ * against a `current` list: a selected session listed without the mode on a list whose latest
+ * read failed (a refilling one, say) is unknown, not left out, so it stays a recipient -
+ * `unchecked`, with that unknown as its wording - and the server, which reads each selected id's
+ * capabilities at send time, excludes it then if it really cannot take the mode. A selection kept
+ * across a session leaving the live list still names it, `unchecked` on a list that is not
+ * current: Envoy may know it and it may simply be stopped, in which case the send is stored for
+ * it, and the server excludes it only when the listener has never heard of it (`liveExclusion`).
  */
 export function broadcastPlan(
   selected: ReadonlySet<string>,
@@ -140,22 +144,20 @@ export function broadcastPlan(
   return { excluded, recipients, unchecked };
 }
 
-/** Why a selected session that has come back is left out of a restored send: it was not
- *  reachable when the refused send was pressed, so the request being re-sent does not name it. */
+/** Why a selected session that the refused send does not name is left out of it: it was not a
+ *  recipient when the send was pressed, so the request being re-sent does not ask for it. */
 const NOT_IN_RESTORED_SEND = "not in the refused send; edit to include it";
 
 /**
  * What re-sending a refused request word for word would do: it reaches exactly the sessions it
  * named, whatever the registry says now. A selected session the request does not name is
  * excluded, so the composer never shows as reached a session the request will not ask for: with
- * NOT_IN_RESTORED_SEND when it has come back since and an edit - which drops the restored request
- * for the live plan - would include it, and otherwise with the reason the live plan would give.
- * A list that is not current says neither that a session it does not hold has gone nor that a
- * session it lists lacks the mode, so such a session is NOT_IN_RESTORED_SEND too: the live plan an
- * edit composes would name it, `unchecked`.
- * A named session that has left since is still a recipient here: the request asks for it, and the
- * server excludes it against its own registry and names it on the broadcast; one a list that is
- * not current cannot vouch for is `unchecked`.
+ * NOT_IN_RESTORED_SEND, since an edit - which drops the restored request for the live plan -
+ * would include it, and with the mode's reason when a current live plan would leave it out for
+ * that. A list that is not current says no session lacks the mode, so such a session is
+ * NOT_IN_RESTORED_SEND too: the live plan an edit composes would name it, `unchecked`. A named
+ * session that has left since is still a recipient here: the request asks for it, and the server
+ * decides what became of it; one a list that is not current cannot vouch for is `unchecked`.
  */
 function restoredBroadcastPlan(
   restored: BroadcastRequest,

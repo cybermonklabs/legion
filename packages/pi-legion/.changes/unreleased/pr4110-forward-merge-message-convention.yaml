@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The forward-merge recipe in the legion-worker skill no longer gives the merge commit a fixed
+  `merge:` message, which a repository whose commit check lints every commit of a pull request
+  refused, since `merge` is in no Conventional Commits type list. The worker writes the message in
+  the repository's own commit convention, read from its commit-message check or else its recent
+  commits on the base, for example `chore(<scope>): merge <base> into <branch>`; the retarget
+  command says the same.

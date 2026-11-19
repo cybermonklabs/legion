@@ -76,7 +76,7 @@ func runReplaySeed(args []string) error {
 	workers := fs.Int("workers", 3, "issues seeded in parallel")
 	opsLog := fs.String("ops-log", "", "CSV file with one row per write")
 	rngSeed := fs.Uint64("rng-seed", 1, "seed of the fallback-anchor and file-byte generators")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
@@ -689,8 +689,9 @@ func (s *replaySeeder) seedIssue(ctx context.Context, p seedIssuePlan) error {
 		}
 	}
 	// Step 5: the issue's fields, then its claim. The marks the comments and asks left are settled
-	// first: a closed issue's documents settle nothing, so closing it with a settlement owed would
-	// leave that settlement owed for good.
+	// first, while the issue is open: a settlement after a close opens no ask for a block with no
+	// ask row and writes its version after the history, so closing the issue with a settlement owed
+	// would leave its ask blocks unindexed and a version past the replayed history.
 	if err := s.waitSettled(ctx, p.Key, locals); err != nil {
 		return err
 	}

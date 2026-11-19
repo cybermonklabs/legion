@@ -237,7 +237,7 @@ case "$pod_reachability" in
 aws-private-ip)
   imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
     fail "instance metadata is unreachable; the harness binds the devbox's private address, read from it"
-  bind_host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) ||
+  bind_host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) ||
     fail "instance metadata has no local-ipv4"
   unset imds
   advertise_host=$bind_host
@@ -258,7 +258,10 @@ esac
 [ "$session_db_port" != "$port" ] || fail "LEGION_E2E_SESSION_DB_PORT is the worker stream's port $port"
 [ -n "$second_owner_repo" ] ||
   fail "LEGION_E2E_REPO_SECOND_OWNER is unset: the second-owner check provisions an issue on a repository of another owner (owner/name, never a literal here)"
-[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
+# The owner half is ghrepo's grammar for an account: a letter or digit, then up to 38 letters,
+# digits, hyphens and underscores, a managed user's `_<shortcode>` among them, so an operator may
+# name a repository of such an account here as the daemon may record one.
+[[ $second_owner_repo =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]+$ ]] || fail "LEGION_E2E_REPO_SECOND_OWNER must be <owner>/<name>, not '$second_owner_repo'"
 [ "$(tr '[:upper:]' '[:lower:]' <<<"${second_owner_repo%%/*}")" != "$(tr '[:upper:]' '[:lower:]' <<<"${repo%%/*}")" ] ||
   fail "LEGION_E2E_REPO_SECOND_OWNER $second_owner_repo is under ${repo%%/*}, $repo's owner: the check needs a repository of another owner"
 case "$previous_image" in *@sha256:*) ;; *) fail "LEGION_E2E_PREVIOUS_IMAGE must be a worker image of main from before one container, pinned by digest (…@sha256:…), not '$previous_image'" ;; esac

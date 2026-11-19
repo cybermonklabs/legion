@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -16,6 +17,9 @@ interface Recorded {
 }
 
 const makeDirectory = temporaryDirectories("dispatch-cli");
+
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -538,7 +542,7 @@ function environment(
   return {
     HOME: stateDir,
     DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN: TOKEN,
     DISPATCH_STATE_DIR: stateDir,
     ...extra,
   };
@@ -548,7 +552,8 @@ async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
   stdin = "",
-  fetchImpl?: typeof fetch
+  fetchImpl?: typeof fetch,
+  nearestAncestorNamed?: (names: readonly string[]) => string | undefined
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -562,6 +567,7 @@ async function run(
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    ...(nearestAncestorNamed === undefined ? {} : { nearestAncestorNamed }),
   });
   return { code, stdout, stderr };
 }
@@ -730,20 +736,94 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // The CLI asks a route no build answered three more times, 1, 2 and 4 s apart (jittered), before
+  // it says so: the test waits those seconds.
   test("answers against a Dispatch without the route says its build is older than the answers route, exit 1", async () => {
     const { code, stdout } = await run(["answers"], omp);
     expect(code).toBe(1);
     expect(stdout).toBe(
       `This Dispatch (http://127.0.0.1:${server.port}) has no answers route yet: its build is older than the answers route.\n`
     );
-    expect(requests.map((request) => request.path)).toEqual(["/api/v1/agents/ses-1/answers"]);
-  });
+    expect(requests.map((request) => request.path)).toEqual(
+      Array(4).fill("/api/v1/agents/ses-1/answers")
+    );
+  }, 20_000);
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);
     expect(code).toBe(2);
     expect(stdout.split("\n")[0]).toBe("dispatch message was not called: 1 problem");
     expect(stdout).toContain("- Example: dispatch message");
+    expect(requests).toEqual([]);
+  });
+
+  // `--run -` would send the one character "-" where the caller meant stdin, so a text flag's bare
+  // `-` is a usage error before any request, dry run included. When nothing else is wrong, the
+  // refusal names the `-file` twin of each such flag and lists no flags.
+  test("a bare - given to text flags is refused, one line per flag, listing no flags", async () => {
+    const argv = [
+      "result",
+      "--issue",
+      "DSP-1",
+      "--check",
+      "k1",
+      "--role",
+      "implementer",
+      "--verdict",
+      "pass",
+      "--commit",
+      "1111111111111111111111111111111111111111",
+      "--run",
+      "-",
+      "--observed",
+      "-",
+      "--negative-control",
+      "-",
+    ];
+    const refusal = [
+      "dispatch result was not called: 3 problems",
+      '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
+      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
+      "",
+    ].join("\n");
+    for (const call of [argv, [...argv, "--dry-run"]]) {
+      expect(await run(call, omp), call.join(" ")).toEqual({
+        code: 2,
+        stdout: refusal,
+        stderr: "",
+      });
+    }
+    expect(requests).toEqual([]);
+
+    expect(await run(["issue", "--project", "DSP", "--title", "-"], omp)).toEqual({
+      code: 2,
+      stdout: [
+        "dispatch issue was not called: 1 problem",
+        '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+        "- Example: dispatch issue --project DSP --title 'Native workspace'",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  test("a bare - beside an unknown flag is refused with both, listing the flags", async () => {
+    const { code, stdout } = await run(
+      ["issue", "--project", "DSP", "--title", "-", "--titel", "x"],
+      omp
+    );
+    expect(code).toBe(2);
+    const lines = stdout.split("\n");
+    expect(lines.slice(0, 3)).toEqual([
+      "dispatch issue was not called: 2 problems",
+      '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+      "- unknown flag --titel",
+    ]);
+    expect(lines[3]).toStartWith("- Allowed flags: --project, ");
+    expect(lines[4]).toStartWith("- Example: dispatch issue ");
     expect(requests).toEqual([]);
   });
 
@@ -1567,7 +1647,7 @@ describe("the dispatch entry as its own process", () => {
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
         DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN: TOKEN,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -1670,7 +1750,7 @@ describe("the dispatch CLI's envoy.json", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: "test-token",
+          token: TOKEN,
         },
       })
     );
@@ -1792,6 +1872,93 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(posted?.body).toMatchObject({ actor: { id: "subagent-1" } });
   });
 
+  // Codex sets CODEX_THREAD_ID in every shell command it runs and lets no plugin export a variable
+  // into those shells, so a Codex shell with no DISPATCH_HOST is host codex, acting as that thread.
+  test("a Codex shell with no DISPATCH_HOST is host codex, acting as CODEX_THREAD_ID", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      ...fromFile,
+      DISPATCH_HOST: undefined,
+      DISPATCH_SESSION_ID: undefined,
+      CODEX_THREAD_ID: "codex-thread-1",
+    });
+    expect(stdout).not.toStartWith("dispatch: ");
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-1" } });
+  });
+
+  // A Codex session started from a Claude Code Bash inherits DISPATCH_HOST=claude,
+  // CLAUDE_CODE_CHILD_SESSION=1 and the Claude session's id; the Codex plugin's shim sets
+  // DISPATCH_HOST=codex, so the command acts as the Codex thread and never as the Claude session.
+  test("DISPATCH_HOST=codex acts as CODEX_THREAD_ID over an inherited Claude Code session, reading no CODEX_HOME file", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const codexHome = brokenConfigDirectory();
+    const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      ...fromFile,
+      DISPATCH_HOST: "codex",
+      DISPATCH_SESSION_ID: undefined,
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+      CLAUDE_CONFIG_DIR: brokenConfigDirectory(),
+      CODEX_HOME: codexHome,
+      CODEX_THREAD_ID: "codex-thread-2",
+    });
+    expect(stdout).not.toStartWith("dispatch: ");
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "codex-thread-2" } });
+  });
+
+  // A Codex session started from a Claude Code shell inherits that shell's DISPATCH_HOST=claude,
+  // CLAUDE_CODE_CHILD_SESSION=1 and Claude session id, and a Claude Code session started from a
+  // Codex shell inherits CODEX_THREAD_ID: the nearer of the two processes decides.
+  test("a shell carrying both hosts' variables acts as the nearer of codex and claude", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const both = {
+      ...fromFile,
+      DISPATCH_HOST: "claude",
+      DISPATCH_SESSION_ID: undefined,
+      CLAUDE_CODE_CHILD_SESSION: "1",
+      CLAUDE_CODE_SESSION_ID: "claude-ses",
+      CODEX_THREAD_ID: "codex-thread-3",
+    };
+    const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
+    const underCodex = await run(argv, both, "", undefined, () => "codex");
+    expect(underCodex.code).toBe(0);
+    const underClaude = await run(argv, both, "", undefined, () => "claude");
+    expect(underClaude.code).toBe(0);
+    const unknown = await run(argv, both, "", undefined, () => undefined);
+    expect(unknown.code).toBe(0);
+    const actors = requests
+      .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
+      .map((request) => (request.body as { actor: { id: string } }).actor.id);
+    expect(actors).toEqual(["codex-thread-3", "claude-ses", "claude-ses"]);
+  });
+
+  test("a Codex shell started from an Oh My Pi shell acts as the nearer of codex and omp", async () => {
+    serverConfig(join(stateDir, ".config", "legion"));
+    const both = { ...fromFile, CODEX_THREAD_ID: "codex-thread-4" };
+    const argv = ["message", "--issue", "DSP-1", "--body", "hello"];
+    expect((await run(argv, both, "", undefined, () => "codex")).code).toBe(0);
+    expect((await run(argv, both, "", undefined, () => "omp")).code).toBe(0);
+    const actors = requests
+      .filter((request) => request.path === "/api/v1/issues/DSP-1/messages")
+      .map((request) => (request.body as { actor: { id: string } }).actor.id);
+    expect(actors).toEqual(["codex-thread-4", "ses-1"]);
+  });
+
+  test("DISPATCH_HOST=codex with no CODEX_THREAD_ID refuses naming it, sending nothing", async () => {
+    const { code, stdout } = await run(["projects"], {
+      ...fromFile,
+      DISPATCH_HOST: "codex",
+      DISPATCH_SESSION_ID: "ses-1",
+    });
+    expect(stdout).toStartWith("dispatch: CODEX_THREAD_ID is not set");
+    expect(code).toBe(2);
+    expect(requests).toEqual([]);
+  });
+
   test("with neither DISPATCH_HOST nor CLAUDE_CODE_CHILD_SESSION=1 it refuses naming DISPATCH_HOST, whatever else Claude Code left", async () => {
     const claude = join(stateDir, "claude");
     serverConfig(claude);
@@ -1866,7 +2033,7 @@ describe("the dispatch CLI's envoy.json", () => {
     writeFileSync(
       old,
       JSON.stringify({
-        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: "checkout-token" },
+        dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: fixtureSecret("file") },
       })
     );
 
@@ -1927,7 +2094,7 @@ describe("the dispatch CLI's envoy.json", () => {
     const file = join(dir, "envoy.json");
     for (const contents of [
       { envoy: { enabled: true, natsUrls: ["nats://nats.internal.example:4222"] } },
-      { dispatch: { token: "file-token" } },
+      { dispatch: { token: fixtureSecret("file") } },
     ]) {
       writeFileSync(file, JSON.stringify(contents));
       const { code, stdout } = await run(["projects"], { ...fromFile, ENVOY_CONFIG_FILE: file });
@@ -1943,7 +2110,7 @@ describe("the dispatch CLI's envoy.json", () => {
   // the session's one long-lived shell keeps until a command unsets or empties DISPATCH_URL.
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL says the shell lost it, not that envoy.json is missing, and exits 2, sending nothing", async () => {
     const tokenFile = join(stateDir, "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "test-token\n");
+    writeFileSync(tokenFile, `${TOKEN}\n`);
     const chosen = join(stateDir, "profile", "envoy.json");
     for (const variables of [
       { DISPATCH_TOKEN_FILE: tokenFile },
@@ -2196,16 +2363,16 @@ describe("cliRefusals", () => {
   });
 
   // The whole line is pinned, not its `dispatch: ` prefix: `opencode` was an accepted host until
-  // it was removed, so the refusal naming it, and naming omp and claude as the ones left, is the
+  // it was removed, so the refusal naming it, and naming omp, claude and codex as the ones accepted, is the
   // user-visible behaviour that removal produces. A prefix-only assertion passes again the moment
   // the host comes back, or the message stops naming the hosts it accepts.
-  test("a host the command does not accept is refused by name, with the two it accepts", async () => {
+  test("a host the command does not accept is refused by name, with the three it accepts", async () => {
     const { code, stdout } = await run(["projects"], {
       DISPATCH_HOST: "opencode",
       DISPATCH_SESSION_ID: "ses-1",
     });
     expect(code).toBe(2);
-    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp or claude.\n');
+    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp, claude or codex.\n');
     expect(requests).toEqual([]);
   });
 

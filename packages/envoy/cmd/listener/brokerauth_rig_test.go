@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -32,7 +33,11 @@ type brokerRig struct {
 	// open is the same routes behind an apiAuth given no broker setting at all, which is the
 	// listener R9 is about: the no-bearer one a GCP VM and the clustered hub run, the VM's on
 	// loopback and the hub's off it behind its NetworkPolicy.
-	open   http.Handler
+	open http.Handler
+	// routes is the mux registerV1Routes filled, which both handlers above serve behind their
+	// apiAuth: a test resolves a path through it (ServeMux.Handler) to the pattern registered
+	// for it.
+	routes *http.ServeMux
 	broker *brokertokentest.StubBroker
 	caller *brokertokentest.Caller
 	logs   *bytes.Buffer
@@ -45,12 +50,12 @@ type brokerRig struct {
 func newBrokerRig(t *testing.T) *brokerRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest and role registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -62,12 +67,19 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	// The rig mounts every v1 route, so it needs the delivery the real listener always carries:
 	// the roles/set handler drains the role's kept message through it (runKeptRoleDrain), and the
 	// registration route gives the session its own consumer through the session-consumer
-	// connection, a listener without which refuses every registration (consumer_error).
+	// connection, a listener without which refuses every registration (consumer_error). It
+	// needs the Legion agent registry too, which the /v1/legion/agents routes read: main always
+	// hands them one (openLegionAgentRegistry), so they read it with no nil check of their own.
+	agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the legion agent registry: %v", err)
+	}
 	deps := withRoleClaimDrain(t, &listenerDeps{
-		client:    client,
-		registry:  registry,
-		sessions:  sessions,
-		consumers: setupSessionConsumers(t),
+		client:       client,
+		registry:     registry,
+		sessions:     sessions,
+		consumers:    setupSessionConsumers(t, client),
+		legionAgents: newLegionAgentRegistry(agents),
 	})
 
 	broker := brokertokentest.NewStubBroker(t)
@@ -80,7 +92,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		AccountTokenFile: accountFile,
 		Origin:           listenerBrokerOrigin,
 	})
-	if err := tokens.open(client.Conn, 1); err != nil {
+	if err := tokens.open(t.Context(), client.Conn, 1); err != nil {
 		t.Fatalf("open the spent-proof bucket: %v", err)
 	}
 
@@ -90,8 +102,9 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	registerV1Routes(routes, deps, "test-machine", logger)
 	return &brokerRig{
 		deps:    deps,
-		handler: apiAuth("", nil, tokens, nil, logger, routes),
-		open:    apiAuth("", nil, nil, nil, logger, routes),
+		handler: apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes),
+		open:    apiAuth(listenerAPIAuth{logger: logger}, routes),
+		routes:  routes,
 		broker:  broker,
 		caller:  brokertokentest.NewCaller(t),
 		logs:    logs,
@@ -312,6 +325,110 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 	})
 }
 
+// v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
+// below must visit at least once.
+const v1RoutePatterns = 15
+
+// R4 on a real bus, with no change to the listener's own code: a read-only token — the project
+// scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
+// answered 401 not_a_session on every path registerV1Routes registers, because the verifier
+// brokerTokens.open builds leaves the read-only switch unset (brokertoken.Options.ServesReadOnly)
+// and so refuses the token as a build before the switch refuses it. A token of a named project,
+// the same kind of token but for its project scope, its project and its scope, is answered
+// anything but 401 on each of the same requests, and its presentation writes no rejection line,
+// so the refusal is the scope's and not the route's.
+//
+// The listener has no route table, so the list below is this test's own: every path
+// registerV1Routes registers, under each method its handler serves (a handler that serves two is
+// walked under both). Each is first resolved through the rig's own mux to the pattern the list
+// names, so an entry that no longer reaches its registered pattern — one the catch-all would
+// swallow, say — fails rather than walking the wrong handler. A path and a body name the session
+// the presenting token names, so the session binding refuses none of these requests and a 401
+// can only be the credential's. A path registerV1Routes gains later is behind apiAuth all the
+// same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
+// apiAuth refuses the token before any handler runs.
+func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	rig := newBrokerRig(t)
+	const (
+		reader        = "ses_rig_reader"
+		named         = "ses_rig_named"
+		readOnlyToken = "access-token-that-only-reads"
+		namedToken    = "access-token-of-a-named-project"
+		// session is where a path or a body names the session its token names.
+		session = "<session>"
+	)
+	rig.broker.Says(readOnlyToken, readOnlyAnswer(reader, "example-reader", rig.caller.JKT()))
+	rig.broker.Says(namedToken, serviceAnswer(named, "example-fleet", rig.caller.JKT()))
+	rig.register(t, reader)
+	rig.register(t, named)
+
+	routes := []struct {
+		method  string
+		path    string
+		pattern string
+		body    string
+	}{
+		{http.MethodPost, "/v1/interests/subscribe", "/v1/interests/subscribe",
+			`{"session_id":"<session>","topics":["notifications.github.rig"],"delivery":{"consumer":true,"epoch":"rig"}}`},
+		{http.MethodPost, "/v1/interests/unsubscribe", "/v1/interests/unsubscribe",
+			`{"session_id":"<session>","topics":["notifications.github.rig"]}`},
+		{http.MethodPost, "/v1/roles/set", "/v1/roles/set", `{"session_id":"<session>","role":"rig-walk-role"}`},
+		{http.MethodGet, "/v1/roles/rig-walk-role", "/v1/roles/", ""},
+		{http.MethodGet, "/v1/registry/<session>", "/v1/registry/", ""},
+		{http.MethodGet, "/v1/legion/agents?issue=INFRA-3825", "/v1/legion/agents", ""},
+		{http.MethodPut, "/v1/legion/agents", "/v1/legion/agents", `{"entries":[]}`},
+		{http.MethodGet, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", ""},
+		{http.MethodPut, "/v1/legion/agents/sessions/<session>", "/v1/legion/agents/sessions/", `{"session_id":"<session>"}`},
+		{http.MethodGet, "/v1/legion/agents/roles/legion-infra-infra-3825-tester", "/v1/legion/agents/roles/", ""},
+		{http.MethodGet, "/v1/interests/<session>", "/v1/interests/", ""},
+		{http.MethodDelete, "/v1/interests/<session>", "/v1/interests/", ""},
+		{http.MethodGet, "/v1/sessions", "/v1/sessions", ""},
+		{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
+			`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
+		{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
+			`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
+		{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
+		{http.MethodGet, "/v1", "/v1", ""},
+		{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
+	}
+
+	walked, patterns := 0, map[string]bool{}
+	for _, route := range routes {
+		t.Run(route.method+" "+route.pattern, func(t *testing.T) {
+			as := func(id string) (string, string) {
+				return strings.ReplaceAll(route.path, session, id), strings.ReplaceAll(route.body, session, id)
+			}
+			path, body := as(reader)
+			if _, pattern := rig.routes.Handler(httptest.NewRequest(route.method, path, nil)); pattern != route.pattern {
+				t.Fatalf("%s %s resolves to the pattern %q, want %q: the list no longer names what registerV1Routes registers",
+					route.method, path, pattern, route.pattern)
+			}
+
+			before := rig.logs.Len()
+			refused := rig.call(t, rig.handler, route.method, readOnlyToken, path, body)
+			if refused.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s under a read-only token: status = %d, want 401; body = %s", route.method, path, refused.Code, refused.Body.String())
+			}
+			assertBrokerRejectionLog(t, rig.logs.String()[before:], "not_a_session", readOnlyToken, "")
+
+			path, body = as(named)
+			before = rig.logs.Len()
+			admitted := rig.call(t, rig.handler, route.method, namedToken, path, body)
+			if admitted.Code == http.StatusUnauthorized {
+				t.Fatalf("%s %s under a named project's token: status = 401, want anything but; body = %s", route.method, path, admitted.Body.String())
+			}
+			assertBrokerRejectionLog(t, rig.logs.String()[before:], "", namedToken, "")
+			t.Logf("%s %s: the read-only token 401, the named project's token %d", route.method, path, admitted.Code)
+			walked++
+			patterns[route.pattern] = true
+		})
+	}
+	t.Logf("walked %d requests over %d patterns", walked, len(patterns))
+	if walked != len(routes) || len(patterns) != v1RoutePatterns {
+		t.Fatalf("walked %d of %d requests over %d of the %d patterns registerV1Routes registers", walked, len(routes), len(patterns), v1RoutePatterns)
+	}
+}
+
 // The spent-proof bucket is the record two listeners of one deployment share: the first create of
 // a key succeeds and every later one reports the proof spent, which is what refuses a captured
 // proof presented to the replica that never saw it. Two handles on one bucket stand in for the
@@ -323,7 +440,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	open := func() spentProofs {
-		kv, err := bus.EnsureKeyValue(client.Conn, js, &natsgo.KeyValueConfig{
+		kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, js, &natsgo.KeyValueConfig{
 			Bucket: bus.DPoPProofBucket, TTL: spentProofRetention, Storage: natsgo.FileStorage, Replicas: 1,
 		})
 		if err != nil {
@@ -379,7 +496,7 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	err = tokens.open(conn, 1)
+	err = tokens.open(t.Context(), conn, 1)
 	if err == nil {
 		t.Fatal("a listener took broker tokens on a bus with no JetStream")
 	}
@@ -395,7 +512,7 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
 	request.Host = "127.0.0.1:9020"
 	request.Header.Set("Authorization", "DPoP some-access-token")
-	apiAuth("", nil, tokens, nil, logging.NewWithWriter("test-machine", &bytes.Buffer{}),
+	apiAuth(listenerAPIAuth{brokers: tokens, logger: logging.NewWithWriter("test-machine", &bytes.Buffer{})},
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusServiceUnavailable {

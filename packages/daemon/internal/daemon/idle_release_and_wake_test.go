@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/roleholder"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -29,6 +31,15 @@ const (
 	idleRigSubscribed = "subscribed-topic"
 	idleRigStuck      = "stuck-resume"
 	idleRigRestart    = "daemon-restart"
+	idleRigLapsed     = "lapsed-holder"
+	idleRigFreed      = "freed-claim"
+	// The four pods whose sessions end as a released Oh My Pi's does in production
+	// (idleRigPlan.ExitsAsReleasedInProduction): one per message a sender sends that wakes such a
+	// pod, and one for the daemon's own phase-ended message and hook prompt.
+	idleRigJustReleasedAgent  = "just-released-agent"
+	idleRigJustReleasedRole   = "just-released-role"
+	idleRigJustReleasedRouted = "just-released-routed"
+	idleRigJustReleasedOutbox = "just-released-outbox"
 )
 
 // idleRigSubscribedTopic is the topic the subscribed pod's session takes with envoy_subscribe: a
@@ -48,26 +59,46 @@ const idleRigSender = "idle-rig-sender"
 // scripted stand-ins for Oh My Pi that register, claim their role and record each message they
 // get. idle_rig_test.go says where each part comes from.
 //
-// Nine pods are launched and made quiet, and one pass of the daemon's own idle tick releases them
-// all: each live claim suspended with the source `released`, and the pod, its disk and its
-// Sandbox deleted. Each subtest then drives its own pods' wakes.
+// Every pod of the rig is launched and made quiet, and one pass of the daemon's own idle tick
+// releases them all: each live claim suspended with the source `released`, and the pod, its disk
+// and its Sandbox deleted. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
-	rig := newIdleWakeRig(t,
+	// The rig is given every plan that sets a field a role process reads as it starts (idleRigPlan):
+	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
+	// just-released pod's process ends. The stuck pod's plan is left alone until its own subtest,
+	// which can set it then, since TakeTurn is read at each task (idleRigPlan): a session that
+	// acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps.
+	endsAsReleased := idleRigPlan{TakeTurn: true, ExitsAsReleasedInProduction: true}
+	rig := newIdleWakeRig(t, map[string]idleRigPlan{
+		idleRigSubscribed:         {TakeTurn: true, Topics: []string{idleRigSubscribedTopic}},
+		idleRigJustReleasedAgent:  endsAsReleased,
+		idleRigJustReleasedRole:   endsAsReleased,
+		idleRigJustReleasedRouted: endsAsReleased,
+		idleRigJustReleasedOutbox: endsAsReleased,
+	},
 		idleRigDelivery, idleRigChecks, idleRigRoleWake, idleRigAgentWake, idleRigBackstop,
-		idleRigKeepNone, idleRigSubscribed, idleRigStuck, idleRigRestart)
+		idleRigKeepNone, idleRigSubscribed, idleRigStuck, idleRigRestart, idleRigLapsed, idleRigFreed,
+		idleRigJustReleasedAgent, idleRigJustReleasedRole, idleRigJustReleasedRouted, idleRigJustReleasedOutbox)
 
-	// The subscribed pod's session takes a topic of its own, as `envoy_subscribe` does, before
-	// its process starts. The stuck pod's plan is left alone until its own subtest: a session
-	// that acknowledges a task and takes no turn has a turn due, which is a pod the rule keeps.
-	subscribed := rig.issue(idleRigSubscribed)
-	rig.agents.setPlan(subscribed.key, string(subscribed.role), idleRigPlan{TakeTurn: true, Topics: []string{idleRigSubscribedTopic}})
-
-	rig.launchAll()
 	rig.quiet()
 	rig.awaitReleased(rig.issues...)
 	// What each role was given before its pod was released — the phase task the daemon's boot
 	// handed it — is what every count below is taken from.
 	rig.markPrompts()
+
+	// First, while the release is moments old: the role claim each of these processes left
+	// standing is freed by the listener's reaper once it has gone a live window unrenewed, and the
+	// role message below must find that claim still naming the released session before then.
+	t.Run("AMessageToAJustReleasedRoleWakesItsPod", func(t *testing.T) {
+		idleRigWakeJustReleased(t, rig)
+	})
+
+	// The daemon's own messages to a released role, a phase-ended message and a hook prompt,
+	// whose rows wake the role's pod and then publish while its woken session has not claimed the
+	// role yet.
+	t.Run("ThePhaseEndedMessageAndTheHookPromptOfAReleasedRoleReachItsWokenSessionOnce", func(t *testing.T) {
+		idleRigOutboxWakesJustReleased(t, rig)
+	})
 
 	t.Run("AReleasedPodComesBackOnEachOfTheFiveWakes", func(t *testing.T) {
 		idleRigWakeAll(t, rig)
@@ -145,22 +176,47 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		}
 	})
 
+	// Row (a) of check k3 (dispatch://INFRA-2846): a role message published right after the
+	// release finds the claim the released session left standing. The role process removed its
+	// session's record as it stopped and nothing else (idleRigRoleProcess.unregister), so the
+	// claim names a holder that is not live, and the listener keeps the message for the role's
+	// next live holder and answers 202 holder_lapsed (spec R4), raising the wake report beside
+	// that answer.
+	t.Run("ARoleMessageToALapsedHolderIsKeptWakesTheRoleAndReachesItOnce", func(t *testing.T) {
+		idleRigKeptWakesAndReaches(t, rig, rig.issue(idleRigLapsed), idleRigRoleLapsed,
+			"kept while the released session's claim stood", "lapsed-holder-1")
+	})
+
+	// Row (b) of check k3: a role message published after the released session's claim is freed
+	// finds the role unclaimed, and the listener keeps it and answers 202 unclaimed, raising the
+	// wake report beside that answer. The claim is freed by the listener's forced release, for
+	// this row's pod alone (idleRigListener.freeClaims).
+	t.Run("ARoleMessageToAFreedClaimIsKeptWakesTheRoleAndReachesItOnce", func(t *testing.T) {
+		issue := rig.issue(idleRigFreed)
+		if status, body := rig.listener.freeClaims(rig.session(issue)); status != http.StatusNoContent {
+			t.Fatalf("freeing the claims of %s's released session answered %d %s, want 204", issue.key, status, body)
+		}
+		idleRigKeptWakesAndReaches(t, rig, issue, idleRigRoleUnclaimed,
+			"kept after the released session's claim was freed", "freed-claim-1")
+	})
+
 	t.Run("ARoleMessageThatKeepsNothingStillWakesTheRole", func(t *testing.T) {
 		issue := rig.issue(idleRigKeepNone)
 		token := string(rig.token(issue))
-		// A role publish has two answers now that the listener keeps a role message for the
-		// role's next holder (sjawhar/legion#2588): kept, which the five-wake pass's own role
-		// message above takes, and this one. `keep: false` is the field a sender that holds a
-		// queue of its own sets (notify.Publish), it keeps nothing, and it is answered 404 as
-		// every role publish was before the kept lane. It is the `keep: false` case R3 item 3
-		// names, and the one where only the wake can bring the role back: nothing waits on the
-		// role's kept lane, so the sender's next attempt is the only way this message ever
-		// reaches a session.
+		// A role publish to a released role has two answers now that the listener keeps a role
+		// message for the role's next holder (sjawhar/legion#2588): kept, which the five-wake
+		// pass's own role message and rows (a) and (b) above take, and this one, row (c) of check
+		// k3. `keep: false` is the field a sender that holds a queue of its own sets
+		// (notify.Publish), it keeps nothing, and it is answered 404 with the holder state the
+		// listener found: holder_lapsed, since the released session's claim still stands
+		// (dispatch://INFRA-2846/spec R4). It is the `keep: false` case R3 item 3 names, and the
+		// one where only the wake can bring the role back: nothing waits on the role's kept lane,
+		// so the sender's next attempt is the only way this message ever reaches a session.
 		status, body := rig.listener.publish(map[string]any{
 			"topic": notify.RoleTopicPrefix + token, "message": "keeps nothing", "keep": false,
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "keep-none-1",
 		})
-		idleRigKeptNothing(t, status, body, idleRigRoleUnclaimed)
+		idleRigKeptNothing(t, status, body, idleRigRoleLapsed)
 		rig.awaitResumed(issue, 2)
 		rig.awaitTask(issue, "The wake is a message somebody published to your role topic ("+token+")")
 		if prompts := rig.newPrompts(issue); len(prompts) != 1 {
@@ -185,9 +241,13 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		if status != http.StatusOK && status != http.StatusAccepted {
 			t.Fatalf("the topic publish answered %d %s, want it taken", status, body)
 		}
-		// The listener reports a wake only for a role topic nobody holds and for an agent
-		// subject nothing can place; a topic a session took with envoy_subscribe is neither, so
-		// the pod stays released and its role waits for the backstop instead.
+		// The listener reports a wake only for a role topic no live session holds and for an
+		// agent subject nothing can place; a topic a session took with envoy_subscribe is neither,
+		// so the pod stays released and its role waits for the backstop instead. The released
+		// session's interest record still names the topic, since its process removed only its
+		// session's record as it stopped, so the listener's fanout finds that session, has no
+		// session record to deliver through, and gives the delivery up without a wake report
+		// (fanoutDelivery).
 		idleRigSettle(t, 8*time.Second, func() {
 			state := rig.api.claim(token)
 			if state.State != string(supervise.StateSuspended) || state.SuspendedBy != string(supervise.SuspendedByReleased) {
@@ -221,7 +281,7 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			"topic": notify.RoleTopicPrefix + string(rig.token(issue)), "message": "take up your phase",
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "stuck-1",
 		})
-		idleRigKept(t, status, body, idleRigRoleUnclaimed)
+		idleRigKept(t, status, body, idleRigRoleLapsed)
 		rig.awaitResumed(issue, 2)
 		idleRigEventually(t, idleRigRecordWait, "the resume of "+issue.key+" recorded", func() bool {
 			return len(rig.resumesOf(issue)) == 1
@@ -256,10 +316,13 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// Last, because it restarts the daemon: the worker stream binds a port of its own on every
 	// boot, so the launchers of the pods the earlier subtests woke are left dialling the old one.
 	t.Run("AMessageSentDuringTheReleaseReachesTheWokenSessionOnceAcrossARestart", func(t *testing.T) {
-		// First the two the daemon was up for: the role message and the direct message of the
-		// five-wake pass. Each sender's next attempt reaches the woken session exactly once.
+		// First the two the daemon was up for, the role message and the direct message of the
+		// five-wake pass. The role message's sender tries again, keeping nothing, and that next
+		// attempt reaches the woken session exactly once. The direct message needs no next
+		// attempt: the listener stored it when it was sent, so that one send reaches the woken
+		// session exactly once, from the session's own consumer.
 		idleRigRetryPublish(t, rig, rig.issue(idleRigRoleWake), "the role message the sender tried again", "role-retry-1")
-		idleRigRetrySend(t, rig, rig.issue(idleRigAgentWake), "the direct message the sender tried again", "agent-retry-1")
+		idleRigDeliveredOnce(t, rig, rig.issue(idleRigAgentWake), "the direct message, again")
 
 		// Then the same two across a restart, on a pod still released: the listener reports both
 		// wakes while the daemon is down, its durable consumer holds them, and the daemon acts on
@@ -272,13 +335,12 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			"topic": notify.RoleTopicPrefix + token, "message": "sent while the daemon was down",
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "restart-role-1",
 		})
-		idleRigKept(t, status, body, idleRigRoleUnclaimed)
-		if status, body := rig.listener.send(map[string]any{
+		idleRigKept(t, status, body, idleRigRoleLapsed)
+		status, body = rig.listener.send(map[string]any{
 			"target_session": session, "message": "sent to the session while the daemon was down",
 			"source": "agent", "source_session": idleRigSender, "idempotency_key": "restart-agent-1",
-		}); status != http.StatusNotFound {
-			t.Fatalf("the send answered %d %s, want 404", status, body)
-		}
+		})
+		idleRigStoredForGone(t, status, body)
 		rig.restart()
 		rig.awaitResumed(issue, 2)
 		// The two wakes the listener reported while the daemon was down reach it on its durable
@@ -308,10 +370,13 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		// The role message was kept for the role's next holder, so the claim the wake's own pod
 		// makes is what hands it over (drainKeptRole) and it reaches the woken session once:
 		// nothing but this pod coming back claims that role, so the kept copy moves no sooner
-		// than the wake. The direct message was kept by nothing — the kept lane is a role's
-		// alone — so its sender's next attempt is what reaches the woken session, once.
+		// than the wake. The direct message was stored on the session's own agent subject when it
+		// was sent, the listener knowing the session from its record (idleRigStoredForGone). The
+		// woken session registers under the same id, and its new consumer starts at the floor
+		// the released one left, so it is handed that message from its own consumer, once, and
+		// its sender has no second attempt to make.
 		idleRigDeliveredOnce(t, rig, issue, "sent while the daemon was down")
-		idleRigRetrySend(t, rig, issue, "sent to the session while the daemon was down", "restart-agent-1")
+		idleRigDeliveredOnce(t, rig, issue, "sent to the session while the daemon was down")
 	})
 
 	rig.kube.requireServed(t)
@@ -367,25 +432,31 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 	rig.publishSettlement(checks)
 
 	// 3. A message published to a role topic of the pod, from a sender that sets no keep flag:
-	//    nobody holds the role, so the listener keeps the message for the role's next holder and
-	//    answers the sender 202 kept (sjawhar/legion#2588), raising the wake report beside that
-	//    answer. The kept copy waits for a claim of the role, which nothing but this pod coming
-	//    back makes, so the wake is still the only thing that moves this message on.
+	//    no live session holds the role, whose claim still names the released session, so the
+	//    listener keeps the message for the role's next live holder and answers the sender 202
+	//    kept for the lapsed holder (sjawhar/legion#2588, dispatch://INFRA-2846), raising the wake
+	//    report beside that answer. The kept copy waits for a live holder of the role, which
+	//    nothing but this pod coming back brings, so the wake is still the only thing that moves
+	//    this message on.
 	role := rig.issue(idleRigRoleWake)
 	status, body := rig.listener.publish(map[string]any{
 		"topic": notify.RoleTopicPrefix + string(rig.token(role)), "message": "the role message, again",
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": "role-wake-1",
 	})
-	idleRigKept(t, status, body, idleRigRoleUnclaimed)
+	idleRigKept(t, status, body, idleRigRoleLapsed)
 
-	// 4. A message sent to the agent subject of a released session.
+	// 4. A message sent to the agent subject of a released session. The session's entry went
+	//    with its pod and the listener's known-session store still holds its record, so the
+	//    listener stores the message on the session's agent subject, answers the sender 200
+	//    stopped and gone, and raises the wake report beside that answer, as it raised it beside
+	//    the 404 such a send was answered before the store. The stored message waits in the
+	//    session's own consumer for the session to run again under the same id.
 	agent := rig.issue(idleRigAgentWake)
-	if status, body := rig.listener.send(map[string]any{
+	status, body = rig.listener.send(map[string]any{
 		"target_session": rig.session(agent), "message": "the direct message, again",
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": "agent-wake-1",
-	}); status != http.StatusNotFound {
-		t.Fatalf("the send answered %d %s, want 404: the session is gone with its pod", status, body)
-	}
+	})
+	idleRigStoredForGone(t, status, body)
 
 	// 5. The backstop, which needs nothing sent: it was armed by the release itself, and the
 	//    test brings its due time forward rather than waiting the period out.
@@ -403,8 +474,8 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 	}
 	for _, issue := range []idleRigIssue{delivery, checks, role, agent, backstop} {
 		// A second pod was made for the wake. Whether one stands now is not asserted: a woken pod
-		// goes quiet again within the rig's one-minute idle period and is released afresh, which
-		// is the rule working, not a wake that failed.
+		// that goes quiet again for the rig's idle period (idleRigIdleMinutes) is released afresh,
+		// which is the rule working, not a wake that failed.
 		if started := rig.pods.starts(issue.pod); started < 2 {
 			t.Errorf("%s's pod was started %d times, want a second pod for the wake", issue.key, started)
 		}
@@ -433,20 +504,29 @@ func idleRigWakeAll(t *testing.T, rig *idleWakeRig) {
 	}
 }
 
-// idleRigRoleUnclaimed is the holder state a role of a released pod resolves to: the role
-// process drops its claim as it stops (idleRigRoleProcess.unregister, whose DELETE
-// /v1/interests releases every role the session held), so nobody claims the role at all. It is
-// the word both answers of a role publish carry for it — the 202's kept_reason and the 404's
-// reason (cmd/listener's roleHolderState).
-const idleRigRoleUnclaimed = "unclaimed"
+// idleRigRoleLapsed is the holder state a role of a released pod resolves to: its session's
+// record is removed as its process stops, by the process itself (idleRigRoleProcess.unregister)
+// or, for one that ends as a released Oh My Pi does, by the daemon's clean stop
+// (idleRigPlan.ExitsAsReleasedInProduction), and its claim is left standing, so the claim names a
+// holder that is not live. It is the word both answers of a role publish carry for it — the
+// 202's kept_reason and the 404's reason (roleholder.HolderLapsed).
+const idleRigRoleLapsed = roleholder.HolderLapsed
 
-// idleRigRoleAnswer is what a role publish's answer says about the keep: the 202's own kept and
-// kept_reason (cmd/listener's publishResponse) and the 404's reason (its roleHolderError),
-// which name the same holder states in the same words.
+// idleRigRoleUnclaimed is the holder state of a role no claim names, in the same two answers: a
+// released pod's role once its claim is freed (idleRigListener.freeClaims).
+const idleRigRoleUnclaimed = roleholder.Unclaimed
+
+// idleRigRoleAnswer is what a role publish's answer says about the keep and the holder: the
+// 202's own kept, kept_reason and kept_until (listenerwire.PublishResponse), the 404's reason
+// (listenerwire.RoleRefusal), which names the same holder states in the same words, and the holder
+// and holder_state both carry for a holder the claim names.
 type idleRigRoleAnswer struct {
-	Kept       bool   `json:"kept"`
-	KeptReason string `json:"kept_reason"`
-	Reason     string `json:"reason"`
+	Kept        bool   `json:"kept"`
+	KeptReason  string `json:"kept_reason"`
+	KeptUntil   int64  `json:"kept_until"`
+	Reason      string `json:"reason"`
+	Holder      string `json:"holder"`
+	HolderState string `json:"holder_state"`
 }
 
 func idleRigRoleAnswerOf(t *testing.T, body string) idleRigRoleAnswer {
@@ -459,13 +539,20 @@ func idleRigRoleAnswerOf(t *testing.T, body string) idleRigRoleAnswer {
 }
 
 // idleRigKept is the answer a role publish gets when the listener kept the message for the
-// role's next holder: 202, kept true, and kept_reason naming the state the resolution found.
-// Every field is read, so a 202 that kept nothing cannot pass for one that kept the message.
+// role's next live holder: 202, kept true, kept_reason naming the state the resolution found, and
+// kept_until naming the end of the copy's hour, in epoch milliseconds, which lies ahead of the
+// answer. Every field is read, so a 202 that kept nothing cannot pass for one that kept the
+// message.
 func idleRigKept(t *testing.T, status int, body, reason string) {
 	t.Helper()
-	if answer := idleRigRoleAnswerOf(t, body); status != http.StatusAccepted || !answer.Kept || answer.KeptReason != reason {
+	answer := idleRigRoleAnswerOf(t, body)
+	if status != http.StatusAccepted || !answer.Kept || answer.KeptReason != reason {
 		t.Fatalf("the role publish answered %d %s, want 202 kept for %q: no live session holds the role, so the listener keeps the message for its next holder",
 			status, body, reason)
+	}
+	if answer.KeptUntil <= time.Now().UnixMilli() {
+		t.Fatalf("the role publish answered %d %s, want kept_until ahead of now: the listener keeps the message for an hour and names when that hour ends",
+			status, body)
 	}
 }
 
@@ -481,6 +568,28 @@ func idleRigKeptNothing(t *testing.T, status int, body, reason string) {
 	}
 }
 
+// idleRigKeptWakesAndReaches holds rows (a) and (b) of check k3 for the released role of issue:
+// a role message from a sender that sets no keep flag is answered 202 kept for reason, the wake
+// the listener reports beside that answer brings the role back with one task naming the role
+// message, and the kept copy reaches the woken session once. The woken pod's claim of the role
+// is what hands the copy over (drainKeptRole): nothing but that pod coming back gives the role a
+// live holder, so the copy moves no sooner than the wake.
+func idleRigKeptWakesAndReaches(t *testing.T, rig *idleWakeRig, issue idleRigIssue, reason, message, key string) {
+	t.Helper()
+	token := string(rig.token(issue))
+	status, body := rig.listener.publish(map[string]any{
+		"topic": notify.RoleTopicPrefix + token, "message": message,
+		"source": "agent", "source_session": idleRigSender, "idempotency_key": key,
+	})
+	idleRigKept(t, status, body, reason)
+	rig.awaitResumed(issue, 2)
+	rig.awaitTask(issue, "The wake is a message somebody published to your role topic ("+token+")")
+	if prompts := rig.newPrompts(issue); len(prompts) != 1 {
+		t.Fatalf("the woken role of %s was given %v, want exactly one task", issue.key, idleRigTexts(prompts))
+	}
+	idleRigDeliveredOnce(t, rig, issue, message)
+}
+
 // idleRigRetryPublish is the sender's next attempt at a role message, which the wake exists to
 // make reach a live session: the sender repeats while no live session holds the role — each such
 // attempt is itself a wake — and the one attempt the listener accepts reaches the woken session
@@ -489,9 +598,16 @@ func idleRigKeptNothing(t *testing.T, status int, body, reason string) {
 // It publishes keep: false, the field the one sender that retries from a queue of its own sets
 // (the Legion daemon's notices, notify.Publish). Nothing is kept for the role, so the attempt a
 // live holder took is the only way this message can reach the session and the count below reads
-// that attempt and nothing else; a sender that lets the listener keep the message is the
-// five-wake pass's role message and the restart's, and only the restart's kept copy is counted,
-// where it is handed over (idleRigDeliveredOnce).
+// that attempt and nothing else. Every other role publish of the rig lets the listener keep the
+// message, as the daemon's own kept publishes do. One kept copy is counted by no function: the
+// five-wake pass's role message (idleRigWakeAll's `role-wake-1`), whose pass reads the wake it
+// raises and not the copy's hand-over. Every other is counted where it is handed over
+// (idleRigDeliveredOnce), by the function that counts it: idleRigKeptWakesAndReaches counts one
+// copy for each of rows (a) and (b) of check k3; idleRigWakeJustReleased counts the
+// just-released role's message; idleRigOutboxWakesJustReleased counts the daemon's phase-ended
+// message and hook prompt; and the restart subtest
+// (AMessageSentDuringTheReleaseReachesTheWokenSessionOnceAcrossARestart) counts the role message
+// sent while the daemon was down.
 func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, message, key string) {
 	t.Helper()
 	publish := func() int {
@@ -507,20 +623,53 @@ func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, mes
 	idleRigDeliveredOnce(t, rig, issue, message)
 }
 
-// idleRigRetrySend is the same for a direct message to the session's agent subject.
-func idleRigRetrySend(t *testing.T, rig *idleWakeRig, issue idleRigIssue, message, key string) {
+// The words a send's answer gives its target (listenerwire.SendResponse, cmd/listener's
+// sendHandler): state stopped is a session nothing holds the relay subject of, or one the listener
+// knows only by its known-session record, and recipient_state gone is a session the registry
+// holds no entry of within the gone horizon. A role publish names a lapsed holder's session by the
+// same word, its holder_state.
+const (
+	idleRigSendStopped   = "stopped"
+	idleRigRecipientGone = "gone"
+)
+
+// idleRigSendAnswer is what a send's answer says of its target: the state the listener found it
+// in, its recipient state and its last registration (Unix ms).
+type idleRigSendAnswer struct {
+	State          string `json:"state"`
+	RecipientState string `json:"recipient_state"`
+	LastSeen       int64  `json:"last_seen"`
+}
+
+func idleRigSendAnswerOf(t *testing.T, body string) idleRigSendAnswer {
 	t.Helper()
-	send := func() int {
-		status, _ := rig.listener.send(map[string]any{
-			"target_session": rig.session(issue), "message": message,
-			"source": "agent", "source_session": idleRigSender, "idempotency_key": key,
-		})
-		return status
+	var answer idleRigSendAnswer
+	if err := json.Unmarshal([]byte(body), &answer); err != nil {
+		t.Fatalf("decode the send's answer %q: %v", body, err)
 	}
-	idleRigUntil(t, idleRigPodWait, "a direct message reaching the live session of "+issue.key, func() bool {
-		return send() == http.StatusOK
-	})
-	idleRigDeliveredOnce(t, rig, issue, message)
+	return answer
+}
+
+// idleRigIsStoredForGone is whether a send's answer is the one a send to a released session gets:
+// the session's entry went with its pod and the listener's known-session store still holds its
+// record, so the listener stores the message on the session's agent subject and answers 200,
+// state stopped, recipient_state gone and last_seen the record's. Every field is read, so neither
+// the 404 of a session no store knows nor the answer of a live one can pass for it. It decodes the
+// body itself and fails nothing, so a caller that carries on past a wrong answer can.
+func idleRigIsStoredForGone(status int, body string) bool {
+	var answer idleRigSendAnswer
+	return status == http.StatusOK && json.Unmarshal([]byte(body), &answer) == nil &&
+		answer.State == idleRigSendStopped && answer.RecipientState == idleRigRecipientGone && answer.LastSeen > 0
+}
+
+// idleRigStoredForGone fails the test unless the send's answer is the one a send to a released
+// session gets (idleRigIsStoredForGone).
+func idleRigStoredForGone(t *testing.T, status int, body string) {
+	t.Helper()
+	if !idleRigIsStoredForGone(status, body) {
+		t.Fatalf("the send answered %d %s, want 200 stored with state %s, recipient_state %s and the record's last_seen: the session is gone with its pod, and the listener still knows it",
+			status, body, idleRigSendStopped, idleRigRecipientGone)
+	}
 }
 
 // idleRigDeliveredOnce holds the once-ness R3 items 3 and 4 ask of a sender whose message the
@@ -550,14 +699,23 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 	// one. It holds none of the message's own words, which idleRigCount matches on.
 	after := fmt.Sprintf("the rig's next message to %s, its %dth", issue.key,
 		len(rig.agents.messages(issue.key, string(issue.role))))
-	if status, body := rig.listener.send(map[string]any{
+	status, body := rig.listener.send(map[string]any{
 		"target_session": rig.session(issue), "message": after,
 		"source": "agent", "source_session": idleRigSender, "idempotency_key": after,
-	}); status != http.StatusOK {
-		t.Fatalf("the message sent to the live session of %s after %q answered %d %s, want 200",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("the message sent to the session of %s after %q answered %d %s, want 200",
 			issue.key, message, status, body)
 	}
-	idleRigEventually(t, idleRigRecordWait, "the message sent to "+issue.key+" after the one its wake was for", func() bool {
+	// A woken pod that goes quiet is released afresh within the rig's idle period, so the
+	// session may have gone again since the message reached it. Such a send is stored and
+	// answered stopped, and raises the wake its pod comes back for, so its record waits for a
+	// pod as well as for the delivery.
+	within := idleRigRecordWait
+	if idleRigSendAnswerOf(t, body).State == idleRigSendStopped {
+		within = idleRigPodWait
+	}
+	idleRigEventually(t, within, "the message sent to "+issue.key+" after the one its wake was for", func() bool {
 		return recorded(after) >= 1
 	})
 	if got := recorded(message); got != 1 {

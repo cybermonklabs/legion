@@ -3,9 +3,12 @@
 // The world a row runs in, and nothing that asserts anything about it: the proxy on a loopback
 // listener, the fake GrantSource behind it, the stand-in service behind the bound host, the two
 // tunnelled services, the certificate authority the rows sign with, and the log they read back.
-// proxy_test.go, aws_test.go, azure_test.go and upgrade_test.go each build one with newRig, and
-// ca_test.go takes the authority helpers alone. Why the rig is built out of real listeners and
-// real TLS rather than mocks is in proxy_test.go's own comment.
+// proxy_test.go, aws_test.go, azure_test.go, upgrade_test.go and h2_test.go each build one with
+// newRig, and ca_test.go takes the authority helpers alone. Why the rig is built out of real
+// listeners and real TLS rather than mocks is in proxy_test.go's own comment.
+//
+// TestMain runs the whole suite twice: once with every rig's client speaking HTTP/1.1 to a bound
+// host, and once speaking HTTP/2 alone, as a gRPC client does (rig.protocol).
 package airlockproxy
 
 import (
@@ -33,7 +36,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
+	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -48,12 +54,44 @@ const (
 	testGrantID  = "grant-00000000"
 	testEnrollID = "enrollment-00000000"
 	testRequest  = "request-00000000"
+	testSession  = "session-00000000"
+	testRuntime  = "runtime-00000000"
 	testIssue    = "INFRA-1352"
 )
 
 // workerPlaceholder is a placeholder in the shape the broker mints them, so a row that asserts a
 // body never names the placeholder is asserting about the real thing.
 var workerPlaceholder = requests.PlaceholderPrefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
+
+// The two protocols a command's client may speak to a bound host, by their ALPN names:
+// HTTP/1.1, which every client that offers it is answered in, and HTTP/2, which a client that
+// offers nothing else - every gRPC client - is answered in (connectBound).
+const (
+	protocolHTTP1 = "http/1.1"
+	protocolH2    = "h2"
+)
+
+// suiteProtocol is the protocol every rig's client speaks unless its row names one: TestMain sets
+// it before each of its two runs of the suite.
+var suiteProtocol = protocolHTTP1
+
+// TestMain runs every row of this package under each protocol a client may speak to a bound host,
+// so each row whose call goes through r.client is a row of HTTP/1.1 and a row of HTTP/2: the swap,
+// the refusals, the AWS signature, the Azure exchange and the lines and counts are the same
+// request handling whichever framing carried the request. A row that speaks to the proxy on a
+// socket of its own - a CONNECT written by hand, an upgrade, a frame written by hand - runs the
+// same bytes in both runs. The banner before each run names the protocol of the run below it.
+func TestMain(m *testing.M) {
+	code := 0
+	for _, protocol := range []string{protocolHTTP1, protocolH2} {
+		suiteProtocol = protocol
+		fmt.Printf("airlockproxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+		if run := m.Run(); run != 0 {
+			code = run
+		}
+	}
+	os.Exit(code)
+}
 
 // testRules is the rules file every row but the two-name one runs under.
 func testRules() airlock.Rules {
@@ -70,6 +108,7 @@ func testRules() airlock.Rules {
 func testConnection() requests.AirlockConnection {
 	return requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
+		SessionID: testSession, RuntimeID: testRuntime,
 		Names: map[string]requests.AirlockGrantName{
 			workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},
 		},
@@ -81,6 +120,44 @@ func testConnection() requests.AirlockConnection {
 func storedValues(name, value string) map[string]requests.AirlockSecret {
 	return map[string]requests.AirlockSecret{name: {Slots: map[string]string{requests.SlotValue: value}}}
 }
+
+// The github-app shape of the rig's one name, for the rows about a slot the broker stops
+// releasing: one token per installation, acme's and zed's, and the worker placeholder is acme's.
+const (
+	githubAcmeSlot  = requests.SlotGitHubPrefix + "acme"
+	githubZedSlot   = requests.SlotGitHubPrefix + "zed"
+	githubZedHolder = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed02"
+	githubAcmeToken = "ghs_the-real-acme-installation-token"
+	githubZedToken  = "ghs_the-real-zed-installation-token"
+)
+
+// useGitHubAppGrant makes the rig's one name a github-app name holding acme's and zed's tokens,
+// with the worker placeholder as acme's, so a call that carries it is handled for (workerName,
+// acme).
+func (r *rig) useGitHubAppGrant() {
+	conn := testConnection()
+	conn.Names = map[string]requests.AirlockGrantName{
+		workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: workerPlaceholder, githubZedSlot: githubZedHolder}},
+	}
+	r.grants.setConnection(workerPlaceholder, conn)
+	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
+		workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: githubAcmeToken, githubZedSlot: githubZedToken}},
+	})
+}
+
+// removeAcmeInstallation is the broker's read of that name once acme's installation has gone:
+// zed's token alone, and the name's reread, which drops what this pod holds of it (DropName). The
+// grant still holds acme's placeholder, as a release made before the installation went does.
+func (r *rig) removeAcmeInstallation() {
+	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
+		workerName: {Type: "github-app", Slots: map[string]string{githubZedSlot: githubZedToken}},
+	})
+	r.proxy.DropName(workerName)
+}
+
+// noAcmeValue is the words a call for acme's slot is refused or ended with once the broker no
+// longer releases it.
+const noAcmeValue = "the broker released no " + githubAcmeSlot + " value for " + workerName
 
 // databaseDown is a grant read that failed in the shape the store fails in: pgx puts the
 // database's user, its name and its address in the text of a connect error, which is why a row
@@ -231,7 +308,7 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 		slots := maps.Clone(held.Slots)
 		slots[slot] = placeholder
 		names := maps.Clone(conn.Names)
-		names[name] = requests.AirlockGrantName{Slots: slots, Kind: held.Kind}
+		names[name] = requests.AirlockGrantName{Slots: slots, Type: held.Type}
 		conn.Names = names
 		f.connections[password] = conn
 	}
@@ -258,17 +335,94 @@ type logLine struct {
 
 // logCapture is the slog handler the rows install: logtest.Recorder keeps every record with the
 // attributes the proxy wrote it with, and the methods here are this package's own reading of
-// those records.
+// those records. Each record is also written as the broker writes it - the broker's JSON handler
+// (logging.NewCloudHandler) through its placeholder mask (logmask.Writer) - into written, the
+// bytes a row that asks what reaches the broker's log reads (writtenLines).
 type logCapture struct {
 	logtest.Recorder
+	written *logtest.Buffer
+	broker  slog.Handler
 }
 
-// calls is every line one call to a bound host logged. Records answers a slice of its own, so a
-// row reads the lines written so far while the proxy goes on writing.
+// newLogCapture is a logCapture with nothing written yet.
+func newLogCapture() *logCapture {
+	written := &logtest.Buffer{}
+	return &logCapture{written: written, broker: logging.NewCloudHandler(logmask.Writer(written))}
+}
+
+func (c *logCapture) Handle(ctx context.Context, record slog.Record) error {
+	if err := c.Recorder.Handle(ctx, record); err != nil {
+		return err
+	}
+	return c.broker.Handle(ctx, record)
+}
+
+// The proxy logs with no attribute or group of a logger's own, and Recorder keeps none.
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+// writtenLines is every line written so far as the broker writes it, each decoded as the JSON
+// object it is.
+func (c *logCapture) writtenLines(t *testing.T) []map[string]any {
+	t.Helper()
+	return logtest.JSONLines(t, c.written.String())
+}
+
+// calls is every line one call to a bound host logged that the airlock carried or failed. Records
+// answers a slice of its own, so a row reads the lines written so far while the proxy goes on
+// writing.
 func (c *logCapture) calls() []logLine { return c.lines(callMessage) }
+
+// refusals is every refusal record the proxy wrote (refuse), read the same way: a refused call to
+// a bound host writes one in place of its call line, and a refusal of the outer server writes
+// one too. refuse writes it before the answer, so a row that has its answer reads it at once.
+func (c *logCapture) refusals() []logLine { return c.lines(answer.RefusalMessage) }
 
 // joins is every line the close of a joined connection logged, read the same way.
 func (c *logCapture) joins() []logLine { return c.lines(joinMessage) }
+
+// cuts is every line the end of a carried call its grant stopped carrying logged, read the same
+// way.
+func (c *logCapture) cuts() []logLine { return c.lines(cutMessage) }
+
+// tunnels is every line one socket the proxy opened for a tunnel or a forwarded plain-HTTP
+// request logged, and dialFailures every line one dial it could not make logged, read the same
+// way.
+func (c *logCapture) tunnels() []logLine { return c.lines(tunnelMessage) }
+
+func (c *logCapture) dialFailures() []logLine { return c.lines(dialFailedMessage) }
+
+// tunnelsAtLeast and dialFailuresAtLeast are those lines once there are n of them, as
+// callsAtLeast is for a call's. The proxy writes either line before the command is answered, so
+// a row that has its answer could read them at once; a row whose command went away has no answer
+// to read, and a row that drives several requests reads all their lines at the end, so these
+// wait.
+func (c *logCapture) tunnelsAtLeast(t *testing.T, n int) []logLine {
+	t.Helper()
+	return c.linesAtLeast(t, tunnelMessage, n)
+}
+
+func (c *logCapture) dialFailuresAtLeast(t *testing.T, n int) []logLine {
+	t.Helper()
+	return c.linesAtLeast(t, dialFailedMessage, n)
+}
+
+// linesAtLeast waits for n lines of one message, and fails t rather than hanging when they never
+// come.
+func (c *logCapture) linesAtLeast(t *testing.T, message string, n int) []logLine {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		lines := c.lines(message)
+		if len(lines) >= n {
+			return lines
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the proxy wrote %d %q lines; want at least %d", len(lines), message, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
 
 // lines is every line the proxy wrote under one message, with the attributes it wrote them with.
 func (c *logCapture) lines(message string) []logLine {
@@ -294,17 +448,7 @@ func (c *logCapture) lines(message string) []logLine {
 // to be written. It fails the row rather than hanging when the line never comes.
 func (c *logCapture) callsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		calls := c.calls()
-		if len(calls) >= n {
-			return calls
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the proxy wrote %d lines for a call to a bound host; want at least %d", len(calls), n)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	return c.linesAtLeast(t, callMessage, n)
 }
 
 // rig is one row's whole world: the proxy, what it dials, what it may resolve, the stand-in
@@ -336,8 +480,30 @@ type rig struct {
 	// where a dial went.
 	dialedMu sync.Mutex
 	dialed   []string
+	// holdResolve and holdDial, where a row sets one, run at the start of each lookup and each
+	// dial with its own context: how a row holds a lookup or a dial until the command behind it
+	// has gone. A lookup a hold ended fails with its context's error, and a dial is made under
+	// the context holdDial answers, so a row has it fail as a dial its command abandoned does or
+	// open as one that won that race does.
+	holdResolve func(ctx context.Context)
+	holdDial    func(ctx context.Context) context.Context
+	// dialTimeout is the dialer's own Timeout for each address a row names it for, as the
+	// production dialer has one (New): how a row has a dial time out on its own, with the error
+	// net.Dialer itself answers, rather than end because its command went away.
+	dialTimeout map[string]time.Duration
+	// dialledFor is the grant each socket the proxy opened was dialled for, as the lines of that
+	// dial name it (callerOfContext), by the socket's own local address, which is the remote
+	// address the service it reached reads each request on it as: how a row reads which caller a
+	// socket was opened for beside the request it carried.
+	dialledForMu sync.Mutex
+	dialledFor   map[string]string
 
 	service *airlocktest.Service
+
+	// protocol is what the command's own client speaks to a bound host (clientAt): protocolHTTP1,
+	// or protocolH2 alone, as a gRPC client offers it. newRig sets the suite's, and a row about
+	// one of the two sets its own after newRig.
+	protocol string
 }
 
 // wrapListener is the seam a row puts a connection of its own under the proxy with: every
@@ -366,7 +532,7 @@ func (l *wrapListener) Accept() (net.Conn, error) {
 // listener accepts.
 func newRig(t *testing.T, o Options, wrap ...func(net.Conn) net.Conn) *rig {
 	t.Helper()
-	r := &rig{t: t, grants: newFakeGrants(), logs: &logCapture{}, trust: x509.NewCertPool()}
+	r := &rig{t: t, grants: newFakeGrants(), logs: newLogCapture(), trust: x509.NewCertPool(), protocol: suiteProtocol}
 
 	// The stand-in service behind the bound host, with a certificate of its own naming that
 	// host and an authority of the rig's own behind it, which is the only thing the proxy
@@ -447,6 +613,9 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	r.dialedMu.Lock()
 	r.dialed = append(r.dialed, addr)
 	r.dialedMu.Unlock()
+	if r.holdDial != nil {
+		ctx = r.holdDial(ctx)
+	}
 	to, ok := r.dialTo[addr]
 	if !ok {
 		to, ok = r.dialTo[r.nameOf(addr)]
@@ -454,8 +623,26 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	if !ok {
 		return nil, fmt.Errorf("this test dials no %s", addr)
 	}
-	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, to)
+	dialer := net.Dialer{Timeout: r.dialTimeout[addr]}
+	conn, err := dialer.DialContext(ctx, network, to)
+	if err != nil {
+		return nil, err
+	}
+	r.dialledForMu.Lock()
+	defer r.dialledForMu.Unlock()
+	if r.dialledFor == nil {
+		r.dialledFor = map[string]string{}
+	}
+	r.dialledFor[conn.LocalAddr().String()] = callerOfContext(ctx).GrantID
+	return conn, nil
+}
+
+// socketCaller is the grant the socket whose local address is local was dialled for, and "" for
+// an address no socket of the proxy's had.
+func (r *rig) socketCaller(local string) string {
+	r.dialledForMu.Lock()
+	defer r.dialledForMu.Unlock()
+	return r.dialledFor[local]
 }
 
 // nameOf is the authority a row wrote dialTo under for an address and port: the name whose
@@ -486,7 +673,13 @@ func (r *rig) dialedAddresses() []string {
 // resolve is Server.resolve: an address literal is itself, a name a row queued answers for has
 // them one per call, a name the row named has the addresses it was given, and any other name
 // resolves to nothing.
-func (r *rig) resolve(_ context.Context, host string) ([]netip.Addr, error) {
+func (r *rig) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	if r.holdResolve != nil {
+		r.holdResolve(ctx)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{addr.Unmap()}, nil
 	}
@@ -529,20 +722,30 @@ func (r *rig) client(password string) *http.Client {
 }
 
 // clientAt is that client pointed at one proxy address, which a row with a second pod of its
-// own needs.
+// own needs. It speaks r.protocol to a bound host: HTTP/1.1 as net/http's client does with a TLS
+// configuration of its own, or HTTP/2 alone, whose handshake offers h2 and nothing else, as a
+// gRPC client's does, so a proxy that does not answer h2 fails the handshake rather than falling
+// back to HTTP/1.1.
 func (r *rig) clientAt(addr, password string) *http.Client {
 	r.t.Helper()
 	proxyURL, err := url.Parse("http://agent:" + password + "@" + addr)
 	if err != nil {
 		r.t.Fatalf("the proxy URL: %v", err)
 	}
-	return &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			Proxy:           http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{RootCAs: r.trust},
-		},
+	transport := &http.Transport{
+		Proxy:           http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{RootCAs: r.trust},
 	}
+	switch r.protocol {
+	case protocolHTTP1:
+	case protocolH2:
+		var protocols http.Protocols
+		protocols.SetHTTP2(true)
+		transport.Protocols = &protocols
+	default:
+		r.t.Fatalf("the rig's protocol is %q, want %q or %q", r.protocol, protocolHTTP1, protocolH2)
+	}
+	return &http.Client{Timeout: 20 * time.Second, Transport: transport}
 }
 
 // get is one GET on a bound host through the proxy, with the headers given as name/value pairs.
@@ -602,6 +805,40 @@ func (r *rig) connectRaw(target string, headers ...string) (*http.Response, net.
 	}
 	r.t.Cleanup(func() { conn.Close() })
 	return answer, conn, reader
+}
+
+// plainRaw writes one absolute-URL GET of http://<authority><path> on a connection of its own,
+// with authority as its Host header too, and answers what came back with its body read. A row
+// about a zoned literal needs it: net/http's client drops the zone from the URL it writes to a
+// proxy, so through that client the zone never reaches the proxy, while any client that writes
+// its own bytes can send it. Each header must end in CRLF.
+func (r *rig) plainRaw(authority, path string, headers ...string) (*http.Response, string) {
+	r.t.Helper()
+	return r.requestRaw(http.MethodGet, "http://"+authority+path, authority, headers...)
+}
+
+// requestRaw writes one request of the row's own bytes on a connection of its own - its method,
+// its request target and a Host header that need not agree with it, as no HTTP client writes
+// them but any command that writes its own bytes can - and answers what came back with its body
+// read. A row sends a CONNECT through it only when the CONNECT is refused, since the body of a
+// tunnel that opened never ends. Each header must end in CRLF.
+func (r *rig) requestRaw(method, target, host string, headers ...string) (*http.Response, string) {
+	r.t.Helper()
+	conn, err := net.Dial("tcp", r.addr)
+	if err != nil {
+		r.t.Fatalf("dial the proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	request := method + " " + target + " HTTP/1.1\r\nHost: " + host + "\r\n" + strings.Join(headers, "") + "Connection: close\r\n\r\n"
+	if _, err := conn.Write([]byte(request)); err != nil {
+		r.t.Fatalf("write the %s: %v", method, err)
+	}
+	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: method})
+	if err != nil {
+		r.t.Fatalf("read the answer to %s %s: %v", method, target, err)
+	}
+	return answer, bodyOf(r.t, answer)
 }
 
 // basic is one Proxy-Authorization header line, as a command's client writes it.

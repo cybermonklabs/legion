@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -97,11 +98,13 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 		t.Fatalf("provision secret data %v", provision.Data)
 	}
 	secret := g.secret(roleSecretName(name, spec.Role))
-	wantKeys := []string{LauncherTokenFile, GitHubConfigKey("acme"), GitHubConfigKey("sjawhar"), GitHubDefaultKey, GitHubHostsKey("acme"), GitHubHostsKey("sjawhar")}
+	wantKeys := []string{LauncherTokenFile, GitHubConfigKey("acme"), GitHubConfigKey("sjawhar"), GitHubDefaultKey,
+		GitHubHostsKey("acme"), GitHubHostsKey("sjawhar"), GitHubPairsKey}
 	slices.Sort(wantKeys)
 	if keys := slices.Sorted(maps.Keys(secret.Data)); !slices.Equal(keys, wantKeys) || len(secret.Data[LauncherTokenFile]) == 0 ||
-		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" {
-		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar and each owner's two gh files %v", keys, wantKeys)
+		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
+		len(secret.Data[GitHubPairsKey]) != 0 {
+		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar, each owner's two gh files and an empty renames file %v", keys, wantKeys)
 	}
 	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticOwnerToken(spec.Role, "acme")} {
 		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != want {
@@ -130,9 +133,9 @@ func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *
 	g.spawn(controllerSpec(t))
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 6 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
+	if secret == nil || len(secret.Data) != 7 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
 		len(secret.Data[GitHubHostsKey("sjawhar")]) == 0 || len(secret.Data[GitHubConfigKey("acme")]) == 0 {
-		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default and the review App's gh files of each owner", secret)
+		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner", secret)
 	}
 	found := false
 	for _, volume := range g.pod(name).Spec.Volumes {
@@ -1934,7 +1937,12 @@ type sandboxMachineCancel struct{}
 
 func (sandboxMachineCancel) Stop() bool { return true }
 
-type supervisedSandboxStore struct{ claim supervise.Claim }
+type supervisedSandboxStore struct {
+	claim supervise.Claim
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
+}
 
 func (s *supervisedSandboxStore) AdmitClaim(_ context.Context, c supervise.Claim) (supervise.Claim, error) {
 	s.claim = c
@@ -1946,6 +1954,10 @@ func (*supervisedSandboxStore) CheckLaunch(context.Context, supervise.Claim) err
 func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.claim = c
 	return nil
+}
+
+func (s *supervisedSandboxStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (*supervisedSandboxStore) PutDelivery(context.Context, claim.Token, supervise.Delivery) error {

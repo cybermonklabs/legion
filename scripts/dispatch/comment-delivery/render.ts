@@ -170,7 +170,7 @@ export function renderReport(
   );
   out.push("## What the classes mean", "");
   out.push(
-    "`tq receipts` (theorem-labs/agent-infra `transcript-store/`) gives each pair a " +
+    "`tq receipts` (example-org/deployment `transcript-store/`) gives each pair a " +
       "status: `received`, `not_received` or `unknown`. It reads the transcripts of the pair's " +
       "session and of each session forked from it. This report gives each comment one class. It " +
       "checks the classes in this order, and it uses the first class that applies.",
@@ -188,10 +188,14 @@ export function renderReport(
     "5. **Not delivered, with one cause.** Every pair has the status `not_received`. The report " +
       "gives the first cause that applies to a pair of the comment, in this order:",
     "   - `not-addressed:<rule>`: the pair was owed the comment, the outbox did not send it to " +
-      "the pair, and no delivery of a mention to the pair was sent or failed. The rule says why " +
-      "the pair was owed it: claimant, route, follower, asker or mention, joined with `+`.",
+      "the pair, and no delivery of a mention to the pair was sent, queued or failed. The rule " +
+      "says why the pair was owed it: claimant, route, follower, asker or mention, joined with " +
+      "`+`.",
     "   - `mention-failed:<error>`: Dispatch tried to deliver a mention, and its newest attempt " +
       "failed. The error is `session-not-live`, `receipt-timeout` or `other`.",
+    "   - `mention-queued`: the newest attempt of a mention to the pair is queued. The Envoy " +
+      "listener took the mention and stored it for the session, which was not running; the " +
+      "session reads it when it runs again.",
     "   - `not-running`: Dispatch sent the comment to the session, and the transcript store's " +
       "recorded start and end of the session's file do not include the time Dispatch published it.",
     "   - `running-no-row`: Dispatch sent the comment to the session within the store's recorded " +
@@ -207,8 +211,9 @@ export function renderReport(
     "The report cannot tell whether an unknown pair got the comment. Its reason is one of these:",
     "",
     "- `session_not_in_store`: the transcript store does not hold the session. The store holds " +
-      "only the Oh My Pi sessions of the two dev boxes. It does not hold Claude Code sessions or " +
-      "the sessions of Legion pods.",
+      "the Oh My Pi sessions of the dev boxes and of the Legion pods, and no Claude Code session " +
+      "of either. It loads each machine on its own schedule, so a session newer than its " +
+      "machine's last load is not in it yet.",
     "- `role`: the pair is a role, and no mention of the role resolved to a session, so there is " +
       "no session whose transcript to read.",
     "- `btw`: Dispatch delivered a mention as a BTW, and has no answer from the side turn. A BTW " +

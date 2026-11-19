@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // publishDeliveryWindow bounds a confirmed send through POST /v1/messages/publish, counted from the
@@ -28,34 +29,11 @@ const publishDeliveryWindow = 4 * time.Second
 // recipient whose connection is down is not sent a burst of forwards that reach nobody.
 const publishRetryPause = 100 * time.Millisecond
 
-// roleSendFailure is the 504 of a role send whose window ended with no forward the stream stored
-// for its holder. Reason is delivery_failed: no live holder to forward to, a read that failed or
-// ran out of time, or a forward the stream did not acknowledge storing. Holder is the holder the
-// send last resolved, empty when none was; Attempts counts the forwards it made, every one the
-// same envelope under one event_id.
-type roleSendFailure struct {
-	Error     string      `json:"error"`
-	Reason    sendOutcome `json:"reason"`
-	EventID   string      `json:"event_id"`
-	DedupeKey string      `json:"dedupe_key"`
-	Holder    string      `json:"holder"`
-	Attempts  int         `json:"attempts"`
-}
-
-// capabilityRefusal is the 403 of a role send whose holder cannot take the payload's delivery
-// mode: it does not advertise the mode, or the mode cannot be read unambiguously. Its error reads
-// as /v1/messages/send's answer to the same refusal.
-type capabilityRefusal struct {
-	Error  string      `json:"error"`
-	Reason sendOutcome `json:"reason"`
-	Holder string      `json:"holder"`
-}
-
 // sendOutcome is how a confirmed send ended, or how its recipient did. An answer that carries a
-// reason carries the outcome itself, which marshals as its string. A send's log line names the
-// outcome as its reason attribute and deliveryStatus's label for it as its delivery_status
-// attribute, so the reason reads as the answer does and delivery_status reads as the role lane's
-// own lines and the messagesDelivered count do.
+// reason carries the outcome's string (listenerwire.RoleSendFailure and CapabilityRefusal). A
+// send's log line names the outcome as its reason attribute and deliveryStatus's label for it as
+// its delivery_status attribute, so the reason reads as the answer does and delivery_status reads
+// as the role lane's own lines and the messagesDelivered count do.
 type sendOutcome string
 
 const (
@@ -67,7 +45,9 @@ const (
 	sendDedupe sendOutcome = "dedupe"
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
-	// sendUnclaimed and sendHolderLapsed are a role send with no live claim, answered 404.
+	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
+	// keep: false, a role token no claim can name, or a keep that failed - answered 404
+	// (roleSend.noHolder).
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
 	// sendDeliveryFailed is a recipient the stream stored no forward for: none live to forward to,
@@ -152,6 +132,15 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 // rather than the holder's. It publishes no delivery exception: the sender has the answer. Every
 // answer goes through record, the route's one line per request (request_record.go), and is then
 // settled: counted, and logged on the send's own delivery line.
+//
+// Each answer marks the message's take from its sender's count (record.charge) before it is
+// written: a wake reported, a forward the stream stored, a forward that failed with no refusal,
+// which the stream may have stored for the holder it went to, and a window that ended cost one.
+// The mark of a forward that may have been stored stands whatever the send answers next
+// (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
+// lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
+// mark alone, and every other answer marks nothing, so where no forward may have been stored the
+// route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -170,8 +159,10 @@ type roleSend struct {
 	arrived time.Time
 	holder  string
 	// holderState is the state the holder's own record put it in at the resolution that named
-	// it, carried so the 200 can say it (GET /v1/roles/<role> says it the same way). A 200 is
-	// answered only for a holder a resolution read live, so that is what it carries there.
+	// it, carried so the 200 and the 202 of a holder that is not live can say it (GET
+	// /v1/roles/<role> says it the same way). A 200 is answered only for a holder a resolution
+	// read live, so that is what it carries there; a 202 kept for a lapsed holder carries
+	// unresponsive or gone (kept).
 	holderState session.State
 	attempts    int
 }
@@ -197,34 +188,39 @@ func (s *roleSend) settle(outcome sendOutcome) {
 // holder's record put it in, which GET /v1/roles/<role> names the same way.
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	s.record.accept(s.w, publishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState})
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, HolderState: s.holderState})
 	s.settle(outcome)
 }
 
-// noHolder answers a role with no live claim. For a state the listener keeps for (roleKeepable:
-// an unclaimed role, since no resolution of this build releases a claim), and while this send's
-// own keep flag asks for it, it keeps the message for the role's next holder and hands the lane
-// to whoever holds the role now, both in the one keep both give-up paths take
-// (keepForNextHolder), and answers kept's 202. A keep that kept nothing - one this send's keep
-// flag turned off, one under a role token no claim can name, a publish that failed, logged by
-// keepRoleMessage - is answered as a send that kept nothing is, since the sender's own fallback
-// must run when the message was not kept: writeRoleHolderError's 404 (unclaimed or
-// holder_lapsed), which the Legion daemon reads as notify.ErrNoHolder, recorded role_unclaimed or
-// role_lapsed. The role lane counts an unclaimed role skipped and a lapsed holder failed.
+// noHolder answers a role with no live holder. For a state the listener keeps for (roleKeepable:
+// a role nobody claims, and a claim whose holder is not live), and while this send's own keep
+// flag asks for it, it keeps the message for the role's next live holder and hands the lane to
+// whoever holds the role now, both in the one keep both give-up paths take (keepForNextHolder),
+// and answers kept's 202. A keep that kept nothing - one this send's keep flag turned off, one
+// under a role token no claim can name, a keep that failed, logged by keepRoleMessage - is
+// answered as a send that kept nothing is, since the sender's own fallback must run when the
+// message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
+// daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
+// exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
+// holder failed when its own keep fails.
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
-// (reportRoleWake). Both answers need it: a message kept for the role's next holder waits until
-// something claims the role again, and a publish with keep: false keeps nothing and is still
-// answered 404, so only the wake brings the released pod back to claim the role, drain what was
-// kept for it (drainKeptRole) and take the sender's next attempt. The report names the role and
-// nothing else; which daemon owns it, and whether any claim of that role is released, is for the
-// daemons to decide.
+// (reportRoleWake). Both answers need it: a message kept for the role's next holder waits, for
+// one hour at most, until a live session holds the role again, and a publish with keep: false
+// keeps nothing and is still answered 404, so only the wake brings the released pod back to claim
+// the role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The
+// report names the role and nothing else; which daemon owns it, and whether any claim of that
+// role is released, is for the daemons to decide.
 func (s *roleSend) noHolder(result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
-	if s.keep && roleKeepable(result) && keepForNextHolder(*s.d.delivery, s.role, s.item) {
-		s.kept(result)
-		return
+	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
+	s.record.charge.woke()
+	if s.keep && roleKeepable(result) {
+		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
+			s.kept(result, kept)
+			return
+		}
 	}
 	s.record.refuseRoleHolder(s.w, s.role, result)
 	// The 404 is written; the refusal's own bus signal goes out behind it (publishRefusalException).
@@ -236,19 +232,49 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	s.settle(outcome)
 }
 
-// kept answers 202 with the envelope the listener kept on the role's kept lane: kept is true and
-// kept_reason names the one state a copy is kept for, unclaimed (roleKeepable). A lapsed claim is
-// never kept for, so no 202 of this build names holder_lapsed. The message reaches the role's next
-// holder when it claims the role (drainKeptRole), so this is an answer rather than a refusal, and
-// it settles under its own outcome so the send still writes exactly one delivery line.
+// kept answers 202 with the envelope the role's kept lane holds for the message (kept.item): kept
+// is true, kept_reason names the state the resolution found - unclaimed, or holder_lapsed for a
+// claim whose holder is not live (roleKeepable) - and kept_until names the end of the copy's hour,
+// until which the walk forwards it to the next session that holds the role live. A lapsed
+// holder's answer names that holder, its state and when it last registered, as the 404
+// holder_lapsed names them, so its sender learns all the 404 told it and that the claim stands.
+// The message reaches the role's next live holder through a handover (drainKeptRole), so this is
+// an answer rather than a refusal, and it settles under its own outcome so the send still writes
+// exactly one delivery line.
+//
+// A repeat of a dedupe key whose copy is still on the lane inside its hour stored nothing new
+// (storeKeptRoleCopy), so the answer is that first copy's envelope and event id, and the request's
+// record line and the send's delivery line name it too: the send's envelope becomes the copy's.
+// Such a repeat is forgiven: it costs its sender nothing, though noHolder's wake report marked
+// its charge, unless an earlier forward of the same send failed with no refusal, which may have
+// stored the message for the holder it went to and marked the charge so (sendToRole).
 //
 // 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
-// 200, the message is with a live holder; 202, nobody holds the role and the message waits for
-// whoever claims it within roleKeepWindow; 404, nothing was kept and the sender's own fallback
-// must run. INFRA-514's architect decided it on 2026-10-31.
-func (s *roleSend) kept(result roles.Resolution) {
+// 200, the message is with a live holder; 202, no live session holds the role and the message
+// waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
+// fallback must run. INFRA-514's architect decided it on 2026-10-31.
+func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
+	if kept.repeat {
+		s.record.charge.forgive()
+	}
+	s.item = kept.item
+	s.holder = result.Holder
+	s.holderState = result.HolderState
+	s.record.item = &s.item
 	s.record.holder = s.holder
-	s.record.acceptWith(s.w, http.StatusAccepted, publishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.holder, Kept: true, KeptReason: result.State})
+	answer := listenerwire.PublishResponse{
+		Envelope:     s.item,
+		ExpectsReply: s.expectsReply,
+		Holder:       s.holder,
+		HolderState:  s.holderState,
+		Kept:         true,
+		KeptReason:   result.State,
+		KeptUntil:    kept.until,
+	}
+	if result.LastSeen != 0 {
+		answer.LastSeen = &result.LastSeen
+	}
+	s.record.acceptWith(s.w, http.StatusAccepted, answer)
 	s.settle(sendKept)
 }
 
@@ -268,7 +294,9 @@ func (s *roleSend) unresolved(err error) {
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it.
+// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
+// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
+// the message has marked the charge already (sendToRole).
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -276,13 +304,17 @@ func (s *roleSend) refused(err error) {
 }
 
 // timedOut answers the 504 of a send whose window ended with no forward the stream stored for its
-// holder, recorded delivery_failed.
+// holder, recorded delivery_failed. A 504 costs its sender one whether or not a forward went out,
+// so also when the window ended before the first forward, or on resolutions that failed or found
+// the holder not live: the limit holds a 504 to be the answer after which the listener cannot say
+// whether it stored the message, and does not tell a 504 that forwarded nothing from the rest.
 func (s *roleSend) timedOut() {
+	s.record.charge.stored()
 	s.record.holder = s.holder
-	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, roleSendFailure{
+	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, listenerwire.RoleSendFailure{
 		Error: fmt.Sprintf("role %s: event %s was not stored for its holder %s within %s (%s)",
 			s.role, s.item.EventID, cmp.Or(s.holder, "(none)"), publishDeliveryWindow, sendDeliveryFailed),
-		Reason:    sendDeliveryFailed,
+		Reason:    string(sendDeliveryFailed),
 		EventID:   s.item.EventID,
 		DedupeKey: s.item.DedupeKey,
 		Holder:    s.holder,
@@ -297,6 +329,10 @@ func (s *roleSend) timedOut() {
 // stored this dedupe key for, both answered 200 with nothing forwarded; a holder that cannot take
 // the payload's delivery mode, answered 403 with the refusal sendHandler gives,
 // recorded capability_refused as sendHandler records it.
+//
+// None of those answers marks the charge: each stores nothing, and an earlier forward of the same
+// send that failed with no refusal, which may have stored the message for the holder it went to,
+// has marked the charge already (sendToRole).
 //
 // The dedupe check reads the route's own record (listenerDeps.confirmed), not the delivery
 // handlers' cache: agentSubjectDelivery and fanoutDelivery record a key there for every delivery
@@ -313,9 +349,9 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 		s.delivered(sendDedupe)
 	default:
 		s.record.holder = s.holder
-		s.record.refuseWith(s.w, http.StatusForbidden, outcomeCapabilityRefused, capabilityRefusal{
+		s.record.refuseWith(s.w, http.StatusForbidden, outcomeCapabilityRefused, listenerwire.CapabilityRefusal{
 			Error:  verdict.refusal,
-			Reason: sendCapability,
+			Reason: string(sendCapability),
 			Holder: s.holder,
 		})
 		s.settle(sendCapability)
@@ -326,24 +362,26 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // sendToRole delivers a role message through the publish route, answering through record. The
 // first resolution reads the holder as an HTTP lookup does (roles.ResolveHolder), within
 // sendRequestBudget of arrived as GET /v1/roles/<role> reads it, and gives that route's answers:
-// a role with no live claim is kept and answered 202 while keep asks for it - the request's own
-// keep field, true when it set none - for the states the listener keeps for (roleKeepable), else
-// 404 unclaimed or holder_lapsed (noHolder), and for a resolution that failed the lookup's 503 or
-// 500 (unresolved). The first attempt forwards to that holder without reading the claim again;
-// every other attempt resolves the holder again, so a holder that relaunched under a new session
-// between attempts gets the next one. On those attempts an unclaimed role is answered as the
-// first resolution answers it, since the claim itself is gone; a holder that stopped answering
-// keeps its claim and fails that attempt only, as a read that failed does, so a holder that comes
-// back inside the window still gets the message. Each attempt forwards the same envelope, under
-// the role forward's dedupe key and under one Nats-Msg-Id, the key and the holder's subject
-// (bus.ForwardMsgID), and waits what is left of the send, at most roleForwardTimeout, for the
-// stream's acknowledgement that it stored it; that acknowledgement is the send's 200, since the
-// holder answers nothing and reads the stored copy from its session consumer (startRoleForward).
-// The stream, which captures agent subjects, therefore keeps one copy of the forward however
-// many attempts there are. Every read takes ctx, the send's window, so none outlasts it: a send
-// whose window ends is answered 504. expectsReply is the expects_reply its answers write
-// (expectsReplyAnswer, api.go), the request's own dialect; the envelope this send forwards and
-// keeps carries the envelope's own value.
+// a role with no live holder - no claim, or a claim whose holder is not live - is kept for the
+// role's next live holder and answered 202 while keep asks for it, the request's own keep field,
+// true when it set none (roleKeepable), else 404 unclaimed or holder_lapsed (noHolder); and for a
+// resolution that failed the lookup's 503 or 500 (unresolved). The first attempt forwards to that
+// holder without reading the claim again; every other attempt resolves the holder again, so a
+// holder that relaunched under a new session between attempts gets the next one. On those
+// attempts an unclaimed role is answered as the first resolution answers it, since the claim
+// itself is gone; a holder that stopped answering keeps its claim and fails that attempt only, as
+// a read that failed does, so a holder that comes back inside the window still gets the message,
+// and a send whose window ends on such attempts is a 504 that kept nothing: the sender is told the
+// send failed for the holder its first resolution read live. Each attempt forwards the same
+// envelope, under the role forward's dedupe key and under one Nats-Msg-Id, the key and the
+// holder's subject (bus.ForwardMsgID), and waits what is left of the send, at most
+// roleForwardTimeout, for the stream's acknowledgement that it stored it; that acknowledgement is
+// the send's 200, since the holder answers nothing and reads the stored copy from its session
+// consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
+// of the forward however many attempts there are. Every read takes ctx, the send's window, so
+// none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
+// its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
+// send forwards and keeps carries the envelope's own value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
@@ -402,13 +440,14 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				return
 			}
 			send.attempts++
-			subject := contracts.AgentSubject(send.holder)
+			subject := contracts.LegacyAgentSubject(send.holder)
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.
 			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item.DedupeKey, send.holder)
+				send.record.charge.stored()
 				send.delivered(sendDelivered)
 				return
 			}
@@ -416,6 +455,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.refused(err)
 				return
 			}
+			// A forward that failed with no refusal may have been stored for its holder, so it
+			// costs its sender one whatever this send answers next.
+			send.record.charge.stored()
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.

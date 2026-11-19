@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `GET /api/v1/issues/{key}/results` answers `currency` on each result again, so a `dispatch`
+  client older than pi-envoy 17.1.0 prints `current` or `older` beside a result, where since the
+  results contract change it printed "unknown" for every result. The field is derived from
+  `commit_stands`, `check_words_moved` and `retracted`, with no read of its own: `current` at a
+  basis under the check's words now with no retraction, `older` at another commit or at a basis
+  under words that moved, and left out otherwise and on every result of a read that names
+  `?at=`. It is a compatibility field, removed once no client older than pi-envoy 17.1.0 is in
+  use.

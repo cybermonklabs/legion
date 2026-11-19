@@ -75,7 +75,7 @@ tells the agent who Dispatch takes it for.
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
 | Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, and the id each row names is what `--advance` takes. |
 | Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
@@ -84,6 +84,7 @@ tells the agent who Dispatch takes it for.
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
+| Steps | `dispatch steps --issue <KEY>` prints each step that ran on an issue, as the Legion daemon recorded it at the step's start and at its end: a line `<KEY>: <n> steps in <m> tasks`, then one line per run, task by task, naming its task, step, kind, role, type, attempt, agent, model, start, end and result. A field with no value prints `-`, and a run that has not ended prints `running` for its end and its result. An issue that no step ran on prints `<KEY>: 0 steps in 0 tasks`, and a key Dispatch does not hold fails as `dispatch read` fails for it: `NOT_FOUND: not found`, exit 1. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
 The dashboard's List is a live table over a project's issues, not a separate search index.
@@ -98,8 +99,8 @@ Bulk parent changes are ordinary independent keyed writes, at most eight in flig
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
 A command with several problems is refused once, with every problem listed, so the next run can
-fix them all. It exits 0 when it wrote or read, 1 when Dispatch or the flags refused it, and 2 on a
-usage error such as an unknown command.
+fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
+exits 2 on a usage error, such as an unknown command or flags it refused before any request.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -109,6 +110,9 @@ dispatch message --issue LEGION-1 --body-file - <<'EOF'
 Shipped in owner/repo#7.
 EOF
 ```
+
+Only one flag of a call may read stdin. The command refuses `--body -`, and its refusal names
+`--body-file -`.
 
 ## AskGate reviews each write
 
@@ -192,9 +196,9 @@ names a picture the session was already shown instead of sending it again, becau
 carries the session's history and Anthropic refuses one over 32 MB. `dispatch doc-read` always
 shows the picture, which is how an agent gets one back after compaction.
 
-Write every ask for a person reading on a phone who has not read the code. Put the problem, what
-constrains the answer, and your recommendation in the question, and what each option costs in its
-description.
+Write every ask so that a person who has not read the code answers it with no other reading. Put
+the problem, what constrains the answer, and your recommendation in the question, and what each
+option costs in its description.
 
 ## Documents
 
@@ -383,15 +387,21 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-It asks again only of a Dispatch that judges the key: one whose answer
-carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
-whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key and answers a repeat with the first answer, so the command never makes a write twice. When the
-write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too
-large to keep), the command exits 0 and says it was made: read it back to see it. When no attempt
-got an answer, the command says the write may or may not have taken effect: read it back before
-you run the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
-`dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
+Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
+one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
+last five minutes, whatever its status; any other would make a repeated write twice. An attempt
+that reached nothing (a refused connection, a credential whose trade goes on) is asked again
+without that check, since its repeat is no second write. Dispatch makes the write once per key and
+answers a repeat with the first answer, so the command never makes a write twice. When the write
+landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
+to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
+have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
+answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
+JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
+read it back before you run the command again, since a new command is a new key. Reads, and the
+`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
+once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
+it presented dead, and on an old build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

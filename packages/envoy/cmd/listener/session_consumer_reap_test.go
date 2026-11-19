@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // sessionConsumerReapRig is the listener's /v1 routes over the in-process server, with the
@@ -43,20 +44,18 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	waitForRegistry(t, registry)
 	now := &stateClock{}
-	sessions, err := session.OpenSessionRegistry(
-		client.Conn,
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(time.Hour),
 		session.WithSessionClock(now.Now),
 		session.WithSessionLiveWindow(time.Minute),
-		session.WithSessionGoneHorizon(2*time.Minute),
-	)
+		session.WithSessionGoneHorizon(2*time.Minute))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -64,13 +63,13 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 	waitForSessions(t, sessions)
 	logger := logging.NewWithWriter("test", io.Discard)
 	delivery, err := connectSessionDelivery([]string{url},
-		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), logger)
+		inactiveThresholdFor(sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), client, logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
 	delivery.relay = &recordingRelay{}
-	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0)
+	consumers, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -84,7 +83,7 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 // register posts sessionID's registration as its plugin's heartbeat does, so the listener creates
 // the session's consumer and writes its record, and returns the answer the session reads, whose
 // delivery field names what it is delivered to through.
-func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) subscribeResponse {
+func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) listenerwire.SubscribeResponse {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	body := strings.NewReader(consumerRegistration(sessionID, "e"))
@@ -92,7 +91,7 @@ func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) subs
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("register %s: status %d: %s", sessionID, recorder.Code, recorder.Body.String())
 	}
-	var answer subscribeResponse
+	var answer listenerwire.SubscribeResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer to %s's registration: %v: %s", sessionID, err, recorder.Body.String())
 	}

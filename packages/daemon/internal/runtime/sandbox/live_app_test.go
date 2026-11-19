@@ -49,7 +49,7 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 // and pick the directory a command names, not which App a role writes as; Stage 4b's daemon
 // hands each role its own.
 func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	return appauth.GitHubCredential(t.apps, implementApp{t.apps}, t.repositories, ghrepo.Renames{},
+	return appauth.GitHubCredential(implementApp{t.apps}, t.repositories, ghrepo.Renames{},
 		t.installed, t.left, slog.Default())(ctx, claim.RoleImplementer, repo)
 }
 
@@ -58,7 +58,7 @@ func (t implementTokens) Credential(ctx context.Context, _ claim.Role, repo ghre
 // pod's refresh asks for the owner its Secret records. It mints as the implement App, the one App
 // the harness holds, where the daemon's own mints as the review App (implementApp).
 func (t implementTokens) ControllerCredential(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-	return appauth.ControllerCredential(implementApp{t.apps}, implementApp{t.apps}, t.repositories, ghrepo.Renames{},
+	return appauth.ControllerCredential(implementApp{t.apps}, t.repositories, ghrepo.Renames{},
 		t.installed, t.left, slog.Default())(ctx, defaultOwner)
 }
 

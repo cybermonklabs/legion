@@ -2,8 +2,13 @@ import { expect, test } from "bun:test"
 import { chmodSync, writeFileSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
-import { createEnvoyClient, type EnvoyClient } from "@legion/envoy-client/transport"
+import {
+  createEnvoyClient,
+  type EnvoyClient,
+  UNRESPONSIVE_RULE,
+} from "@legion/envoy-client/transport"
 import { captureEnvironment } from "@legion/test-fixtures/environment"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server } from "bun"
 import {
@@ -96,6 +101,7 @@ test("sends Envoy messages through the shared transport", async () => {
     recipient: "ses_receiver",
     recipient_state: "live",
     confirmed: true,
+    state: "connected",
   })
 })
 
@@ -142,14 +148,34 @@ test("lists the unresponsive sessions too, each with its state and last_seen", a
   ])
 })
 
-test("renders a kept role publish as a success that says no session holds the role yet", async () => {
-  // Nobody holds the role, so the listener kept the message and answered 202 (INFRA-839). The
-  // tool says so in the same words the Oh My Pi plugin uses, and names no holder: the holder a
-  // resolution read never received the message.
+// No live session holds the role, so the listener kept the message for one hour and answered 202
+// with kept_until, the end of that hour (dispatch://INFRA-2846, R3). The tool says until when the
+// copy waits and, since this server always names its own session as the source, that a message
+// comes if no session takes it by then, in the same line the Oh My Pi plugin shows. A holder that
+// is not live is named with its state, and a listener of an earlier release names no time.
+test("a kept publish says until when it is kept", async () => {
+  const keptUntil = Date.UTC(2026, 10, 15, 10, 30)
+  const until = "2026-11-15T10:30:00.000Z"
+  const lastSeen = Date.UTC(2026, 10, 15, 9, 20)
+  // What the listener answers for each role, read from the topic a publish names.
+  const answers: Record<string, Record<string, unknown>> = {
+    "notifications.role.legion-architect": { kept_reason: "unclaimed", kept_until: keptUntil },
+    "notifications.role.reviewer": {
+      kept_reason: "holder_lapsed",
+      kept_until: keptUntil,
+      holder: "ses_reviewer",
+      holder_state: "unresponsive",
+      last_seen: lastSeen,
+    },
+    // A listener of an earlier release: kept, and no time named.
+    "notifications.role.controller": { kept_reason: "unclaimed" },
+  }
+  const published: Record<string, unknown>[] = []
   const client = createEnvoyClient({
     baseUrl: "http://envoy.test",
     fetch: async (_request, init) => {
       const body = JSON.parse(String(init?.body)) as { readonly topic: string }
+      published.push(body)
       return new Response(
         JSON.stringify({
           event_id: "evt-kept",
@@ -157,12 +183,12 @@ test("renders a kept role publish as a success that says no session holds the ro
           source_event_id: "agent.ses_claude.evt-kept",
           source_session: "ses_claude",
           topic: body.topic,
-          dedupe_key: "agent.legion-architect.evt-kept",
+          dedupe_key: "agent.role.evt-kept",
           issued_at: 1,
           payload_summary: "the worker is stalled",
           trace_id: "trace-kept",
           kept: true,
-          kept_reason: "unclaimed",
+          ...answers[body.topic],
         }),
         { status: 202, headers: { "Content-Type": "application/json" } },
       )
@@ -174,17 +200,58 @@ test("renders a kept role publish as a success that says no session holds the ro
     session: sessionWith([]),
     clientInstanceID: INSTANCE,
   }
+  const publish = (topic: string) =>
+    executeEnvoyTool(runtime, "envoy_publish", { topic, message: "the worker is stalled" })
 
-  const result = (await executeEnvoyTool(runtime, "envoy_publish", {
-    topic: "notifications.role.legion-architect",
-    message: "the worker is stalled",
-  })) as { readonly message: string; readonly kept: boolean; readonly kept_reason: string }
-
-  expect(result.message).toBe(
-    "published evt-kept. Envoy kept it for the role: no session holds it yet, and the message waits for the session that claims it next.",
+  // The tool's description names the hour, kept_until and the message that follows it.
+  const description = channelToolDefinitions().find(
+    ({ name }) => name === "envoy_publish",
+  )?.description
+  expect(description).toContain("The listener then keeps the message for one hour.")
+  expect(description).toContain("its kept_until is the time that hour ends")
+  expect(description).toContain(
+    "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late.",
   )
-  expect(result.kept).toBe(true)
-  expect(result.kept_reason).toBe("unclaimed")
+
+  expect(await publish("notifications.role.legion-architect")).toEqual({
+    message: `published evt-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`,
+    event_id: "evt-kept",
+    topic: "notifications.role.legion-architect",
+    kept: true,
+    kept_reason: "unclaimed",
+    kept_until: keptUntil,
+  })
+  expect(published[0]).toMatchObject({ source_session: "ses_claude" })
+
+  // A holder that is unresponsive: named with its state, with the warning that such a holder is
+  // not dead and that the sender starts no replacement for it.
+  const unresponsive = await publish("notifications.role.reviewer")
+  expect(unresponsive).toEqual({
+    message: `published evt-kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late. ${UNRESPONSIVE_RULE}`,
+    event_id: "evt-kept",
+    topic: "notifications.role.reviewer",
+    holder: "ses_reviewer",
+    holder_state: "unresponsive",
+    last_seen: lastSeen,
+    kept: true,
+    kept_reason: "holder_lapsed",
+    kept_until: keptUntil,
+  })
+  expect(unresponsive).toMatchObject({
+    message: expect.stringMatching(
+      /An unresponsive session is not dead.*Start no replacement for it/,
+    ),
+  })
+
+  // A listener of an earlier release names no time, and the line says kept with no time.
+  expect(await publish("notifications.role.controller")).toEqual({
+    message:
+      "published evt-kept. Envoy kept it for the role: no live session holds the role now. Envoy did not say until when it keeps it.",
+    event_id: "evt-kept",
+    topic: "notifications.role.controller",
+    kept: true,
+    kept_reason: "unclaimed",
+  })
 })
 
 test("the role a tool claims names the process claiming it on the wire", async () => {
@@ -348,7 +415,7 @@ test("a dispatch_* call is an unknown tool even with Dispatch configured, and re
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "test-token"
+    process.env["DISPATCH_TOKEN"] = fixtureSecret("dsp")
     const runtime: ChannelToolRuntime = {
       identity,
       client: {} as EnvoyClient,
@@ -445,3 +512,96 @@ test("envoy_sessions filters by the machine a session runs on and by the listene
   expect(await listed("devbox")).toEqual(["ses_on_devbox"])
   expect(await listed("other")).toEqual([])
 })
+
+/** One envelope, as the listener echoes it back to a send or a publish. */
+function envelope(topic: string): Record<string, unknown> {
+  return {
+    event_id: "evt-text",
+    source: "agent",
+    source_event_id: "agent.ses_claude.evt-text",
+    source_session: "ses_claude",
+    topic,
+    dedupe_key: "dedupe-text",
+    issued_at: 1,
+    payload_summary: "message",
+    trace_id: "trace-text",
+  }
+}
+
+/** A runtime whose listener answers every send and publish with `answer`. */
+function runtimeAnswering(answer: Record<string, unknown>): ChannelToolRuntime {
+  return {
+    identity,
+    client: createEnvoyClient({
+      baseUrl: "http://envoy.test",
+      fetch: async () => Response.json(answer),
+    }),
+    session: sessionWith([]),
+    clientInstanceID: INSTANCE,
+  }
+}
+
+test("tells the model its message was queued, never sent, when the target is stopped", async () => {
+  const runtime = runtimeAnswering({
+    ...envelope("notifications.agent.ses_receiver"),
+    recipient: "ses_receiver",
+    // A session with no entry but a record: the registry's state stays one of its three.
+    recipient_state: "gone",
+    state: "stopped",
+    last_seen: Date.UTC(2026, 10, 2, 9, 15, 0),
+  })
+
+  const result = await executeEnvoyTool(runtime, "envoy_send", {
+    session_id: "ses_receiver",
+    message: "ready",
+  })
+
+  expect(result).toEqual({
+    message:
+      "queued evt-text for ses_receiver: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message",
+    event_id: "evt-text",
+    recipient: "ses_receiver",
+    recipient_state: "gone",
+    confirmed: true,
+    state: "stopped",
+    last_seen: Date.UTC(2026, 10, 2, 9, 15, 0),
+  })
+})
+
+for (const published of [
+  {
+    counts: { recipients: 0, recipients_connected: 0 },
+    label: "no other session subscribes",
+    text: "published evt-text; no other session subscribes to notifications.team.test, so no other session gets it",
+  },
+  {
+    counts: { recipients: 3, recipients_connected: 2 },
+    label: "three other sessions get it",
+    text: "published evt-text to 3 other sessions (2 running now)",
+  },
+  {
+    counts: {},
+    label: "a listener that counts nobody",
+    text: "published evt-text.",
+  },
+]) {
+  test(`renders a publish the listener answered with ${published.label}`, async () => {
+    const runtime = runtimeAnswering({
+      ...envelope("notifications.team.test"),
+      ...published.counts,
+    })
+
+    const result = await executeEnvoyTool(runtime, "envoy_publish", {
+      topic: "notifications.team.test",
+      message: "broadcast",
+    })
+
+    // Strict, so a count the listener did not send is no key of the result at all.
+    expect(result).toStrictEqual({
+      message: published.text,
+      event_id: "evt-text",
+      topic: "notifications.team.test",
+      ...published.counts,
+    })
+  })
+}

@@ -2,7 +2,10 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -29,22 +32,25 @@ type RebuildReport struct {
 // Every refusal comes before the first write: a room resident in this server or in another
 // envoy-dispatch process (a holds query, roomQueries.ask), a history that loads, a history another
 // rebuild or an append moved past the one this rebuild loaded (RebuildTx), a closed issue (for
-// supplied markdown, which changes the document), and markdown that is not a Proof document, drops
-// an open ask block, introduces a block pointer at a block the attribute may not name
-// (refuseBlockPointers), or introduces a check block that breaks a rule of a check CI proves
-// (refuseCICheckBlocks), both against the latest version. Supplied markdown is caller text: it is
-// parsed as an upload is, and its rendering is weighed as a new document's is (SeedText). The
-// latest version is the server's own rendering of the document, read back as every stored
-// rendering is (pmdoc.ParseRendering), so a document whose version is past what one write may make
-// - stored before that bound, or grown past it by browser edits - still rebuilds. Supplied
-// markdown that differs from the latest version is a document change, so the same transaction
-// writes its version, which moves the open approval request to it (writeVersionTx,
-// MoveApprovalAsk); the VersionResult is what the caller's artifact.version event names. A rebuild
-// of a closed issue's document from its latest version writes the close's ask states into the tree
-// it seeds, as the close's final sweep writes them into the issue's other documents
-// (closedIssueAskState), and marks the document owing the settlement those writes leave owed, so no
-// ask block the close withdrew reads open again once the rebuild commits. A failure anywhere rolls
-// the whole rebuild back with the transaction. The room refuses loads until that transaction ends
+// supplied markdown, which changes the document), a latest version holding an element this build
+// does not know (ErrDocNewerContent, as every read of it answers), and markdown that is not a
+// Proof document, drops an open ask block, introduces a block pointer at a block the attribute
+// may not name (refuseBlockPointers), or introduces a check block that breaks a rule of a check CI
+// proves (refuseCICheckBlocks), both against the latest version. Supplied markdown is caller
+// text: it is parsed as an upload is, and its rendering is weighed as a new document's is
+// (SeedText). The latest version is the server's own rendering of the document, read back as
+// every stored rendering is (pmdoc.ParseRendering), so a document whose version is past what one
+// write may make - stored before that bound, or grown past it by browser edits - still rebuilds,
+// and so does one holding an element this build reads but may not create yet, which the seed puts
+// back rather than creates (encodeDocumentTreeHolding). Supplied markdown that differs from the
+// latest version is a document change, so the same transaction writes its version, which moves
+// the open approval request to it (writeVersionTx, MoveApprovalAsk); the VersionResult is what
+// the caller's artifact.version event names. A rebuild of a closed issue's document from its
+// latest version writes the close's ask states into the tree it seeds, as the close's final sweep
+// writes them into the issue's other documents (closedIssueAskState), and marks the document
+// owing the settlement those writes leave owed, so no ask block the close withdrew reads open
+// again once the rebuild commits. A failure anywhere rolls the whole rebuild back with the
+// transaction. The room refuses loads until that transaction ends
 // (Ledger.holdRebuild): a load before the commit would read the old history, and a second rebuild
 // would preflight against it. That is also why the close's states go into the seed rather than
 // through a live write after it (WriteIssueAskStates): such a write's fork is refused while the
@@ -76,7 +82,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// refused (ErrRoomBehindHead) and lead to the same close, and the reload reads the rebuilt
 	// document.
 	if s.srv.GetDoc(artifactID) != nil {
-		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in this server; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
+		return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenHere, askAfterTwoMinutes)
 	}
 	answers, _, err := s.roomQueries.ask(ctx, tx, artifactID, roomQueryHolds)
 	if err != nil {
@@ -84,18 +90,46 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	for _, answer := range answers {
 		if answer.holds {
-			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s is live in another server process; close its editors and retry two minutes later, or replace it from markdown instead", ErrDocumentLive, artifactID)
+			return RebuildReport{}, VersionResult{}, liveRebuildRefusal(ctx, tx, artifactID, roomOpenElsewhere, askAfterTwoMinutes)
 		}
 	}
-	loaded, err := s.persistence.Load(ctx, artifactID)
+	// The head of the history the refusal below judges. RebuildTx replaces that history only
+	// while the head is still this one, and Load answers no head when it fails, which is the
+	// case this route exists for, so it is read here instead - as Load reads it, and before the
+	// load, so an append that lands between the two leaves the head behind the history judged
+	// and the rebuild refused rather than let through over a history nothing judged.
+	loadedHead, err := s.persistence.Head(ctx, artifactID)
 	if err != nil {
+		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: read the document's head before rebuild: %v", ErrServiceUnavailable, err)
+	}
+	// The pre-load is only how a history that loads, which this refuses, is told from one that
+	// does not: the rebuild's source is the latest saved version or the supplied markdown, never
+	// the stored updates. So a load that fails because the history does not load is that same
+	// answer, and the rebuild goes on, as it does for a history that loads into nothing a reader
+	// can use. That is every ErrDocumentUnloadable: a state that does not decode, and one ygo
+	// refuses from its clocks, which will not even merge, so Load itself fails rather than
+	// returning an update validateUpdate can refuse (mergedThrough). The load error is then what
+	// the report names as the history's fault. Any other load failure is the store's, not the
+	// document's, and the caller may retry past it.
+	var validationErr error
+	loaded, err := s.persistence.Load(ctx, artifactID)
+	switch {
+	case errors.Is(err, ErrDocumentUnloadable):
+		validationErr = err
+	case err != nil:
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: load document before rebuild: %v", ErrServiceUnavailable, err)
+	default:
+		validationErr = validateUpdate(loaded.Update, s.maxPendingItems)
+		loadedHead = loaded.Version
 	}
-	validationErr := validateUpdate(loaded.Update, s.maxPendingItems)
 	if validationErr == nil {
-		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: document %s", ErrDocumentLoads, artifactID)
+		latest, err := savedVersionNumber(ctx, tx, artifactID)
+		if err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		return RebuildReport{}, VersionResult{}, fmt.Errorf("%w (document %s, latest saved version %d)", ErrDocumentLoads, artifactID, latest)
 	}
-	// The owner row before the room lock the write below takes, as every writer that takes both
+	// The owner's lock before the room lock the write below takes, as every writer that takes both
 	// does (lockDocumentRoom). Held, it also keeps the open asks the replacement must keep, and
 	// the approval request the version moves, from changing under this transaction.
 	owner, open, err := lockArtifactOwner(ctx, tx, artifactID)
@@ -106,9 +140,23 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
-	var tree *pmdoc.Node
+	// stored is the latest version's own tree, as the version holds it, when the rebuild seeds from
+	// that version: the seed puts back what the version holds, so an element this build reads and
+	// may not create yet is held already, not created (pmdoc.UpdateHolding). It is nil for supplied
+	// markdown, which creates every element it holds.
+	var tree, stored *pmdoc.Node
 	if markdown == nil {
-		tree, err = uploadedInput(pmdoc.ParseRendering(latest.markdown))
+		// The version's markdown is the server's own, not the caller's, so an element this build
+		// does not know in it is newer content, as every read of the document answers it, not
+		// invalid markdown.
+		parsed, parseErr := pmdoc.ParseRendering(latest.markdown)
+		if newer := documentSchemaError(parseErr); errors.Is(newer, ErrDocNewerContent) {
+			return RebuildReport{}, VersionResult{}, newer
+		}
+		// uploadedInput copies parsed, so the close's states written into tree below leave
+		// stored as the version holds it.
+		tree, err = uploadedInput(parsed, parseErr)
+		stored = parsed
 	} else {
 		if !open {
 			return RebuildReport{}, VersionResult{}, ErrIssueClosed
@@ -137,15 +185,16 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, &ErrInvalidAskBlock{Reason: err}
 	}
 	// A closed issue's document shows its asks as the close left them, and the tree read from the
-	// latest version need not: settlement, which versions a document, runs on no closed issue, so
-	// that version can predate the close, and the close's live writes to the document either never
-	// reached it, its history not loading then, or are in the history this replaces. So the
-	// close's final sweep is written into the tree here (closedIssueAskState): every resolved ask's
-	// block and copy, and every answered ask's copy, from the rows as they stand under the issue's
-	// row this transaction holds, and every readable ask block with no ask row marked resolved. The
-	// ask rows are taken before RebuildTx takes the document's advisory lock, the order the close's
-	// own write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt
-	// document reads as the issue's other documents do.
+	// latest version need not: no settlement versions a document whose history does not load,
+	// the one history a rebuild replaces, so that version can predate the close, and the close's
+	// live writes to the document either never reached it, its history not loading then, or are
+	// in the history this replaces. So the close's final sweep is written into the tree here
+	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
+	// from the rows as they stand under the issue's owner lock this transaction holds, and every
+	// readable ask block with no ask row marked resolved. The ask rows are taken before RebuildTx
+	// takes the document's advisory lock, the order the close's own write takes them in
+	// (WriteIssueAskStates). Once this transaction commits, the rebuilt document reads as the
+	// issue's other documents do.
 	var closedStates *issueAskStateWrites
 	if !open {
 		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true)
@@ -178,16 +227,16 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}
-	seed, err := encodeDocumentTree(tree)
+	seed, err := encodeDocumentTreeHolding(tree, stored)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, fmt.Errorf("seed rebuilt document tree: %w", err)
 	}
 
 	// RebuildTx replaces the history only if its head is still the one loaded above, which is the
 	// history validated as one that cannot load: a second rebuild of the document on another
-	// process that loaded the same history waits on the owner row above until this one commits,
+	// process that loaded the same history waits on the owner lock above until this one commits,
 	// then finds the head moved and is refused.
-	report, err := s.persistence.RebuildTx(ctx, tx, artifactID, loaded.Version, seed)
+	report, err := s.persistence.RebuildTx(ctx, tx, artifactID, loadedHead, seed)
 	if err != nil {
 		return RebuildReport{}, VersionResult{}, err
 	}
@@ -197,11 +246,13 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		// markdown is nil here: a closed issue refuses supplied markdown above. The seed differs
 		// from the latest version by the close's states, as each of the issue's documents the
 		// close wrote differs from its own, so it owes the settlement those writes leave owed
-		// (updateOwedStatement): none runs while the issue is closed, and the one its reopen runs
-		// versions the document and indexes, as new open asks, the blocks marked resolved here
-		// with no ask row. RebuildTx holds the document's advisory lock, which the mark is ordered
-		// by. The writes credit no one, as the close's do (the zero owedUpdates): no pending author
-		// is added, and the latest edit source the row names is kept.
+		// (updateOwedStatement). That settlement versions the document whether or not the issue
+		// is closed. While the issue is closed it keeps each block marked resolved here with no
+		// ask row resolved and opens no ask for it (reconcileAskBlocks), and a settlement after
+		// the reopen indexes it as a new open ask. RebuildTx holds the document's advisory lock,
+		// which the mark is ordered by. The writes credit no one, as the close's do (the zero
+		// owedUpdates): no pending author is added, and the latest edit source the row names is
+		// kept.
 		owed, err := updateOwedStatement(artifactID, owedUpdates{})
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
@@ -239,4 +290,38 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	report.SourceVersion = written.version.Number
 	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes}, nil
+}
+
+// The causes and next steps of the rebuild refusals liveRebuildRefusal builds.
+const (
+	roomOpenHere       = "is open in this Dispatch process, or its last editor left it less than two minutes ago"
+	roomOpenElsewhere  = "is open in another Dispatch process, or its last editor left it less than two minutes ago"
+	askAfterTwoMinutes = "Stop. Ask a person whether to rebuild the document after two minutes"
+	readAgainFirst     = "Another rebuild may already have repaired the document: read it again, and ask a person whether to rebuild it only if it still does not load"
+)
+
+// liveRebuildRefusal is every ErrDocumentLive refusal of a rebuild that names what a rebuild would
+// discard: why Dispatch refused (cause), the latest saved version a rebuild from it would go back
+// to, read on tx, and what the caller does next (next). One builder, so no refusal keeps advice
+// another has dropped. The one ErrDocumentLive refusal it does not build is "already being
+// rebuilt" (RebuildDocument), which says only that a rebuild is running and offers no repair.
+func liveRebuildRefusal(ctx context.Context, tx pgx.Tx, artifactID, cause, next string) error {
+	latest, err := savedVersionNumber(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: document %s %s, so Dispatch refused the rebuild. A rebuild from the latest saved version, %d, discards every edit made after it. %s",
+		ErrDocumentLive, artifactID, cause, latest, next)
+}
+
+// savedVersionNumber is the number of artifactID's latest saved version, which a refused rebuild
+// names: a rebuild discards every edit made after it.
+func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int, error) {
+	var number int
+	if err := tx.QueryRow(ctx, `
+		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
+	`, artifactID).Scan(&number); err != nil {
+		return 0, fmt.Errorf("read latest document version number: %w", err)
+	}
+	return number, nil
 }

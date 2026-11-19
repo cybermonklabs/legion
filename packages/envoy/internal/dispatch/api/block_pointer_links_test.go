@@ -50,7 +50,13 @@ func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 	requireEdgeSources(t, "links to r1", graphEdges(t, handler, url.Values{"to": {r1}}).Edges, "serves block "+c1)
 	requireEdgeSources(t, "serves links to r1", graphEdges(t, handler, url.Values{"to": {r1}, "kind": {"serves"}}).Edges, "serves block "+c1)
 	requireEdgeSources(t, "mentions of r1", graphEdges(t, handler, url.Values{"to": {r1}, "kind": {"mentions"}}).Edges)
-	expectRefusal(t, "an unknown kind", graphRequest(t, handler, url.Values{"to": {r1}, "kind": {"nope"}}), http.StatusBadRequest, "INVALID_KIND")
+	// A kind no build of this fleet emits is listed in unknown_kinds rather than refused, as a
+	// newer build's `block[]` attribute name would be during a release.
+	unknown := graphEdges(t, handler, url.Values{"to": {r1}, "kind": {"nope"}})
+	requireEdgeSources(t, "an unknown kind", unknown.Edges)
+	if !reflect.DeepEqual(unknown.UnknownKinds, []string{"nope"}) {
+		t.Fatalf("an unknown kind: unknown_kinds = %q, want [nope]", unknown.UnknownKinds)
+	}
 
 	atR1 := 0
 	for _, edge := range graphEdges(t, handler, url.Values{"to": {specRef}}).Edges {
@@ -126,6 +132,51 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 		"serves block "+c1, "supports block "+c1)
 	if version := servesVersion(); version != 1 {
 		t.Fatalf("the serves edge was created at version %d after the prose went, want still 1", version)
+	}
+}
+
+// A block[] attribute links its typed block to each distinct target it names, once, under the
+// attribute's name, and makes no mentions link for those values, though each value is written in
+// the block's opening line and the extraction finds it there as a mention too. A value repeated as
+// written is refused before it is stored (pmdoc.ParseBlockPointerValue), so one target is named
+// twice by an unpinned and a pinned value, which refs.pointerPairs counts as one target. That case
+// comes first, on a claim with no link yet: two equal pairs there are one insert writing one new
+// row twice, which the store refuses, while against a link already stored they change nothing.
+func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
+	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "ACME")
+	issue := createSpecIssue(t, handler, "ACME", ":::requirement{#r1}\nA requirement.\n:::\n\n:::requirement{#r2}\nAnother requirement.\n:::\n")
+	specRef := "dispatch://" + issue.Key + "/spec"
+	r1, r2 := specRef+"#b-r1", specRef+"#b-r2"
+	r1Node, r2Node := issue.Key+"/spec#r1", issue.Key+"/spec#r2"
+	c1 := issue.Key + "/checks-md#c1"
+
+	requireRows := func(stage string, want ...string) {
+		t.Helper()
+		var got []string
+		for _, row := range readBlockRefs(t, database, readChecks(t, database, issue.Key).ID) {
+			if row.BlockID == "c1" {
+				got = append(got, row.Kind+" "+row.ToID)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: c1's block_refs rows = %q, want %q", stage, got, want)
+		}
+	}
+
+	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1+" "+r1+"@v1")); response.Code != http.StatusCreated {
+		t.Fatalf("upload the claim that names r1 unpinned and pinned: status=%d body=%s", response.Code, response.Body.String())
+	}
+	requireRows("one target named twice", "serves "+r1Node)
+	requireEdgeSources(t, "one target named twice: links to r1", graphEdges(t, handler, url.Values{"to": {r1}}).Edges, "serves block "+c1)
+
+	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1+" "+r2)); response.Code != http.StatusCreated {
+		t.Fatalf("upload the claim that names two targets: status=%d body=%s", response.Code, response.Body.String())
+	}
+	requireRows("two targets", "serves "+r1Node, "serves "+r2Node)
+	for _, target := range []string{r1, r2} {
+		requireEdgeSources(t, "two targets: links to "+target, graphEdges(t, handler, url.Values{"to": {target}}).Edges, "serves block "+c1)
 	}
 }
 

@@ -33,7 +33,7 @@ func waitingLine(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var line []string
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, catchUpClock())
+		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, nil, catchUpClock())
 		if err != nil {
 			return err
 		}
@@ -61,7 +61,7 @@ func waitingLine(t *testing.T, pool *store.Pool) []string {
 // (finishCatchUp, intake.CatchUpApplied). The line is an answered root whose architect has still
 // to write its spec, which takes a slot, and behind it a root that never ran. With one slot
 // between them, a pass that passed the held root over would hand the root behind it a slot that
-// is never taken back.
+// no pass takes back to restore the order.
 func TestTheBootCatchUpHoldKeepsItsRootsPlaceOnTheRuntime(t *testing.T) {
 	answered := catchUpClock().Add(-time.Hour)
 	client := &awaitingDispatch{}

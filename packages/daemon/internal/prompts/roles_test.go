@@ -302,11 +302,11 @@ func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 
 // GitHub's default squash message, `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every
 // commit message of a pull request, which put this tree's Dispatch keys, `Omp-Session:` trailers
-// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2). So the merger
-// writes the message itself, and on the one path that cannot — `enqueuePullRequest` takes no
-// message — it reads the repository's setting first and stops rather than enqueueing under a
-// setting that joins them. The command's shape is the instruction: a merge that drops `--subject`
-// or `--body ”` lets GitHub write the message again.
+// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2), and would put its
+// `Legion-Role:` trailers there too. So the merger writes the message itself, and on the one path
+// that cannot — `enqueuePullRequest` takes no message — it reads the repository's setting first
+// and stops rather than enqueueing under a setting that joins them. The command's shape is the
+// instruction: a merge that drops `--subject` or `--body ”` lets GitHub write the message again.
 func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{

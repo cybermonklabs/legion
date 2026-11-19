@@ -18,10 +18,12 @@ If the deployment instructions (the `# Deployment instructions` part of your sys
 `oracle` task agent), send your question to it first with
 `envoy_publish(topic="notifications.role.<name>", expects_reply="required")`, because that role may
 already hold the answer. Then end your turn: the reply arrives as a delivery that starts your next
-one, and research before it duplicates the role's work. If no session holds the role, the publish
-answers that Envoy kept the question for the session that claims the role next, which is handed it
-once within the hour. Nobody can answer you now, so put that kept answer in your output and
-research at once rather than wait for it.
+one, and research before it duplicates the role's work. If no live session holds the role, the
+publish answers that Envoy kept the question for one hour, until its `kept_until`, and the next
+session to hold the role live in that hour is handed it once. If none does, Envoy drops it, and
+when your publish named your session, sends your session a message that names it, unless it
+dropped it more than an hour late. Nobody can answer you now, so put that kept answer in your
+output and research at once rather than wait for it.
 
 Run steps 1 and 2, in parallel if you choose, since neither needs the other's result. Run step 3
 when the question names a library, and step 4 when it asks for general practice, each only when
@@ -38,7 +40,7 @@ answer from what came back, never from the dispatch.
 | 3. Framework docs | `web_search`, then `read` the library's official docs page | [library] docs [topic] |
 | 4. External practices | `web_search`, then `read` what the tool's or standard's maintainer publishes (docs, RFC, changelog); give its URL | current practice for [topic] |
 
-Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If another file lists that path under its front-matter `supersedes:` key (on that line or as a list item below it), use that file instead; if one has a line `Extends docs/solutions/<hit path>`, read both. Nothing else reconciles these links.
+Before you rely on a step 1 hit, `grep` `docs/solutions/` for its path. If another file lists that path under its front-matter `supersedes:` key (on that line or as a list item below it), use that file instead; if one has a line `Extends docs/solutions/<hit path>`, read both. The "Documentation" section of the repository's `AGENTS.md` names the pages whose rule a later rule replaces: for a hit on one of them, follow the rule that section names. Nothing else reconciles these links.
 
 ## Output
 

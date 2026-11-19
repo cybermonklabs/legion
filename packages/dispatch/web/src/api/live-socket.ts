@@ -7,8 +7,9 @@
 // (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
 // timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
 // change it applied with the revisions it holds and the event feed from the last event it applied,
-// and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age
-// (close 4001); the page reopens at once and shows nothing of it.
+// and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age,
+// or, behind Identity-Aware Proxy, once the assertion its upgrade carried expires (close 4001); the
+// page reopens at once, with a fresh assertion, and shows nothing of it.
 import { type AgentStreamResponder, LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 import { hashKey, type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
@@ -70,7 +71,8 @@ const SIGN_IN_CHECK_MS = 30_000;
 const SERVICE_RESTART = 1012;
 /** Dispatch closes a socket with this code once its caller no longer resolves (signed out). */
 const CALLER_GONE = 1008;
-/** The code the page closes a silent socket with before it opens another. */
+/** The code the page closes a socket with before it opens another: a silent one, or one whose
+ *  process refused a frame of a subscription the page holds. */
 const REPLACED = 4000;
 
 /** The status the matching GET route answers each error frame's code with, so the page's error
@@ -414,23 +416,38 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     }
     switch (sub.kind) {
       case "delivery":
-        return failDelivery(sub, frame);
+        failDelivery(sub, frame);
+        break;
       case "agent":
         // Dispatch holds no subscription it refused, so the page lets it go without telling it.
         remove(sub, false);
-        return sub.handlers.onUnavailable(frame.code, frame.message);
+        sub.handlers.onUnavailable(frame.code, frame.message);
+        break;
       case "events":
         // Dispatch holds no subscription it refused either, but the page never gives the feed up:
         // it is sent again after a backoff of its own, and its next start reports the gap.
         console.error("live socket: Dispatch refused the event feed", frame);
         sub.gap = true;
         resendLater(sub);
+        break;
     }
+    // While a release rolls out, the process this socket reached can be of an older build that
+    // cannot serve a frame this page sends (a frame type or a view kind it does not know). Each
+    // reconnect may reach another process, so the page closes the socket and reconnects through
+    // the lost socket's backoff, and the reconnect subscribes again.
+    if (frame.code === "INVALID_FRAME") refused();
+  };
+
+  /** Closes the socket a process refused a frame on and reconnects as a lost socket does, with
+   *  its backoff. */
+  const refused = () => {
+    if (socket === null) return;
+    letGo();
+    retryLater();
   };
 
   const receive = (data: unknown) => {
     lastFrameAt = Date.now();
-    attempt = 0;
     let parsed: unknown;
     try {
       parsed = JSON.parse(String(data));
@@ -445,6 +462,9 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       return;
     }
     const frame = parsed as LiveServerFrame;
+    // A frame the process refused does not show that this process serves the page, so the backoff
+    // keeps growing while each reconnect meets such a process.
+    if (frame.type !== "error" || frame.code !== "INVALID_FRAME") attempt = 0;
     switch (frame.type) {
       case "heartbeat":
         return;
@@ -587,8 +607,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     const wasOpen = isOpen;
     detach();
     if (wasOpen && code === LIVE_SOCKET_MAX_AGE_CLOSE) {
-      // Dispatch rotated a socket that reached its age: every subscription resumes on the next,
-      // nothing was missed, and nothing shows.
+      // Dispatch rotated a socket that reached its age, or whose upgrade's assertion expired: every
+      // subscription resumes on the next, nothing was missed, and nothing shows.
       open();
       return;
     }

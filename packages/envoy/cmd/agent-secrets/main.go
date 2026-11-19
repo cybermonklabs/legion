@@ -4,9 +4,10 @@
 // AGENT_SECRETS_HELPER_SOCK, to sign on its behalf (helper mode). It enrolls a runtime (box
 // enrollment only, through the local helper — see cmdEnrollHelper below), requests and reads
 // back secret grants, and — in its most common shape — requests one or more secrets and execs a
-// command with them in its environment. A person manages the agent secrets themselves with the
-// secret forms (secret.go), which call the broker's own store (AWS Secrets Manager or GCP Secret
-// Manager) under the person's own cloud sign-in and then ask the broker to reread what they wrote.
+// command with them in its environment. The agent secrets themselves are managed with the secret
+// forms (secret.go), which call the broker's own store (AWS Secrets Manager or GCP Secret Manager)
+// under the cloud credential their environment gives them, the store's own IAM deciding what that
+// credential may do, and then ask the broker to reread what they wrote.
 //
 // Every answer and every refusal about a secret names where it came from (source.go): the broker
 // AGENT_SECRETS_URL names, and the kind of that broker's store, where its settings give one. This
@@ -15,8 +16,8 @@
 // execs — the names it injected and their source, never a value — and the status forms print
 // that source beside what they report. None of those lines names the broker's host or the store's
 // account, region or project, since they are quoted wherever an agent's output is; the secret
-// forms, which a person runs under their own cloud sign-in, name the account or project they
-// write to. No form prints a credential AGENT_SECRETS_URL carries (internal/redact).
+// forms, which call the store itself, name the account or project they read and write. No form
+// prints a credential AGENT_SECRETS_URL carries (internal/redact).
 //
 //	agent-secrets keygen --out <dir>
 //	agent-secrets enroll --helper --runtime-id <id> --thumbprint <tp> [--session-id <id>]
@@ -26,7 +27,7 @@
 //	agent-secrets grant list [--json]|revoke <grant_id>
 //	agent-secrets login
 //	agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]
-//	agent-secrets identity
+//	agent-secrets identity [--source]
 //	agent-secrets renew [--pod-token-file FILE]
 //	agent-secrets request NAME... [--reason TEXT] [--ttl DURATION] [--json]
 //	agent-secrets status <request_id> [--json]
@@ -38,14 +39,20 @@
 //	agent-secrets secret list|show|create|set|retag|delete|restore ...
 //	agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]
 //
-// Environment: AGENT_SECRETS_URL (the broker's base URL) and, for every session-authenticated
-// subcommand, either AGENT_SECRETS_KEY_DIR (an agent box or pod's key.pem and enrollment, the
-// two files keygen and enroll write) or AGENT_SECRETS_HELPER_SOCK (a machine session's
-// agent-secrets-helper socket, joined by `agent-secrets register`). When unset, each falls back
-// to its launcher's default path, $XDG_RUNTIME_DIR/agent-secrets and the helper socket inside it,
-// and a default counts only when its file is there (identity.go). AGENT_SECRETS_ENROLL_WAIT (a
-// duration, default 20s) bounds how long a call waits while a box's launcher is still enrolling
-// it. AGENT_SECRETS_APPROVE_URL (Dispatch's origin) makes `machine login` print the Dispatch page
+// Environment: AGENT_SECRETS_URL (the broker's base URL). Every session-authenticated subcommand
+// takes this process's broker identity from the first of four sources that has one (chain.go):
+// AGENT_SECRETS_KEY_DIR (an agent box or pod's key.pem and enrollment, the two files keygen and
+// enroll write), a person's `agent-secrets login` sign-in, AGENT_SECRETS_HELPER_SOCK (a machine
+// session's agent-secrets-helper socket, joined by `agent-secrets register`) for a caller inside
+// a session it registered, and the machine's own cloud identity, found with no setting from the
+// exchange audiences the broker answers. When unset, the key dir and the socket fall back to
+// their launcher's default path, $XDG_RUNTIME_DIR/agent-secrets and the helper socket inside it,
+// and a default counts only when its file is there (identity.go). A process started with no
+// environment of its own (a systemd unit, a cron job) reads the broker's address, the sign-in
+// client and the machine identity settings from ~/.config/agent-secrets/config, where a variable
+// that is set wins (config.go). AGENT_SECRETS_ENROLL_WAIT (a duration, default 20s) bounds how
+// long a call waits while a box's launcher is still enrolling it. AGENT_SECRETS_APPROVE_URL
+// (Dispatch's origin) makes `machine login` print the Dispatch page
 // where a person types its code, and nothing else: a pending secret request (request, status, the
 // exec form's wait) names the approver the broker names, and the record's page on the secrets
 // broker that the broker's own answer carries as approve_url. The exec form's child keeps
@@ -63,13 +70,14 @@
 // that hold a launcher's proof-signing key). One runtime enrols itself: a Kubernetes pod an
 // operator launches by hand (`enroll --pod`, pod.go). It holds no credential a person installed;
 // the projected service-account token its own kubelet mounts is what the broker trusts instead,
-// so it needs no helper, no launcher and no approval. The secret forms
-// read AWS_PROFILE (or --profile) for the person's AWS sign-in against an AWS broker, or their
-// Google sign-in (their Application Default Credentials, or their gcloud login) against a GCP
-// one, and need no session identity at all. The machine and grant forms act under this machine's
-// login: the helper signs each call with its launcher credential (sign-launcher) for a process
-// it can show is outside every registered session's process tree, the operator's own shell, and
-// only for the broker's four operator routes.
+// so it needs no helper, no launcher and no approval. The secret forms sign in to the store with
+// the cloud credential the environment gives them, as the cloud's own tools read it - against an
+// AWS broker the AWS SDK's own chain (access keys, a web identity token file, AWS_PROFILE,
+// AWS_DEFAULT_PROFILE, the rest of its default chain), against a GCP one the first Google source
+// present (newGCPBackend) - and need no session identity at all. The machine and grant forms act
+// under this machine's login: the helper signs each call with its launcher credential
+// (sign-launcher) for a process it can show is outside every registered session's process tree,
+// the operator's own shell, and only for the broker's four operator routes.
 package main
 
 import (
@@ -92,18 +100,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Exit codes beyond 0 and 1 use BSD sysexits.h values where applicable. Every value returned by
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person to approve it
+	exitPending      = 75  // request still waiting for a person or for the model judge, or its status could not be read when --wait ran out
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -140,13 +150,13 @@ var commands = []command{
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
-		"End a grant as its operator or approver, under this machine's login, as Dispatch's Live\ngrants page does. Ending an automatic grant also makes its session ask before it gets those\nsecrets again."},
+		"End a grant. From your own shell, end it as its operator or approver, under this\nmachine's login, as Dispatch's Live grants page does; ending an automatic grant also\nmakes its session ask before it gets those secrets again. Inside a session, end a grant\ngiven to the broker identity this session signs as, as `revoke` does; any other grant is\nrefused NOT_YOURS."},
 	{"login", "agent-secrets login",
 		"Sign in on this machine as yourself: print the code to type in at Google, then record the\nsign-in at the secrets broker, which binds it to a box key this machine makes. Every session\nof yours on this machine then acts as you. A second person signs in beside you, and\nAGENT_SECRETS_PERSON then says which of you a session acts for."},
 	{"register", "agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]",
-		"Register this process with agent-secrets-helper as a machine session. With --exec, run COMMAND\nas this same process, so it and everything it starts are that session. With --session-id, the\nsession keeps one broker identity — and the requests and grants bound to it — across a restart\nof the helper or of the machine, rather than enrolling afresh as a new pid; run it again with\nthe id from inside a session that could not name one at launch."},
-	{"identity", "agent-secrets identity",
-		"Exit 0 when this process has a broker identity and 1 when it does not, asking the broker\nnothing."},
+		"Register a machine session with agent-secrets-helper. With --exec, register this process and\nrun COMMAND as this same process, so it and everything it starts are that session. Without\n--exec, name the session this process runs inside, or else the session launcher (omp) above\nit, never this process, which ends with the command; with neither, exit 1 and say to relaunch\nunder --exec. With --session-id, the session keeps one broker identity — and the requests and\ngrants bound to it — across a restart of the helper or of the machine, rather than enrolling\nafresh as a new pid; run it again with the id from inside a session that could not name one\nat launch."},
+	{"identity", "agent-secrets identity [--source]",
+		"Exit 0 when this process has a launcher's key dir or a helper session and 1 when it does not,\nasking the broker nothing. With --source, print the source of the broker identity a use\ncommand would take (key-dir, sign-in, helper or machine) and what it is, asking the broker\nand the metadata server where it must and registering nothing; exit 1 with every source's\nreason when none has one."},
 	{"--version", "agent-secrets --version",
 		"Print the release this binary was built as."},
 	{"renew", "agent-secrets renew [--pod-token-file FILE]",
@@ -166,15 +176,20 @@ var commands = []command{
 	{"sign", "agent-secrets sign --method M --url U [--enrollment E]",
 		"Print the proof this session would sign for one broker call, without making the call."},
 	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] [--github-token] -- <command> [args...]",
-		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing. Each GitHub App secret's NAME holds the JSON object of installations\nthe release makes; with --github-token it holds that one installation's token alone, which is\nthe form a command that sends the token to GitHub needs. --github-token needs --github-owner,\nand nothing runs when a release holds other than one installation, or when the grant releases\nno GitHub App token at all."},
+		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). The release\nnames <command>'s first 32 arguments, each cut to 256 bytes, and this call's --reason to the\nbroker, which logs them with the reason of the request the grant came of, each value of 8 bytes\nor more the release hands out and each credential of a known shape replaced by [redacted]. Any\nother secret on the command line, a shorter value among them, is logged as typed: pass secrets\nin the environment, never as arguments.\n--github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing. Each GitHub App secret's NAME holds the JSON object of installations\nthe release makes; with --github-token it holds that one installation's token alone, which is\nthe form a command that sends the token to GitHub needs. --github-token needs --github-owner,\nand nothing runs when a release holds other than one installation, or when the grant releases\nno GitHub App token at all."},
 }
 
 // usageEnvironment closes usage: the variables every form reads, and the exit codes.
 const usageEnvironment = `
-environment:
+environment (a process given none of the AGENT_SECRETS_URL, AGENT_SECRETS_SIGNIN_* and
+AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
+~/.config/agent-secrets/config, KEY=value lines; a variable that is set wins):
   AGENT_SECRETS_URL          the broker's base URL; every form that calls the broker needs it
-  AGENT_SECRETS_KEY_DIR      an agent box's or pod's key.pem and enrollment
-                             (default $XDG_RUNTIME_DIR/agent-secrets, used when key.pem is there)
+  AGENT_SECRETS_KEY_DIR      an agent box's or pod's key.pem and enrollment, the first source of
+                             a session form's broker identity; then a person's sign-in, then
+                             the helper for a caller in its session, then this machine's own
+                             identity (default $XDG_RUNTIME_DIR/agent-secrets, used when
+                             key.pem is there)
   AGENT_SECRETS_HELPER_SOCK  a machine session's agent-secrets-helper socket
   AGENT_SECRETS_ENROLL_WAIT  how long a call waits while a box's launcher is still enrolling it
                              (default 20s)
@@ -198,13 +213,17 @@ environment:
                              where a person signs in (default https://accounts.google.com); a dev
                              stack names its own issuer
   AGENT_SECRETS_MACHINE_IDENTITY
-                             the identity this machine proves at the broker's token exchange,
-                             which a person's sign-in presents as the actor token: kubernetes
-                             (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata
-                             (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (both, with
-                             AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT)
+                             the one identity this machine proves at the broker's token
+                             exchange, which a person's sign-in presents as the actor token:
+                             metadata (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (that, with
+                             AGENT_SECRETS_MACHINE_TOKEN_FILE, AGENT_SECRETS_POOL_AUDIENCE and
+                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes is refused, since the broker
+                             mints no launcher credential for it; unset, it is found from the
+                             Google exchange audience the broker names: an external_account file
+                             GOOGLE_APPLICATION_CREDENTIALS names, or the Google metadata
+                             server, and kept in $XDG_STATE_HOME/agent-secrets/machine
   AGENT_SECRETS_MACHINE_TOKEN_FILE
-                             this machine's projected Kubernetes service-account token
+                             the projected service-account token pool federates
   AGENT_SECRETS_MACHINE_AUDIENCE
                              the audience of this machine's Google identity token
   AGENT_SECRETS_POOL_AUDIENCE
@@ -213,12 +232,28 @@ environment:
   AGENT_SECRETS_POOL_ACCOUNT the managed identity generateIdToken is called on
   AGENT_SECRETS_SESSION      the session name a trade writes under, where the deployment's entry
                              fixes none
-  AWS_PROFILE                the AWS profile the secret forms sign in with when --profile names
-                             none (else the AWS SDK's default credential chain); every secret
-                             form needs a sign-in in the broker's account, and a write your own
-                             Identity Center sign-in there
+  AWS_PROFILE                the AWS profile the secret forms sign in with, against a broker on
+                             AWS; access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and
+                             AWS_WEB_IDENTITY_TOKEN_FILE, outrank it, as in the AWS CLI, and
+                             without it the AWS SDK's default credential chain signs in; every
+                             secret form needs a sign-in in the broker's account, and the
+                             store's IAM decides what it may do there
+  AWS_DEFAULT_PROFILE        the AWS profile the secret forms sign in with where AWS_PROFILE is
+                             unset; a profile either names that the AWS config does not hold
+                             stops the command
+  CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
+                             on Google Cloud; it outranks every other Google source
+  GOOGLE_APPLICATION_CREDENTIALS
+                             a Google credentials file the secret forms sign in with where no
+                             token is lent; it outranks the gcloud variables below
+  CLOUDSDK_ACTIVE_CONFIG_NAME
+                             the gcloud configuration whose login the secret forms sign in with,
+                             before the well-known credentials file, the active gcloud account
+                             and the metadata server
+  CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
+                             that order; the store's IAM decides what each may do
 
-exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
+exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval (or its status unreadable when --wait ran out), 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;
 secret create and set end by the signal on hang-up (SIGHUP), interrupt (Ctrl-C), quit (Ctrl-\)
 or termination (SIGTERM) at the value prompt: a shell reports 129, 130, 131 or 143
@@ -240,6 +275,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "--version":
 		fmt.Fprintf(stdout, "agent-secrets %s\n", buildversion.String())
 		return 0
+	}
+	if err := loadClientConfig(); err != nil {
+		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
+		return exitUsageError
+	}
+	switch args[0] {
 	case "keygen":
 		return cmdKeygen(args[1:], stdout, stderr)
 	case "enroll":
@@ -395,10 +436,12 @@ func flagGiven(flags *flag.FlagSet, name string) bool {
 }
 
 // reportError prints a command's failure as "<prefix>: <err>", except that a helper holding no
-// launcher credential is reported with the one line identity prints for it, whatever the command.
+// launcher credential is reported with the one line identity prints for it, whatever the command:
+// the helper's own answer, which says what cures it in the helper's mode.
 func reportError(stderr io.Writer, prefix string, err error) {
-	if errors.Is(err, errNoCredential) {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", errNoCredential)
+	var none *noCredentialError
+	if errors.As(err, &none) {
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", none.sessionLine())
 		return
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
@@ -500,23 +543,20 @@ func parseKeyPEM(data []byte, name string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// buildSigner selects and builds this process's Signer: an agent box or pod signs with the key
-// and enrollment id it keeps in its key dir (file mode); a person who ran `agent-secrets login`
-// on this machine signs with the box key and enrollment in their own sign-in record (sign-in
-// mode, brokerclient.SignIns); a machine session has no key of its own and
-// asks agent-secrets-helper over its socket, which signs only for processes descending from a
-// session `agent-secrets register` registered (helper mode). The key dir and socket are
+// buildSigner selects and builds this process's Signer: the first source of the chain that has
+// one (chain.go) — a launcher's key dir, a person's sign-in, the helper for a caller inside a
+// session it registered, the machine's own identity. The key dir and socket are
 // AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, or their defaults where those are unset
 // (identity.go). While a box's launcher is still enrolling it (a fresh enrollment.pending in the
 // key dir), this first waits for key.pem and enrollment, for AGENT_SECRETS_ENROLL_WAIT at most.
-// The enrollment id it returns is file mode's and sign-in mode's own; helper mode returns ""
-// because nothing needs
-// it as a literal except RenewEnrollment's URL path, and a machine session's lease is renewed by
-// the helper itself — cmdRenew refuses outright once it sees an empty id from a successful build.
+// The enrollment id it returns is the key dir's, the sign-in's or the machine's own; helper mode
+// returns "" because nothing needs it as a literal except RenewEnrollment's URL path, and a
+// machine session's lease is renewed by the helper itself — cmdRenew refuses outright once it
+// sees an empty id from a successful build.
 func buildSigner() (enrollmentID string, signer Signer, err error) {
 	wait, err := enrollWait()
 	if err != nil {
-		return "", nil, err
+		return "", nil, &settingError{err}
 	}
 	dir := keyDir()
 	gaveUp := awaitEnrollment(dir, wait)
@@ -527,143 +567,27 @@ func buildSigner() (enrollmentID string, signer Signer, err error) {
 	return enrollmentID, signer, err
 }
 
-func selectSigner(dir string) (string, Signer, error) {
-	if keyPath := filepath.Join(dir, keyFile); exists(keyPath) {
-		key, keyErr := loadKey(keyPath)
-		if keyErr != nil {
-			return "", nil, keyErr
-		}
-		id, idErr := readTrimmed(filepath.Join(dir, enrollmentFile))
-		if idErr != nil {
-			if reason, rerr := readTrimmed(filepath.Join(dir, enrollmentErrorFile)); rerr == nil {
-				return "", nil, fmt.Errorf("%w (%s: %s)", idErr, enrollmentErrorFile, reason)
-			}
-			return "", nil, idErr
-		}
-		if id == "" {
-			return "", nil, fmt.Errorf("%s: empty", filepath.Join(dir, enrollmentFile))
-		}
-		return id, &fileSigner{key: key, enrollmentID: id, register: machineReregister(dir, key)}, nil
-	}
-	if record, err := signInSigner(); err != nil {
-		return "", nil, err
-	} else if record != nil {
-		return record.enrollmentID, record, nil
-	}
-	sock, named := helperSocket()
-	if named || exists(sock) {
-		return "", &helperSigner{sock: sock}, nil
-	}
-	if signer, err := machineSigner(dir); err != nil {
-		return "", nil, err
-	} else if signer != nil {
-		return signer.enrollmentID, signer, nil
-	}
-	return "", nil, fmt.Errorf("no session identity: the key dir %s has no key.pem (AGENT_SECRETS_KEY_DIR; an agent box or a Legion pod is enrolled by its launcher, and a Kubernetes pod enrols itself with `agent-secrets enroll --pod`, which names this directory in the renewal command it prints), nobody has run `agent-secrets login` here, this machine proves no identity of its own (%s), and no helper socket is set or at %s (AGENT_SECRETS_HELPER_SOCK; a machine session is registered by `agent-secrets register`)", dir, brokerclient.IdentityVar, sock)
-}
+// settingError is a session form's failure for a setting it cannot run without or cannot read,
+// which is a usage error (exit 2), where every other failure to find this process's identity is a
+// plain failure (exit 1, sessionFailed).
+type settingError struct{ error }
 
-// machineSigner is the signer of a machine that proves an identity of its own and holds no
-// launcher and no helper — a pod no launcher enrols, and which has not enrolled itself with
-// `enroll --pod` either, since that writes the key the branch above would have taken. It trades
-// that identity for a launcher credential, registers a key it makes here under it, and writes
-// the key, the enrollment and the marker that says whose session this is into the key dir, so
-// the next call of this machine's takes the file branch above and trades nothing. It answers
-// nil where this machine proves no identity, which is every deployment that has not turned the
-// exchange on.
-func machineSigner(dir string) (*fileSigner, error) {
-	identity, err := brokerclient.MachineIdentity(os.Getenv)
-	if err != nil || identity == nil {
-		return nil, err
-	}
-	key, err := proof.NewKey()
-	if err != nil {
-		return nil, err
-	}
-	enrollmentID, err := registerMachineSession(context.Background(), dir, key)
-	if err != nil {
-		return nil, err
-	}
-	return &fileSigner{key: key, enrollmentID: enrollmentID, register: machineReregister(dir, key)}, nil
-}
+func (e *settingError) Unwrap() error { return e.error }
 
-// machineReregister is how a machine session in the key dir is made again when the broker says
-// its enrollment is not live: it trades this machine's identity afresh and registers key under
-// the credential that trade mints. It is nil unless this key dir's session is one this command
-// registered for a machine that proves an identity of its own (machineSessionMarker) — a box or
-// pod its launcher enrolled writes no marker, and its lapsed enrollment is the launcher's.
-func machineReregister(dir string, key *ecdsa.PrivateKey) func(context.Context) (string, error) {
-	if !exists(filepath.Join(dir, machineSessionMarker)) {
-		return nil
+// sessionFailed reports why a session form has no signer, with reportError's line, and answers
+// its exit code: exitUsageError for a settingError, 1 for the chain's refusal and for a source
+// that was present but broken.
+func sessionFailed(stderr io.Writer, prefix string, err error) int {
+	reportError(stderr, prefix, err)
+	var setting *settingError
+	if errors.As(err, &setting) {
+		return exitUsageError
 	}
-	return func(ctx context.Context) (string, error) { return registerMachineSession(ctx, dir, key) }
-}
-
-// registerMachineSession trades this machine's identity for a launcher credential, registers key
-// under it as a session, and writes the key, the enrollment and the marker into the key dir.
-func registerMachineSession(ctx context.Context, dir string, key *ecdsa.PrivateKey) (string, error) {
-	identity, err := brokerclient.MachineIdentity(os.Getenv)
-	if err != nil {
-		return "", err
-	}
-	if identity == nil {
-		return "", fmt.Errorf("this machine proves no identity of its own, so no session can be registered for it: set %s", brokerclient.IdentityVar)
-	}
-	base := brokerBaseURL()
-	if base == "" {
-		return "", fmt.Errorf("%s names the identity this machine proves, so %s must name the secrets broker it proves it to", brokerclient.IdentityVar, brokerURLVar)
-	}
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		return "", err
-	}
-	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: base, Key: key, Subject: identity,
-		Session: brokerclient.TradeSession(os.Getenv, ""), HTTP: brokerclient.HTTPClient(),
-	})
-	if err != nil {
-		return "", err
-	}
-	token, err := client.Token(ctx)
-	if err != nil {
-		return "", err
-	}
-	if token.CredentialID == "" {
-		return "", errors.New("the broker took this machine's identity but named no launcher credential, so no session can be registered under it")
-	}
-	enrollmentID, err := enrollUnderCredential(ctx, base, key, thumbprint, token.CredentialID, "this machine")
-	if err != nil {
-		return "", err
-	}
-	if err := writeMachineSession(dir, key, enrollmentID); err != nil {
-		return "", err
-	}
-	return enrollmentID, nil
-}
-
-// writeMachineSession keeps the key, the enrollment and the marker of a machine that registered
-// a session for itself, in the key dir and in the modes a launcher writes them with (a 0700
-// directory, a 0600 key). The marker is what later calls read to know this key dir's session is
-// one this command may register again when its lease lapses (machineReregister); a launcher's
-// key dir has none.
-func writeMachineSession(dir string, key *ecdsa.PrivateKey, enrollmentID string) error {
-	pemBytes, err := encodeKeyPEM(key)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("make the key dir %s: %w", dir, err)
-	}
-	if err := writeFileAtomic(filepath.Join(dir, keyFile), pemBytes, 0o600); err != nil {
-		return err
-	}
-	if err := writeFileAtomic(filepath.Join(dir, machineSessionMarker), nil, 0o600); err != nil {
-		return err
-	}
-	return writeFileAtomic(filepath.Join(dir, enrollmentFile), []byte(enrollmentID+"\n"), 0o600)
+	return 1
 }
 
 // signInSigner is the signer of the person this session acts for, or nil where nobody has
-// signed in on this machine (in which case the caller goes on to the helper). A box with
+// signed in on this machine (in which case the chain goes on to the helper). A box with
 // sign-ins but no way to say which one this session is refuses here, naming them: a command
 // must never read one colleague's secrets under another's name. A sign-in whose enrollment has
 // not been made yet is registered now, under a fresh trade of that person's identity, and the
@@ -674,7 +598,7 @@ func writeMachineSession(dir string, key *ecdsa.PrivateKey, enrollmentID string)
 // answer nothing but a dead id until somebody ran `agent-secrets login` again — which would
 // make a second box key and a second sign-in on that person's list (client.reenroller).
 func signInSigner() (*fileSigner, error) {
-	store := brokerclient.SignIns(os.Getenv)
+	store := brokerclient.SignIns(homeGetenv)
 	records, err := store.List()
 	if err != nil || len(records) == 0 {
 		return nil, err
@@ -687,17 +611,19 @@ func signInSigner() (*fileSigner, error) {
 	if err != nil {
 		return nil, err
 	}
-	register := func(ctx context.Context) (string, error) {
+	// The box key is the sign-in's own, recorded at the broker with it, so it is the key a
+	// registration made again signs with too.
+	register := func(ctx context.Context, _ string) (*ecdsa.PrivateKey, string, error) {
 		record.EnrollmentID = ""
 		fresh, err := registerSignInSession(ctx, record, key)
 		if err != nil {
-			return "", err
+			return nil, "", err
 		}
 		record = fresh
-		return fresh.EnrollmentID, nil
+		return key, fresh.EnrollmentID, nil
 	}
 	if record.EnrollmentID == "" {
-		if _, err := register(context.Background()); err != nil {
+		if _, _, err := register(context.Background(), ""); err != nil {
 			return nil, err
 		}
 	}
@@ -706,15 +632,15 @@ func signInSigner() (*fileSigner, error) {
 
 // sessionContext resolves the broker URL and this process's Signer every session-authenticated
 // subcommand (renew, request, status, cancel, revoke, self, and the exec form) needs, plus the
-// enrollment id buildSigner read from file mode (empty in helper mode).
-func sessionContext() (base, enrollmentID string, signer Signer, err error) {
+// enrollment id buildSigner read (empty in helper mode). A missing broker URL is a settingError.
+func sessionContext() (base brokeraddr.Address, enrollmentID string, signer Signer, err error) {
 	base = brokerBaseURL()
-	if base == "" {
-		return "", "", nil, fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)
+	if base.Empty() {
+		return brokeraddr.Address{}, "", nil, &settingError{fmt.Errorf("%s is required: it names the secrets broker this command reads every secret from, and this command reads no local secrets file", brokerURLVar)}
 	}
 	enrollmentID, signer, err = buildSigner()
 	if err != nil {
-		return "", "", nil, err
+		return brokeraddr.Address{}, "", nil, err
 	}
 	return base, enrollmentID, signer, nil
 }
@@ -726,17 +652,12 @@ func writeVerbatim(w io.Writer, raw []byte) {
 	w.Write(raw)
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
-// to a ten-second cap. The renewer's own step is leasetime.NextBackoff, which the broker's
-// lease bound walks it by; these polls are nobody's lease, and a change made to move that
-// floor is not a change to how often `agent-secrets request --wait` asks.
+// to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
+// wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
+// failed read). The renewer's own step is leasetime.NextBackoff, which the broker's lease bound
+// walks it by; these polls are nobody's lease, and a change made to move that floor is not a
+// change to how often either of them asks.
 func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
@@ -814,8 +735,7 @@ func cmdRenew(args []string, stdout, stderr io.Writer) int {
 	}
 	base, enrollmentID, signer, err := sessionContext()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets renew: %v\n", err)
-		return exitUsageError
+		return sessionFailed(stderr, "agent-secrets renew", err)
 	}
 	if enrollmentID == "" {
 		fmt.Fprintln(stderr, "agent-secrets renew: a machine session's lease is renewed by agent-secrets-helper; agent-secrets renew is for agent boxes and pods")
@@ -921,12 +841,13 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	}
 	base, _, signer, err := sessionContext()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets request: %v\n", err)
-		return exitUsageError
+		return sessionFailed(stderr, "agent-secrets request", err)
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	result, raw, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID())
+	// `request` has no narrowing flags: it asks for the request alone, and the release that
+	// narrows is a later run's.
+	result, raw, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID(), nil)
 	if err != nil {
 		refuse(stderr, "agent-secrets request", c.source(ctx), err)
 		return 1
@@ -938,10 +859,12 @@ func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		writeVerbatim(stdout, raw)
 	} else {
-		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", result.RequestID, result.State, c.source(ctx))
+		// Every value on these lines is the broker's, so each prints on one line
+		// (redact.OneLine), as every broker-answer value this CLI prints does.
+		fmt.Fprintf(stdout, "request_id: %s\nstate: %s\nsource: %s\n", redact.OneLine(result.RequestID), redact.OneLine(result.State), c.source(ctx))
 		printDetail(stdout, result.Detail)
 		if result.State == "pending" {
-			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+			fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 		}
 	}
 	switch result.State {
@@ -971,12 +894,11 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	base, _, signer, err := sessionContext()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets status: %v\n", err)
-		return exitUsageError
+		return sessionFailed(stderr, "agent-secrets status", err)
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	result, raw, err := c.GetRequest(ctx, signer, positional[0])
+	result, raw, err := c.GetRequest(ctx, signer, positional[0], 0)
 	if err != nil {
 		refuse(stderr, "agent-secrets status", c.source(ctx), err)
 		return 1
@@ -985,15 +907,15 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 		writeVerbatim(stdout, raw)
 		return 0
 	}
-	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", result.State, c.source(ctx))
+	fmt.Fprintf(stdout, "state: %s\nsource: %s\n", redact.OneLine(result.State), c.source(ctx))
 	if result.State == "pending" {
-		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL))
+		fmt.Fprintln(stdout, waitingOn(result.Approver, result.ApproveURL, result.JudgeDeciding))
 	}
 	if result.GrantID != nil {
-		fmt.Fprintf(stdout, "grant_id: %s\n", *result.GrantID)
+		fmt.Fprintf(stdout, "grant_id: %s\n", redact.OneLine(*result.GrantID))
 	}
 	if result.Decision != nil {
-		fmt.Fprintf(stdout, "decided_by: %s\n", result.Decision.By)
+		fmt.Fprintf(stdout, "decided_by: %s\n", redact.OneLine(result.Decision.By))
 	}
 	printDetail(stdout, result.Detail)
 	return 0
@@ -1014,8 +936,7 @@ func cmdCancel(args []string, stdout, stderr io.Writer) int {
 	}
 	base, _, signer, err := sessionContext()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets cancel: %v\n", err)
-		return exitUsageError
+		return sessionFailed(stderr, "agent-secrets cancel", err)
 	}
 	ctx := context.Background()
 	c := newClient(base)
@@ -1040,19 +961,31 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets revoke: exactly one grant_id is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
-	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets revoke: %v\n", err)
-		return exitUsageError
-	}
-	ctx := context.Background()
-	c := newClient(base)
-	if err := c.RevokeGrant(ctx, signer, positional[0]); err != nil {
-		refuse(stderr, "agent-secrets revoke", c.source(ctx), err)
+	c, failed, err := revokeAsSession(positional[0])
+	switch {
+	case failed != nil:
+		return sessionFailed(stderr, "agent-secrets revoke", failed)
+	case err != nil:
+		refuse(stderr, "agent-secrets revoke", c.source(context.Background()), err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(base))
+	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(c.baseURL))
 	return 0
+}
+
+// revokeAsSession is the session's own revoke of grantID (POST /v1/grants/{id}/revoke), which
+// `revoke` and `grant revoke` inside a session both make, under the identity, the enrollment wait
+// and the exit codes of every session command (sessionContext, sessionFailed). failed is why this
+// process has no such identity, for the form to report through sessionFailed, so the exit code
+// comes from a function broker-refgen follows; otherwise err is the broker's answer to c's call,
+// unreported, for the form to word.
+func revokeAsSession(grantID string) (c *client, failed, err error) {
+	base, _, signer, failed := sessionContext()
+	if failed != nil {
+		return nil, failed, nil
+	}
+	c = newClient(base)
+	return c, nil, c.RevokeGrant(context.Background(), signer, grantID)
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,8 +1006,7 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 	}
 	base, _, signer, err := sessionContext()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", name, err)
-		return exitUsageError
+		return sessionFailed(stderr, "agent-secrets "+name, err)
 	}
 	ctx := context.Background()
 	c := newClient(base)
@@ -1092,13 +1024,13 @@ func cmdSelf(name string, args []string, stdout, stderr io.Writer) int {
 		operator = *result.Operator
 	}
 	fmt.Fprintf(stdout, "enrollment_id: %s\nkind: %s\noperator: %s\nlease_expires_at: %s\nsource: %s\n",
-		result.EnrollmentID, result.Kind, operator, result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
+		redact.OneLine(result.EnrollmentID), redact.OneLine(result.Kind), redact.OneLine(operator), result.LeaseExpiresAt.Format(time.RFC3339), c.source(ctx))
 	for _, g := range result.Grants {
 		if g.ExpiresAt == nil {
-			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", g.GrantID, g.RequestID)
+			fmt.Fprintf(stdout, "grant: %s (request %s, until this session ends)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID))
 			continue
 		}
-		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", g.GrantID, g.RequestID, g.ExpiresAt.Format(time.RFC3339))
+		fmt.Fprintf(stdout, "grant: %s (request %s, expires %s)\n", redact.OneLine(g.GrantID), redact.OneLine(g.RequestID), g.ExpiresAt.Format(time.RFC3339))
 	}
 	return 0
 }
@@ -1161,11 +1093,17 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets: at least one secret NAME is required")
 		return exitUsageError
 	}
+	// The command is looked up before the broker is asked anything: a command that is not on
+	// PATH could never run, and a request for it would wait on an approver all the same.
+	path, err := exec.LookPath(command[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
+		return 1
+	}
 
 	base, _, signer, err := sessionContext()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
-		return exitUsageError
+		return sessionFailed(stderr, "agent-secrets", err)
 	}
 	c := newClient(base)
 	ctx := context.Background()
@@ -1173,7 +1111,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// all of them: the injection line, and each refusal, whether the request is refused, waits
 	// out its decision, or releases no value.
 	src := sync.OnceValue(func() source { return c.source(ctx) })
-	result, _, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID())
+	result, _, err := c.CreateRequest(ctx, signer, names, *reason, ttl, requestSessionID(), narrowing)
 	if err != nil {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
@@ -1184,46 +1122,87 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	// shownID is the request's id as the lines below print it: the broker's, so on one line
+	// (redact.OneLine). requestID itself is what the polls ask after.
+	shownID := redact.OneLine(requestID)
+	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
+	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
+	// the approver may still decide before --wait runs out, and a grant this command has stopped
+	// waiting for is one nothing collects.
+	var pollErr error
 	if state == "pending" {
-		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
+		reportPending(stderr, requestID, result.Approver, result.ApproveURL, result.JudgeDeciding, *wait, src())
+		judging := result.JudgeDeciding
 		deadline := time.Now().Add(*wait)
+		// backoff is the sleep before the next read after one that came back undecided before
+		// the wait it asked had run out. The broker holds a read until the request is decided or
+		// that wait passes, so a pending answer that comes sooner is from a broker before ?wait=,
+		// which answers every read at once; a failed read that comes back sooner gets the same
+		// sleep. Without it the loop would ask such a broker as fast as it answers.
 		backoff := 2 * time.Second
 		for state == "pending" {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				break
 			}
-			time.Sleep(minDuration(backoff, remaining))
-			status, _, err := c.GetRequest(ctx, signer, requestID)
-			if err != nil {
+			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
+			// rounded up so the last read covers the deadline, at most
+			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision, so
+			// the command learns of it at once rather than at its next poll.
+			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
+			sent := time.Now()
+			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
+			switch {
+			case err == nil:
+				pollErr = nil
+				state, grantID, detail = status.State, status.GrantID, status.Detail
+				// The judge held the request and has given it up: it is its person's now, and the
+				// agent is told who that is and where they decide it, once.
+				if judging && !status.JudgeDeciding && state == "pending" {
+					fmt.Fprintf(stderr, "agent-secrets: the model judge could not decide it; %s\n", waitingOn(status.Approver, status.ApproveURL, false))
+					judging = false
+				}
+			case retryable(err):
+				// Said once per run of failed polls, not once per poll.
+				if pollErr == nil {
+					fmt.Fprintf(stderr, "agent-secrets: %s; still waiting for request %s\n", refusalText(src(), err), shownID)
+				}
+				pollErr = err
+			default:
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			state, grantID, detail = status.State, status.GrantID, status.Detail
-			backoff = nextBackoff(backoff)
+			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
+				time.Sleep(min(backoff, time.Until(deadline)))
+				backoff = nextBackoff(backoff)
+			}
 		}
 	}
 	switch state {
 	case "granted":
 	case "pending":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), requestID)
+		if pollErr != nil {
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), pollErr, shownID)
+			return exitPending
+		}
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", shownID, src(), shownID)
 		return exitPending
 	case "denied":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", requestID, src(), deniedBecause(detail))
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was denied%s\n", shownID, src(), deniedBecause(detail))
 		return exitDenied
 	case "cancelled", "expired":
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", requestID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s was %s\n", shownID, src(), state)
 		return 1
 	default:
-		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %q\n", requestID, src(), state)
+		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is in unexpected state %q\n", shownID, src(), state)
 		return 1
 	}
 	if grantID == nil {
-		fmt.Fprintf(stderr, "agent-secrets: request %s was granted but its grant from %s is no longer live; request it again\n", requestID, src())
+		fmt.Fprintf(stderr, "agent-secrets: request %s was granted but its grant from %s is no longer live; request it again\n", shownID, src())
 		return 1
 	}
 
-	values, err := c.GrantValues(ctx, signer, *grantID, narrowing)
+	values, err := c.GrantValues(ctx, signer, *grantID, narrowing, releaseCall{Command: record.ClipCommand(command), Reason: *reason})
 	if err != nil {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
@@ -1282,11 +1261,6 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	path, err := exec.LookPath(command[0])
-	if err != nil {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", err)
-		return 1
-	}
 	// The one line the injected command's own output is preceded by: which names this process
 	// puts in its environment, and that this CLI's broker and a store of which kind gave them,
 	// never a value. A reader of the command's log can tell these values from another secrets
@@ -1299,12 +1273,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	return 0 // unreachable: syscall.Exec replaces this process on success
 }
 
-// reportPending says, once, before the exec form's wait, that a person must decide the request,
-// where the secrets it would inject come from (src), and who decides it, and on which page of the
-// broker when its answer names one (waitingOn).
-func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, wait time.Duration, src source) {
-	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", requestID, src, wait)
-	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage))
+// reportPending says, once, before the exec form's wait, who decides the request — a person, or
+// the model judge while it holds the request — where the secrets it would inject come from (src),
+// and on which page of the broker a person decides it when its answer names one (waitingOn).
+func reportPending(stderr io.Writer, requestID string, approver *string, brokerPage string, judging bool, wait time.Duration, src source) {
+	fmt.Fprintf(stderr, "agent-secrets: request %s to %s is waiting for approval; waiting up to %s\n", redact.OneLine(requestID), src, wait)
+	fmt.Fprintf(stderr, "agent-secrets: %s\n", waitingOn(approver, brokerPage, judging))
 }
 
 // waitingOn is the sentence that says whom a pending request waits on and where they decide it:
@@ -1318,11 +1292,21 @@ func reportPending(stderr io.Writer, requestID string, approver *string, brokerP
 // switch appends: a broker from before that page carries none, the suffix is empty, and the same
 // sentence names the approver alone, with no page - the request waits on the same person, who
 // opens the broker themselves. The broker names an approver for every pending request; one from
-// before it did names none, and the sentence says so rather than guessing.
-func waitingOn(approver *string, brokerPage string) string {
+// before it did names none, and the sentence says so rather than guessing. The page is the
+// broker's, so it prints on one line (redact.OneLine): as it came, or Go-quoted where a control
+// character in it would start a line of its own.
+//
+// A request the model judge holds (judging, the answer's judge_deciding) carries no page: its
+// keys are ones the judge decides, so the sentence says the judge is deciding it and that nobody
+// is asked, and never that its approver must approve it. If the judge cannot decide it, a later
+// answer carries the page, and the exec form says so.
+func waitingOn(approver *string, brokerPage string, judging bool) string {
+	if judging {
+		return "the model judge is deciding it; nobody is asked to approve it unless the judge cannot decide it"
+	}
 	where := ""
 	if brokerPage != "" {
-		where = ": " + brokerPage
+		where = ": " + redact.OneLine(brokerPage)
 	}
 	switch {
 	case approver == nil:
@@ -1330,13 +1314,13 @@ func waitingOn(approver *string, brokerPage string) string {
 	case *approver == record.AnyoneApprover:
 		return "waiting for anyone signed in to the secrets broker to approve it" + where
 	default:
-		return "waiting for " + *approver + " to approve it on the secrets broker" + where
+		return "waiting for " + redact.OneLine(*approver) + " to approve it on the secrets broker" + where
 	}
 }
 
 // deniedBecause is what the exec form's denied line adds to name why: ": " and the broker's own
 // sentence about the refusal (RequestResult.Detail), which names the secret that refused the
-// request and the rule that did, as ": GCLOUD_SAMI: requester-not-listed". An agent reading that
+// request and the rule that did, as ": GCLOUD_DEMO: requester-not-listed". An agent reading that
 // line on stderr then knows which secret it may not have and that asking again will not help,
 // rather than only that something was denied. A broker that recorded no detail, and one from
 // before the field, adds nothing, so such a denial reads exactly as it always has.
@@ -1344,7 +1328,7 @@ func deniedBecause(detail *string) string {
 	if detail == nil {
 		return ""
 	}
-	return ": " + *detail
+	return ": " + redact.OneLine(*detail)
 }
 
 // printDetail writes the broker's own sentence about a request, the one the request row keeps as
@@ -1355,7 +1339,7 @@ func printDetail(stdout io.Writer, detail *string) {
 	if detail == nil {
 		return
 	}
-	fmt.Fprintf(stdout, "detail: %s\n", *detail)
+	fmt.Fprintf(stdout, "detail: %s\n", redact.OneLine(*detail))
 }
 
 // sessionIdentityVars are the AGENT_SECRETS_* variables the exec form's child keeps: the broker's

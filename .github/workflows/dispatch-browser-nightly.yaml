@@ -10,8 +10,9 @@ name: Dispatch browser nightly
 # head, below, says what it guards and why it is here rather than in a file of its own.
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
-# blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
-# last committer that a scheduled workflow failed. Nothing else is told: this call passes no
+# blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
+# workflows" page says: "Notifications for scheduled workflows are sent to the user who last
+# modified the cron syntax in the workflow file." Nothing else is told: this call passes no
 # `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
 # no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
 # and this workflow deliberately builds no second one: a reader written here is the thing R22
@@ -45,16 +46,26 @@ concurrency:
   group: dispatch-browser-nightly
   cancel-in-progress: false
 
-# What the called workflow's jobs need: the clone and the pinned downloads (`contents: read`),
-# and the merge job's read of this run's own jobs through the API (`actions: read`). No
-# `checks: write`, which the ci-ok report would need: this call passes no `ci-ok-changes`, so
-# that step does not run and this workflow posts no check.
+# The default for a job of this workflow that declares none. The one job below declares its own,
+# which is what reaches the workflow it calls.
 permissions:
   contents: read
   actions: read
 
 jobs:
+  # A calling job that declares no `permissions:` hands the called workflow the default
+  # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
+  # "Supported keywords for jobs that call a reusable workflow"), so what dispatch-browser.yaml's
+  # jobs need is declared here. `contents: read` is the `actions/checkout` step every one of its
+  # five jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
+  # merge job's "Reading one, the rows" step, which reads this run's own attempt's jobs by running
+  # `.github/scripts/dispatch-browser-run-reads.sh jobs` (and its "Reading three" step reads that
+  # same file). No `checks: write`, which the ci-ok report would need: this call passes no
+  # `ci-ok-changes`, so that step does not run and this workflow posts no check.
   full:
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
@@ -72,8 +83,9 @@ jobs:
   # the judgement and says why a comparison of values would be red every night on nothing.
   #
   # It is a job of this file rather than a workflow of its own because GitHub starts a schedule
-  # and a `workflow_dispatch` from the default branch alone, so a workflow that exists only on a
-  # branch can be dispatched by nobody and proved before its merge by nothing
+  # from the default branch alone and offers a `workflow_dispatch` only for a file the default
+  # branch holds, so a workflow that exists only on a branch can be dispatched by nobody and
+  # proved before its merge by nothing
   # (dispatch://INFRA-1621/comment/36392fee-60e8-4dbd-9068-bd8524088d08 records that refusal).
   # This file already stands on main with both triggers, so `gh workflow run
   # dispatch-browser-nightly.yaml --ref <branch>` runs the branch's own copy of this job.
@@ -116,15 +128,15 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
       # reason it gives: Playwright's Node runner reads `@legion/contracts` out of a build this
-      # checkout has to make before the config loads.
+      # checkout has to make before the config loads, of the entries Dispatch imports alone.
       - name: Build contracts for dispatch e2e
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       # Built here rather than left to run-server.sh, which would build it inside the harness's
       # own boot wait, as the multiprocess job does for the same reason.

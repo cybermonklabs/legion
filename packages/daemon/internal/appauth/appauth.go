@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/url"
@@ -112,7 +113,7 @@ const responseBound = 1 << 20
 // is the installation's whole breadth. Those objects measure 4.9 to 5.3 KB each, which is what
 // the secrets broker bounds one of them at 64 KB on
 // (packages/envoy/internal/broker/secrets/githubapp.go, githubRepositoryAnswerBound), and this
-// deployment's theorem-labs installation held 216 repositories at 15:45Z on 2026-11-10, about
+// deployment's example-org installation held 216 repositories at 15:45Z on 2026-11-10, about
 // 1.1 MB of answer. 16 MiB holds about 3,000 repositories at the measured size, far above any
 // installation a Legion deployment mints on, and an answer past it is refused rather than read
 // into the daemon's memory.
@@ -145,55 +146,35 @@ type Tokens interface {
 	// the App and the daemon narrows no further (INFRA-2543). An owner with no name is refused
 	// before anything is minted, since there is no account to mint on.
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
-	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, Actions and metadata read. Two callers ask for it and no role's bundle does: a
+	// ReadToken is the App's installation token for owner narrowed to reading: readPermissions,
+	// which is contents, metadata, pull requests, issues, Actions, checks, commit statuses and
+	// attestations, each at read. Two callers ask for it and no role's bundle does: a
 	// controller, which works no repository and holds one for every owner its App is installed
 	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
 	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
 	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
 	// directories hold that owner's own lease at the role's permissions instead (Token,
 	// GitHubCredential, INFRA-2543). An App on token_command gets what its command's read-only
-	// release holds instead, which the command decides: the secrets broker's is the same four
-	// (its readOnlyPermissions). With a key of its own the mint asks for what the installation
-	// is granted of those four and leaves the rest out (exchangeGranted), so an installation
-	// whose account has not granted the App Actions gets the other three rather than nothing.
-	// An owner with no name is refused before anything is minted, as Token's is.
+	// release holds instead, which the command decides: the secrets broker's holds the broker's
+	// own set, contents, metadata, pull requests and Actions read (its readOnlyPermissions), which
+	// differs from readPermissions, so such a lease reads no issue, check run, commit status or
+	// attestation. With a key of its own the mint asks for what the installation is granted of
+	// readPermissions and leaves the rest out (exchangeGranted), so an installation whose account
+	// has not granted the App issues, Actions, checks, commit statuses or attestations gets a
+	// token without the ones it is not granted rather than nothing. An owner with no name is
+	// refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
-// readPermissions narrows an installation token to reading a repository's contents, its pull
-// requests, its Actions runs and its metadata: what a role needs of every repository of the
-// project but its own issue's, what a controller needs of every one of them, and what the
-// provisioning token takes of the issue's own repository, which a clone, a fetch and a
-// repository cache only read (implementTokens, internal/daemon). A mint asks for what the
-// installation is granted of this set, at the access it is granted (exchangeGranted), and
-// GitHub mints a token with the permissions the request names.
-//
-// actions:read is here because reading a repository includes reading what its merges did: a
-// deployment check of a merge reads the push run that carries it, that run's jobs and a job's
-// log, and a role that cannot read them cannot tell a deploy that applied from one that was
-// skipped. Measured on 2026-11-04 against a private repository whose installation holds
-// actions:write: unnarrowed, actions/runs and actions/runs/{id}/jobs answered 200 and
-// actions/jobs/{id}/logs answered 302 to a signed URL that answered 200; narrowed to contents,
-// pull requests and metadata, all three answered 403 "Resource not accessible by integration".
-// The narrowing was the whole refusal, and no App
-// or installation setting was missing. It stays a read: actions:read cannot cancel, re-run or
-// dispatch a workflow, and reaches no Actions secret or variable, which are permissions of their
-// own.
-//
-// The set is the most a read lease holds, and the only thing that holds it: the lease reaches
-// every repository its installation holds, as every token this package mints does, so what
-// keeps a reading lease from writing is these four permissions and nothing beside them. A
-// permission the installation is granted none of is left out of the request rather than minted.
-var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
-
 // Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
-// the wall clock, and the daemon's own stderr for what a token_command writes there.
+// the wall clock, the daemon's own stderr for what a token_command writes there, and
+// slog.Default for what the manager logs: a grant shortfall, at warn (sayShortfalls).
 type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Now        func() time.Time
 	Stderr     io.Writer
+	Log        *slog.Logger
 }
 
 // Manager caches installation tokens by App and owner, and bot identities by App id. An App
@@ -205,6 +186,7 @@ type Manager struct {
 	client  *http.Client
 	now     func() time.Time
 	stderr  io.Writer
+	log     *slog.Logger
 
 	mu                sync.Mutex
 	leases            map[scope]Lease
@@ -227,9 +209,9 @@ type Manager struct {
 	// Forget of its owner.
 	refusals map[scope]refusedNarrowingAt
 
-	// saidShortfalls holds every shortfall already said on stderr, each by the App role, the
-	// owner whose installation is granted less than the role's set asks for, and the shortfall
-	// itself (shortfallMessage).
+	// saidShortfalls holds every shortfall already logged, each by the App role, the owner whose
+	// installation is granted less than the role's set asks for, and the shortfall itself
+	// (sayShortfalls).
 	saidShortfalls map[saidShortfall]bool
 
 	// root ends every token_command run on Close (stop), runs counts the runs still going, and
@@ -268,15 +250,14 @@ type pendingInstallations struct {
 	err    error
 }
 
-// A Manager answers every interface a caller reaches it through, the optional one included: a
-// bundle takes the RefusalForgetter by type assertion (listInstallation's caller is the other),
-// so a method renamed without its interface would leave the Manager silently un-forgotten
-// rather than fail the build.
+// A Manager answers every interface a caller reaches it through. The daemon's wiring takes it
+// as a Source, which the build holds it to wherever it is handed over. Forgetter is taken by
+// type assertion instead (internal/daemon's openWorkflow and leakCheckSource), so a Forget
+// renamed without its interface would fail the daemon's boot, or leave the leak check serving
+// a token GitHub refused, rather than fail the build.
 var (
-	_ Tokens             = (*Manager)(nil)
-	_ OwnerInstallations = (*Manager)(nil)
-	_ Forgetter          = (*Manager)(nil)
-	_ RefusalForgetter   = (*Manager)(nil)
+	_ Source    = (*Manager)(nil)
+	_ Forgetter = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -298,6 +279,10 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
+	log := options.Log
+	if log == nil {
+		log = slog.Default()
+	}
 	root, stop := context.WithCancel(context.Background())
 	return &Manager{
 		root:                 root,
@@ -307,6 +292,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		client:               client,
 		now:                  now,
 		stderr:               stderr,
+		log:                  log,
 		leases:               map[scope]Lease{},
 		pending:              map[scope]*pendingLease{},
 		installations:        map[AppRole]map[string]string{},
@@ -332,13 +318,15 @@ func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease,
 }
 
 // ReadToken is Token for a token narrowed to readPermissions, cached under a scope of its own,
-// so an owner's write and read tokens never stand in for each other. Each of those four
-// permissions is asked for at what the installation is granted of it, and one it is granted
-// none of is left out (exchangeGranted). In token mode it is the command's read-only release
-// (TokenCommandReadOnly) instead, which the command decides; the secrets broker's is
-// readPermissions' own set. A write request of the same owner is a run of its own either way:
-// it asks for no read-only release, so the two never stand in for each other. An owner with no
-// name is refused, and nothing is minted.
+// so an owner's write and read tokens never stand in for each other. Each permission of the set
+// is asked for at read where the installation is granted it, and one it is granted none of is
+// left out (exchangeGranted). In token mode it is the command's read-only release
+// (TokenCommandReadOnly) instead, which the command decides; the secrets broker's holds the
+// broker's own set, contents, metadata, pull requests and Actions, which differs from
+// readPermissions, so its holder reads no issue, check run, commit status or attestation through
+// it. A write request of the same owner is a run of its own either way: it asks for no read-only
+// release, so the two never stand in for each other. An owner with no name is refused, and
+// nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
 	return m.lease(ctx, mintRequest{role: role, owner: owner, read: true, permissions: readPermissions})
 }
@@ -365,23 +353,14 @@ func (m *Manager) Forget(role AppRole, owner string) {
 	})
 }
 
-// RefusalForgetter drops the narrowing refusal a token source remembers for one owner's read
-// lease, so the next ask of that scope reaches GitHub rather than the memory
-// (Manager.ForgetNarrowingRefusal). It is optional, as Forgetter is: a source that remembers no
-// refusal has none to drop, so a test fake and a harness that implement Tokens alone keep
-// working.
-type RefusalForgetter interface {
-	ForgetNarrowingRefusal(role AppRole, owner string)
-}
-
-// ForgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
+// forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
 // (lease, narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It
 // is for the caller that knows that one memory is stale — the token-mode mapping check, which
 // asks whether the App's installation holds a repository and must have GitHub's answer rather
 // than the memory of a refusal met before an operator fixed the grant (listInstallation) —
 // where Forget, which drops every lease and every refusal of the owner, would throw away a
 // token that is good and make the owner's other scope mint again.
-func (m *Manager) ForgetNarrowingRefusal(role AppRole, owner string) {
+func (m *Manager) forgetNarrowingRefusal(role AppRole, owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.refusals, leaseScope(true, role, owner))
@@ -434,7 +413,7 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 // The memory answers the ask that would repeat a refusal, never one that already knows better.
 // A caller holding what the window cannot know — the token-mode mapping check, which asks
 // whether an installation holds a repository after an operator may have changed the grant
-// (listInstallation) — drops that one scope's memory before it asks (ForgetNarrowingRefusal),
+// (listInstallation) — drops that one scope's memory before it asks (forgetNarrowingRefusal),
 // so what it is served is GitHub's answer now.
 //
 // What a cached answer is worth is worth saying, since a caller may read such an ask as what
@@ -510,11 +489,12 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 // 422 as a TransientError alone (exchange.go), and token mode returns its trouble before it
 // builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
 // is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
-// remember (refusals), a bundle deciding which directories it holds (credential.go's dirEntry),
-// the leak check's token (internal/daemon's leakCheckToken) and the controller route's answer
-// (internal/api) — so that none of them reads a rate limit as an answer about what an
-// installation grants. The daemon's provisioning adapter reads it no longer: it returns every
-// error of its mint as it came (internal/daemon's implementTokens).
+// remember (refusals), a bundle deciding which directories it leaves out (credential.go's
+// leaveOutReason), the leak check's token (internal/daemon's leakCheckToken) and the controller
+// route's answer (internal/api) — so that none of them reads a rate limit as an answer about what
+// an installation grants.
+// The daemon's provisioning adapter reads it no longer: it returns every error of its mint as it
+// came (internal/daemon's implementTokens).
 func NarrowingRefused(err error) bool {
 	var trouble *TransientError
 	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)
@@ -646,11 +626,12 @@ var errInstallationGone = errors.New("the installation is gone")
 // request names one (exchange), so there is none for GitHub to refuse. In token mode it is the
 // secrets broker refusing the narrowing its own release names (brokerNarrowingRefused).
 //
-// It is exported because its callers read it rather than fail on it: a role's gh bundle leaves
-// out the directory whose lease is refused and keeps the rest (mintBundle), and refuses a
-// bundle whose own default owner it leaves out (bundleDefault), which the API's controller
-// route answers as a refusal of its own (internal/api's controllerGitHubCredential). The
-// Manager remembers it per scope and serves it without asking GitHub again while the window
+// It is exported because its callers read it rather than fail on it: a controller's gh bundle
+// that cannot mint its own default owner's lease fails wrapping it, which the API's controller
+// route answers as a refusal of its own (internal/api's controllerGitHubCredential), while a
+// bundle leaves out every other owner GitHub answers this way, as it does for the few other
+// answers that are about the installation (mintBundle, leaveOutReason).
+// The Manager remembers it per scope and serves it without asking GitHub again while the window
 // holds (lease, narrowingRefusalWindow), which it does for no other refusal. No other refusal
 // is read any of these ways. The daemon's provisioning adapter once fell back on it, serving
 // the owner's own write token where the reading lease was refused; it does so no longer, and
@@ -666,17 +647,33 @@ var ErrNotInstalled = errors.New("github_app_not_installed")
 // the installation is the whole of a role's reach, since every token this package mints reaches
 // every repository its installation holds and names no repository at all (INFRA-2543), so the
 // accounts the App is installed on are the owners a bundle can hold a directory for. It is an
-// interface of its own, as Tokens is, so a bundle can be built over a fake in a test and over
-// the Manager in the daemon.
+// interface of its own, as Tokens is, so that a test fake answers one of the two and a Source
+// is put together from the pair.
 type OwnerInstallations interface {
 	InstalledOwners(ctx context.Context, role AppRole) ([]string, error)
+}
+
+// Source is a daemon's GitHub App token source whole: the leases it mints (Tokens) and the
+// owner accounts each App is installed on (OwnerInstallations). A gh bundle is built from both,
+// one directory per installed owner holding that owner's lease, so the two credentials and
+// every place the daemon hands its token source on take a Source (GitHubCredential,
+// ControllerCredential, internal/daemon's runtime factories, internal/api's Options.Tokens).
+// The type is what says a token source answers its installations: a value that does not is
+// refused by the build, where a type assertion at each of those places would find it only as
+// the daemon ran. The Manager is the daemon's one Source.
+type Source interface {
+	Tokens
+	OwnerInstallations
 }
 
 // InstalledOwners is the owner accounts role's App is installed on, lowercased and sorted, read
 // from GitHub at the moment of the call: GET /app/installations under the App's own JWT, every
 // page of it (discoverInstallations), or, in token mode, the accounts the command's release of
 // every installation names (runTokenCommand with no owner, which records them as this role's
-// installations itself).
+// installations itself). An installation GitHub lists as suspended is none of them: GitHub
+// refuses every token of a suspended installation, so it is its own statement that the
+// installation serves nothing (discoverInstallations), and the secrets broker leaves one out of
+// every release for the same reason (its GitHubApp.Mint), which is why a release names none.
 //
 // It asks GitHub every time rather than answering from the installations the Manager has found
 // before, because its caller builds a bundle from the answer: an owner the account removed the
@@ -694,32 +691,52 @@ type OwnerInstallations interface {
 // bearable: there the read is runTokenCommand with no owner, the release of every installation
 // the App has, which is a subprocess, a request to the secrets broker and a whole set of
 // tokens thrown away but for the owner names.
+//
+// The shared read belongs to no caller (readSharedInstallations): it runs on a context detached
+// from the one that started it, bounded by installationReadLimit, and every caller, the first
+// among them, waits for it under its own context. Run under the first caller's context, an API
+// request that a client cancelled would end the read and hand `context canceled` to a launch
+// that joined it, failing a bundle over nothing that happened to the launch or to GitHub.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	m.mu.Lock()
-	if waiting, ok := m.pendingInstallations[role]; ok {
-		m.mu.Unlock()
-		select {
-		case <-waiting.done:
-			return slices.Clone(waiting.owners), waiting.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	read, joined := m.pendingInstallations[role]
+	if !joined {
+		read = &pendingInstallations{done: make(chan struct{})}
+		m.pendingInstallations[role] = read
+		go m.readSharedInstallations(context.WithoutCancel(ctx), role, read)
 	}
-	waiting := &pendingInstallations{done: make(chan struct{})}
-	m.pendingInstallations[role] = waiting
 	m.mu.Unlock()
-
-	owners, err := m.readInstalledOwners(ctx, role)
-	m.mu.Lock()
-	waiting.owners, waiting.err = owners, err
-	delete(m.pendingInstallations, role)
-	close(waiting.done)
-	m.mu.Unlock()
-	return owners, err
+	select {
+	case <-read.done:
+		return slices.Clone(read.owners), read.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
-// readInstalledOwners is the read itself, made by the one caller that found no read of role's
-// App already running (InstalledOwners).
+// installationReadLimit bounds the one installation read every overlapping caller of an App
+// shares (InstalledOwners), which no caller's own deadline bounds: longer than the thirty
+// seconds a runtime gives a call (sandbox's apiTimeout), so a caller that joins late is still
+// answered, and short enough that a read GitHub never answers is dropped and the next caller
+// asks afresh rather than joining it for ever.
+const installationReadLimit = time.Minute
+
+// readSharedInstallations makes the read the callers of InstalledOwners share and hands its
+// answer to every one of them through read. detached carries the values of the context that
+// started it and none of its cancellation.
+func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
+	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
+	defer cancel()
+	owners, err := m.readInstalledOwners(bounded, role)
+	m.mu.Lock()
+	read.owners, read.err = owners, err
+	delete(m.pendingInstallations, role)
+	close(read.done)
+	m.mu.Unlock()
+}
+
+// readInstalledOwners is the read itself, made once for every caller of role's App whose call
+// overlaps it (InstalledOwners, readSharedInstallations).
 func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
 	app, err := m.app(role)
 	if err != nil {
@@ -788,11 +805,19 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 			Account struct {
 				Login string `json:"login"`
 			} `json:"account"`
+			SuspendedAt *string `json:"suspended_at"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return nil, fmt.Errorf("GitHub App installation discovery returned an invalid response")
 		}
 		for _, installation := range payload {
+			// A suspended installation is GitHub's own statement that it serves nothing: every
+			// token asked of it is refused 403. Listed, its owner would be a directory of every
+			// role's bundle whose mint can only fail, and an owner nothing can be minted on is
+			// what not being installed means.
+			if installation.SuspendedAt != nil {
+				continue
+			}
 			id, err := installationID(installation.ID)
 			if err != nil || installation.Account.Login == "" {
 				return nil, fmt.Errorf("GitHub App installation discovery returned an invalid installation account")

@@ -37,7 +37,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			// The holder's agent subject, which the stream stores and acknowledges as a forward
 			// needs; no session subscribes it (INFRA-771), so the acknowledgement is the only
 			// reply.
-			holderSubject := contracts.AgentSubject("drain-late-bind-holder")
+			holderSubject := contracts.LegacyAgentSubject("drain-late-bind-holder")
 
 			// The handler forwards each role message to the holder, as the listener's role lane
 			// does, once the drain is under way. Late, the connection is already draining, which

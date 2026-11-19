@@ -113,6 +113,31 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 	return admission
 }
 
+// architectStart is the task admission queues with the start of a root architect
+// (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
+// workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
+// the design gate rows it holds and the run its architect claim last served — under the gate
+// steps its own admission runs, and what its tree is owed where a person decided something on it
+// while nobody in the tree could hear them (decided). A test about what admission writes names the
+// task through this helper; which shape each root gets, and the whole text of each shape, are
+// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
+// and the delivery to a launched architect in internal/daemon
+// (TestAFreshAdmissionGivesItsArchitectItsStartTask).
+func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
+	t.Helper()
+	root := issue(t, pool, key)
+	var start workflow.ArchitectStart
+	inTx(t, pool, func(tx pgx.Tx) {
+		var err error
+		start, err = workflow.ArchitectStartOf(context.Background(), tx, record.NewStore(), admission.engine.GatedSteps(), root)
+		if err != nil {
+			t.Fatalf("read what the architect task of %s is derived from: %v", key, err)
+		}
+	})
+	start.Decided = decided
+	return workflow.ArchitectStartTask(start)
+}
+
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, engine, admission); err != nil {
@@ -134,12 +159,15 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 }
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
-// with every task-less phase start left out. A phase worker's start is one row, which carries
-// the task and waits for the issue's admission slot (workflow.StartOrOwe); a start that names a
-// phase and carries no task is a role admission brings back beside it, which asks that role
-// nothing. These assertions are about the starts that carry work, as the workflow package's own
-// helpers are. A start that names no phase is no phase worker's — the architect start promotion
-// makes, the production check's look — and is left in.
+// with every task-less phase start and every step record left out. A phase worker's start is one
+// row, which carries the task and waits for the issue's admission slot (workflow.StartOrOwe); a
+// start that names a phase and carries no task is a role admission brings back beside it, which
+// asks that role nothing. These assertions are about the starts that carry work, as the workflow
+// package's own helpers are. A start that names no phase is no phase worker's — the architect
+// start promotion makes, the production check's look — and is left in. A step record is written
+// beside the rows of each start and end of a step, and the tests of those sites read it exactly
+// (workflow's step_sites_test.go and step_sites_linger_test.go, and step_records_test.go here for
+// admission's own sites), so every row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has
@@ -157,6 +185,9 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 		var row record.OutboxRow
 		if err := rows.Scan(&row.Kind, &row.Issue, &row.Payload); err != nil {
 			t.Fatalf("scan outbox: %v", err)
+		}
+		if row.Kind == record.OutboxKindStepRecord {
+			continue
 		}
 		payload, err := record.DecodeOutboxPayload(row)
 		if err != nil {
@@ -189,11 +220,11 @@ func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 }
 
 // waitingLine is the waiting line of project, in its order, under the design gate of steps (nil
-// for the deployment's single step spec). It reads the line exactly as admission does, through
-// the one judgement it promotes from (blockers.JudgeLine): the mirror rows of every issue a
-// blocker can hold first, so the line leaves out an issue one of them holds where it stands
-// (record.LineFacts.Held), the children-first judgement next, so it leaves out a parent whose
-// own Dispatch children are still open (record.LineFacts.ChildWaits), and then the line.
+// for the deployment's single step spec). It reads the stored state and judges the line through
+// blockers.JudgeLine, the judgement admission promotes from: the held set
+// (record.LineFacts.Held), the children-first waits (record.LineFacts.ChildWaits) and the waits
+// of started issues (record.LineFacts.Waits), and then the line. It runs none of the releases a
+// pass runs before it judges the line, so it shows the line as the last pass left it.
 func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []record.DesignStep) []string {
 	t.Helper()
 	var got []string
@@ -297,9 +328,24 @@ func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 // that seed their own records (newAdmissionForProject).
 func seedSlottedForProject(t *testing.T, pool *pgxpool.Pool, project, key, rank string) {
 	t.Helper()
+	seedSlottedInPhase(t, pool, project, key, rank, phase.Admitted, nil)
+}
+
+// seedSlottedInPhase is the general form of seedSlotted: the root stands in the phase given
+// rather than at admitted, and shape is where a test says what else the record carries. It is
+// the package's one slotted-issue fixture, so a test of a started issue in a worker phase seeds
+// the record, the slot row and the tree lifecycle exactly as a test of one at admitted does.
+func seedSlottedInPhase(t *testing.T, pool *pgxpool.Pool, project, key, rank string, at phase.Phase, shape func(*record.Issue)) {
+	t.Helper()
+	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: project, Title: key, Tree: key, Phase: at, Generation: 1, Status: "in_progress",
+		Rank: rank, HandedOver: true}
+	if shape != nil {
+		shape(&issue)
+	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: project, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: rank, HandedOver: true}); err != nil {
+		if err := records.PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put active issue: %v", err)
 		}
 		slots, err := records.Slots(context.Background(), tx)
@@ -408,9 +454,13 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 		listed[i] = intake.ListedIssue(summary)
 	}
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped, settle := intake.OpenSettlers(scoped, admission)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			t.Fatalf("Reconcile: %v", err)
+		}
+		if err := settle(scoped, tx); err != nil {
+			t.Fatalf("settle the reconcile: %v", err)
 		}
 	})
 	committed()

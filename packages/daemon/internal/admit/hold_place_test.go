@@ -61,7 +61,8 @@ func reachConsumer(t *testing.T, pool *pgxpool.Pool, admission *Admission, event
 // resume, a root a Dispatch link holds, a tree whose cleanup is reserved, a tree another
 // authority holds — is a judgement the pass has made, so the line moves on and the next pass
 // makes it again. A hold is the absence of a judgement: passing the candidate over would hand
-// its slot to an issue ranked below it, and a slot is never taken back, so the inversion would
+// its slot to an issue ranked below it, and a slot is taken back only from an issue that waits on
+// another issue (releaseSlotsForWaits), never to restore rank order, so the inversion would
 // be permanent. Both holds are read through the one predicate promoteHolds builds, so neither
 // can drift from the other.
 //

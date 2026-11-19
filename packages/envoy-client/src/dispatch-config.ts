@@ -1,3 +1,4 @@
+import { isCleanUrl } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
   type BearerSource,
@@ -49,12 +50,18 @@ export interface ActiveDispatchConfig {
   readonly url: string;
   /**
    * What every request presents: the bearer a variable or a file gave (`bearerCredential`), or
-   * the access token this machine traded its own identity for at the secrets broker, presented
-   * under the `DPoP` scheme with a fresh proof of this process's key on each request
-   * (`brokerCredential`). One field, so no caller can present half of it.
+   * the access token the secrets broker traded this machine's identity for, or the identity of a
+   * person signed in on it, presented under the `DPoP` scheme with a fresh proof of the token's
+   * key on each request (`brokerCredential`). One field, so no caller can present half of it.
    */
   readonly credential: RequestCredential;
   readonly publicUrl?: string;
+  /**
+   * Set where the link base (`publicUrl`, else `url`) is not a plain http(s) URL, so every link
+   * the `dispatch` command prints is a `dispatch://` reference (`linkBaseOf`): the notice a
+   * session's start prints once, naming the setting that base came from and never its value.
+   */
+  readonly linkNotice?: string;
 }
 
 /** Dispatch on, or off with the one notice or error that says why (`SectionOff`). */
@@ -162,11 +169,12 @@ export function lostDispatchUrlNotice(
  * `options.commands` is `kept`: then only an outcome a run already kept in this process answers,
  * and with none Dispatch is off with an error saying the command has not run (`fileValue`).
  * Dispatch is on when its URL resolves and a credential does: one of those bearers, or — when no
- * bearer is configured at all — this machine's own identity traded at the secrets broker
- * (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`), which is a
- * DPoP-bound access token rather than a bearer, traded under `options.session`. The bearers are
- * resolved first and unchanged, so a session that has one keeps behaving exactly as it did. Off,
- * it says why: a `notice` when nothing names it or a file turns it off, an `error` otherwise.
+ * bearer is configured at all — an access token traded at the secrets broker (`AGENT_SECRETS_URL`
+ * with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`) for this machine's identity, or for
+ * a person's sign-in on it where one is there, which is a DPoP-bound access token rather than a
+ * bearer, traded under `options.session`. The bearers are resolved first and unchanged, so a
+ * session that has one keeps behaving exactly as it did. Off, it says why: a `notice` when nothing
+ * names it or a file turns it off, an `error` otherwise.
  * Nothing naming it while a token variable is set is said as the `DISPATCH_URL` the shell lost
  * (`lostDispatchUrlNotice`).
  *
@@ -175,8 +183,11 @@ export function lostDispatchUrlNotice(
  * `dispatch.token` — and a machine that can trade nothing turns Dispatch off with an error saying
  * so, rather than presenting whatever bearer the box happens to hold. It is a deployment's word
  * about the session it launches, which `legion controller start` sets under `dispatch_token_broker`
- * so that the operator's own envoy.json cannot write Dispatch as the operator. Any other value is
- * a mistake in the deployment, refused rather than read as on or as off.
+ * so that the operator's own envoy.json cannot write Dispatch as the operator, and beside it
+ * `PERSON_SIGNIN_TRADE=off` (`@legion/broker-client`'s `PERSON_TRADE_VAR`), so that route trades
+ * this machine's identity and never the operator's sign-in. `DISPATCH_TOKEN_BROKER` unset or blank
+ * reads as off, and a value other than `1` written there is a mistake in the deployment, refused
+ * rather than read as on or as off.
  */
 export function dispatchSettings(
   env: DispatchEnvironment,
@@ -190,7 +201,7 @@ export function dispatchSettings(
 ): DispatchConfigResolution {
   const target = dispatchTarget(env, config);
   if (!target.enabled) return target;
-  const { url, source } = target;
+  const { url, urlSetting, source } = target;
   let credential: RequestCredential;
   try {
     credential =
@@ -212,11 +223,17 @@ export function dispatchSettings(
   if (publicUrl !== undefined && (publicParsed === undefined || publicParsed.port === "0")) {
     return offWithError("DISPATCH_PUBLIC_URL must be an http or https URL");
   }
+  const base = publicUrl === undefined ? url : withoutTrailingSlashes(publicUrl);
+  const linkNotice = linkNoticeFor(
+    base,
+    publicUrl === undefined ? urlSetting : "DISPATCH_PUBLIC_URL"
+  );
   return {
     enabled: true,
     url,
     credential,
     ...(publicUrl === undefined ? {} : { publicUrl: withoutTrailingSlashes(publicUrl) }),
+    ...(linkNotice === undefined ? {} : { linkNotice }),
   };
 }
 
@@ -234,28 +251,38 @@ export function dispatchUrl(env: DispatchEnvironment, config: EnvoyConfig): stri
 }
 
 /** Where Dispatch's credential comes from: a variable, a file with the server written beside it,
- * or the secrets broker, which this machine's own identity is traded at. */
+ * or the secrets broker, where this machine's identity, or a person's sign-in on it, is traded. */
 type TokenSource = Exclude<BearerSource, { readonly kind: "none" }> | { readonly kind: "broker" };
 
 /** `DISPATCH_TOKEN_BROKER`'s value as a question dispatchTarget can ask: true where the deployment
- * has said this session's Dispatch credential is this machine's own identity and nothing else,
+ * has said this session's Dispatch credential is traded at the secrets broker and nothing else,
  * false where it says nothing, and a refusal for any other value, which is a deployment that meant
  * one of the two and wrote neither. */
 function brokerRouteForced(env: DispatchEnvironment): boolean | SectionOff {
   const written = (env.DISPATCH_TOKEN_BROKER ?? "").trim();
   if (written === "") return false;
   if (written === "1") return true;
+  // Its value is not quoted: a token pasted into the wrong variable would be printed.
   return offWithError(
-    `DISPATCH_TOKEN_BROKER is "${written}" and takes 1: set it to 1 where this session's Dispatch credential is this machine's own identity traded at the secrets broker, and leave it unset where a bearer is read as usual`
+    "DISPATCH_TOKEN_BROKER takes 1: set it to 1 where this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and leave it unset where a bearer is read as usual"
   );
 }
 
-/** Dispatch as `dispatchSettings` resolves it up to its token: its URL and the token's source, or
- * off saying why. Reads a `DISPATCH_TOKEN_FILE`, never runs a `!` command. */
+/** Dispatch as `dispatchSettings` resolves it up to its token: its URL, the setting that URL was
+ * read from (`urlSetting`: `DISPATCH_URL`, `dispatch.serverUrl in <file>`, or Dispatch's default),
+ * and the token's source, or off saying why. Reads a `DISPATCH_TOKEN_FILE`, never runs a `!`
+ * command. */
 function dispatchTarget(
   env: DispatchEnvironment,
   config: EnvoyConfig
-): SectionOff | { readonly enabled: true; readonly url: string; readonly source: TokenSource } {
+):
+  | SectionOff
+  | {
+      readonly enabled: true;
+      readonly url: string;
+      readonly urlSetting: string;
+      readonly source: TokenSource;
+    } {
   if (config.kind === "failed") return offWithError(config.error);
   const forced = brokerRouteForced(env);
   if (typeof forced !== "boolean") return forced;
@@ -316,11 +343,17 @@ function dispatchTarget(
     }
     if (route.traded) {
       const brokered = withoutTrailingSlashes(explicitUrl ?? own.serverUrl ?? DEFAULT_SERVER_URL);
-      return { enabled: true, url: brokered, source: { kind: "broker" } };
+      const urlSetting =
+        explicitUrl !== undefined
+          ? "DISPATCH_URL"
+          : own.serverUrl !== undefined
+            ? `dispatch.serverUrl in ${config.path}`
+            : DEFAULT_URL_SETTING;
+      return { enabled: true, url: brokered, urlSetting, source: { kind: "broker" } };
     }
     if (forced) {
       return offWithError(
-        `DISPATCH_TOKEN_BROKER is set, so this session's Dispatch credential is this machine's own identity traded at the secrets broker, and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
+        `DISPATCH_TOKEN_BROKER is set, so this session's Dispatch credential is traded at the secrets broker (the person signed in on this machine, else the machine's own identity), and ${route.gap}: Dispatch is off rather than written with whatever bearer this box holds`
       );
     }
     return offWithError(
@@ -332,7 +365,28 @@ function dispatchTarget(
   const url = withoutTrailingSlashes(
     explicitUrl ?? (source.kind === "file" ? source.server : (own.serverUrl ?? DEFAULT_SERVER_URL))
   );
-  return { enabled: true, url, source };
+  const urlSetting =
+    explicitUrl !== undefined
+      ? "DISPATCH_URL"
+      : source.kind === "file"
+        ? `dispatch.serverUrl in ${source.path}`
+        : own.serverUrl !== undefined
+          ? `dispatch.serverUrl in ${config.path}`
+          : DEFAULT_URL_SETTING;
+  return { enabled: true, url, urlSetting, source };
+}
+
+/** What names Dispatch's default address, which no setting wrote. */
+const DEFAULT_URL_SETTING = "Dispatch's default URL";
+
+/**
+ * The start notice for links a session prints as `dispatch://` references (`linkBaseOf`), or
+ * undefined where the link base prints: `setting` names the setting the base came from, never its
+ * value, which is what cannot be printed.
+ */
+function linkNoticeFor(linkBase: string, setting: string): string | undefined {
+  if (isCleanUrl(linkBase)) return undefined;
+  return `${setting} is not a plain http(s) URL (it carries user info, a query, a fragment, '%' or '\\'), so the links Dispatch commands print are dispatch:// references; set DISPATCH_PUBLIC_URL to a plain https URL for dashboard links`;
 }
 
 /**

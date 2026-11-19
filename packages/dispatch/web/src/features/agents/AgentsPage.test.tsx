@@ -37,11 +37,16 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
+// its shell (`MarginColumn.tsx`). No row here reads the margin or a broadcast page, and a load
+// that a row starts and ends before lands in a later row, where React's report of it is outside
+// `act`. So each module is loaded here, with the test file, and no row starts or waits for it.
 import "../agent-view/AgentConversationPage";
+import "../margin/Margin";
+import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents } from "./AgentsPage";
@@ -82,7 +87,17 @@ async function refuseBroadcast(): Promise<never> {
 // fixture frozen at an absolute date would age out of every retry assertion.
 const recentAttemptAt = new Date(Date.now() - 60_000).toISOString();
 
+/** When the file loaded, which most fixture times below are dated from. A time whose reading a
+ *  row asserts to the minute - a `seen` label, or the two minutes that keep a session Active - is
+ *  dated with `ago` as the row builds it instead: the page reads the clock as it draws, and random
+ *  order can run a row a minute or more after the file loaded. */
 const now = Date.now();
+
+/** `ms` before this moment. */
+function ago(ms: number): number {
+  return Date.now() - ms;
+}
+
 const agents = [
   {
     capabilities: ["aside", "btw"],
@@ -250,7 +265,6 @@ function renderAgents({
         recipients: [],
       }
   );
-  const getBlockSchema = spyOn(api, "getBlockSchema").mockResolvedValue({ types: [], version: 1 });
   const createMessageDelivery = spyOn(api, "createMessageDelivery").mockResolvedValue({
     accepted_as: null,
     accepted_at: null,
@@ -297,7 +311,6 @@ function renderAgents({
     createBroadcast,
     createMessageDelivery,
     createMessage,
-    getBlockSchema,
     getBroadcast,
     getInbox,
     getMyAgentState,
@@ -309,7 +322,6 @@ function renderAgents({
     queryClient,
     restore: () => {
       getBroadcast.mockRestore();
-      getBlockSchema.mockRestore();
       getMyAgentState.mockRestore();
       createComment.mockRestore();
       createMessage.mockRestore();
@@ -326,6 +338,14 @@ function renderAgents({
     view,
     whoAmI,
   };
+}
+
+/** Reads the agent list again, as the poller's next tick would, inside `act`: the read's answer
+ *  re-renders the page, and the update lands where the test can see it. */
+async function refetchAgents(queryClient: QueryClient): Promise<void> {
+  await act(async () => {
+    await queryClient.refetchQueries({ queryKey: ["agents"] });
+  });
 }
 
 function card(region: HTMLElement, name: string): HTMLElement {
@@ -387,7 +407,9 @@ function groupCount(region: HTMLElement, group: AgentGroup): string {
 
 test("Agents lists live session activity and capability-aware actions", async () => {
   const user = userEvent.setup();
-  const page = renderAgents();
+  const page = renderAgents({
+    listedAgents: [{ ...agents[0], last_seen: ago(30_000) }, agents[1]],
+  });
 
   try {
     await screen.findByRole("heading", { name: "Agents" });
@@ -424,7 +446,7 @@ test("Agents lists live session activity and capability-aware actions", async ()
 test("Agents lists an unresponsive session with its state, neither dropped nor drawn as running", async () => {
   const stalled = {
     ...agents[0],
-    last_seen: now - 6 * 60_000,
+    last_seen: ago(6 * 60_000),
     session_id: "stalled-session",
     state: "unresponsive",
     title: "Stalled",
@@ -484,6 +506,42 @@ test("an agent card sends a plain message in the mode the session takes", async 
     const silent = card(region, "Deaf");
     await expand(user, silent, "Deaf");
     expect(within(silent).getByText("Takes no messages")).toBeTruthy();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A capability that is no delivery mode carries no message, so the card draws none as one: a
+// session listing only such capabilities takes no messages, as one listing none does.
+test("an agent card lists only the delivery modes the session takes", async () => {
+  const user = userEvent.setup();
+  const unknown = {
+    ...agents[1],
+    capabilities: ["future-capability"],
+    session_id: "unknown-session",
+    title: "Unknown",
+  };
+  const mixed = {
+    ...agents[1],
+    capabilities: ["future-capability", "aside"],
+    session_id: "mixed-session",
+    title: "Mixed",
+  };
+  const page = renderAgents({ listedAgents: [...agents, unknown, mixed] });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const silent = card(region, "Unknown");
+    await expand(user, silent, "Unknown");
+    expect(within(silent).getByText("Takes no messages")).toBeTruthy();
+    expect(within(silent).queryByText("future-capability")).not.toBeInTheDocument();
+
+    const listening = card(region, "Mixed");
+    await expand(user, listening, "Mixed");
+    expect(within(listening).getByText("Aside")).toBeTruthy();
+    expect(within(listening).queryByText("Takes no messages")).not.toBeInTheDocument();
+    expect(within(listening).queryByText("future-capability")).not.toBeInTheDocument();
   } finally {
     page.view.unmount();
     page.restore();
@@ -665,7 +723,7 @@ function session(overrides: Partial<Agent> & Pick<Agent, "session_id">): Agent {
   };
 }
 
-const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+const minutesAgo = (minutes: number) => new Date(ago(minutes * 60_000)).toISOString();
 
 test("orderAgents puts who needs you first, then open asks, then Dispatch recency with silent sessions last", () => {
   const needsYou = session({ last_activity: minutesAgo(30), open_asks: 1, session_id: "needy" });
@@ -824,21 +882,21 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
   const olderActivityButNewerHeartbeat: Agent = {
     ...agents[1],
     last_activity: minutesAgo(5),
-    last_seen: now - 1_000,
+    last_seen: ago(1_000),
     session_id: "z-session",
     title: "Zulu",
   };
   const newerActivityButOlderHeartbeat: Agent = {
     ...agents[1],
     last_activity: minutesAgo(1),
-    last_seen: now - 9 * 60_000,
+    last_seen: ago(9 * 60_000),
     session_id: "a-session",
     title: "Alpha",
   };
   const noActivity: Agent = {
     ...agents[1],
     last_activity: null,
-    last_seen: now,
+    last_seen: Date.now(),
     session_id: "none-session",
     title: "None",
   };
@@ -868,7 +926,7 @@ test("Agents lists each session in its group, orders the rows inside one, and ke
     expect(groupCount(region, "active")).toBe("(1)");
     expect(groupCount(region, "idle")).toBe("(2)");
     expect(groupCount(region, "quiet")).toBe("(0)");
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect(titles()).toEqual(["Planner", "Alpha", "Zulu", "None"]);
 
     // Collapsing a group hides its rows and no others, and opening it puts them back.
@@ -960,18 +1018,21 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
   }
 });
 
-/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. */
-const stale: Agent = {
-  ...agents[1],
-  last_activity: new Date(now - 30 * 60_000).toISOString(),
-  last_seen: now - 11 * 60_000,
-  session_id: "stale-session",
-  title: "Stale",
-};
+/** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. Dated as a
+ *  row builds it, since a row reads its `seen 11 minutes ago`. */
+function staleAgent(): Agent {
+  return {
+    ...agents[1],
+    last_activity: minutesAgo(30),
+    last_seen: ago(11 * 60_000),
+    session_id: "stale-session",
+    title: "Stale",
+  };
+}
 
 test("Agents puts a session unseen for ten minutes in Quiet, which collapses and opens", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [stale, ...agents] });
+  const page = renderAgents({ listedAgents: [staleAgent(), ...agents] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -1014,7 +1075,7 @@ test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () =
   const user = userEvent.setup();
   const page = renderAgents({
     agentState: { "stale-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
-    listedAgents: [...agents, stale],
+    listedAgents: [...agents, staleAgent()],
   });
 
   try {
@@ -1041,7 +1102,7 @@ test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () =
 test("Agents lists a session with an open ask under Needs you alone, however long it has been silent", async () => {
   const user = userEvent.setup();
   const silentForHours: Agent = {
-    ...stale,
+    ...staleAgent(),
     last_activity: null,
     last_seen: now - 2 * 60 * 60_000,
   };
@@ -2059,7 +2120,8 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
 
@@ -2191,7 +2253,8 @@ test("a reply inherits the mode of the exchange's newest attempt even within one
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     await user.click(within(answer).getByRole("button", { name: "Reply" }));
     await type(user, within(planner).getByRole("textbox", { name: "Comment" }), "Ship it.");
@@ -2674,7 +2737,7 @@ test("a restored broadcast shows the mode it re-sends, even after the selection'
 
     // The Reviewer now takes BTW too, so the selection's own mode would be BTW.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const sends = await screen.findByRole("region", { name: "Sends" });
     await within(sends).findByText(`Could not send to 1 agent: ${BROADCAST_REFUSED}`);
     await user.click(within(sends).getByRole("button", { name: "Restore draft" }));
@@ -2717,7 +2780,7 @@ test("a selected agent that went away does not change what Restore draft re-send
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
 
     page.listAgents.mockResolvedValue([planner]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(
         within(region).queryByRole("checkbox", { name: "Select Reviewer for broadcast" })
@@ -2804,7 +2867,7 @@ test("a selected agent that came back is shown as not in the restored send, and 
 
     // The Reviewer now takes BTW: the live plan would reach it, the refused request does not.
     page.listAgents.mockResolvedValue([planner, { ...reviewer, capabilities: ["aside", "btw"] }]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await restoreDraft(1);
     expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
       "Broadcast to 1 of 2 selected"
@@ -2832,8 +2895,10 @@ test("a selected agent that came back is shown as not in the restored send, and 
   }
 });
 
-// The security review's minor: only a session an edit would bring in is "not in the refused send";
-// one the live plan still leaves out keeps the reason the live plan gives.
+// The security review's minor: only a session the live plan would include is "not in the refused
+// send"; one the mode still leaves out keeps the reason the mode gives. A session gone from the
+// live list is one the live plan would include - it may be stopped rather than ended, and the
+// server decides - so an edit brings it back in.
 test("a restored send names a selected session it leaves out by the reason an edit would keep, unless it has come back", () => {
   const [planner, reviewer] = agents;
   const restored = {
@@ -2855,7 +2920,7 @@ test("a restored send names a selected session it leaves out by the reason an ed
     composedBroadcast(composition, currentList(live)).plan.excluded.map((item) => item.reason);
 
   expect(reasons([planner, reviewer])).toEqual(["does not advertise BTW"]);
-  expect(reasons([planner])).toEqual(["no live session"]);
+  expect(reasons([planner])).toEqual(["not in the refused send; edit to include it"]);
   expect(reasons([planner, { ...reviewer, capabilities: ["aside", "btw"] }])).toEqual([
     "not in the refused send; edit to include it",
   ]);
@@ -2874,10 +2939,11 @@ test("a selected session missing from an agent list that is not current is unkno
   const refilling: BroadcastRoster = { agents: [reviewer], current: false, refilling: true };
   const failed: BroadcastRoster = { agents: [reviewer], current: false, refilling: false };
 
-  // A current list that no longer holds the Planner says it has gone.
+  // A current list that no longer holds the Planner still names it a recipient, and nothing to
+  // check: it may be stopped rather than ended, which only the server can tell (INFRA-626).
   expect(broadcastPlan(selected, currentList([reviewer]), "aside")).toEqual({
-    excluded: [{ agent: undefined, reason: "no live session", sessionID: planner.session_id }],
-    recipients: [reviewer.session_id],
+    excluded: [],
+    recipients: [planner.session_id, reviewer.session_id],
     unchecked: [],
   });
   // The same rows from a refilling list say nothing of who is absent.
@@ -2940,9 +3006,17 @@ test("a restored send claims no absence from an agent list that is not current",
       },
     ],
   });
-  // A current list still says the Planner has nothing to check and the Reviewer has gone.
+  // A current list says the Planner has nothing to check, and leaves the unnamed Reviewer out
+  // only because the request does not name it: its absence from the list is no exclusion of its
+  // own, so an edit would include it (INFRA-626).
   expect(composedBroadcast(composition, currentList([planner])).plan).toEqual({
-    excluded: [{ agent: undefined, reason: "no live session", sessionID: reviewer.session_id }],
+    excluded: [
+      {
+        agent: undefined,
+        reason: "not in the refused send; edit to include it",
+        sessionID: reviewer.session_id,
+      },
+    ],
     recipients: [planner.session_id],
     unchecked: [],
   });
@@ -3043,15 +3117,19 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
         .getAllByRole("button")
         .map((chip) => chip.textContent);
 
-    // A current read without the Planner says it has gone.
+    // A current read without the Planner keeps it a recipient, named by its id with no reason:
+    // it may be stopped rather than ended, which the server decides (INFRA-626).
     page.listAgents.mockResolvedValue([reviewer]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
-    await waitFor(() => expect(chips()[0]).toEndWith(" · no live session ✕"));
+    await refetchAgents(page.queryClient);
+    await waitFor(() => expect(chips()[0]).toBe("session:planner-… ✕"));
     expect(chips()[1]).toBe("Reviewer ✕");
+    expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
+      "Broadcast to 2 of 2 selected"
+    );
 
     // A refilling read keeps the Reviewer's row and says nothing of the Planner's absence.
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(chips()[0]).toEndWith(
       ` · couldn't check whether it is running. ${AGENT_LIST_REFILLING} ✕`
@@ -3205,9 +3283,10 @@ test("a broadcast Dispatch has not confirmed is tried again under its key until 
     expect(page.createBroadcast).toHaveBeenCalledTimes(1);
 
     for (const [index, wait] of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000].entries()) {
-      await tick(wait - 1);
+      // tick's last round moves the clock 1 ms: it stands at wait - 1 here, at wait after tick(0).
+      await tick(wait - 2);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 1);
-      await tick(1);
+      await tick(0);
       expect(page.createBroadcast).toHaveBeenCalledTimes(index + 2);
       // 1 + 2 + 4 + 8 + 16 s is past the send's 30 s deadline: still the server's, not refused.
       if (index === 4) {
@@ -3394,9 +3473,8 @@ test("Send says which of its reasons stops it, where that reason is shown, and t
     );
   const both = [planner.session_id, reviewer.session_id];
   const tail = ". Nothing is sent to them, and no other mode is substituted.";
-  // The line keeps each excluded session as an agent part, for `AgentName` to draw: by its
-  // registry title while it is listed, else by its ID.
-  const gone = (sessionId: string) => ({ sessionId, storedTitle: undefined });
+  // The line keeps each excluded session as an agent part, for `AgentName` to draw, by its
+  // registry title.
   const listed = (agent: Agent) => ({ sessionId: agent.session_id, storedTitle: agent.title });
   // Nobody reached: the label stops counting, and the Excluded line is the notice and the reason.
   const nobody = (line: AgentPart[]) => ({
@@ -3406,32 +3484,21 @@ test("Send says which of its reasons stops it, where that reason is shown, and t
     refusalOnNotice: true,
   });
 
-  // Every selected session has left the registry: the line names each by its ID, and no mode
-  // would help.
-  expect(state(both, [], "btw")).toEqual(
-    nobody([
-      "Excluded: ",
-      gone(planner.session_id),
-      " (no live session)",
-      ", ",
-      gone(reviewer.session_id),
-      " (no live session)",
-      tail,
-    ])
-  );
-  // One gone, one without the mode: each with its own cause, then the mode that reaches the
-  // live one.
-  expect(state(both, [reviewer], "btw")).toEqual(
-    nobody([
-      "Excluded: ",
-      gone(planner.session_id),
-      " (no live session)",
-      ", ",
-      listed(reviewer),
-      " (does not advertise BTW)",
-      `${tail} Sending as Aside would reach 1 of them.`,
-    ])
-  );
+  // A selected session gone from the live list is still a recipient: Envoy may know it and it
+  // may simply be stopped, which the server decides and the sent broadcast names (INFRA-626).
+  expect(state(both, [], "btw")).toEqual({
+    label: "Send to 2",
+    notice: null,
+    refusal: null,
+    refusalOnNotice: false,
+  });
+  // One gone, one without the mode: only the mode excludes, and the gone one is reached.
+  expect(state(both, [reviewer], "btw")).toEqual({
+    label: "Send to 1",
+    notice: ["Excluded: ", listed(reviewer), " (does not advertise BTW)", tail],
+    refusal: null,
+    refusalOnNotice: false,
+  });
   // The hint picks the mode that reaches the most: Aside reaches both, BTW only the Planner.
   expect(state(both, agents, "steer").refusal?.at(-1)).toMatch(
     / Sending as Aside would reach 2 of them\.$/
@@ -3562,6 +3629,8 @@ test("the header checkbox follows the filters and its count never hides a select
 
 test("the header checkbox selects a row a collapsed group hides, and the group says how many", async () => {
   const user = userEvent.setup();
+  // Planner spoke a minute before this row runs, so it is Active, outside the group it folds.
+  const planner: Agent = { ...agents[0], last_activity: minutesAgo(1) };
   // Seen half a minute ago and never heard from by Dispatch: Idle.
   const silent: Agent = {
     ...agents[0],
@@ -3570,7 +3639,7 @@ test("the header checkbox selects a row a collapsed group hides, and the group s
     session_id: "silent-session",
     title: "Silent",
   };
-  const page = renderAgents({ inboxRows: [], listedAgents: [agents[0], silent] });
+  const page = renderAgents({ inboxRows: [], listedAgents: [planner, silent] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -3641,6 +3710,8 @@ test("a refused send's row shows its message formatted on one line, with its who
 // expanded in there. Nobody can see it, so a reply that arrives then must stay unread - in the
 // navigation and on the row - until the group opens and puts the conversation back on screen.
 test("an open row a collapsed group hides marks nothing read, and opening the group reads it", async () => {
+  // A body is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const asked = exchange("m1", "Still there?", "2026-09-14T01:00:00Z");
@@ -3648,7 +3719,7 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
   // arrives and after it: the group holding it does not change under the hidden row.
   const page = renderAgents({
     inboxRows: [{ ...inbox[0], author: { id: "stale-session", kind: "session" }, id: "ask-stale" }],
-    listedAgents: [stale, ...agents],
+    listedAgents: [staleAgent(), ...agents],
     messages: [asked],
   });
 
@@ -3676,7 +3747,9 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
       },
     ]);
     page.getMyAgentState.mockResolvedValue({ "stale-session": { unread_replies: 1 } });
-    await page.queryClient.invalidateQueries();
+    await act(async () => {
+      await page.queryClient.invalidateQueries();
+    });
     await within(staleCard).findByText("Yes, still here.");
     // A mark the hidden row sent would go out from an effect a few microtasks on; give it a
     // task, so the assertion below is not merely early.
@@ -3757,7 +3830,9 @@ test("i on a row collapsed with its picker open goes back into the picker's sele
     await expand(user, planner, "Planner");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
-    planner.focus();
+    act(() => {
+      planner.focus();
+    });
     // The key goes to the focused row; clicking it would collapse the card the key has to reach.
     await user.keyboard("i");
     const select = within(planner).getByRole("combobox", { hidden: true, name: "Issue" });
@@ -3783,7 +3858,7 @@ test("a registry poll that fails keeps every row and what it holds, and says so"
     await type(user, field, "Half a thought");
 
     page.listAgents.mockRejectedValue(new Error("Envoy listener unreachable"));
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Could not refresh agents: Envoy listener unreachable"
     );
@@ -3813,7 +3888,7 @@ test("a refilling registry keeps every row, says it is refilling, and ends no se
     await screen.findByRole("region", { name: "Replied, no longer connected" });
 
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
       AGENT_LIST_REFILLING
     );
@@ -3835,7 +3910,7 @@ test("a refilling registry never says no agents are connected", async () => {
   try {
     await screen.findByText("No agents are connected.");
     page.listAgents.mockRejectedValue(refillingError());
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await screen.findByTestId("agent-list-refilling");
     expect(screen.queryByText("No agents are connected.")).toBeNull();
     expect(screen.queryByText(/Could not (load|refresh) agents/)).toBeNull();
@@ -3885,12 +3960,12 @@ test("a row back after its session left mid-send holds the send it left until it
     );
 
     page.listAgents.mockResolvedValue([agents[1]]);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     await waitFor(() =>
       expect(within(region).queryByRole("heading", { name: "Planner" })).not.toBeInTheDocument()
     );
     page.listAgents.mockResolvedValue(agents);
-    await page.queryClient.refetchQueries({ queryKey: ["agents"] });
+    await refetchAgents(page.queryClient);
     const back = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     expect(back).not.toBe(planner);
     // A new row for the same session, open where the reader left it: the page holds which rows
@@ -4016,16 +4091,19 @@ test("a link naming a machine opens the page filtered to it, and the filter can 
   }
 });
 
-/** A session on its own machine, so the machine filter has more than two rows to narrow. */
-const deployer: Agent = {
-  ...agents[1],
-  host: "deploy-host",
-  last_activity: new Date(now - 60_000).toISOString(),
-  last_seen: now - 10_000,
-  roles: ["deployer"],
-  session_id: "deploy-session",
-  title: "Deployer",
-};
+/** A session on its own machine, so the machine filter has more than two rows to narrow. It
+ *  spoke a minute before the row that builds it, so a row reads it as Active. */
+function deployerAgent(): Agent {
+  return {
+    ...agents[1],
+    host: "deploy-host",
+    last_activity: minutesAgo(1),
+    last_seen: ago(10_000),
+    roles: ["deployer"],
+    session_id: "deploy-session",
+    title: "Deployer",
+  };
+}
 
 /** The three filters of the row, by the concept each picks from. */
 const FILTER_LABELS = { group: "Group", machine: "Machine", role: "Role" } as const;
@@ -4056,7 +4134,7 @@ function filterOption(filter: keyof typeof FILTER_LABELS, name: string): HTMLEle
 // its own options, takes more than one, says how many are picked, and clears them.
 test("the machine filter is a searchable multi-select that keeps the rows of every machine picked", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [...agents, deployer] });
+  const page = renderAgents({ listedAgents: [...agents, deployerAgent()] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -4099,7 +4177,7 @@ test("the machine filter is a searchable multi-select that keeps the rows of eve
 
 test("the group and role filters are searchable multi-selects of their own", async () => {
   const user = userEvent.setup();
-  const page = renderAgents({ listedAgents: [...agents, deployer] });
+  const page = renderAgents({ listedAgents: [...agents, deployerAgent()] });
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -4522,7 +4600,9 @@ test("a send alice left behind is not resumed for bob, and is dropped", async ()
   reloadTab();
   const bob = renderAgents();
   bob.whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "bob" });
-  bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  act(() => {
+    bob.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "bob" });
+  });
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
     const planner = card(region, "Planner");

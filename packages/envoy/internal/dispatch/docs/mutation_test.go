@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -438,6 +439,55 @@ func TestSnapshotVersionDoesNotAttributeUnchangedDocument(t *testing.T) {
 		t.Fatalf("settled version authors = %#v, want only %v", version.Authors, editor)
 	}
 }
+
+// Another build may have written the latest version: during a release two builds serve one
+// database, and an older renderer escapes some text differently. While no update since that
+// version changed the content, a snapshot writes no version, even though this build renders the
+// document differently, as settlement writes none.
+func TestSnapshotVersionWritesNoVersionForAnotherRenderersMarkdownOfUnchangedContent(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	snapshot := func() VersionResult {
+		t.Helper()
+		tx, err := service.store.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin snapshot transaction: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		snapshotCtx, ledger := service.Join(ctx, tx)
+		defer ledger.Discard()
+		result, err := service.SnapshotVersion(snapshotCtx, artifactID, alice)
+		if err != nil {
+			t.Fatalf("snapshot the document: %v", err)
+		}
+		if err := ledger.Commit(ctx); err != nil {
+			t.Fatalf("commit the snapshot: %v", err)
+		}
+		return result
+	}
+	seedServiceText(t, service, artifactID, "snake_case here")
+	latest := snapshot()
+	if !latest.Wrote {
+		t.Fatal("the snapshot after the seed wrote no version")
+	}
+	var stored string
+	if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, latest.Version.Number).Scan(&stored); err != nil {
+		t.Fatalf("read the latest version: %v", err)
+	}
+	if stored != "snake_case here\n" {
+		t.Fatalf("latest version markdown = %q, want %q", stored, "snake_case here\n")
+	}
+	// An older renderer escaped every underscore.
+	if _, err := service.store.Pool.Exec(ctx, `update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2`, artifactID, latest.Version.Number, `snake\_case here`+"\n"); err != nil {
+		t.Fatalf("store an older renderer's markdown: %v", err)
+	}
+
+	if again := snapshot(); again.Wrote || again.Version.Number != latest.Version.Number {
+		t.Fatalf("snapshot = version %d wrote=%t, want version %d without a write", again.Version.Number, again.Wrote, latest.Version.Number)
+	}
+}
 func TestCommittedSnapshotAndNamedVersionsClearPendingAuthors(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -803,8 +853,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			var answered error
 			if err := joinedWrite(service, func(ctx context.Context) error {
 				tx, _ := txFromContext(ctx)
-				// The issue route holds the issue's row before it writes any document.
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				// The issue route holds the issue's owner lock before it writes any document.
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if answered = unchanged.write(ctx); answered != nil && !errors.Is(answered, ygws.ErrNoChanges) {

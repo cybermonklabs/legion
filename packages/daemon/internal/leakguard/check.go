@@ -128,8 +128,11 @@ func noAnswer(env []string) string {
 	return "/bin/false"
 }
 
-// child is one process this package runs: the shared check in one of its shapes, the gh read of a
-// repository's visibility, or a git command a push's records are read with.
+// child is one process this package runs: the shared check in one of its shapes, a read of a
+// repository's visibility (gh's REST read; where that is refused for a rate limit, gh's GraphQL
+// read and git's ls-remote; where gh failed on its connection, gh's token answer, curl's REST read
+// and git's ls-remote; and where `legion gh` refuses it for an owner the project does not serve,
+// git's ls-remote), or a git command a push's records are read with.
 type child struct {
 	// argv is the command and its arguments, argv[0] naming the program.
 	argv []string
@@ -137,10 +140,22 @@ type child struct {
 	dir string
 	// env is what the child's environment carries beyond the guard's own (Guard.env).
 	env []string
+	// inherit, where it is not nil, is which names of the base environment the child keeps;
+	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
+	// what every child keeps but the visibility read made with no credential (Guard.lsRemote)
+	// and the one made through curl (Guard.curlVisibility).
+	inherit func(name string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
 	files []*os.File
+	// stderr, where it is not nil, takes the child's standard error apart from the standard
+	// output run answers, which the GraphQL visibility read needs to read gh's body alone
+	// (Guard.graphQLVisibility), the curl read to read curl's answer alone
+	// (Guard.curlVisibility), the token read to quote gh's error without its output
+	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
+	// content (Guard.git). Nil answers the two together.
+	stderr io.Writer
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -159,15 +174,16 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together. The error is a child that could not be run at all: one that did not start, or one the
-// end of ctx stopped, which is a *stoppedError. A status is an answer, and no status is not.
+// together unless c.stderr takes err. The error is a child that could not be run at all: one that
+// did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
+// which has no status. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir
-	cmd.Env = g.env(base, c.env...)
+	cmd.Env = g.env(base, c.inherit, c.env...)
 	cmd.Stdin = c.stdin
 	cmd.ExtraFiles = c.files
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole
@@ -176,6 +192,9 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	killed := procgroup.Configure(cmd)
 	var printed bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &printed, &printed
+	if c.stderr != nil {
+		cmd.Stderr = c.stderr
+	}
 	started := time.Now()
 	err := procgroup.Err(cmd.Run())
 	switch {
@@ -238,7 +257,7 @@ func wholeSeconds(d time.Duration) int64 {
 func (g *Guard) shared(ctx context.Context, what string, c child) error {
 	status, printed, err := g.run(ctx, c)
 	if err != nil {
-		return sharedNotRun(what, err)
+		return sharedNotRun(what, err, printed)
 	}
 	return readStatus(what, status, printed)
 }
@@ -247,13 +266,14 @@ func (g *Guard) shared(ctx context.Context, what string, c child) error {
 // for. A check the caller's context stopped is said in the failure's own sentence, which names
 // the check, the time it ran and its bound, with nothing beneath it: the stop's own error would
 // say the same again, with the program's file name for its subject. Any other error stays
-// beneath the sentence that the check could not be run.
-func sharedNotRun(what string, err error) error {
+// beneath the sentence that the check could not be run, with what the check printed before a
+// signal ended it (procgroup.Said).
+func sharedNotRun(what string, err error, printed string) error {
 	var stopped *stoppedError
 	if errors.As(err, &stopped) {
 		return &SetupFailure{What: what, Why: stopped.said("the shared public leak check")}
 	}
-	return &SetupFailure{What: what, Why: "the shared public leak check could not be run", Err: err}
+	return &SetupFailure{What: what, Why: "the shared public leak check could not be run", Err: procgroup.Said(err, printed)}
 }
 
 // readStatus is what a status of the shared check means, for a shape that has no further status

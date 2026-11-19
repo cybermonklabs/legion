@@ -14,6 +14,7 @@ import (
 
 	envoyaws "github.com/sjawhar/envoy/infra/aws"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
+	envoynats "github.com/sjawhar/envoy/infra/nats"
 )
 
 // testSeed is nats-io's vector user seed (nkeys v0.4.15 README.md line 45); testPublicKey is its
@@ -187,6 +188,18 @@ func natsSeedRows() []seedRow[envoyaws.NatsServiceArgs] {
 		{input: "authorization.noAuthUser", set: func(a *A, s bool) string {
 			a.Authorization.NoAuthUser = pick(s, lowerSeed, "example-fallback")
 			return a.Authorization.NoAuthUser
+		}},
+		{input: "authorization.callout.issuer", set: func(a *A, s bool) string {
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: pick(s, testSeed, calloutIssuer), XKey: calloutXKey, ServiceUser: "example-listener"}
+			return a.Authorization.Callout.Issuer
+		}},
+		{input: "authorization.callout.xkey", set: func(a *A, s bool) string {
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: pick(s, lowerSeed, calloutXKey), ServiceUser: "example-listener"}
+			return a.Authorization.Callout.XKey
+		}},
+		{input: "authorization.callout.serviceUser", set: func(a *A, s bool) string {
+			a.Authorization.Callout = &envoynats.AuthCalloutArgs{Issuer: calloutIssuer, XKey: calloutXKey, ServiceUser: pick(s, splitSeed("-"), "example-daemon")}
+			return a.Authorization.Callout.ServiceUser
 		}},
 		{input: "configHeader[1]", set: func(a *A, s bool) string {
 			a.ConfigHeader[1] = "Public keys only, " + pick(s, splitSeed(" "), "today")
@@ -479,7 +492,7 @@ func TestEveryStringInputHasASeedRow(t *testing.T) {
 		var names []string
 		for i := range typ.NumField() {
 			f := typ.Field(i)
-			if k := f.Type.Kind(); k == reflect.Bool || k == reflect.Int || f.Type == reflect.TypeFor[*bool]() {
+			if k := f.Type.Kind(); k == reflect.Bool || k == reflect.Int || f.Type == reflect.TypeFor[*bool]() || f.Type == reflect.TypeFor[*int]() {
 				continue
 			}
 			name, _, _ := strings.Cut(f.Tag.Get("pulumi"), ",")

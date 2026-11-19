@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 )
 
@@ -75,6 +76,7 @@ load:twice) printf "${legion}LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=
 session:refuses) echo "Invalid OMP_SESSION_STORAGE: legion-launch-probe (expected file or sql)" >&2; exit 1 ;;
 session:accepts) exit 0 ;;
 session:dies) echo "database is locked" >&2; exit 1 ;;
+session:killed) echo "database is locked" >&2; kill -KILL $$ ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 *:hang) exec sleep 30 ;;
 esac
@@ -336,18 +338,20 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 			t.Errorf("the %s probe file %s outlived the probe: %v", kind, probe, err)
 		}
 	}
+	// Each variable is read whole, by name (envlisting): a listing also holds PWD and TMPDIR,
+	// whose values can contain any text, and env can print any variable first.
 	for _, kind := range []string{"agents", "load", "session"} {
-		probeEnv := f.read(t, kind+".env.1")
+		probeEnv := envlisting.Vars(f.read(t, kind+".env.1"))
 		for name, value := range env {
-			if !strings.Contains(probeEnv, name+"="+value+"\n") {
+			if got, set := probeEnv[name]; !set || got != value {
 				t.Errorf("the %s probe ran without the image's %s=%s", kind, name, value)
 			}
 		}
 	}
-	if sessionEnv := f.read(t, "session.env.1"); !strings.Contains(sessionEnv, "OMP_SESSION_STORAGE=legion-launch-probe\n") {
-		t.Error("the session-storage probe ran without OMP_SESSION_STORAGE=legion-launch-probe")
+	if got := envlisting.Vars(f.read(t, "session.env.1"))["OMP_SESSION_STORAGE"]; got != "legion-launch-probe" {
+		t.Errorf("the session-storage probe ran with OMP_SESSION_STORAGE=%q, want legion-launch-probe", got)
 	}
-	if strings.Contains(f.read(t, "agents.env.1"), "OMP_SESSION_STORAGE=") {
+	if _, set := envlisting.Vars(f.read(t, "agents.env.1"))["OMP_SESSION_STORAGE"]; set {
 		t.Error("the pi.agents probe ran with the session-storage probe's variable")
 	}
 }
@@ -466,6 +470,9 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 1.5s"}, "agents"},
 		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
 			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
+		// A signal's death has no status: read as one, it was `exited -1 without naming …`.
+		{"Oh My Pi killed before the resolver every time", []string{"available"}, []string{"killed"},
+			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "was ended by signal: killed without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)

@@ -106,7 +106,10 @@ states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
-live sessions with `setLiveSessions` from `e2e/agents.ts`. It starts
+live sessions with `setLiveSessions` from `e2e/agents.ts`, stop one of them with
+`setSessionStopped` (the listener still knows it, so a send to it is stored and
+Dispatch records the attempt `queued`), and say what a send answers it was with
+`setSessionSendState`. It starts
 `e2e/fake-broker.ts` as the secrets broker, so the
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
@@ -262,17 +265,37 @@ the servers, since both serve its origin, so A's and B's ports are held first (a
 `held-port.py keep` each) and each server serves on its keeper's port. Both servers sign
 cookies with one key the run generates, so a person stays signed in whichever answers.
 `DISPATCH_E2E_SERVER_BIN` runs a prebuilt `envoy-dispatch` instead of the one `run-server.sh`
-builds from this checkout, and `DISPATCH_E2E_SERVER_BIN_B` gives Dispatch B one of its own, so a
-run can put two builds of the server against the one database as `DISPATCH_E2E_WEB_DIST_B` puts
-two builds of the dashboard there; `scripts/e2e/dispatch-two-builds.sh` is the proof that uses
+builds from this checkout, and `DISPATCH_E2E_BINARY_B` gives Dispatch B one of its own (the
+harness hands it on as B's `DISPATCH_E2E_SERVER_BIN`), so a run can put two builds of the server
+against the one database as `DISPATCH_E2E_WEB_DIST_B` puts two builds of the dashboard there;
+`scripts/e2e/dispatch-two-builds.sh` and the cross-build spec below are the proofs that use
 them. It runs
 the `*.multiprocess.e2e.ts` specs but the sign-in spec below, in Chromium, which the default run
 leaves out; arguments after `--` reach Playwright
 (`bun run e2e:multiprocess -- <name>.multiprocess.e2e.ts`). A spec
 pins a request to one process with the `X-Dispatch-E2E-Process: a|b` header or a whole browser
-context with the `dispatch-e2e-process` cookie, and reads which process served what from the
-proxy's `/_proxy/requests` and `/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole
-contract. Any `DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
+context with the `dispatch-e2e-process` cookie, or splits a context with the `dispatch-e2e-page`
+and `dispatch-e2e-api` cookies (its page from one process, its API, sockets and `/auth` from the
+other), and reads which process served what from the proxy's `/_proxy/requests` and
+`/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole contract. Any
+`DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
+
+To run one build's page against another build's server, give B a previous release, as CI's
+`dispatch-two-builds` job does with the directory `packages/envoy/scripts/build-dispatch-build.sh`
+writes:
+
+```bash
+DISPATCH_E2E_BINARY_B=<dir>/envoy-dispatch DISPATCH_E2E_WEB_DIST_B=<dir>/web \
+  bun run e2e:multiprocess -- cross-build.multiprocess
+```
+
+B then runs that envoy-dispatch and serves that web dist (both paths absolute or from
+`packages/envoy`). That build must be `legion-envoy-v30.11.0` or later, which
+`build-dispatch-build.sh` refuses to go below: it writes the default assignee every project needs
+since migration `20261111210103`, it serves on the port the harness holds for it, as
+A does, and signs cookies with the run's shared key, so no run names a port for B and the run's
+global setup checks it like any other B. `e2e/cross-build.multiprocess.e2e.ts` splits each browser
+context, its page from one build and its API, sockets and `/auth` from the other.
 
 `DISPATCH_E2E_SIGNIN=oidc` signs people in as a deployment does instead of through dev sign-in:
 the harness also starts `packages/envoy/cmd/dev-oidc-issuer` (`e2e/run-signin-issuer.sh`), and
@@ -522,6 +545,36 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
+`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
+names blocks: a list written over a paragraph's whole text, a list written over the text of a
+nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
+matched item's own marker, and the markdown each edit answers with. It takes the first three
+inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
+that project. The create of that project names `DISPATCH_DEFAULT_ASSIGNEE`, the person its
+unowned work lands on: the bearer acts for no person, so the server refuses a project that names
+none (`400 INVALID_PROJECT`). That input is required with `DISPATCH_URL` and no `PROJECT`; with
+`DATABASE_URL` it defaults to `alice`, whom the instance this run starts seeds and signs in; and
+with a `PROJECT` the server already holds, nothing is created and it is not read. It is the one
+driver that can start its own server: given `DATABASE_URL`, a
+loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
+its own trap. That command truncates and reseeds the database it is given, so before anything
+starts the run asks the server the connection string reaches, through `psql`, which database it
+is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
+through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
+through, and a database of the same name as the shared one on a server it cannot prove is
+another: two names that differ pass, and two equal names pass only where both servers answered a
+port and the ports differ. It parses neither string itself, so the database it judges is the one
+libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
+set, as the instance reads it.
+The connection string the run is given must carry everything libpq needs to connect — host, port,
+user, password and TLS settings among them — since the run unsets every `PG*` variable before it
+starts the instance, so none survives into it.
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
+  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
+```
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -559,9 +612,100 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All five source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
+
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
+(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
+were given to Dispatch, to measure which of our listed addresses that device reaches. What it
+measures is TCP connects from that device to the listed addresses and ports, nothing more: it
+cannot see a service the origin itself forwards by path or by Host on its own host and port, and
+it must run on the device itself, not in a VM, a container or a remote shell, whose network is
+another one. It is handed to that person as the one file with its target list, so it sources
+nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
+three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
+bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
+`sh` of macOS is bash, and runs it. Its inputs:
+
+- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets, its
+  host on the rule a target's host follows;
+- `OUTSIDE_PATH_TARGETS`, a file, or a pipe such as `/dev/stdin`, of `name host port` lines, one
+  per internal target (the hub, the listeners, the secrets broker, the other Dispatch origin),
+  ending in LF or CRLF. `#` starts a comment, and comments are ASCII like the rest of the list.
+  `host` is a name or a literal address; a name has no empty label (`a..b`, `.example`); an IPv4
+  address must be four numbers of 0 to 255 with no leading zero (curl reads `172.020.000.021` in
+  octal, another host); an IPv6 address must be hexadecimal digits and colons alone, so curl reads
+  none as a URL range (it reads `[1-1:1]` as one), and must not be IPv4-mapped however it is
+  written: its text must not start with `ffff:` once its leading zeros and colons are dropped, as
+  `::ffff:a00:1` and `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no
+  mapped address; and a `svc:` selector, which resolves nowhere, is refused. **The list must hold
+  each of our services' addresses on the path as lines of their own, not names alone**: a name
+  line proves only where that name resolves on the person's device, so a name that resolves
+  elsewhere there says nothing of the address behind it. A list of names alone prints a warning.
+  **The list is ASCII**: every byte must be printable ASCII, a tab or LF, but a CR that comes
+  directly before an LF and a UTF-8 byte-order mark at offset 0, which the script drops before
+  anything parses the list. Any other byte, a NUL, a control character or any byte above 0x7E (so
+  any non-ASCII text, in a comment too), refuses the run, naming the byte and its offset counted
+  from 0: `read` splits only on LF, and a reader that split on that byte would put the next target
+  in the line's comment, where it would be lost. The script reads the list once, to its end, with
+  the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
+  the end refuses the run.
+
+```bash
+OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
+  bash outside-path-reach.sh
+```
+
+It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
+Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
+in five rounds started 6 s apart (0, 6, 12, 18 and 24 s), every host of a round at once. The
+rounds are 6 s apart because a tunnel whose first handshake packet was lost stays down until
+WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
+together would all fall inside that.
+Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
+the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
+not by curl's exit code alone, since our services accept a connection and then wait for the
+client:
+
+| curl's answer | Class |
+|---|---|
+| a completed connect (`time_connect` above zero), whatever the exit | `REACHED` |
+| no connect, in a round in which the origin did not connect either | `uncounted` |
+| exit 7, refused | `unreachable` |
+| exit 28, timed out, with no lookup completed | `unresolved (lookup timed out)` |
+| exit 28 after a lookup of under a second | `unreachable` |
+| exit 28 after a lookup of a second or more, too little of the 3 s left to connect | `UNKNOWN`, naming the lookup time |
+| exit 6, the name does not resolve | `unresolved` |
+| anything else | `UNKNOWN` |
+
+A target's round counts only when the probe connected to the origin in that same round: a round
+in which the device reached not even the origin proves nothing of a target, which reads
+`uncounted` there unless it connected, so `PASS` needs the origin reached in every round. A
+target is `REACHED` when any of its five rounds connected and `unreachable` only when all five
+counted and were, so a network that loses packets does not hide one easily. Measured with a
+reachable listener whose incoming packets were dropped at random, 120 runs per row: at 70% loss
+no run printed `PASS` under bash 3.2 or 5.2 (194 and 201 of 600 rounds missed), where the same
+rig with three rounds printed `PASS` in 8 of 240; at 50% loss three rounds already printed none
+in 240. Heavier or longer loss can still miss all five. `PASS` (exit 0) needs Dispatch's
+answers, a connect to the origin itself in every round and every target unreachable; `FAIL`
+(exit 1) names each target reached, or an origin that served a read with no credential; every
+run that proved nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
+`OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"`, classifies one recorded probe, and five
+of them separated by `;` are judged as one target's rounds in order; that mode exits 4, never
+`PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
+of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
+sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
+`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach` drives it against real
+listeners, from four files: `outside-path-reach-input.test.ts` for what it decides before any
+probe (the inputs it refuses, the origin's two answers and its classifier),
+`outside-path-reach.test.ts` for the runs that probe, `outside-path-reach-blackhole.test.ts` for
+the two runs that need a network dropping TEST-NET-1, which skip with the reason printed where the
+network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
+a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
+timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
+zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
 ## Acceptance run against the deployed image
 
@@ -631,7 +775,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,238 rows in 160 files, and the other 54 are a wall-clock run of its own, under the
+run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -646,6 +790,10 @@ well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour t
 the project in `e2e/playwright.config.ts` names, and a comment beside the tag names which.
 `webkit` covers where a caret lands beside a collaborator's cursor, and `firefox` covers text
 typed over what follows a block's last line break, which that engine's own editing mishandles.
+Both run `e2e/download-names.e2e.ts`, which reads how the engine names a download from the
+`filename*` and `filename` of its `Content-Disposition`, and whether it asks the server again
+for a download address it holds. WebKit writes each space of the name it reads from `filename*`
+as `_`, which that file's row of a name with spaces expects.
 `firefox-download-navigation` runs the one row of
 `e2e/shell.e2e.ts` that follows a Download link before a chunk fails. `webkit-iphone` runs the
 phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts` and
@@ -671,7 +819,7 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 54 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
 caps its own workers at one.
 What holds a reading to a quiet machine is the run being one worker wide, and the three files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of

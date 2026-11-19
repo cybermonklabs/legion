@@ -70,13 +70,15 @@ func pacedHarness(t *testing.T, rate int, tune ...func(*Deps)) *harness {
 	return h
 }
 
-// wakeClaim is another claim of the same daemon in state, with the session a resume relaunches.
+// wakeClaim is another claim of the same daemon in state, with the session a resume relaunches: a
+// session of its own, since the daemon holds each session's id and file to the first claim that
+// recorded them (holdRecorded), and a resume of another claim's session is refused.
 func wakeClaim(token claim.Token, state ClaimState) Claim {
 	c := queuedClaim()
 	c.Token, c.State = token, state
 	if state != StateQueued {
 		c.Generation = 1
-		c.Session, c.SessionFile = session, sessionFile
+		c.Session, c.SessionFile = "ses_"+string(token), "/state/sessions/"+string(token)+".jsonl"
 	}
 	if state == StateSuspended {
 		c.SuspendedBy = SuspendedByDaemon
@@ -347,7 +349,7 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: second.Claim().Session})
 
 	if got := second.Claim(); got.Session != "" || got.SessionFile != "" {
 		t.Fatalf("the claim records session %q at %q, want neither", got.Session, got.SessionFile)
@@ -491,11 +493,12 @@ func waveToken(n int) claim.Token {
 
 // stalePluginClaim is c as a live worker of an earlier release, which is what a plugin wave finds:
 // ready, recording the process the stale-plugin lane decides and the session a relaunch resumes,
-// at the plugin contract its registration declared.
+// at the plugin contract its registration declared. The session is the claim's own (wakeClaim's),
+// since a resume of another claim's session is refused (holdRecorded).
 func stalePluginClaim(c Claim, contract int) Claim {
 	c.State = StateReady
 	c.Generation = 1
-	c.Session, c.SessionFile = session, sessionFile
+	c.Session, c.SessionFile = "ses_"+string(c.Token), "/state/sessions/"+string(c.Token)+".jsonl"
 	c.PluginContract = contract
 	c.Locator = &runtime.Locator{
 		Runtime:     runtime.RuntimeTmux,
@@ -734,8 +737,15 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 
 	h.relaunched()
 
-	if got := h.wantPrompts(sent + 1)[sent]; got.Message != next {
-		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, next)
+	// The stale process left no report the daemon took (a stale plugin's report is refused), so
+	// its let-go at the launch's turn recorded its background work as unknown, and the task
+	// carries that sentence in front of it (dispatch://INFRA-3276 R3).
+	ended := h.claim().EndedWork
+	if ended.Cause != endStalePlugin || !ended.Tells() {
+		t.Fatalf("the launch's turn recorded %+v, want an untold end of the stale plugin's process", ended)
+	}
+	if got, want := h.wantPrompts(sent + 1)[sent], relaunchSentence(ended, true)+"\n\n"+next; got.Message != want {
+		t.Fatalf("the prompt after the relaunch is %+v, want the task %q, to the process the launch started", got, want)
 	}
 }
 
@@ -801,9 +811,9 @@ func TestATurnTheReplacedProcessConfirmedIsTakenBackAtTheLaunchsTurn(t *testing.
 // settlement runs with the very decision the write failed in (Handle, settle): the task would
 // go while its worker was still on it, on the process this turn did not replace.
 //
-// The negative control is that ordering reverted (interrupted's awaitingResult, cleared above
-// the write): the settlement that follows the turn then retires the task, which this test reads
-// where it asks the claim for it.
+// The negative control is that ordering reverted (interrupted's emptying of Machine.outstanding,
+// moved above the write): the settlement that follows the turn then retires the task, which this
+// test reads where it asks the claim for it.
 func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, wakeRate)
@@ -1891,6 +1901,9 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	replaced := h.locator()
 
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so
+	// the replacement below ends no work and the operator's task goes as it was given (recordEnd).
+	h.reportActivity()
 	owed := h.pending()
 	if !h.m.replaceable(&owed) {
 		t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this test needs the ladder's wait", owed)

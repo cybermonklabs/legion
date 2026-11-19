@@ -19,140 +19,61 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain removes the NATS server the package's tests share (testnats.Main) and the databases
+// their pools are cloned on (storetest.Run).
+func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
-// deliveryTestPool opens a real Postgres pool from DISPATCH_TEST_DATABASE_URL, migrates it, and
-// returns it; a test that needs it skips (not fails) when the variable is unset, matching every
-// other Postgres-backed test in this module's convention. The database is the server's own and
-// outlives the run, so it is repaired before it is migrated (repairDroppedTables) and truncated
-// rather than created afresh.
+// deliveryTestPool returns the pool of a database of the test's own, with the test's context:
+// storetest.Open's clone of the template this test process migrated once, dropped after the test,
+// which skips the test (not fails it) when DISPATCH_TEST_DATABASE_URL is unset. A clone holds no
+// row another test or an earlier run wrote, so nothing is truncated or repaired first.
+//
+// The database is never the one DISPATCH_TEST_DATABASE_URL names. Migrating that one runs each
+// CREATE INDEX CONCURRENTLY there, and a concurrent build waits for every session of its own
+// database holding a snapshot older than the build's (PostgreSQL's WaitForOlderSnapshots). In CI
+// and on a shared machine that database is the server's postgres, where every other package's
+// harness creates and drops its databases, so another package's create database could hold the
+// build past its lock bound and fail whichever test migrated first (dispatch://INFRA-3904).
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
-	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres-backed delivery tests")
-	}
-	ctx := t.Context()
-	pgxPool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pgxpool.New: %v", err)
-	}
-	t.Cleanup(pgxPool.Close)
-	pool := store.NewPool(pgxPool)
-	repairDroppedTables(t, ctx, pool)
-	st := &store.Store{Pool: pool}
-	if err := st.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	// Every delivery table is truncated before the test, not after: a failed previous run's rows
-	// (useful to inspect) are cleared by the next run that needs a clean slate, not hidden by one
-	// that crashes before its own cleanup runs. duty_passes is cleared with them: this database
-	// is the server's own and outlives the run, where storetest's clones do not, so a reconcile
-	// pass an earlier run recorded inside ReconcileInterval would make this run's pass skip for
-	// a period it did not serve (duty.Exclusive).
-	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests", "pull_request_heads", "branch_commits", "delivery_reconcile_progress", "delivery_settings", "duty_passes"} {
-		if _, err := pool.Exec(ctx, "delete from "+table); err != nil {
-			t.Fatalf("truncate %s: %v", table, err)
-		}
-	}
-	return pool, ctx
+	return storetest.Open(t).Pool, t.Context()
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, the one table a test of
 // this package drops to make a write of it fail the way a write fails (withoutBranchCommits).
-// The repair below and that test's own cleanup both replay it to put the table back, rather
-// than keeping a second copy of its `create table` here and in step with it by hand: Migrate
-// skips every version schema_migrations already records, so forgetting the version makes the
-// table exactly as the migration does.
+// Putting the table back replays it, rather than keeping a second copy of its `create table`
+// here and in step with it by hand: Migrate skips every version schema_migrations already
+// records, so forgetting the version makes the table exactly as the migration does.
 const branchCommitsMigration = 20261107234701
 
-// repairDroppedTables forgets the recorded version of branch_commits when the database is
-// missing the table, so the Migrate that follows creates it again.
-//
-// A test that drops the table puts it back itself (withoutBranchCommits), which is the fast
-// path and the ordinary one, and which runs this same repair. What this one is for is the run
-// that never got to its cleanup: `go test -timeout` kills the binary outright, and the table
-// is then missing from a database that is the server's own and outlives the run, while
-// schema_migrations still records the migration that creates it. Nothing would make it again
-// — Migrate applies the versions the database does not record — so every later run of this
-// package would fail at the truncate above, until someone repaired the database by hand.
-//
-// It reads the table from the catalogue (to_regclass answers null for a name that is no
-// relation) rather than trying a read of it and reading the failure, since a failed statement
-// of this kind aborts nothing here but would have to be told apart from a database that is
-// unreachable. A database that has no schema_migrations at all is a fresh one with no version
-// recorded and nothing dropped, and there is nothing to forget.
-func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
+// deliveryTestLeases is the lease pool an intake takes its durable's hold and consumer lease on
+// (intakeHoldName, consumerLease), taken from the test's own pool. Each lease is held on a
+// connection of its own, so a test can hold the lease from one caller while an intake tries for it
+// from another.
+func deliveryTestLeases(t *testing.T, pool *store.Pool) *pgxpool.Pool {
 	t.Helper()
-	var migrated bool
-	if err := pool.QueryRow(ctx, "select to_regclass('schema_migrations') is not null").Scan(&migrated); err != nil {
-		t.Fatalf("look for schema_migrations: %v", err)
-	}
-	if !migrated {
-		return
-	}
-	var present bool
-	if err := pool.QueryRow(ctx, "select to_regclass('branch_commits') is not null").Scan(&present); err != nil {
-		t.Fatalf("look for branch_commits: %v", err)
-	}
-	if present {
-		return
-	}
-	if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
-		t.Fatalf("forget the migration of branch_commits, which a run that died left dropped: %v", err)
-	}
+	return storetest.Leases(t, pool)
 }
 
-// A table a test dropped and never put back is made again by the next deliveryTestPool, so the
-// run after the one `-timeout` killed mid-test runs against the schema its migrations describe.
-// Without that repair the table stays missing while schema_migrations records its version, and
-// every later run of this package fails at the truncate of it.
-//
-// The drop here has no cleanup of its own on purpose: what is under test is that the harness
-// repairs a database nobody put back, and the second deliveryTestPool is what leaves the
-// database as the next test finds it.
-func TestTheHarnessMakesAgainATableADeadRunLeftDropped(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
-		t.Fatalf("drop branch_commits as a run killed mid-test leaves it: %v", err)
-	}
-
-	next, nextCtx := deliveryTestPool(t)
-	var rows int
-	if err := next.QueryRow(nextCtx, "select count(*) from branch_commits").Scan(&rows); err != nil {
-		t.Fatalf("read branch_commits from the harness that should have made it again: %v", err)
-	}
-	if rows != 0 {
-		t.Fatalf("branch_commits holds %d rows after being made again, want the empty table its migration makes", rows)
-	}
-	var recorded bool
-	if err := next.QueryRow(nextCtx,
-		"select exists(select 1 from schema_migrations where version = $1::bigint)", branchCommitsMigration).Scan(&recorded); err != nil {
-		t.Fatalf("read whether the branch_commits migration is recorded again: %v", err)
-	}
-	if !recorded {
-		t.Fatalf("schema_migrations does not record %d after the repair, so the next Migrate would make the table a second time", branchCommitsMigration)
-	}
-}
-
-// deliveryTestLeases is the lease pool an intake reconciles its durable under (duty.Exclusive on
-// consumerLease(durable)), taken from the test's own pool. Each lease is held on a connection of
-// its own, so a test can hold the lease from one caller while an intake tries for it from
-// another.
-func deliveryTestLeases(t *testing.T, pool *store.Pool) duty.Leases {
+// deliveryTestIntakeLeases is the reservation StartIntakes takes in the server, made here on the
+// test's own pool (ReserveIntakeLeases).
+func deliveryTestIntakeLeases(t *testing.T, pool *store.Pool) IntakeLeases {
 	t.Helper()
-	leases, err := pool.Leases()
+	callers, err := pool.Leases()
 	if err != nil {
 		t.Fatalf("open the leases pool: %v", err)
+	}
+	leases, err := ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
 	}
 	return leases
 }
@@ -217,7 +138,7 @@ func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, 
 
 // seedDeliveryProject writes deliveryProject and maps deliveryRepo to it as its default, so
 // every issue the fixtures seed resolves to the repository their pull requests are in.
-// Idempotent: each fixture calls it, and the tests of this package share one database.
+// Idempotent: each fixture calls it, and one test can use several fixtures.
 func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedProjectRepository(t, ctx, pool, deliveryProject, "Delivery", deliveryRepo)

@@ -348,6 +348,34 @@ func shortGitLockClock(t *testing.T, interval, recheck time.Duration) {
 	t.Cleanup(func() { gitLockInterval, gitLockRecheck = previousInterval, previousRecheck })
 }
 
+// useSweepingLauncher has every launcher this row starts take its test process for the
+// container's first process until the row's end (useContainerInit), since only that launcher
+// sweeps (serveGitLockSweep) and no test of this package runs as PID 1. Such a launcher runs the
+// memory guard too, so the guard is pointed at an empty pod of its own (useGuardPod), whose
+// reading is far below the mark and whose signal ends nothing of the machine's, and its sweep
+// reads a /proc of the row's own whose one process is the test's (useGitLockProc), rather than
+// either reading this machine's /proc, whose processes the row knows nothing of. It is called
+// before the launcher starts, so its restore runs after the launcher's own cleanup, which waits
+// for Run.
+func useSweepingLauncher(t *testing.T) {
+	t.Helper()
+	useGuardPod(t, newGuardPod(t), nil)
+	useGitLockProc(t, procRoot(t, os.Getpid()))
+}
+
+// useGitLockProc points the sweep of every launcher this row starts (newGitLockSweep) at proc
+// until the row's end, and is called before the launcher starts, for the reason
+// shortGitLockClock is. On a machine several users share, this machine's /proc lists other users'
+// git and jj processes, whose open files the test cannot read, and the sweep counts any one of
+// them as a holder of every lock (gitLockSweep.holders): a launcher that read it would keep every
+// lock the row planted whenever another user's git happened to be running.
+func useGitLockProc(t *testing.T, proc string) {
+	t.Helper()
+	previous := gitLockProc
+	gitLockProc = proc
+	t.Cleanup(func() { gitLockProc = previous })
+}
+
 // roleStart is a start of role's generation that runs argv and exits, carrying env besides the
 // workspace it names: the restore and the sweep both read LEGION_WORKSPACE from the environment
 // the launcher merges for the generation.
@@ -589,6 +617,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		}
 
 		t.Chdir(ws)
+		useSweepingLauncher(t)
 		fleet := newFleet(t, 5*time.Second, "tester")
 		for _, path := range planted {
 			if !swept(path) {
@@ -658,6 +687,7 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		}
 		defer free()
 		t.Chdir(t.TempDir())
+		useSweepingLauncher(t)
 		f := newFleet(t, 5*time.Second, "tester")
 		conn := f.role("tester")
 		conn.send(roleStart(1, c.dir, nil))
@@ -693,6 +723,7 @@ func TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory(t *testing.T) {
 	lock := c.lock("index.lock", "stale", time.Second)
 	worktree := c.worktreeLock("HEAD.lock", "stale", time.Second)
 	t.Chdir(c.dir)
+	useSweepingLauncher(t)
 	f := newFleet(t, 2*time.Second, "tester")
 	for _, path := range []string{lock, worktree} {
 		if !swept(path) {
@@ -701,6 +732,25 @@ func TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory(t *testing.T) {
 		if !strings.Contains(f.stderr.String(), "removed the git lock "+strconv.Quote(path)+",") {
 			t.Fatalf("the launcher removed %s and wrote no line for it:\n%s", path, f.stderr.String())
 		}
+	}
+}
+
+// The launcher's own sweep reads the /proc gitLockProc names and holds the rule a sweep over a
+// /proc of a row's own holds (TestAClockPassKeepsALockWhoseGitHolderItCannotRead): a git whose
+// open files cannot be read counts as a holder of every lock, so even the first pass, which
+// removes every lock no process holds whatever its age, keeps the two the row above has it
+// remove. It is that row's control: the /proc it reads is the one the row hands it, and not the
+// machine's, where no such git need be running.
+func TestTheLaunchersFirstPassKeepsEveryLockWhileAGitItCannotReadRuns(t *testing.T) {
+	c := newLockClone(t)
+	lock := c.lock("index.lock", "stale", time.Second)
+	worktree := c.worktreeLock("HEAD.lock", "stale", time.Second)
+	t.Chdir(c.dir)
+	useSweepingLauncher(t)
+	useGitLockProc(t, blindProc(t, "git"))
+	f := newFleet(t, 2*time.Second, "tester")
+	for _, path := range []string{lock, worktree} {
+		requireKept(t, f.stderr, path, "a git or jj whose open files cannot be read is running")
 	}
 }
 
@@ -715,6 +765,7 @@ func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testin
 	lock := c.lock("index.lock", "stale", time.Second)
 	elsewhere := t.TempDir()
 	t.Chdir(elsewhere)
+	useSweepingLauncher(t)
 	f := newFleet(t, 5*time.Second, "tester")
 	if !strings.Contains(f.stderr.String(), "working directory "+strconv.Quote(elsewhere)+" is no jj workspace") {
 		t.Fatalf("the launcher's log names no working directory of its own:\n%s", f.stderr.String())
@@ -809,6 +860,7 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		c := newLockClone(t)
 		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
 		t.Chdir(c.dir)
+		useSweepingLauncher(t)
 		f := newFleet(t, 2*time.Second, "tester")
 		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
 		testwait.Eventually(t, "the sweep's clock to remove "+running, func() bool { return swept(running) })

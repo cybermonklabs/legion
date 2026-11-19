@@ -122,7 +122,7 @@ func (h *harness) controllerSessionGrant(session, secret string) *httptest.Respo
 // newControllerCredentialHarness is newCredentialHarness with control over whether the daemon
 // launches the project's controller itself, over a project whose repositories are under two
 // owners, sjawhar and acme.
-func newControllerCredentialHarness(t *testing.T, tokens appauth.Tokens, launched bool) *harness {
+func newControllerCredentialHarness(t *testing.T, tokens appauth.Source, launched bool) *harness {
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
@@ -141,7 +141,7 @@ func (h *harness) controllerGitHubCredential(secret string) *httptest.ResponseRe
 	return h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret}, nil)
 }
 
-// failingTokens is a Tokens whose every mint fails, for the credential routes' 502.
+// failingTokens is a token source whose every mint fails, for the credential routes' 502.
 type failingTokens struct{}
 
 func (failingTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
@@ -152,8 +152,8 @@ func (failingTokens) ReadToken(context.Context, appauth.AppRole, string) (appaut
 	return appauth.Lease{}, errors.New("github is down")
 }
 
-// The installations read answers, so what fails is the mint: the route's GITHUB_TOKEN_FAILED
-// and not its unavailable-source refusal.
+// The installations read answers, so what fails is the mint, which the route answers
+// GITHUB_TOKEN_FAILED.
 func (failingTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }
@@ -482,10 +482,13 @@ func TestCredentialAndWorkflowRoutesRefuseAMissingFieldWithACode(t *testing.T) {
 }
 
 // legion controller start's refresh call answers the review App's read-only token for every owner
-// of the project, each rendered as the two files gh reads, with the first owner, sorted, the
-// default, or the owner the request names (the one the controller's GH_CONFIG_DIR already names),
-// for the current controller capability alone: a wrong secret, or one a later legion controller
-// start superseded, is refused the same way, and a default that is no GitHub login is refused.
+// that App is installed on, each rendered as the two files gh reads, with the first owner, sorted,
+// the default, or the owner the request names (the one the controller's GH_CONFIG_DIR already
+// names), and the owner accounts the App is installed on, for the current controller capability
+// alone: a wrong secret, or one a later legion controller start superseded, is refused the same
+// way, and a default that is no GitHub login, or one the App is not installed on, is refused. A
+// managed user's login, which ends in `_<shortcode>`, is a GitHub login: asked for in any case,
+// such an owner the App is installed on is the default, lowercased, and served.
 func TestControllerGitHubCredential(t *testing.T) {
 	h := newControllerCredentialHarness(t, handoffTokens{}, false)
 	secret := h.mintedSecret()
@@ -504,23 +507,95 @@ func TestControllerGitHubCredential(t *testing.T) {
 		if !maps.Equal(answer.Owners, want) || answer.Default != tc.want || answer.App != "review" {
 			t.Fatalf("controller github credential asking %q = %+v, want the review App's read-only files of both owners, default %s", tc.asked, answer, tc.want)
 		}
+		if want := []string{"acme", "sjawhar"}; !slices.Equal(answer.Installed, want) {
+			t.Fatalf("controller github credential asking %q answers installed %q, want %q, the accounts the review App is installed on", tc.asked, answer.Installed, want)
+		}
 		if _, err := time.Parse(timeFormat, answer.ExpiresAt); err != nil {
 			t.Fatalf("expiresAt %q does not parse: %v", answer.ExpiresAt, err)
 		}
 	}
 	wantFailure(t, h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "../x"}, nil),
 		http.StatusBadRequest, "INVALID_DEFAULT_OWNER")
-	outside := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "outside-project"}, nil)
-	if body := outside.Body.String(); !strings.Contains(body, `\"outside-project\"`) || strings.Contains(body, "token-for") {
-		t.Errorf("a default outside the project answered %s, want a refusal naming it and no token", body)
+	notInstalled := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "not-installed"}, nil)
+	if body := notInstalled.Body.String(); !strings.Contains(body, `\"not-installed\"`) || strings.Contains(body, "token-for") {
+		t.Errorf("a default the review App is not installed on answered %s, want a refusal naming it and no token", body)
 	}
-	wantFailure(t, outside, http.StatusBadRequest, "DEFAULT_OWNER_OUTSIDE_PROJECT")
+	wantFailure(t, notInstalled, http.StatusBadRequest, "DEFAULT_OWNER_NOT_INSTALLED")
 
 	wantFailure(t, h.controllerGitHubCredential("not-the-capability"), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
 
 	superseded := secret
 	h.mintedSecret()
 	wantFailure(t, h.controllerGitHubCredential(superseded), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
+
+	managed := newControllerCredentialHarness(t, installedTokens{installed: []string{"acme", "mona-cat_octo", "sjawhar"}}, false)
+	recorder := managed.request(http.MethodPost, "/legion/v1/controller/github-credential",
+		ControllerCredentialRequest{Secret: managed.mintedSecret(), Default: "Mona-Cat_Octo"}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("controller github credential asking Mona-Cat_Octo = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	var answer ControllerCredentialResponse
+	decodeInto(t, recorder, &answer)
+	if got, want := answer.Owners["mona-cat_octo"], (ControllerOwnerCredential{Hosts: ghconfig.Hosts("review-token-for-mona-cat_octo-read"), Config: ghconfig.Config}); answer.Default != "mona-cat_octo" || got != want {
+		t.Errorf("controller github credential asking Mona-Cat_Octo = default %q with mona-cat_octo's files %+v, want default mona-cat_octo holding %+v", answer.Default, got, want)
+	}
+}
+
+// installedTokens is refusingTokens over a review App installed on owners of its own, where
+// handoffTokens answers the two accounts the harnesses' project serves repositories under: the
+// installations are the account's choice and no mapping's.
+type installedTokens struct {
+	refusingTokens
+	installed []string
+}
+
+func (t installedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return t.installed, nil
+}
+
+// The answer's `installed` is the installations the bundle's own build read, and not the
+// bundle's directories, which is what `legion controller start` tells its controller its App is
+// installed on. The two differ both ways. A resolving rename puts a directory in the bundle for
+// the owner the repository moved away from, an alias holding the lease of the owner it moved to,
+// on an account the App need not be installed on: sjawhar here, which `owners` holds and
+// `installed` does not. And an installed owner whose reading lease GitHub refuses has no
+// directory at all: acme here, which `installed` holds and `owners` does not. The list is
+// sorted, and an array on the wire.
+func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *testing.T) {
+	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil),
+		Tokens: installedTokens{refusingTokens: refusingTokens{owner: "acme"}, installed: []string{"acme", "cybermonklabs"}},
+		GitHubRepositories: func() []ghrepo.Repository {
+			return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")}
+		},
+		RepositoryRenames: transferredLegion,
+	}).Handler
+	served := h.controllerGitHubCredential(h.mintedSecret())
+	if served.Code != http.StatusOK {
+		t.Fatalf("controller github credential = %d, want 200; body %s", served.Code, served.Body)
+	}
+	raw := slices.Clone(served.Body.Bytes())
+	var answer ControllerCredentialResponse
+	decodeInto(t, served, &answer)
+	moved := ControllerOwnerCredential{Hosts: ghconfig.Hosts("review-token-for-cybermonklabs-read"), Config: ghconfig.Config}
+	if want := map[string]ControllerOwnerCredential{"cybermonklabs": moved, "sjawhar": moved}; !maps.Equal(answer.Owners, want) {
+		t.Fatalf("the answer's owners = %+v, want %+v: the alias directory sjawhar beside cybermonklabs, both holding cybermonklabs' lease, and no directory for acme, whose lease GitHub refused; this case proves nothing otherwise",
+			answer.Owners, want)
+	}
+	if want := []string{"acme", "cybermonklabs"}; !slices.Equal(answer.Installed, want) {
+		t.Errorf("the answer's installed = %q, want %q: the accounts the review App is installed on, sorted, whatever directories the bundle holds", answer.Installed, want)
+	}
+	// The wire itself, since a nil slice and an empty one decode alike into the Go field.
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode the body as an object: %v", err)
+	}
+	if _, array := body["installed"].([]any); !array {
+		t.Errorf("the body's installed = %v, want an array", body["installed"])
+	}
 }
 
 // A review App installed on no account at all answers the credential route's

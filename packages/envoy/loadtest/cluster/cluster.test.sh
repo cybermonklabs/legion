@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # packages/envoy/loadtest/cluster/cluster.test.sh
 #
-# Proves cluster.sh's behaviour without a cluster and without a network: fakes `kubectl`, `gh`,
-# `curl`, `go`, `git`, `uv`, `dispatch`, `hostname` and `sleep` on PATH. The fake kubectl records
+# Proves cluster.sh's behaviour without a cluster and without a network (but for (h)'s fresh render,
+# below, whose go fetches helm): fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
+# `hostname` and `sleep` on PATH. The fake kubectl records
 # every call and answers from files the test writes (the run's pods, the lock ConfigMap, cpu.max,
 # the errors an apply fails with), and runs the stored-order check's runner script on the fake
 # runner's /work, where the fake go's envoy-dispatch prints a summary line; the fake curl answers
@@ -68,9 +69,14 @@
 # stops after five races in a row; (e) every manifest renders with no placeholder left and every
 # image by digest, and a value of the wrong shape is refused; (f) a container restart between the
 # before and after reads writes step-failed.json with kind restart; (g) the sampler writes an
-# error line with no number when its exec fails, and a numeric line when it reads; (h) when go and
-# the network reach helm, render-nats.sh re-renders nats.yaml equal to the committed file (else it
-# says it skipped that); (i) the run's residual notes are replay-residual.md's lines, then the seed
+# error line with no number when its exec fails, and a numeric line when it reads; (h)
+# render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
+# sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
+# the unchanged archive with no curl call, equal to the committed file (else it says it skipped
+# that). That render runs helm through `go run`, so it needs go's module proxy, or offline
+# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it fails rather
+# than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's residual
+# notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
 # sign-flipped versions, a count the check lacks written as "not recorded"; (j) stored-order.json
 # holds the checker's fields and a clean run's and a mismatching run's counts, and nulls (never 0)
@@ -166,17 +172,30 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/cluster-test.XXXXXX")
 readonly fake=$tmp/fake bin=$tmp/bin
 readonly ns=loadtest-test
 
+# own_steps: each `cluster.sh step` of this suite still running, as "PID COMMAND LINE". The command
+# line alone also names the steps of another copy of this suite running from this checkout at the
+# same time; only FAKE_DIR, which every command of this one inherits, tells them apart.
+own_steps() {
+  local pid
+  while read -r pid; do
+    grep -qzxF -- "FAKE_DIR=$fake" "/proc/$pid/environ" 2>/dev/null || continue
+    printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+  done < <(pgrep -f -- "$cluster step --namespace $ns ")
+}
+
 cleanup() {
   local f pid
   for f in "$tmp"/root*/*/heartbeat.pid "$tmp"/root*/*/sampler.pid; do
-    [ -f "$f" ] || continue
-    pid=$(<"$f")
+    # A daemon that stopped since the glob took its pidfile with it.
+    pid=$(cat -- "$f" 2>/dev/null) || continue
     kill -TERM -- "-$pid" 2>/dev/null || true
   done
   # A case that failed before its assertions could see the step end leaves the step shell (w)
   # killed, its disk watcher and its wait on the runner job behind; a cluster.sh that passes (w)
   # ends all three itself.
-  pkill -f "$cluster step --namespace $ns " 2>/dev/null || true
+  while read -r pid _; do
+    kill -TERM -- "$pid" 2>/dev/null || true
+  done < <(own_steps)
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -222,6 +241,28 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
+# credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
+# (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
+# DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# shellcheck disable=SC2016 # expanded by the runner's sh
+credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+# flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
+# command ARG... names a file in DIR, the directory its start claims, and there is one at least:
+# a job whose flags named another directory would open no file at all.
+flags_name_dir() {
+  local dir=$1 prev="" a n=0
+  shift
+  for a in "$@"; do
+    case $prev in
+      -token-file | -listener-token-file | -pg-file)
+        ((++n))
+        [ "${a%/*}" = "$dir" ] || { echo "fake kubectl exec: the start claims $dir, and its job's $prev names $a" >&2; return 1; }
+        ;;
+    esac
+    prev=$a
+  done
+  ((n > 0)) || { echo "fake kubectl exec: a start given credentials gives its job no -…-file flag" >&2; return 1; }
+}
 case $verb in
   get)
     case "$*" in
@@ -316,7 +357,37 @@ case $verb in
           printf 'usage_usec 123456\nthrottled_usec 0\ncpu_max 1600000 100000\nmemory_current 1048576\ninactive_file 4096\nend\n'
         fi
         ;;
-      "sh -c name="*) printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts" ;;
+      # A runner job's start (runner_start). One started with the copy's credentials (-c) runs the
+      # runner's own script here, on the fake runner's /work with this call's standard input, so
+      # the script itself writes the credentials and its job's EXIT trap removes them; the job it
+      # starts is credential_reader, in place of the loadgen command the start line names.
+      "sh -c name="*)
+        printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts"
+        if [[ ${cmd[2]} == *'read -r v'* ]]; then
+          mkdir -p "$FAKE_DIR/runner/work"
+          # The directory the start claims is in its script (runner_start -c DIR), and it is the
+          # one the job's -…-file flags name.
+          [[ ${cmd[2]} =~ secrets=\'(/work/secrets/[A-Za-z0-9._-]+)\' ]] || { echo "fake kubectl exec: a start given credentials names no directory: $c" >&2; exit 1; }
+          claimed=${BASH_REMATCH[1]}
+          flags_name_dir "$claimed" "${cmd[@]:5}" || exit 1
+          sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "${cmd[4]}" \
+            sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner$claimed" "$FAKE_DIR/runner-credentials" || exit $?
+        fi
+        ;;
+      # replay_checksum: the runner's own script too, with credential_reader and then the checksum
+      # line standing in for loadgen replay-checksum.
+      'sh -c secrets=$1; '*)
+        if [ "${cmd[5]:-} ${cmd[6]:-}" != "/work/loadgen replay-checksum" ]; then
+          echo "fake kubectl exec: unexpected command given the copy's credentials: $c" >&2
+          exit 1
+        fi
+        flags_name_dir "${cmd[4]}" "${cmd[@]:5}" || exit 1
+        mkdir -p "$FAKE_DIR/runner/work"
+        sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "$FAKE_DIR/runner${cmd[4]}" \
+          sh -c "$credential_reader"' && echo "{\"issues\": 1047, \"md5\": \"fakemd5\"}"' \
+          sh replay-checksum "$FAKE_DIR/runner${cmd[4]}" "$FAKE_DIR/runner-credentials"
+        exit $?
+        ;;
       # The job a stop names (runner_stop, runner_wait's bound, typing_stop) and, in a file of
       # its own so that every exact check of runner-stops keeps reading one job name per line,
       # the job a SIGKILL names (runner_wait past its grace), with the second that SIGKILL was
@@ -364,7 +435,6 @@ case $verb in
       # A replay step: the runner's directories, the bundle copied in and verified there.
       "sh -c rm -rf /work/bundle"*) ;;
       "tar -C /work -xf -") cat >/dev/null ;;
-      "/work/loadgen replay-checksum "*) echo '{"issues": 1047, "md5": "fakemd5"}' ;;
       "/work/loadgen replay-verify-bundle "*) echo '{"files": 28}' ;;
       *"/healthz")
         echo '{"ok":true,"nats":true,"schema_version":121}'
@@ -814,13 +884,35 @@ EOF
 # seconds (space-separated: kube_read's 5 s, the daemons' 60 s, runner_wait's 15 s and the disk
 # watcher's 30 s, where a test sets them), are recorded and return at once; every other sleep (the
 # daemons' loops, their start waits) is the real one.
+#
+# FAKE_SLEEP_GATE=FILE holds the daemons' 60 s until FILE exists. A daemon removes its own pidfile
+# when it stops, and with FAKE_FAST_SLEEP's fast periods it stops as soon as the last command of
+# its run has ended -- before the case that ran that command reads the pidfile, or after, as the
+# box schedules them. A command run with the gate leaves its daemons in their first period, alive
+# and with their pidfiles, until the case has read their pids and made FILE. The wait is in real
+# 0.05 s naps, and it ends too once FAKE_DIR is gone, so a daemon the suite's cleanup missed does
+# not wait for ever.
+real_sleep=$(PATH=$real_path command -v sleep)
 cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
+if [ "\$*" = 60 ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
+  until [ -e "\$FAKE_SLEEP_GATE" ] || [ ! -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
+fi
 if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
   printf '%s\n' "\$*" >>"\$FAKE_DIR/sleep.log"
   exit 0
 fi
-exec $(PATH=$real_path command -v sleep) "\$@"
+exec $real_sleep "\$@"
+EOF
+
+# The jq stand-in: every jq call of cluster.sh and of the fakes, its arguments recorded in
+# jq-argv.log, one call a line, then the real jq. An argument is what every user of the pod reads
+# (/proc/<pid>/cmdline), so no_credential_in_args reads this log as it reads kubectl.log.
+real_jq=$(PATH=$real_path command -v jq)
+cat >"$bin/jq" <<EOF
+#!/usr/bin/env bash
+[ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s\n' "\$*" >>"\$FAKE_DIR/jq-argv.log"
+exec $real_jq "\$@"
 EOF
 chmod +x "$bin"/*
 
@@ -832,7 +924,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_EXEC_ERRORS FAKE_FAST_SLEEP FAKE_TYPING_RC FAKE_DISPATCH_BUILD_ERROR FAKE_COPY_BACK_FAIL \
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
-  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL
+  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -939,7 +1031,7 @@ write_pods() {
 }
 
 reset_fake() {
-  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/seeded" "$fake/runner-starts" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
+  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/jq-argv.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
     "$fake/runner-stops" "$fake/runner-kills" "$fake/runner-kill-times" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
@@ -1247,6 +1339,61 @@ jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.jso
   fail "up did not copy envoy-dispatch into the runner"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
 
+# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
+# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
+# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
+copy_credentials() {
+  local dt lt pw
+  dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
+  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
+  pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
+  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
+  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
+}
+
+# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
+# in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
+# record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
+# waited on the job removed it. A detached job's removal lands a moment after its start returned.
+job_credentials() {
+  local job=$1 naps=0 file value creds
+  creds=$(copy_credentials)
+  while compgen -G "$fake/runner/work/secrets/$job.*" >/dev/null; do
+    ((++naps <= 200)) || fail "runner job $job's credentials are still in the runner after it ended: $(ls -ld "$fake/runner/work/secrets/$job".*)"
+    sleep 0.05
+  done
+  while read -r file value; do
+    grep -qxF -- "$job $file 600 700 $value" "$fake/runner-credentials" 2>/dev/null ||
+      fail "runner job $job read no $file of mode 600, in a directory of mode 700, holding the copy's own value: $(grep "^$job " "$fake/runner-credentials" 2>/dev/null)"
+  done <<<"$creds"
+}
+
+# no_credential_in_args: no kubectl call and no jq call so far carries a credential of the copy
+# among its arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
+no_credential_in_args() {
+  local log name value
+  for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+    # A log no call wrote cannot show a credential in a call, so the check would prove nothing.
+    [ -s "$log" ] || fail "no call wrote $log, so no_credential_in_args can see no argument in it"
+  done
+  # All four of the copy's secrets, as up made them; the Postgres password stands for the URL
+  # that holds it, whose rest is no secret. A state.json without one fails here, so no check
+  # below compares against nothing.
+  while read -r name value; do
+    [ -n "$value" ] || fail "$run_dir/state.json has no $name"
+    for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+      ! grep -qF -- "$value" "$log" ||
+        fail "a ${log##*/} call carries the copy's $name on its command line: $(grep -m1 -F -- "$value" "$log" | cut -c1-300)"
+    done
+  done < <(jq -r '.secrets | to_entries[] | "\(.key) \(.value)"' "$run_dir/state.json")
+  [ "$(jq '.secrets | length' "$run_dir/state.json")" = 4 ] || fail "$run_dir/state.json does not hold the copy's four secrets"
+}
+
+# up made the copy's four secrets and wrote them into state.json: no call of up carried one as an
+# argument (the logs hold only up's calls here, since reset_fake ran before it).
+no_credential_in_args
+pass "up writes the copy's four secrets into state.json with no kubectl or jq call carrying one as an argument"
+
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC"
 [ -f "$run_dir/seed.json" ] || fail "seed kept no seed.json in the run directory"
@@ -1258,6 +1405,23 @@ for k in artifact_versions ref_targets ref_target_versions ref_sources artifact_
   jq -e --arg k "$k" '.counts | has($k)' "$run_dir/seed.meta.json" >/dev/null ||
     fail "seed.meta.json's counts lack $k, which common.sh's SEED_COUNTS_SQL counts: $(jq -c .counts "$run_dir/seed.meta.json" 2>/dev/null)"
 done
+# Each of the seed's loadgen jobs is given the -…-file forms of its credentials, naming files the
+# runner wrote for that job alone, and no kubectl call carries a credential.
+for job in seed seed-refs seed-finish; do
+  start=$(grep "^$job /work/loadgen " "$fake/runner-starts") || fail "the seed started no loadgen $job in the runner"
+  wants=("-pg-file /work/secrets/$job\.[0-9a-f]+/pg-url ")
+  [ "$job" = seed-finish ] ||
+    wants+=("-token-file /work/secrets/$job\.[0-9a-f]+/dispatch-token " "-listener-token-file /work/secrets/$job\.[0-9a-f]+/listener-token ")
+  for want in "${wants[@]}"; do
+    [[ "$start " =~ \ $want ]] || fail "loadgen $job is not given '$want': $start"
+  done
+  for gone in "-token " "-listener-token " "-pg "; do
+    [[ "$start " != *" $gone"* ]] || fail "loadgen $job is still given ${gone% } as a value: $start"
+  done
+  job_credentials "$job"
+done
+no_credential_in_args
+pass "seed's loadgen jobs read the copy's credentials from files of mode 600 the runner writes for each job alone and removes when it ends, and no kubectl call carries one"
 
 run_cluster step --namespace "$ns" smoke 1 --duration 1m
 ((RC == 0)) || fail "step exited $RC"
@@ -1271,9 +1435,15 @@ cmp -s "$fake/stepdir/heap.txt" "$run_dir/steps/smoke/heap.txt" || fail "heap.tx
 grep -q -- 'gzip -1 -c /work/steps/smoke/heap.txt' "$fake/kubectl.log" || fail "heap.txt did not come back by its own stream"
 start=$(grep '^step-smoke ' "$fake/runner-starts") || fail "the step started no loadgen run in the runner"
 for want in "run -allow-foreign" "-events 4 " "-sessions 400 " "-requests 60 " "-duration 1m " "-warmup 30s " "-grace 20s " \
-  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0" "-pg postgres://dispatch:"; do
+  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
+[[ $start =~ \ -token-file\ (/work/secrets/step-smoke\.[0-9a-f]+)/dispatch-token\  ]] || fail "the step's loadgen run has no -token-file of a directory of its own: $start"
+for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+  [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
+done
+job_credentials step-smoke
+no_credential_in_args
 jq -e '.namespace == "'"$ns"'" and .postgres.version != "" and .postgres.settings_sha256 != "" and .node_cpu_model.dispatch == "Fake CPU @ 2.00GHz" and (.pods | length) == 8' \
   "$run_dir/steps/smoke/copy-meta.json" >/dev/null || fail "copy-meta.json lacks a field: $(cat "$run_dir/steps/smoke/copy-meta.json")"
 # The phase and the reads-only flag, which loadgen curves reads to place the step in the curves.
@@ -1436,6 +1606,18 @@ for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen r
   "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
+[[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
+for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+  [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
+done
+# The replay and the checksums replay-prepare and its reset read (replay_checksum) take the copy's
+# credentials as the seed and the step do, and still no kubectl call carries one.
+job_credentials replay-r16
+job_credentials replay-checksum
+grep -qE -- "sh /work/secrets/replay-checksum\.[0-9a-f]+ /work/loadgen replay-checksum -allow-foreign -url http://dispatch\.$ns\.svc:8766 -token-file /work/secrets/replay-checksum\.[0-9a-f]+/dispatch-token " "$fake/kubectl.log" ||
+  fail "no loadgen replay-checksum was given its credentials' files: $(grep -F 'replay-checksum' "$fake/kubectl.log" | tail -n1)"
+no_credential_in_args
+pass "replay and replay-checksum read the copy's credentials from files the runner writes for each and removes when it ends, and no kubectl or jq call of up, seed, step, replay-prepare or replay carries one"
 for f in reset.json replay-prepared.json last-reset.json envoy-dispatch.json pg-stats-before.json pg-stats-after.json summary.json CODEPATHS.md; do
   [ -f "$run_dir/steps/r16/$f" ] || fail "the replay step directory has no $f"
 done
@@ -1748,10 +1930,14 @@ bt_start=$(grep -F 'typing-10x-typing /work/browsertype ' "$fake/runner-starts")
   fail "a kubectl call of the typing path wrote a token into the runner: $(grep -F 'cat >"$1/token"' "$fake/kubectl.log" | tail -n1)"
 [ ! -e "$fake/runner/work/typing/token" ] ||
   fail "the typing path left a token in the runner: $(cat "$fake/runner/work/typing/token")"
-# (loadgen run's own command line carries -token; browsertype's calls are those naming it, its
-# job or its runner directory.)
+# (browsertype's calls are those naming it, its job or its runner directory.) The step's own
+# loadgen run reads the copy's credentials from the runner, which shows the record below can hold
+# a job's; browser typing reads none (runner_start without -c).
 grep -E 'browsertype|/work/typing|sh typing-' "$fake/kubectl.log" >"$tmp/typing-calls" || fail "kubectl.log holds no browsertype call"
 ! grep -qF -- "$dispatch_token" "$tmp/typing-calls" || fail "a browsertype kubectl call carries the agent token on its command line"
+job_credentials step-10x-typing
+! grep -q '^typing-' "$fake/runner-credentials" ||
+  fail "a browsertype job was given the copy's credentials: $(grep '^typing-' "$fake/runner-credentials")"
 ! grep -rqF -- "$dispatch_token" "$tdir" || fail "a file under the step directory holds the agent token: $(grep -rlF -- "$dispatch_token" "$tdir")"
 ! grep -qF -- "$dispatch_token" "$tmp/out" || fail "step --typing printed the agent token"
 # The order in kubectl.log: the document list copied in, browsertype's start, loadgen's start
@@ -2013,19 +2199,140 @@ pass "a restart between the before and after container reads writes step-failed.
 )
 pass "the sampler writes an error line with no number when its exec fails, and a numeric line when it reads"
 
-# ---- (h) nats.yaml against a fresh render ------------------------------------------------------------
+# ---- (g2) a runner job's credential directory ----------------------------------------------------
 
-if PATH=$real_path command -v go >/dev/null &&
-  PATH=$real_path curl -fsS --max-time 20 -o /dev/null https://nats-io.github.io/k8s/helm/charts/index.yaml 2>/dev/null; then
-  # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
-  PATH=$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
-    fail "render-nats.sh failed"
-  # shellcheck disable=SC2031 # as above
+# The runner's own scripts (RUNNER_CREDENTIALS, RUNNER_SECRETS_CLEANUP), run here under dash, the
+# runner image's sh, against a directory under this test's own root standing in for /work/secrets.
+# Without dash this section cannot run them as the runner does, so it fails naming dash rather than
+# blaming the scripts for a 127.
+command -v dash >/dev/null ||
+  fail "(g2) needs dash, the runner image's sh, to run the runner's credential scripts as the runner does; install dash (Debian and Ubuntu: apt-get install dash)"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  secrets_root=$tmp/secrets-work/secrets
+  creds=$'agent-token\nlistener-token\npostgres://dispatch:pw@postgres/dispatch'
+  # Two starts of one job name -- this command's, or another command's of the same run -- are
+  # given two directories, so neither's end removes the other's credentials.
+  endpoints seed
+  first=$JOB_SECRETS
+  endpoints seed
+  [[ $first == /work/secrets/seed.* && $JOB_SECRETS == /work/secrets/seed.* && $first != "$JOB_SECRETS" ]] ||
+    fail "two starts of the job seed were given the directories $first and $JOB_SECRETS, not one of their own each"
+  # A start claims its directory with one mkdir: given one that is there, it writes nothing into
+  # it, removes nothing of it and ends with 1, so its job is never started.
+  mkdir -p "$secrets_root/seed.taken"
+  printf 'keep\n' >"$secrets_root/seed.taken/dispatch-token"
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  dash -c 'secrets=$1; '"$RUNNER_CREDENTIALS"'; echo started' sh "$secrets_root/seed.taken" <<<"$creds" >"$tmp/claim.out" 2>&1 || rc=$?
+  ((rc == 1)) || fail "a start given a directory that is there ended with $rc, not 1"
+  [ "$(cat "$secrets_root/seed.taken/dispatch-token")" = keep ] || fail "a start wrote into a directory another start holds"
+  ! grep -q started "$tmp/claim.out" || fail "a start whose claim failed went on to start its job"
+  # The shell that waits on a job -- in the foreground, as replay_checksum's, or with the job in
+  # the background, as runner_start's -- removes the directory on a TERM or a HUP of its own, on
+  # which dash otherwise ends without running its EXIT trap.
+  # shellcheck disable=SC2016 # expanded by dash
+  for case in foreground:TERM foreground:HUP detached:TERM detached:HUP detached:INT; do
+    wrapper=${case%:*} sig=${case#*:}
+    dir=$secrets_root/job-$wrapper-$sig
+    case $wrapper in
+      foreground) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' ;;
+      detached) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; trap - HUP INT TERM; '"$RUNNER_SECRETS_CLEANUP"'"$@" & wait $!' ;;
+    esac
+    dash -c "$script" sh "$dir" sleep 2 <<<"$creds" &
+    pid=$!
+    naps=0
+    until [ -f "$dir/pg-url" ]; do
+      ((++naps <= 200)) || fail "the $wrapper shell wrote no credentials into $dir"
+      sleep 0.05
+    done
+    [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
+      fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
+    kill -"$sig" "$pid"
+    rc=0
+    if [ "$sig" = INT ]; then
+      # A background job of a non-interactive sh ignores INT, the runner's detached wait shell as
+      # much as this one, so an INT ends neither it nor its job: the directory stays while the job
+      # runs and goes when it ends.
+      sleep 0.3
+      { kill -0 "$pid" 2>/dev/null && [ -d "$dir" ]; } ||
+        fail "an INT ended the detached shell or removed its job's credentials while the job ran"
+      wait "$pid" || rc=$?
+      ((rc == 0)) || fail "the detached shell ended with $rc once its job did, not 0"
+    else
+      wait "$pid" || rc=$?
+      ((rc == 143)) || fail "the $wrapper shell ended with $rc on a $sig, not 143"
+    fi
+    [ ! -e "$dir" ] || fail "the $wrapper shell left its job's credentials in $dir after a $sig"
+  done
+  # An INT that reaches a foreground shell, one not started ignoring it, ends it through the
+  # cleanup too.
+  dir=$secrets_root/job-foreground-INT
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  timeout -s INT 0.5 dash -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' sh "$dir" sleep 2 <<<"$creds" || rc=$?
+  ((rc == 124)) || fail "the foreground shell given an INT by timeout ended with $rc, not timeout's 124"
+  [ ! -e "$dir" ] || fail "the foreground shell left its job's credentials in $dir after an INT"
+)
+pass "two starts of one runner job name get directories of their own, a start never writes into or removes one it did not claim, and the shell that waits on a job removes its directory on a TERM or a HUP, and a foreground one on an INT, while an INT leaves a detached one running until its job ends"
+
+# ---- (h) nats.yaml against a fresh render of the vendored chart ---------------------------------
+
+# A copy of render-nats.sh's tree whose vendored chart has its last byte changed. render-nats.sh
+# refuses that archive before it runs go, so this half needs neither go nor the network: it runs on
+# the fakes' PATH, where the fake go records any call.
+# shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
+(
+  version=$(sed -n 's/^CHART_VERSION=//p' "$here/render-nats.sh")
+  want=$(sed -n 's/^CHART_SHA256=//p' "$here/render-nats.sh")
+  tree=$tmp/render-tree
+  mkdir -p "$tree/loadtest/cluster"
+  tree=$(cd -- "$tree" && pwd -P) # Match the directory spelling in render-nats.sh's refusal.
+  chart=$tree/loadtest/cluster/nats-$version.tgz
+  cp -- "$here/../common.sh" "$tree/loadtest/"
+  cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree/loadtest/cluster/"
+  vendored=$(sha256sum -- "$chart" | cut -d' ' -f1)
+  [ "$vendored" = "$want" ] || fail "nats-$version.tgz has sha256 $vendored, not render-nats.sh's CHART_SHA256 '$want'"
+  size=$(wc -c <"$chart")
+  byte='\000'
+  [ "$(tail -c1 "$chart" | od -An -tu1 | tr -d ' ')" != 0 ] || byte='\001'
+  printf '%b' "$byte" | dd of="$chart" bs=1 seek=$((size - 1)) conv=notrunc status=none
+  got=$(sha256sum -- "$chart" | cut -d' ' -f1)
+  [ "$got" != "$want" ] || fail "the chart with its last byte changed still has sha256 $want"
+  [ -f "$fake/go.log" ] || : >"$fake/go.log"
+  go_calls=$(wc -l <"$fake/go.log")
+  ! bash "$tree/loadtest/cluster/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/refused.yaml" 2>"$tmp/out" ||
+    fail "render-nats.sh rendered a chart whose sha256 is $got"
+  grep -qxF "render-nats.sh: $chart has sha256 $got, not $want; refusing it" "$tmp/out" ||
+    fail "render-nats.sh's refusal of the changed chart does not name it and both sums"
+  [ ! -e "$tmp/refused.yaml" ] && [ ! -e "$tmp/refused.yaml.tmp" ] || fail "render-nats.sh wrote a render of the refused chart"
+  [ "$(wc -l <"$fake/go.log")" = "$go_calls" ] || fail "render-nats.sh ran go on the refused chart: $(tail -n1 "$fake/go.log")"
+)
+pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
+
+# The render runs on the real PATH for go, behind a curl that records each call and fails it: with
+# --pin-from it fetches nothing but helm, which go fetches itself through its module proxy.
+# shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
+if PATH=$real_path command -v go >/dev/null; then
+  mkdir -p "$tmp/no-curl"
+  cat >"$tmp/no-curl/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_DIR/no-curl.log"
+exit 1
+EOF
+  chmod +x "$tmp/no-curl/curl"
+  status=0
+  PATH=$tmp/no-curl:$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
+    status=$?
+  [ ! -s "$fake/no-curl.log" ] || fail "render-nats.sh --pin-from ran curl, which reads the network: $(cat "$fake/no-curl.log")"
+  [ "$status" = 0 ] || fail "render-nats.sh failed; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
   diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
     fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
-  pass "manifests/nats.yaml equals a fresh render of chart nats/nats 2.15.1 with nats-values.yaml"
+  pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, which ran no curl"
 else
-  printf 'SKIP: go or the network does not reach helm and the chart, so manifests/nats.yaml was not compared with a fresh render\n'
+  printf 'SKIP: go is not on PATH, so manifests/nats.yaml was not compared with a fresh render\n'
 fi
 
 # ---- (i) the replay residual's seed-check lines -------------------------------------------------
@@ -2298,10 +2605,15 @@ pass "a read-only kubectl exec is retried once 5 s after a dial timeout or a ref
 # full-size copy runs on with nothing driving it.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-orphan FAKE_FAST_SLEEP=60
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# The daemons stay in their first period until the heartbeat's pid is read (FAKE_SLEEP_GATE): with
+# fast periods the heartbeat could otherwise stop, and take its pidfile with it, before that read.
+FAKE_SLEEP_GATE=$fake/root-orphan.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 orphan_dir=$(find "$LOADTEST_CLUSTER_ROOT" -mindepth 1 -maxdepth 1 -type d)
 orphan_hb=$(<"$orphan_dir/heartbeat.pid")
+kill -0 "$orphan_hb" 2>/dev/null ||
+  fail "the heartbeat up started (pid $orphan_hb) is not running, though the gate holds it in its first period: $(cat "$orphan_dir/logs/heartbeat.log")"
+: >"$fake/root-orphan.gate"
 # up has returned, so no cluster.sh command of this run is alive any more.
 for ((i = 0; i < 50; i++)); do
   kill -0 "$orphan_hb" 2>/dev/null || break
@@ -2327,6 +2639,7 @@ pass "the heartbeat stops once no command of its run is alive, so an abandoned r
 (
   so_checker=$(jq -nc --arg c "$commit_ok" '{dispatch_commit: $c, built_from: $c, overlay_source: null,
     overlay_files: [], registration: null, renderer_matches: true, sha256: "f00d"}')
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
   source "$cluster"
   printf 'stored-order: documents=5 clean=2 mismatched=1 refused=0 failed=0 unchecked=2\n' >"$tmp/so-unchecked.txt"
   stored_order_summary "$tmp/so-unchecked.txt" "$so_checker" 1 2026-10-29T00:00:00Z >"$tmp/so-unchecked.json"
@@ -2378,10 +2691,14 @@ pass "a step whose copy-back from the runner failed is marked failed with kind c
 # each to cgroup.jsonl every 5 s with nothing left to read.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-sampler-stop FAKE_FAST_SLEEP=60
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Gated as in (o), so the sampler cannot stop, and take its pidfile with it, before its pid is read.
+FAKE_SLEEP_GATE=$fake/root-sampler-stop.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 sampler_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
 sampler_pid=$(<"$sampler_dir/sampler.pid")
+kill -0 "$sampler_pid" 2>/dev/null ||
+  fail "the sampler up started (pid $sampler_pid) is not running, though the gate holds it in its first period: $(cat "$sampler_dir/logs/sampler.log")"
+: >"$fake/root-sampler-stop.gate"
 # up has returned, so no command of this run is alive: its heartbeat stops, and the sampler with it.
 sampler_alive=yes
 for ((i = 0; i < 200; i++)); do
@@ -2495,7 +2812,9 @@ pass "up's refusal of a stale lock names the holder pod and issue and says to co
 # run. Only status and down, which register no command, run from another namespace.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-pidns
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Gated as in (o), and never opened: the daemons are killed below, still in their first period,
+# however long up took after it started them.
+FAKE_SLEEP_GATE=$fake/root-pidns.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 pidns_run=$(jq -r .data.run "$fake/lock.json")
 pidns_dir=$LOADTEST_CLUSTER_ROOT/$pidns_run
@@ -2690,10 +3009,10 @@ kill_dfs=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
 # step's deadline, TERMs the pid that job's .pid file names in whatever pod is named runner --
 # which a later run's step of that name would be. Given the step shell's pid and start time it
 # ends at its next poll instead, as the watcher does, so the kill leaves nothing of the step
-# running here and no job is stopped. Nothing but cluster.sh ends them: the cleanup's pkill runs
-# long after this.
+# running here and no job is stopped. Nothing but cluster.sh ends them: the cleanup's kill of
+# this suite's steps runs long after this.
 await_gone "${kill_kids[@]}" ||
-  fail "the step's disk watcher and its wait on the runner job ($(pgrep -af "$cluster step --namespace $ns " | tr '\n' ';')) still run after the step shell was killed: they poll on, so the watcher records pg_disk in a dead step's directory and the wait stops the job step-pgkill at the step's deadline, which a later run's step of that name would be"
+  fail "the step's disk watcher and its wait on the runner job ($(own_steps | tr '\n' ';')) still run after the step shell was killed: they poll on, so the watcher records pg_disk in a dead step's directory and the wait stops the job step-pgkill at the step's deadline, which a later run's step of that name would be"
 kill_dfs_after=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
 ! grep -qx 'step-pgkill' "$fake/runner-stops" 2>/dev/null ||
   fail "the disk watcher of a killed step stopped the runner job step-pgkill after the kill: $(cat "$fake/runner-stops")"
@@ -2703,8 +3022,8 @@ kill_dfs_after=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
   fail "the killed step's disk watcher made $((kill_dfs_after - kill_dfs)) more reads of the volume before it ended: it reads on under the threshold"
 ! grep -qx 30 "$fake/sleep.log" ||
   fail "the killed step's disk watcher took $(grep -cx 30 "$fake/sleep.log") more 30 s naps after it was reaped: it polls on for ever"
-! pgrep -f "$cluster step --namespace $ns " >/dev/null 2>&1 ||
-  fail "the step still runs here although its disk watcher and its wait on the runner job ended: $(pgrep -af "$cluster step --namespace $ns " | tr '\n' ';')"
+[ -z "$(own_steps)" ] ||
+  fail "the step still runs here although its disk watcher and its wait on the runner job ended: $(own_steps | tr '\n' ';')"
 ! grep -qx 'step-pgkill' "$fake/runner-stops" 2>/dev/null ||
   fail "the killed step's wait on its runner job stopped step-pgkill: $(cat "$fake/runner-stops")"
 unset FAKE_FAST_SLEEP
@@ -2989,7 +3308,10 @@ pass "with the lock naming another run, runner_stop, runner_step_remove and typi
 # still proved written with no lock read of their own.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-lockread
-FAKE_LOCK_GET_FAIL=1 FAKE_FAST_SLEEP=2 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Gated as in (o), and never opened: down below stops both daemons, and until then they stay in
+# their first period. Past it the heartbeat, with no command of the run alive, would stop and take
+# its pidfile with it, so the checks below would depend on coming within 60 s of its start.
+FAKE_LOCK_GET_FAIL=1 FAKE_FAST_SLEEP=2 FAKE_SLEEP_GATE=$fake/root-lockread.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC != 0)) ||
   fail "up ran through although no read of the lock answered after it took one: the guard before a write into the copy fails closed: $(cat "$tmp/out")"
 grep -qF "could not read the lock dispatch-loadtest-lock in $ns after 3 tries" "$tmp/out" ||
@@ -3001,7 +3323,7 @@ lockread_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
   source "$cluster"
   NS=$ns
   set_run "${lockread_dir##*/}"
-  export FAKE_LOCK_GET_FAIL=1
+  export FAKE_LOCK_GET_FAIL=1 FAKE_SLEEP_GATE=$fake/root-lockread.gate
   start_daemon sampler
 ) || fail "the sampler did not start while every read of the lock fails: $(cat "$lockread_dir/logs/sampler.log" 2>/dev/null)"
 for daemon in heartbeat sampler; do
@@ -3216,11 +3538,16 @@ rc_reads() { grep -c -- "exec runner -c runner -- cat /work/logs/$1.rc" "$fake/k
 # stop_watchdog SECONDS PID, stop_watchdog_end: a guard that kills the disk watcher PID after
 # SECONDS (a real nap: never one of FAKE_FAST_SLEEP's) and leaves $fake/stop-late behind. A
 # pg_disk_watch_stop that waits for ever on a watcher whose TERM was lost then fails this case
-# instead of hanging the suite, as the fakes' own caps do.
+# instead of hanging the suite, as the fakes' own caps do. The nap is a child the guard waits on
+# and kills when stop_watchdog_end TERMs the guard: a TERM to the subshell alone left its `sleep`
+# running, up to 240 s past the suite's own exit.
 stop_watchdog() {
   rm -f -- "$fake/stop-late"
   (
-    sleep "$1"
+    sleep "$1" &
+    nap=$!
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    wait "$nap"
     kill -KILL "$2" 2>/dev/null || true
     : >"$fake/stop-late"
   ) &
@@ -3382,7 +3709,9 @@ pass "each poll of the disk watcher and of the runner-job wait reads the lock on
 # naming the pod it could not reach, which ends the step command and lets the lock age.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-unreach
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --pg-volume 150Gi
+# Gated as in (o), and never opened: up's daemons stay in their first period until the heartbeat
+# is killed below and down stops the sampler, however long the checks in between take.
+FAKE_SLEEP_GATE=$fake/root-unreach.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --pg-volume 150Gi
 ((RC == 0)) || fail "up exited $RC: $(cat "$tmp/out")"
 unreach_run=$(jq -r .data.run "$fake/lock.json")
 unreach_dir=$LOADTEST_CLUSTER_ROOT/$unreach_run/steps/pgterm
@@ -3599,8 +3928,8 @@ rm -f -- "$unreach_fail"
 # non-zero within its bound, and nothing of that run renews the lock after it has.
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC: $(cat "$tmp/out")"
-# The heartbeat up started sleeps a real 60 s; the step below starts one whose 60 s is a fast
-# sleep, so the periods this case waits out cost it no clock.
+# The heartbeat up started is held in its first period; the step below starts one whose 60 s is a
+# fast sleep, so the periods this case waits out cost it no clock.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
 kill -TERM -- "-$unreach_hb" 2>/dev/null || true
 until ! kill -0 "$unreach_hb" 2>/dev/null; do sleep 0.05; done
@@ -3616,7 +3945,9 @@ main "\$@"
 EOF
 rm -f -- "$fake/runner-starts" "$fake/runner-stops" "$fake/rc-polls"
 step_at=$EPOCHSECONDS
-FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 \
+# The step's heartbeat is gated as in (o) until its pid is read below: with fast periods it could
+# otherwise stop, and take its pidfile with it, as soon as the step command has ended.
+FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
 unreach_pid=$!
 # The pod goes away once the load runs in it, which is when a step has nothing but this wait left.
@@ -3638,6 +3969,9 @@ step_took=$((EPOCHSECONDS - step_at))
 # The heartbeat ends with the command, as (o) has it for a run whose command is gone: the lock
 # it renewed every 60 s is renewed no more, so it ages and up calls it stale.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
+kill -0 "$unreach_hb" 2>/dev/null ||
+  fail "the heartbeat the step started (pid $unreach_hb) is not running, though the gate holds it in its first period: $(cat "$LOADTEST_CLUSTER_ROOT/$unreach_run/logs/heartbeat.log")"
+: >"$fake/root-unreach-step.gate"
 for ((i = 0; i < 50; i++)); do
   kill -0 "$unreach_hb" 2>/dev/null || break
   sleep 0.1

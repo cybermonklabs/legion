@@ -138,8 +138,8 @@ func TestTheBinaryWithNoMachineLoginURLServesNoDeviceGrant(t *testing.T) {
 		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
 	}})
 	requireHealthy(t, broker.Addr)
-	if !strings.Contains(broker.Await(t, "machine login device grant"), "machine login device grant state=off") {
-		t.Fatalf("the boot log does not report the device grant off:\n%s", broker.Log())
+	if record := broker.AwaitRecord(t, "machine login device grant", nil); record["state"] != "off" {
+		t.Fatalf("the boot log does not report the device grant off: %v", record)
 	}
 
 	status, body := startDeviceAuthorization(t, broker.Addr, proofKey(t))
@@ -203,19 +203,22 @@ func TestTheBinaryWithAMachineLoginURLServesTheDeviceGrant(t *testing.T) {
 	}
 }
 
-// TestAListenerOnAVMIntrospectsWithItsGoogleIdentity: a listed caller may hold a Google identity
-// token instead of a Kubernetes one, which is the Envoy listener on a VM. The real binary reads
-// a token back for it on the introspection route its name carries, and refuses a machine of the
-// same shape that BROKER_API_ACCOUNTS does not name 403 ACCOUNT_NOT_LISTED — the broker's list
-// refusing a sound credential, not the credential failing.
+// TestAListenerOnAVMIntrospectsWithItsGoogleIdentity drives a broker whose only Google caller
+// is an API account: introspection works without listing a VM service, but neither that caller
+// nor an unlisted account can exchange its token for an access token or launcher credential.
 func TestAListenerOnAVMIntrospectsWithItsGoogleIdentity(t *testing.T) {
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")
 	googleKey := google.PublishKey(t, "google-key")
 
-	env := append(googleExchangeEnv(t, storetest.URL(t), cluster, github, google, longAccessSeconds),
+	env := append(exchangeEnv(t, storetest.URL(t), cluster, github, longAccessSeconds),
+		"BROKER_GOOGLE_OIDC_ISSUER="+google.URL(),
+		"BROKER_GOOGLE_OIDC_AUDIENCE="+machineAudience,
 		"BROKER_API_ACCOUNTS=dispatch="+apiAccount+" listener=google:"+listenerVMAccount)
+	for _, setting := range []string{"BROKER_VM_SERVICES", "BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES", "BROKER_VM_EXCHANGE_ACCOUNTS"} {
+		env = append(env, setting+"=")
+	}
 	broker := startBroker(t, brokerOptions{Env: env})
 	broker.Await(t, "token exchange")
 	live := newPlainBroker(broker.Addr)
@@ -237,5 +240,18 @@ func TestAListenerOnAVMIntrospectsWithItsGoogleIdentity(t *testing.T) {
 	status, body = live.introspect(t, "a-token-nobody-issued", identity(strangerVMAccount))
 	if status != http.StatusForbidden || body["code"] != "ACCOUNT_NOT_LISTED" {
 		t.Fatalf("introspection by a machine BROKER_API_ACCOUNTS does not name = %d %v, want 403 ACCOUNT_NOT_LISTED", status, body)
+	}
+
+	live = newLiveBroker(broker.Addr, proofKey(t))
+	for _, account := range []string{listenerVMAccount, strangerVMAccount} {
+		status, body := live.exchange(t, machineForm(identity(account), "not-a-secret-session"))
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" ||
+			!strings.Contains(description, "no entry lists the Google account "+account) {
+			t.Fatalf("exchange by %s with no VM services = %d %v, want an unlisted Google account refusal", account, status, body)
+		}
+		if body["access_token"] != nil || body[oauthwire.ExtraCredentialID] != nil {
+			t.Fatalf("refused exchange by %s returned a token or credential: %v", account, body)
+		}
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,14 +27,26 @@ const introspectTimeout = 5 * time.Second
 // so anything larger is not the broker's own and is refused rather than held.
 const maxIntrospectionBytes = 64 << 10
 
-// Project scopes an Introspection's Project is read under: the broker's own wire names, carried
+// Project scopes an Introspection's Projects is read under: the broker's own wire names, carried
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
-	// ProjectScopeNamed means Project is the one project key the token may write.
+	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token, or
+	// none for an account entry naming none.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
-	// ProjectScopePerson means the token writes wherever its person may.
+	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
+	// asked for.
 	ProjectScopePerson = oauthwire.ProjectScopePerson
+	// ProjectScopeNone means the token writes no project and names none: a read-only token,
+	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
+	// only under Options.ServesReadOnly.
+	ProjectScopeNone = oauthwire.ProjectScopeNone
 )
+
+// ScopeRead is the one OAuth scope a read-only token holds, in the answer's space-separated
+// Scope: the broker's own wire name, carried here for the reason the project scopes are. Beside
+// ProjectScopeNone it is a read-only token, and beside any other project scope it is no
+// session's credential (ErrNotASession).
+const ScopeRead = oauthwire.ScopeRead
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
@@ -46,7 +59,8 @@ const ExchangeClientID = oauthwire.ExchangeClientID
 // which its route serialises (internal/broker/oauthwire). The two ends share one struct rather
 // than a copy each, so a field added to the answer reaches this check and the compiler holds the
 // names and the JSON tags together. It is named here because this package's callers decode and
-// read it without the broker's storage, as this package itself does: oauthwire imports nothing.
+// read it without the broker's storage, as this package itself does: oauthwire imports nothing of
+// the broker.
 type Introspection = oauthwire.Introspection
 
 // expiryOf is when the token an answer describes stops being live, or the zero time when the
@@ -59,19 +73,21 @@ func expiryOf(answer Introspection) time.Time {
 	return time.Unix(answer.ExpiresAt, 0)
 }
 
-// callerOf is the Caller a live answer names, the one shape both checks hand back. The named
-// scope is read here rather than left to a reader: Project is the project a named-scope answer
-// names, and nothing at all for an answer scoped to its person, who writes wherever they may.
-// The service is carried as the broker answered it, which is set exactly where the person is
-// not (live refuses an answer naming neither). ProjectScope is carried whole beside them,
-// because a reader deciding what the token may do needs the scope itself and not only the
-// project rule read off it.
-func callerOf(answer Introspection) Caller {
-	caller := Caller{Session: answer.Session, Person: answer.Person, Service: answer.Service, ProjectScope: answer.ProjectScope}
-	if answer.ProjectScope == ProjectScopeNamed {
-		caller.Project = answer.Project
+// callerOf is the Caller a live answer names, the one shape both checks hand back. The list of
+// projects is carried whole, under any scope, as the caller's own copy, and the scope beside it,
+// because a reader deciding what the token may do needs the scope itself and not only the list;
+// a read-only answer names none, which sessionCaller holds it to. The service is carried as the
+// broker answered it, which is set exactly where the person is not (sessionCaller refuses an
+// answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
+// and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
+// sessionCaller lets a read-only answer through only with its switch set, which only a verifier
+// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
+func callerOf(answer Introspection, shape tokenShape) Caller {
+	return Caller{
+		Session: answer.Session, Person: answer.Person, Service: answer.Service,
+		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
+		ReadOnly: shape == shapeReadOnly,
 	}
-	return caller
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount
@@ -109,9 +125,19 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		// so none of them refuses it.
 		return Introspection{}, fmt.Errorf("%w: the broker answered %d", ErrBrokerUnreachable, response.StatusCode)
 	}
-	var answer Introspection
+	var answer struct {
+		Introspection
+		// LegacyProject is the field a broker before the list answered a named token's one
+		// project under. This reader reads no such field, so an answer carrying it would pass as
+		// a named token naming no project — the public-session account's shape, which Dispatch
+		// holds to no project — and is refused instead, whatever else it says.
+		LegacyProject json.RawMessage `json:"project"`
+	}
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return Introspection{}, fmt.Errorf("%w: decode the broker's answer: %w", ErrBrokerUnreachable, err)
 	}
-	return answer, nil
+	if answer.LegacyProject != nil {
+		return Introspection{}, ErrNotASession
+	}
+	return answer.Introspection, nil
 }

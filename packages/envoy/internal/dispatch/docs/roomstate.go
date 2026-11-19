@@ -117,7 +117,25 @@ type roomState struct {
 	settleDeferred bool
 	// settleWarming is set while a settlement loads the room it is about to settle, so that load
 	// arms no second settlement for the document's pending-settlement row (onLoadDocument).
-	settleWarming  bool
+	settleWarming bool
+	// warmed is the room instance a late departure's settlement loaded (withSettlementLoad): its
+	// warm-up's load, or the load the retire of that room made. It is retired once nothing holds
+	// the record (retireSettlementRoom). It is forgotten when a browser joins the room or a writer
+	// takes the record's writer slot, which take the room up (takeUpSettlementRoom, openLiveWrite),
+	// and once its load's count has ended, which only that room's leaving ygo's map allows
+	// (warmedRoom): a retirement's close ends it by the room's unload, and a close ygo refused
+	// leaves it for the next retirement. So it keeps no retired room alive and is kept for a room
+	// still loading.
+	warmed *warmedRoom
+	// retiring is the reservation a retirement of that room holds on the record from its last look
+	// at the record until ygo's close of the room has returned (reserveRetirement, endRetirement),
+	// closed as it ends. A writer taking the writer slot, a settlement taking the room and another
+	// retirement wait for it (awaitRetirement). So no writer or settlement takes up a room the close
+	// then takes away, and a retirement whose close the other's presence in the room refused is
+	// followed by one that closes the room once the other has left it. Each goes on with the room
+	// once the close was refused, or with no room once it closed. It holds the record
+	// (unusedLocked), so it is ended on the record it was taken on.
+	retiring       chan struct{}
 	settleFailures int
 	// settling counts the settlements running on this state (settleRoomWithin), which hold it
 	// across their database work.
@@ -267,9 +285,11 @@ func (s *Service) releaseIfUnused(room string) {
 // the resident rooms, nor holds a place under the room cap unless a socket still holds a
 // reservation on it, the bytes of one load of the name no longer count as resident (roomUnloaded,
 // which ends the name's oldest load: the one ending, save in the out-of-order case below), and its
-// state goes too unless something still holds it, whose end releases it instead. ygo calls it
-// exactly once for each room whose load succeeded, and only for a room that has left its map,
-// whichever way the room goes: the idle sweep, the last peer leaving, CloseRoom.
+// state goes too unless something still holds it, whose end releases it instead. A room a
+// settlement loaded for itself (roomState.warmed) is forgotten once its own load's count has ended
+// (warmedRoom), which this unload may be what ended.
+// ygo calls it exactly once for each room whose load succeeded, and only for a room that has left
+// its map, whichever way the room goes: the idle sweep, the last peer leaving, CloseRoom.
 //
 // The unload ends the oldest load counted under the name (roomUnloaded). That load is always one
 // that has left ygo's map: ygo holds one room of a name at a time, takes a room out of its map
@@ -285,7 +305,12 @@ func (s *Service) releaseUnloadedRoom(_ context.Context, room string) {
 		s.beforeUnloadEndsLoad(room)
 	}
 	s.roomUnloaded(room, nil)
-	s.releaseIfUnused(room)
+	if state := s.lockExistingState(room); state != nil {
+		if state.warmed != nil && s.loadEnded(state.warmed.load) {
+			state.warmed = nil
+		}
+		s.unlockState(room, state)
+	}
 }
 
 // releaseIfUnusedLocked forgets state, room's, once ygo holds no room for it - none loaded or
@@ -381,13 +406,13 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 // open writer, a running or armed settlement, a latest edit source no settlement has read, a
 // failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
 // browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, and an in-flight credit whose append
-// has not landed. Its caller holds state.mu.
+// taken or appended, a commit's parked bytes not yet stored, an in-flight credit whose append has
+// not landed, and a retirement's reservation (retiring). Its caller holds state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
 	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
 		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
 		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
-		len(state.parked) == 0
+		len(state.parked) == 0 && state.retiring == nil
 }
 
 // parkedBytes is one commit's parked bytes and the cursor of the room instance that took them.
@@ -696,26 +721,6 @@ func (state *roomState) recordIssueLocked(read issueRead) {
 	state.closed, state.closedRead = !read.open, read.at
 }
 
-// recordedIssueClosed is whether room's state records its issue closed, and whether it records
-// the issue at all: a document with no state, or a state no read or close of the issue reached,
-// records nothing.
-func (s *Service) recordedIssueClosed(room string) (closed, recorded bool) {
-	state := s.lockExistingState(room)
-	if state == nil {
-		return false, false
-	}
-	defer s.unlockState(room, state)
-	return state.closed, !state.closedRead.IsZero()
-}
-
-// recordIssueRead records read on room's state, when the service holds one (recordIssueLocked).
-func (s *Service) recordIssueRead(room string, read issueRead) {
-	if state := s.lockExistingState(room); state != nil {
-		state.recordIssueLocked(read)
-		s.unlockState(room, state)
-	}
-}
-
 // admittedIssueRead is what room's state records of its issue while a document socket's
 // admission holds the state (holdForAdmission), and whether it does: the socket's own read, or a
 // close or reopen recorded since. A cold socket's admission triggers the room's load, which takes
@@ -916,6 +921,15 @@ func (s *Service) roomUnloaded(room string, load *residentLoad) {
 	}
 	s.roomSlots.setLocked(room, slot)
 	s.residentRooms.Add(-1)
+}
+
+// loadEnded is whether load's count has been taken back (roomUnloaded): by an unload of the name,
+// or by the load's own failure. Its caller may hold a room's state lock, which is taken before
+// roomSlots.mu, as an admission's ask of roomLoadedHere takes them.
+func (s *Service) loadEnded(load *residentLoad) bool {
+	s.roomSlots.mu.Lock()
+	defer s.roomSlots.mu.Unlock()
+	return load.ended
 }
 
 // reserveConnection takes a place under the connection cap for a document socket, and is whether

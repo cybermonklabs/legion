@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -29,8 +31,8 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	restore := awsClients
-	awsClients = func(context.Context, string, string) (secretsAPI, stsAPI, error) {
-		return rig.Secrets, fakeSTS{account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/" + rig.Operator}, nil
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+		return rig.Secrets, fakeSTS{account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/" + rig.Operator}, nil, nil
 	}
 	t.Cleanup(func() { awsClients = restore })
 	stdin := secretStdin

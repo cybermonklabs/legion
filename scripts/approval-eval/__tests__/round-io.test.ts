@@ -43,6 +43,7 @@ function judgementRow(overrides: Partial<JudgementRow> = {}): JudgementRow {
     arm: "bare-opus-5-5",
     recipe: "bare",
     model: "anthropic/claude-opus-5-5",
+    servedModel: "anthropic/claude-opus-5-5",
     endpoint: "claude",
     caseId: "case-a",
     slice: "report",
@@ -106,6 +107,35 @@ describe("rowOf", () => {
     expect(rowOf(JSON.stringify({ ...judgementRow(), arm: 3 }))).toBeNull();
     expect(rowOf(JSON.stringify({ ...judgementRow(), caseId: null }))).toBeNull();
     expect(rowOf(JSON.stringify({ ...judgementRow(), judgement: "0" }))).toBeNull();
+  });
+
+  test("reads an answered row whose verdict no record ties to its arm's model as the model fault", () => {
+    const { servedModel: _, ...unrecorded } = judgementRow();
+    expect(rowOf(JSON.stringify(unrecorded))).toMatchObject({
+      verdict: ["Approve"],
+      fault: "model",
+      faultDetail: "the row records no served model",
+    });
+    const fallback = judgementRow({ servedModel: "anthropic/claude-fable-5-2" });
+    expect(rowOf(JSON.stringify(fallback))).toMatchObject({
+      verdict: ["Approve"],
+      fault: "model",
+      faultDetail:
+        "asked anthropic/claude-opus-5-5, and the answer came from anthropic/claude-fable-5-2",
+    });
+    // A Jev arm asks for an alias, so its row is held to naming the model that served it, not
+    // to the asked id; a Jev answer that named none is the model fault like any other.
+    const jev = judgementRow({ endpoint: "jev", model: "jev-latest", servedModel: "jev-2026-11" });
+    expect(rowOf(JSON.stringify(jev))).toEqual(jev);
+    const jevUnnamed = judgementRow({ endpoint: "jev", model: "jev-latest", servedModel: null });
+    expect(rowOf(JSON.stringify(jevUnnamed))).toMatchObject({
+      verdict: ["Approve"],
+      fault: "model",
+      faultDetail: "asked jev-latest, and the answer names no model",
+    });
+    // A faulted row keeps the fault it was written with.
+    const faulted = { ...unrecorded, fault: "transport" as const, faultDetail: "closed" };
+    expect(rowOf(JSON.stringify(faulted))).toMatchObject({ fault: "transport" });
   });
 });
 

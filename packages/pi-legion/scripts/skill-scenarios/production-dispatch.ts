@@ -20,7 +20,7 @@ import type {
   IssueSummary,
   MessageRead,
 } from "@legion/contracts";
-import type { RequestCredential } from "@legion/envoy-client/bearer";
+import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { type DispatchEnvironment, dispatchSettings } from "@legion/envoy-client/dispatch-config";
 import { envoyConfigPath, readEnvoyConfig } from "@legion/envoy-client/envoy-config";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -54,8 +54,9 @@ export function processIo(): CliIo {
 }
 
 /** Dispatch's address and what a request to it presents: the bearer a variable or a file gave,
- * or this machine's own identity traded at the secrets broker, which signs a DPoP proof for each
- * request (`ActiveDispatchConfig.credential`). */
+ * or an access token the secrets broker traded for this machine's identity, or for a person's
+ * sign-in on it, presented with a DPoP proof for each request
+ * (`ActiveDispatchConfig.credential`). */
 export interface DispatchCredentials {
   readonly url: string;
   readonly credential: RequestCredential;
@@ -175,13 +176,23 @@ export class ProductionDispatch {
       let response: Response;
       let text: string;
       try {
+        // One deadline for the credential and the read, 60 s, the credential waiting on all of
+        // it but the read's 1 s reserve (`credentialDeadline`): a broker credential waiting on a
+        // pod's missing registration stops there, and one that hands over its live token leaves
+        // the read that reserve.
+        const deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
         response = await this.#fetch(url.toString(), {
           method: "GET",
           headers: {
             Accept: "application/json",
-            ...(await this.#credential.headers("GET", url.toString())),
+            ...(await this.#credential.headers(
+              "GET",
+              url.toString(),
+              undefined,
+              credentialDeadline(deadline, REQUEST_TIMEOUT_MS)
+            )),
           },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          signal: deadline,
         });
         text = await response.text();
       } catch (error) {

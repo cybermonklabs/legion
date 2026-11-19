@@ -21,7 +21,8 @@ import (
 // hookPublisher is the listener with one operation run inside the publish: while the listener has
 // the notice and has answered nothing, the hook runs to completion, which is where a lane meets
 // the daemon — the publish is outside every transaction of the row's run. The publish is then
-// given answer, nil for the delivery.
+// given answer, nil for the delivery; a kept publish (PublishKept) is answered the same way and
+// never kept.
 type hookPublisher struct {
 	mu        sync.Mutex
 	hook      func() error
@@ -31,6 +32,14 @@ type hookPublisher struct {
 }
 
 func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+}
+
+func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+}
+
+func (p *hookPublisher) publish(published outboxPublish) error {
 	p.mu.Lock()
 	hook := p.hook
 	p.hook = nil
@@ -47,7 +56,7 @@ func (p *hookPublisher) Publish(_ context.Context, topic, message string, payloa
 	if p.answer != nil {
 		return p.answer
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, published)
 	return nil
 }
 
@@ -80,7 +89,7 @@ func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root stri
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, time.Time{})
 	}); err != nil {
 		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
 	}
@@ -214,7 +223,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, now, time.Time{})
+			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now, time.Time{})
 		})
 	}}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,

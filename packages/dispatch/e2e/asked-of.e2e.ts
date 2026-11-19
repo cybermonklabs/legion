@@ -103,7 +103,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   await setLiveSessions([{ session_id: asker.actor.id, title: "Planner" }]);
   // CORE names carol, a third person: every project names a default assignee, and making it
   // somebody other than these two readers keeps the two questions below out of both counts.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
 
   // A human's issue is assigned to its creator, so these two are alice's and bob's own. Two
   // questions sit on alice's and one on bob's, so every count below moves by one rather than
@@ -338,7 +338,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
   test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
   test.setTimeout(240_000);
   // CORE names carol, so neither reader below holds anything of it to start with.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   // The shared token holds nobody and names nobody, so this issue starts on CORE's default and
   // no Inbox of the two readers lists its question: the command is the only thing that can put
   // either on one of them.

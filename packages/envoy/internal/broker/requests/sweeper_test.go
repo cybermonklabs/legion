@@ -5,17 +5,21 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 type wakeCall struct {
@@ -34,7 +38,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 	// An overdue pending request: PendingTTL negative backdates pending_expires_at into the past
 	// at creation time, so it is immediately eligible for the sweep.
 	m.PendingTTL = -time.Hour
-	overdue, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	overdue, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || overdue.State != "pending" {
 		t.Fatalf("Create(overdue) = %+v, %v, want state pending", overdue, err)
 	}
@@ -42,7 +46,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 	// A second enrollment's own overdue pending request, to pin that Wake fires once PER request
 	// leaving pending, not once per tick.
 	enr2, key2 := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-	overdue2, err := m.Create(ctx, enr2, signRequest(t, m, key2, "need it too", "DEEL_API_KEY"), "")
+	overdue2, err := m.Create(ctx, enr2, signRequest(t, m, key2, "need it too", "DEEL_API_KEY"), "", nil)
 	if err != nil || overdue2.State != "pending" {
 		t.Fatalf("Create(overdue2) = %+v, %v, want state pending", overdue2, err)
 	}
@@ -51,7 +55,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 	// distinct enrollment avoids coalescing onto overdue's own pending row for the same secret.
 	enr3, key3 := newEnrollment(t, m.Store, "session", "box-c-"+t.Name(), new(fixtureOperator), nil)
 	m.PendingTTL = time.Hour
-	fresh, err := m.Create(ctx, enr3, signRequest(t, m, key3, "not yet", "DEEL_API_KEY"), "")
+	fresh, err := m.Create(ctx, enr3, signRequest(t, m, key3, "not yet", "DEEL_API_KEY"), "", nil)
 	if err != nil || fresh.State != "pending" {
 		t.Fatalf("Create(fresh) = %+v, %v, want state pending", fresh, err)
 	}
@@ -168,6 +172,83 @@ func TestSweeperTickDeletesExpiredBrowserSessions(t *testing.T) {
 	}
 }
 
+// sweepsOfATick is how many sweeps one Tick runs, each with a failure line of its own: the count
+// TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain drives and fails under, held apart from
+// the table in sweeper.go, so a sweep dropped from that table fails the test rather than
+// shrinking it.
+const sweepsOfATick = 7
+
+// sweepLines renders the sweeps' own lines among records, each sweep's failure line and
+// SweepRecoveredMessage, as "LEVEL message sweep=<name>", leaving out a failure's error, whose
+// text is the pool's.
+func sweepLines(records []slog.Record) []string {
+	ours := map[string]bool{SweepRecoveredMessage: true}
+	for _, sw := range sweeps {
+		ours[sw.failed] = true
+	}
+	var lines []string
+	for _, r := range records {
+		if !ours[r.Message] {
+			continue
+		}
+		line := r.Level.String() + " " + r.Message
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "sweep" {
+				line += " sweep=" + a.Value.String()
+			}
+			return true
+		})
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain holds Tick to a change of state, not a
+// beat: over a store that fails every sweep, the first Tick writes each sweep's failure line once
+// and a second Tick writes none of them again; once the store answers, the next Tick writes
+// SweepRecoveredMessage once for each sweep, and the Tick after it writes nothing. The store that
+// fails is a pool on the fixture's own database, closed before it runs a statement, so each sweep
+// fails at its first statement as against a database that stopped answering; the store that
+// answers is the fixture's own, set on the same Sweeper, which is what holds each sweep's state.
+func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
+	m, _, _, _ := newFixture(t)
+	ctx := context.Background()
+	closed, err := pgxpool.NewWithConfig(ctx, m.Store.Pool.Config())
+	if err != nil {
+		t.Fatalf("open the pool the failing store closes: %v", err)
+	}
+	closed.Close()
+	down := &store.Store{Pool: closed}
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: down}, Machine: &Machine{Store: down}, MachineLogins: &machine.Service{Store: down}, OAuth: oauthstore.New(closed), Interval: time.Hour}
+
+	var failed, recovered []string
+	for _, sw := range sweeps {
+		failed = append(failed, "WARN "+sw.failed+" sweep="+sw.name)
+		recovered = append(recovered, "INFO "+SweepRecoveredMessage+" sweep="+sw.name)
+	}
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	tick := func(name string, want []string) int {
+		t.Helper()
+		before := len(capture.Records())
+		sweeper.Tick(ctx)
+		got := sweepLines(capture.Records()[before:])
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s logged %q, want %q", name, got, want)
+		}
+		return len(got)
+	}
+
+	if driven := tick("the first tick over a store that fails", failed); driven < sweepsOfATick {
+		t.Fatalf("the first tick over a store that fails drove the failure lines of %d sweeps, want all %d", driven, sweepsOfATick)
+	}
+	tick("a second tick over the store that fails", nil)
+	sweeper.Enrollments, sweeper.Machine = &enroll.Service{Store: m.Store}, m
+	sweeper.MachineLogins, sweeper.OAuth = &machine.Service{Store: m.Store}, oauthstore.New(m.Store.Pool)
+	tick("the first tick once the store answers", recovered)
+	tick("a second tick over the store that answers", nil)
+}
+
 // TestSweeperEndsLapsedEnrollments pins that one Tick ends an enrollment whose lease has lapsed,
 // as a launcher's revoke ends one: its live grant is revoked, its pending request is cancelled and
 // its record closed, so the approver's pending list (GET /v1/pending) stops offering it. That
@@ -182,11 +263,11 @@ func TestSweeperEndsLapsedEnrollments(t *testing.T) {
 	type session struct{ grantID, pendingID, recordID string }
 	open := func(enr string, key *ecdsa.PrivateKey) session {
 		t.Helper()
-		granted, err := m.Create(ctx, enr, signRequest(t, m, key, "automatic", "AUTO_TOKEN"), "")
+		granted, err := m.Create(ctx, enr, signRequest(t, m, key, "automatic", "AUTO_TOKEN"), "", nil)
 		if err != nil || granted.GrantID == nil {
 			t.Fatalf("Create(AUTO_TOKEN) = %+v, %v, want a grant", granted, err)
 		}
-		pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs approval", "DEEL_API_KEY"), "")
+		pending, err := m.Create(ctx, enr, signRequest(t, m, key, "needs approval", "DEEL_API_KEY"), "", nil)
 		if err != nil || pending.State != "pending" || pending.RecordID == nil {
 			t.Fatalf("Create(DEEL_API_KEY) = %+v, %v, want pending with a record", pending, err)
 		}
@@ -240,7 +321,7 @@ func TestSweeperEndsLapsedEnrollments(t *testing.T) {
 	if got, err := m.Get(ctx, liveSession.pendingID); err != nil || got.State != "pending" {
 		t.Fatalf("the live enrollment's pending request = %+v, %v; want still pending", got, err)
 	}
-	pendingList, err := m.PendingForApprover(ctx, approver)
+	pendingList, err := m.PendingForApprover(ctx, approver, PendingStates{})
 	if err != nil || len(pendingList) != 1 || pendingList[0].RecordID != liveSession.recordID {
 		t.Fatalf("PendingForApprover = %+v, %v; want only the live enrollment's record %s", pendingList, err, liveSession.recordID)
 	}
@@ -295,7 +376,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 				sweeper.Tick(ctx)
 				return replay(ctx, jti, expires)
 			}
-			req, err := m.Create(ctx, enr, signRequest(t, m, key, "racing the sweep", name), "")
+			req, err := m.Create(ctx, enr, signRequest(t, m, key, "racing the sweep", name), "", nil)
 			if !errors.Is(err, pgx.ErrNoRows) {
 				t.Fatalf("Create after the sweep ended its enrollment = %+v, %v; want pgx.ErrNoRows", req, err)
 			}
@@ -314,7 +395,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
-	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "a grant the sweep revokes", "AUTO_TOKEN"), "")
+	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "a grant the sweep revokes", "AUTO_TOKEN"), "", nil)
 	if err != nil || granted.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v, want a grant", granted, err)
 	}
@@ -351,7 +432,7 @@ func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
 	var createErr error
 	go func() {
 		defer close(createDone)
-		created, createErr = m.Create(ctx, enr, signed, "")
+		created, createErr = m.Create(ctx, enr, signed, "", nil)
 	}()
 	createPID := storetest.AwaitLockWaiters(t, watch, holdAdvisory, 1)[0]
 

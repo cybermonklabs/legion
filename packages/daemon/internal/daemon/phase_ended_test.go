@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -65,17 +66,30 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			publisher := &outboxPublisher{}
 			runner, sup, pool := conflictRunner(t, tc.from, tc.status, tc.uncompleted, publisher)
 			implementer := startedClaim(t, sup, claim.RoleImplementer)
+			// The premise: the issue holds the row its phase keeps and no other, so a row in
+			// merging or in retro, which stand past the review, is the admission pass's grant.
+			if holds, keeps := slotted(t, pool, "LEGION-208"), tc.from != phase.Merging && tc.from != phase.Retro; holds != keeps {
+				t.Fatalf("LEGION-208 in %s holds a slot = %t before the conflict, want %t", tc.from, holds, keeps)
+			}
 
 			applyTheConflict(t, ctx, pool, runner)
+			if !slotted(t, pool, "LEGION-208") {
+				t.Fatalf("LEGION-208 holds no slot after the conflict: the admission pass of that fact grants the implementing start its row")
+			}
+			var ended int64
+			if err := pool.QueryRow(ctx, `select id from outbox where kind = 'phase_ended' and payload->>'role' = $1`, string(tc.role)).Scan(&ended); err != nil {
+				t.Fatalf("read the %s's phase-ended row: %v", tc.role, err)
+			}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("run the conflict's effects: %v", err)
 			}
 
-			// The start ran in the same drain, and the implementer holds the conflict task.
+			// The start ran in the same drain, on the row the fact's admission pass holds or
+			// granted, and the implementer holds the conflict task.
 			implementer.Wait()
 			held := implementer.Claim()
 			if held.Pending == nil || !strings.Contains(held.Pending.Task, "Phase: implementing.") || !strings.Contains(held.Pending.Task, why) {
-				t.Fatalf("the implementer is %s holding %+v, want the implementing task naming the conflict: its start waits for nothing", held.State, held.Pending)
+				t.Fatalf("the implementer is %s holding %+v, want the implementing task naming the conflict: its start waits for nothing once its slot is held", held.State, held.Pending)
 			}
 			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", tc.role))
 			var told []outboxPublish
@@ -91,8 +105,11 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 				t.Fatalf("the %s was told\n\t%q\nwant\n\t%q", tc.role, told[0].message, tc.message)
 			}
 			t.Logf("the %s was told: %s", tc.role, told[0].message)
-			if _, ok := record.ParseOutboxKey(told[0].key); !ok {
-				t.Fatalf("the message went under key %q, want its row's own (legion-outbox:<id>): a retried row is one delivery", told[0].key)
+			if !told[0].keep {
+				t.Fatalf("the message was published with keep: false, want keep: the listener is its keeper for a role no live session holds")
+			}
+			if want := record.OutboxKey(ended); told[0].key != want {
+				t.Fatalf("the message went under key %q, want its row's own, %q: a retry under it while the copy is kept stores nothing new (notify.HTTPPublisher.PublishKept)", told[0].key, want)
 			}
 			// The architect's own notice is a row of its own, to its own topic, as before.
 			architect := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleArchitect))
@@ -100,6 +117,9 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			for _, published := range publisher.publishes() {
 				if notice, ok := published.payload.(record.Notice); ok && notice.Kind == "checks-red" && published.topic == architect {
 					notices++
+					if published.keep {
+						t.Fatalf("the architect's notice was published with keep, want keep: false: the daemon holds its own notice queue")
+					}
 				}
 			}
 			if notices != 1 {
@@ -114,7 +134,10 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 
 // A role topic with no live holder is the ordinary state before a session claims it, and the role's
 // next task from the daemon names its phase anyway: the row ends with one log line rather than
-// waiting as an architect's notice waits, and the implementer's start goes on all the same.
+// waiting as an architect's notice waits, and the implementer's start goes on all the same. The
+// listener here has no kept lane (holderPublisher without keeps), as a listener before
+// sjawhar/legion#2588 has none: it refuses the kept publish to a role nobody claims with its 404,
+// so nothing keeps the message, and the row ends even so.
 func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	ctx := context.Background()
 	publisher := &holderPublisher{}
@@ -144,6 +167,124 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	if left := outboxRows(t, pool); left != 0 {
 		t.Fatalf("outbox rows left = %d, want the message finished rather than held", left)
 	}
+}
+
+// A released role's woken session claims its role only after the row's next attempt has
+// published, so that attempt meets a role no live session holds: the row publishes with keep, the
+// listener keeps the message for the role's next holder, which the woken session is, and the row
+// ends with the listener as the message's keeper, the pod woken once. Published with keep: false,
+// the message would meet the no-holder answer and the row would end with it kept nowhere, which
+// is how a woken role lost the end of its phase.
+func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	keptAcrossTheWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+}
+
+// A phase-ended message to a released role waits out the resume the wake pacing parks, as a hook
+// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): the row reads the claim
+// again at the wake's turn or parkedWakeBound on, whichever comes first, as a routine wait, and
+// publishes nothing while the park holds, and the attempt after the turn has launched the resume
+// publishes the message with keep, once, and ends the row.
+func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	keptAfterTheParkedWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+}
+
+// An operator's resume of a released role whose resume the wake pacing parked launches the claim
+// at once (supervise's dropWakeFor), and the turn the row read goes with the dropped wake: the
+// row, which reads the claim again at the bound rather than sleeping to that turn, publishes the
+// message with keep, once, at its next attempt, and ends, as a hook prompt does
+// (TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound). A row that waited for
+// the turn would publish nothing for the two hours the turn is away, and hold the pod from idle
+// release all that time. The negative control is parkedWait without the bound, the row due at
+// the turn: the attempt at the bound then finds the row not due and publishes nothing.
+func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	keptAfterAnOperatorsResume(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+}
+
+// A relaunch the wake pacing parks over a process the claim still records holds no row: the
+// machine leaves that claim as it stands, idle on its process (supervise's parkWake), and its
+// live session can take a publish now, so the row's first attempt publishes. The claim is one of
+// the wave TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt reads, a process on an
+// earlier plugin contract whose stale-plugin relaunch waits its turn (parkedOverItsProcess). A row
+// held there would hold every notice, phase-ended message, hook prompt and merge-queue removal to
+// a live session behind that session's paced refresh. The negative control is wakeForDelivery's
+// park check without its first half, the claim launching with no process: each row then waits for
+// the relaunch (parkedWait) and publishes nothing.
+func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
+	t.Run("a phase-ended message", func(t *testing.T) {
+		ctx := context.Background()
+		publisher := &holderPublisher{}
+		runner, sup, pool := hookRunner(t, publisher)
+		parkedOverItsProcess(t, sup, "LEGION-208", claim.RoleTester)
+		ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ended, time.Now().Add(-time.Minute)))
+
+		if err := runner.RunOnce(ctx); err != nil {
+			t.Fatalf("the row's first attempt: %v", err)
+		}
+		topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester))
+		attempts, delivered := publisher.snapshot()
+		if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ended.Message("LEGION-208") {
+			t.Fatalf("the first attempt made %d publishes and delivered %+v, want the message delivered to %s: the relaunch waits over a live session",
+				attempts, delivered, topic)
+		}
+		if left := outboxRows(t, pool); left != 0 {
+			t.Fatalf("outbox rows left = %d, want the row finished by its first attempt", left)
+		}
+	})
+	t.Run("an architect's notice", func(t *testing.T) {
+		ctx := context.Background()
+		pool := isolatedOutboxPool(t)
+		records := record.NewStore()
+		noticeTree(t, pool, records, false)
+		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+		parkedOverItsProcess(t, sup, "LEGION-1", claim.RoleArchitect)
+		publisher := &holderPublisher{}
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("the notice's first attempt = %v, want it published: the relaunch waits over a live session", err)
+		}
+		want := architectTopic(t, "LEGION-1")
+		if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != want || delivered[0].key != record.OutboxKey(row.ID) {
+			t.Fatalf("notice publishes = %+v, want one to %s under the row's key", delivered, want)
+		}
+	})
+}
+
+// parkedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
+// wave of TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt leaves one: idle on
+// the process it records, which speaks the contract before the daemon's (liveClaim), under the
+// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing gives
+// the relaunch a turn an hour ahead and the machines' clock fires no timer the test does not fire
+// (heldClock), so the relaunch waits through the whole test. It is posted as the daemon's pass
+// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Admitted).
+func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
+	t.Helper()
+	ctx := context.Background()
+	// A machine takes its deps where it is built, so the clock and the pacing go in before the
+	// claim is created.
+	sup.deps.Clock = &heldClock{}
+	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
+	token := mustClaimToken(t, issue, role)
+	live := liveClaim(1, token, sup.deps.PluginContract-1)
+	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
+	machine, _, err := sup.Create(ctx, live, "")
+	if err != nil {
+		t.Fatalf("create the live %s's claim: %v", role, err)
+	}
+	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Admitted: true}); err != nil {
+		t.Fatalf("raise the stale-plugin relaunch of the %s: %v", role, err)
+	}
+	if held := machine.View(); held.State != supervise.StateIdle || held.Locator == nil ||
+		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakePluginRefresh {
+		t.Fatalf("the %s is %s recording %+v with wake %+v, want it idle on its process under the stale-plugin relaunch the pacing parked",
+			role, held.State, held.Locator, held.WakeWaiting)
+	}
+	return machine
 }
 
 // The three answers of the confirmed publish route are other failures, and keep the ordinary retry:
@@ -184,8 +325,14 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 
 // conflictRunner is an outbox runner over an isolated database holding LEGION-208 in from, with the
 // pull request about to be read as conflicting and the phase rows of the roles that worked it, wired to
-// the workflow engine as production wires it: a fact applied against the pool queues its rows, and
-// one drain runs them.
+// the workflow engine and the admission pass as production wires them: a fact applied against the
+// pool queues its rows, and one drain runs them.
+//
+// The issue holds the admission slot its phase keeps (record.KeepsSlot): a row in testing and in
+// reviewing, and none in merging or in retro, which stand past the review. The conflict sends the
+// work back to implementing, whose start waits for a slot (workflow.StartOrOwe), and the admission
+// pass that runs on the same fact grants the issue that slot where it holds none, so the start is
+// claimable when the drain runs.
 func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -194,7 +341,9 @@ func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted b
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: "LEGION-208", Title: "Workflow", Phase: from, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	holdSlot(t, pool, issue.Key)
+	if record.KeepsSlot(issue) {
+		holdSlot(t, pool, issue.Key)
+	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
@@ -221,12 +370,13 @@ func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted b
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree),
 		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: issue.Key, Status: status}}, notices: publisher,
 		// The drain runs an hour after the rows the red writes, so every one of them is due.
-		handlers: []intake.Handler{engine}, now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),
+		handlers: []intake.Handler{engine, admission}, now: func() time.Time { return time.Now().Add(time.Hour) }, log: quietLogger(),
 	}
 	return runner, sup, pool
 }
@@ -253,4 +403,14 @@ func applyTheConflict(t *testing.T, ctx context.Context, pool *store.Pool, runne
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the conflicting head = %+v, %v", result, err)
 	}
+}
+
+// slotted says whether an admission slot row names issue.
+func slotted(t *testing.T, pool *store.Pool, issue string) bool {
+	t.Helper()
+	var holds bool
+	if err := pool.QueryRow(context.Background(), "select exists(select 1 from slots where issue = $1)", issue).Scan(&holds); err != nil {
+		t.Fatalf("read the slot of %s: %v", issue, err)
+	}
+	return holds
 }

@@ -35,6 +35,14 @@
 # run's verdict. A pull request needs no early post, since no queue holds it and its run is
 # cancelled by the next push.
 #
+# One failure of those four is no decision at all: a job whose runner was shut down under it
+# (GitHub reports it `failure`, and its check run carries the runner's "has received a shutdown
+# signal" annotation beside exit code 143) was killed by the platform rather than by the change,
+# so this script posts nothing and the group is left to the rest of the run. runner-shutdown.sh
+# holds that reading, and ci-ok.sh reads such a job as cancelled when the ci-ok job reaches this
+# run's verdict at the end of it. A read GitHub refuses leaves the failure a failure and the
+# post is made, as every other refusal here prefers the failing verdict.
+#
 # A decided run is read once before the post, so the check's summary names every job's result: the
 # run's jobs route (the latest attempt's, as GitHub lists them), where a job GitHub shows
 # completed stands at its conclusion, a called workflow's jobs (`<job> / <its job>`) together, one
@@ -59,13 +67,15 @@
 #
 # Its inputs, from the ci-ok-report action's env:
 #   GH_TOKEN           the job's github.token, with `actions: read` (the run's jobs) and
-#                      `checks: write` (the post).
+#                      `checks: write` (the post, and the check-run annotations
+#                      runner-shutdown.sh reads, which `checks: read` would carry too).
 #   JOB                the reporting job's id in ci.yaml; a called workflow's job passes the id of
 #                      the ci.yaml job that calls it.
 #   JOB_STATUS         that job's `job.status`: success, failure or cancelled.
 #   CHANGES            `toJSON(needs.changes)` of the reporting job.
 #   EVENT              `github.event_name`.
-#   HEAD_SHA           the commit ci-ok is for (post-check-run.sh).
+#   HEAD_SHA           the commit ci-ok is for (post-check-run.sh), and the commit whose check
+#                      runs runner-shutdown.sh reads.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, as Actions sets them.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
 #                      by default (the copy of the commit the run checked out). CI_OK_SELECTED_BY,
@@ -82,6 +92,8 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workflow=${CI_OK_WORKFLOW:-$script_dir/../workflows/ci.yaml}
 # shellcheck source=.github/scripts/gh-read.sh
 source "$script_dir/gh-read.sh"
+# shellcheck source=.github/scripts/runner-shutdown.sh
+source "$script_dir/runner-shutdown.sh"
 for input in GH_TOKEN JOB JOB_STATUS CHANGES EVENT HEAD_SHA GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_SERVER_URL; do
   if [ -z "${!input:-}" ]; then
     echo "::error::ci-ok-report.sh needs $input in its environment"
@@ -97,18 +109,42 @@ fi
 # whose result decided it and which case it was, so the posted title and summary both say what
 # decided it. A job's own result is read from JOB_STATUS rather than from the jobs route, which
 # shows this job `in_progress` while this step runs.
+#
+# A failure a runner shutdown caused is the one that decides nothing: the platform took the
+# machine away under the job, so the group is left to the rest of the run and to the ci-ok job's
+# verdict, which reads that job as cancelled. The job whose own runner was shut down rarely
+# reaches this step at all — the steps after the kill are skipped, as the `Apply` step of the
+# job in runner-shutdown.sh's header was — so the case that reaches it is `changes`, whose
+# result the reporting job is handed; both are read the same way all the same.
+shutdown_killed() { # shutdown_killed <job>: true when that job's failure was a runner shutdown
+  local kills
+  # A refused read is not a kill: runner_shutdown_kills has warned, and the failure stands.
+  kills=$(runner_shutdown_kills "$1") || return 1
+  [ -n "$kills" ]
+}
 decided_job=$JOB
 decided_by=
+shutdown_job=
 if [ "$EVENT" = merge_group ]; then
   case $JOB_STATUS in
-    failure) decided_by="whose failure decides this merge-group run, posted from this job rather than from the ci-ok job at the end of the run" ;;
+    failure)
+      if shutdown_killed "$JOB"; then
+        shutdown_job=$JOB
+      else
+        decided_by="whose failure decides this merge-group run, posted from this job rather than from the ci-ok job at the end of the run"
+      fi
+      ;;
     cancelled) decided_by="whose cancellation decides this merge-group run, posted from this job rather than from the ci-ok job at the end of the run" ;;
   esac
-  if [ -z "$decided_by" ]; then
+  if [ -z "$decided_by" ] && [ -z "$shutdown_job" ]; then
     case $(jq -r .result <<<"$CHANGES") in
       failure)
-        decided_job=changes
-        decided_by="reporting after changes failed, which decides this merge-group run: the verdict goes up from this job rather than from the ci-ok job at the end of the run"
+        if shutdown_killed changes; then
+          shutdown_job=changes
+        else
+          decided_job=changes
+          decided_by="reporting after changes failed, which decides this merge-group run: the verdict goes up from this job rather than from the ci-ok job at the end of the run"
+        fi
         ;;
       cancelled)
         decided_job=changes
@@ -116,6 +152,10 @@ if [ "$EVENT" = merge_group ]; then
         ;;
     esac
   fi
+fi
+if [ -n "$shutdown_job" ]; then
+  echo "$shutdown_job ended failure on this merge-group run only because its runner was shut down: its check run carries the runner's \"has received a shutdown signal\" annotation and exit code 143, which is the platform killing the job rather than a verdict on the change. Nothing is posted from here, and the ci-ok job posts this run's verdict at the end of the run, where that job reads as cancelled"
+  exit 0
 fi
 if [ -z "$decided_by" ]; then
   echo "$JOB ended $JOB_STATUS on a $EVENT run, which this job decides nothing of; the ci-ok job posts this run's verdict"

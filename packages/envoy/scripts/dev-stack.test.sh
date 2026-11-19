@@ -5,12 +5,14 @@
 # real network binds or a real server binary: it puts a fake `go`, `psql`, `curl` and `python3` on
 # PATH — each recording what it was asked for to the instance's own call file and answering it
 # without touching anything real — and the fake `go build -o <dir>/ ./cmd/<pkg> ...` installs a
-# stub at <dir>/<pkg> instead of compiling. dev-stack.sh's own isolation, port and stop logic
-# lives entirely in the shell driver and never in the Go binaries it starts, so a stub proves the
-# driver's behaviour without depending on cmd/dispatch, cmd/broker or cmd/listener compiling.
+# stub at <dir>/<pkg> instead of compiling. The same fake go makes the prebuilt directory a
+# --binaries run is given, as the builds farm makes the real one. dev-stack.sh's own isolation,
+# port and stop logic lives entirely in the shell driver and never in the Go binaries it starts,
+# so a stub proves the driver's behaviour without depending on cmd/dispatch, cmd/broker or
+# cmd/listener compiling.
 #
 # Each stub logs the line the real process logs once it is listening — the issuer's
-# "issuer listening url=", the broker's "broker listening addr=", natsd's "Listening for client
+# "issuer listening url=", the broker's JSON "broker listening", natsd's "Listening for client
 # connections on" and "Server is ready", the listener's JSON "envoy-listener listening" and
 # Dispatch's msg="dispatch: listening" addr= — with its own PID standing in for the port a real
 # Listen would report, since two concurrently running stubs always have distinct PIDs, and then
@@ -22,16 +24,35 @@
 # to make safe — and asserts that: (a) every process of a run is started and the port the banner
 # names for it is the one that process reported; (b) the Dispatch port keeper's held port is what
 # the broker's machine-login URL and Dispatch's own server URL name, which is why a keeper is
-# there at all; (c) "dev-stack: ready." is printed exactly once, with the export block after it;
+# there at all, and the broker binds its metrics on a port the kernel picks; (c) "dev-stack:
+# ready." is printed exactly once, with the export block after it;
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
 # drops exactly the two databases it created, on a normal exit, on INT, on a SIGTERM to its whole
 # process group sent again while the stop runs, and on a failure part way through, which leaves
 # nothing running; (f) a run given no database URL refuses with exit 2, naming all three sources;
-# and (g) the second box is printed with a path of its own for each of the first box's, every one
+# (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
-# path two stand-ins would fight over.
+# path two stand-ins would fight over; (h) a run given --binaries calls no go at all, copies the
+# prebuilt stubs into its own bin directory, and runs them, held to everything (a), (b),
+# (c) and (e) hold a built run to; and (i) a --binaries directory short of one of them, or
+# holding one that is not an executable file, is refused with exit 2, naming each such file,
+# before anything is created or started; and (j) a --callout run starts natsd behind the auth
+# callout with a monitor port, two brokers that each run the auth service on it, and the listener
+# and Dispatch each with a NATS service token the issuer writes, exports what callout-check.sh
+# reads, and outlives its second broker being killed, while a run without --callout does none of
+# it; (k) every run gives each broker its database URL with pool_max_conns=10, production's
+# pool size, joined to the server URL's own query string or starting one where it has none (the
+# --callout run names a server URL with no query string), while Dispatch, which refuses that
+# parameter, gets the URL's query string alone; (l) on the --callout run SIGUSR1 restarts natsd on
+# the ports it reported, with the same store and callout keys, and SIGUSR2 restarts the listener
+# on its keeper's socket, each old process gone, its log kept, and the stack up; and the controls
+# that (l)'s same-port checks can fail, each stopping the whole stack and naming both ports: (m) a
+# natsd that comes back on another client port, (n) one that comes back on its client port and
+# another monitor port, and (o) a listener that comes back on another port than its keeper's; and
+# (p) a bash older than 5.1 (4.4, 5.0) is refused with exit 2 and one line naming the bash it needs
+# and the one it is, while 5.1 and 5.3 are taken, by the gate the driver runs at its top.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -53,6 +74,11 @@ mkdir -p "$fake_bin_dir"
 # The Postgres server every instance below is told to use. Nothing connects to it: the fake psql
 # answers every call.
 readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=disable'
+# The same server named with no query string, so the URL a run builds for a database of its own
+# has to start one: the --callout run (j) is given it. server_url is the server alone, which each
+# run's own database URL starts with.
+readonly admin_url_no_query=${admin_url%%\?*}
+readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
 cleanup() {
@@ -106,9 +132,11 @@ chmod +x "${fake_bin_dir}/curl"
 # --- Fake python3, which dev-stack.sh runs only as scripts/e2e/lib/held-port.py: `keep` writes
 # its own PID to the port file as the port it holds (two concurrent keepers have distinct PIDs, as
 # two kernel-chosen ports are distinct) and stays alive, writing that file last as the real keeper
-# does, which writes it only once it is serving; `exec` drops its own options and executes the
-# command after `--`, as the real one does once it has put the held socket on descriptor 3. No
-# socket is opened either way. ---
+# does, which writes it only once it is serving; it writes the same port at its --socket path,
+# which stands in for the socket a server's start is handed. `exec` drops its own options and
+# executes the command after `--`, as the real one does once it has put the held socket on
+# descriptor 3; with --from, it reads the port that socket path holds and puts it for each {port}
+# in the command, as the real one puts the held socket's port. No socket is opened either way. ---
 cat >"${fake_bin_dir}/python3" <<'EOF'
 #!/usr/bin/env bash
 script="${1:-}"
@@ -123,14 +151,18 @@ mode="${1:-}"
 shift || true
 case "$mode" in
   keep)
-    port_file=""
+    port_file="" socket=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --port-file)
           port_file="$2"
           shift 2
           ;;
-        --socket | --host)
+        --socket)
+          socket="$2"
+          shift 2
+          ;;
+        --host)
           shift 2
           ;;
         *)
@@ -139,22 +171,28 @@ case "$mode" in
           ;;
       esac
     done
-    [[ -n "$port_file" ]] || exit 2
+    [[ -n "$port_file" && -n "$socket" ]] || exit 2
     sleeper=""
     trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT
+    printf '%s\n' "$$" >"$socket"
     printf '%s\n' "$$" >"$port_file"
     sleep 999999 &
     sleeper=$!
     wait "$sleeper"
     ;;
   exec)
+    held=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --)
           shift
           break
           ;;
-        --from | --host | --port-file | --fd-env | --env)
+        --from)
+          held="$(cat "$2")"
+          shift 2
+          ;;
+        --host | --port-file | --fd-env | --env)
           shift 2
           ;;
         *)
@@ -164,6 +202,13 @@ case "$mode" in
       esac
     done
     [[ $# -gt 0 ]] || exit 2
+    if [[ -n "$held" ]]; then
+      command=()
+      for argument in "$@"; do
+        command+=("${argument//\{port\}/$held}")
+      done
+      set -- "${command[@]}"
+    fi
     exec "$@"
     ;;
   *)
@@ -177,14 +222,21 @@ chmod +x "${fake_bin_dir}/python3"
 # --- Fake go: "go build -o <dir>/ ./cmd/<pkg> ..." installs one stub per package instead of
 # compiling. Every server stub reports its own PID as its port and stays alive until it is
 # signalled, exiting 0 on SIGTERM as a server stopped by its supervisor does, so a stub the test
-# stops drives dev-stack.sh's normal exit. With DEV_STACK_TEST_BROKER_FAILS set at build time the
+# stops drives dev-stack.sh's normal exit. Two report a port they were given instead, as the
+# server binds it: natsd one named by -p or -m, and the listener the one held-port.py put in its
+# ENVOY_PUBLIC_URL, which is its keeper's. With DEV_STACK_TEST_BROKER_FAILS set at build time the
 # broker stub instead exits 1 without reporting an address, which is a failure part way through a
-# start; it is baked in rather than read from the environment because dev-stack.sh starts every
-# process with env -i, so nothing of this test's environment reaches one. The client stubs
-# (agent-secrets, agent-secrets-helper) are never run by dev-stack.sh, which only puts their
-# directory on PATH. ---
+# start, and with DEV_STACK_TEST_NATSD_MOVES set the natsd stub reports its own PID as its client
+# port whatever -p names, which is a server that came back on another port; each is baked in
+# rather than read from the environment because dev-stack.sh starts every process with env -i,
+# so nothing of this test's environment reaches one. The client stubs (agent-secrets,
+# agent-secrets-helper) are never run by dev-stack.sh, which only puts their directory on PATH.
+# With DEV_STACK_TEST_GO_CALL_FILE set, every call is also recorded there, which is how a
+# --binaries run shows it called no go at all. ---
 cat >"${fake_bin_dir}/go" <<'EOF'
 #!/usr/bin/env bash
+# Every call, recorded where the caller asks, so a --binaries run can show it made none.
+[[ -z "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]] || printf 'go %s\n' "$*" >>"$DEV_STACK_TEST_GO_CALL_FILE"
 out=""
 prev=""
 packages=()
@@ -232,7 +284,8 @@ ISSUER
       cat >"$target" <<'BROKER'
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
-echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-}" >&2
+echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
+echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 BROKER
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
@@ -241,7 +294,10 @@ exit 1
 REFUSES
       else
         cat >>"$target" <<'LISTENS'
-echo "broker listening addr=127.0.0.1:$$" >&2
+printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
+if [[ -n "${BROKER_NATS_URLS:-}" ]]; then
+  printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker: the NATS auth service is answering"}\n' >&2
+fi
 LISTENS
       fi
       ;;
@@ -249,7 +305,40 @@ LISTENS
       cat >"$target" <<'NATSD'
 #!/usr/bin/env bash
 echo "[INF] Starting nats-server" >&2
-echo "[INF] Listening for client connections on 127.0.0.1:$$" >&2
+echo "fake natsd: pid=$$" >&2
+echo "fake natsd: args=$*" >&2
+# The ports it was given, bound as nats-server binds them: -1 is its own choice, which this stub's
+# PID stands for, and any other port is that port.
+client=$$ monitor=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p)
+      [[ "$2" == -1 ]] || client="$2"
+      shift 2
+      ;;
+    -m)
+      monitor="$2"
+      [[ "$monitor" != -1 ]] || monitor=$$
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+NATSD
+      if [[ -n "${DEV_STACK_TEST_NATSD_MOVES:-}" ]]; then
+        cat >>"$target" <<'MOVES'
+client=$$
+MOVES
+      fi
+      if [[ -n "${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}" ]]; then
+        # A restart, given the monitor port it served (not -1), comes back on one of its own.
+        cat >>"$target" <<'MOVES'
+[[ -z "$monitor" || "$monitor" == "$$" ]] || monitor=$$
+MOVES
+      fi
+      cat >>"$target" <<'NATSD'
+echo "[INF] Listening for client connections on 127.0.0.1:$client" >&2
+[[ -z "$monitor" ]] || echo "[INF] Starting http monitor on 127.0.0.1:$monitor" >&2
 echo "[INF] Server is ready" >&2
 NATSD
       ;;
@@ -257,17 +346,35 @@ NATSD
       cat >"$target" <<'LISTENER'
 #!/usr/bin/env bash
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
-printf '{"level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
+echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
+# It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
+# stands for a port only where it was handed none.
+port="${ENVOY_PUBLIC_URL##*:}"
+[[ "$port" =~ ^[0-9]+$ ]] || port=$$
+LISTENER
+      if [[ -n "${DEV_STACK_TEST_LISTENER_MOVES:-}" ]]; then
+        # Every start after the first, which a restart is, reports a port of its own instead of its
+        # keeper's. The count lives beside the stub, in this run's own bin directory.
+        cat >>"$target" <<'MOVES'
+starts_file="${0%/*}/.listener-starts"
+starts=$(($(cat "$starts_file" 2>/dev/null || echo 0) + 1))
+echo "$starts" >"$starts_file"
+((starts == 1)) || port=$$
+MOVES
+      fi
+      cat >>"$target" <<'LISTENER'
+printf '{"level":"INFO","msg":"envoy-listener listening","addr":"127.0.0.1:%s"}\n' "$port" >&2
 LISTENER
       ;;
     dispatch)
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
-echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-}" >&2
+echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 echo "time=2026-01-01T00:00:00.000Z level=INFO msg=\"dispatch: listening\" addr=127.0.0.1:$$" >&2
 DISPATCH
       ;;
-    agent-secrets | agent-secrets-helper)
+    agent-secrets | agent-secrets-helper | natsprobe)
       cat >"$target" <<'CLIENT'
 #!/usr/bin/env bash
 exit 0
@@ -300,17 +407,26 @@ chmod +x "${fake_bin_dir}/go"
 # the previous run's "dev-stack: ready." line until that job runs, and wait_for_ready would read
 # it. TMPDIR is this test's own directory, so each run's work directory lives under it and this
 # test's cleanup removes both. The run is given no LEGION_TEST_PG_DSN and no DATABASE_URL, so
-# nothing of the machine it runs on decides which server it is pointed at.
+# nothing of the machine it runs on decides which server it is pointed at. Arguments after the
+# fourth are dev-stack.sh's own, after its --database-url.
 run_instance() {
   local which="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
+  shift 4
   : >"$log_file"
   : >"$psql_call_file"
   : >"$curl_call_file"
+  if [[ -n "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]]; then
+    : >"$DEV_STACK_TEST_GO_CALL_FILE"
+  fi
   env -u LEGION_TEST_PG_DSN -u DATABASE_URL \
     PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file" \
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}" \
-    bash "$driver" --database-url "$admin_url" >"$log_file" 2>&1 &
+    DEV_STACK_TEST_NATSD_MOVES="${DEV_STACK_TEST_NATSD_MOVES:-}" \
+    DEV_STACK_TEST_NATSD_MONITOR_MOVES="${DEV_STACK_TEST_NATSD_MONITOR_MOVES:-}" \
+    DEV_STACK_TEST_LISTENER_MOVES="${DEV_STACK_TEST_LISTENER_MOVES:-}" \
+    DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
+    bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
 }
 
@@ -361,7 +477,7 @@ dropped_databases() { grep -o 'drop database if exists dev_stack_[a-z0-9_]*' "$1
 banner_port_of() { grep -o "dev-stack: $2 [a-z]*://127\.0\.0\.1:[0-9]*" "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 # The port a process itself reported, from the log file dev-stack.sh gave that process alone.
 issuer_log_port() { grep -o 'issuer listening url=http://127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
-broker_log_port() { grep -o 'broker listening addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
+broker_log_port() { grep -o '"message":"broker listening","addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 nats_log_port() { grep -o 'Listening for client connections on 127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
@@ -369,14 +485,19 @@ dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]
 exported() { grep -o "export $2=.*" "$1" | head -n1 | cut -d= -f2- || true; }
 
 # The globals assert_instance_ready sets for the caller: the run's work directory, the suffix its
-# names are made from, the ports every process of it reported, and the port its Dispatch keeper
-# held.
+# names are made from, the ports every process of it reported, the port its Dispatch keeper held,
+# and the pids of the servers whose reported port is not their pid (the listener, whose port is its
+# keeper's). A restart adds the pids of the servers it started to restarted_pids.
 work_dir=""
 run_suffix=""
 kept_port=""
 declare -A process_port=()
+declare -A server_pid=()
+restarted_pids=()
+# The fifth argument is the query string of the server URL the run was given (with its "?"), by
+# default admin_url's.
 assert_instance_ready() {
-  local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4"
+  local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4" query="${5-?sslmode=disable}"
   if ! wait_for_ready "$log_file"; then
     cat "$log_file" >&2
     fail "$label never reached ready"
@@ -385,6 +506,8 @@ assert_instance_ready() {
   [[ -n "$work_dir" && -d "$work_dir" ]] || fail "$label named no work directory"
   run_suffix="$(printf '%s' "${work_dir##*.}" | tr '[:upper:]' '[:lower:]')"
   process_port=()
+  server_pid=()
+  restarted_pids=()
 
   # (a) Every process is started, and the port dev-stack.sh printed for it is the port that
   # process itself reported in its own log, never one the driver chose.
@@ -415,6 +538,21 @@ assert_instance_ready() {
     fail "$label: Dispatch's server URL does not name the kept port $kept_port"
   grep -q 'listen-fd=3' "${work_dir}/logs/dispatch.log" ||
     fail "$label: Dispatch was not given the keeper's socket (DISPATCH_LISTEN_FD)"
+  # The broker's metrics port is one the kernel picks, since the fixed default is a port only one
+  # of two stacks on a machine could hold.
+  grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
+    fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
+  # The listener serves on its keeper's socket: the port it reported is the one its keeper holds,
+  # which held-port.py put in its ENVOY_PUBLIC_URL, so a restart (l) serves that same port.
+  local listener_kept_port
+  listener_kept_port="$(cat "${work_dir}/listener-port" 2>/dev/null || true)"
+  [[ -n "$listener_kept_port" ]] || fail "$label: the listener port keeper wrote no port"
+  [[ "${process_port[listener]}" == "$listener_kept_port" ]] ||
+    fail "$label: the listener reported port ${process_port[listener]}, not $listener_kept_port its keeper holds"
+  grep -q "public=http://127\.0\.0\.1:${listener_kept_port} listen-fd=3$" "${work_dir}/logs/listener.log" ||
+    fail "$label: the listener was not handed its keeper's socket (ENVOY_LISTEN_FD) and port (ENVOY_PUBLIC_URL)"
+  server_pid[listener]="$(sed -n 's/^fake listener: pid=\([0-9]*\) .*/\1/p' "${work_dir}/logs/listener.log" | head -n1 || true)"
+  [[ -n "${server_pid[listener]}" ]] || fail "$label: the listener stub logged no pid"
 
   # (c) One "ready." line, and the exports after it, each naming the port its own process reported.
   local ready_lines
@@ -518,21 +656,24 @@ assert_instance_ready() {
   grep -qxF -e "-sf http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
     fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]}"
 
-  # Two databases of this run's own, named for it, and no other; each server pointed at its own.
-  local created
+  # Two databases of this run's own, named for it, and no other; each server pointed at its own,
+  # the broker with production's pool size (k), whole URL to whole URL.
+  local created broker_query="?pool_max_conns=10"
+  [[ -z "$query" ]] || broker_query="${query}&pool_max_conns=10"
   created="$(created_databases "$psql_call_file")"
   [[ "$created" == "dev_stack_broker_${run_suffix} dev_stack_dispatch_${run_suffix} " ]] ||
     fail "$label created '$created', not one broker and one Dispatch database of its own"
-  grep -q "database=postgres://tester:s3cret@127.0.0.1:5999/dev_stack_broker_${run_suffix}" "${work_dir}/logs/broker.log" ||
-    fail "$label did not point its broker at its own database"
-  grep -q "database=postgres://tester:s3cret@127.0.0.1:5999/dev_stack_dispatch_${run_suffix}" "${work_dir}/logs/dispatch.log" ||
-    fail "$label did not point Dispatch at its own database"
+  grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}${broker_query} issuer=" "${work_dir}/logs/broker.log" ||
+    fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
+  grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
+    fail "$label did not point Dispatch at its own database with the URL's query string alone: $(grep 'fake dispatch: database' "${work_dir}/logs/dispatch.log")"
 }
 
-# Every process of the run is gone, by the PID each reported as its port, and the keeper with them.
+# Every process of the run is gone, by the PID each reported as its port, the keeper with them,
+# the servers whose port is not their pid, and every server a restart started.
 assert_everything_stopped() {
   local label="$1" pid
-  for pid in "${process_port[@]}" "$kept_port"; do
+  for pid in "${process_port[@]}" "$kept_port" "${server_pid[@]}" "${restarted_pids[@]}"; do
     [[ -n "$pid" ]] || continue
     if kill -0 "$pid" 2>/dev/null; then
       fail "$label left process $pid running"
@@ -553,25 +694,40 @@ psql_calls1="${temporary_dir}/psql-calls-1"
 psql_calls2="${temporary_dir}/psql-calls-2"
 curl_calls1="${temporary_dir}/curl-calls-1"
 curl_calls2="${temporary_dir}/curl-calls-2"
+go_calls1="${temporary_dir}/go-calls-1"
 
 # Both instances start before either is waited on: this is the scenario a port and a database of
 # each run's own exist to make safe, not two sequential runs that never contend for anything.
-run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+# Instance 1 records its go calls, the control for (h): a run that builds is seen to call go.
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls1" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 run_instance 2 "$log2" "$psql_calls2" "$curl_calls2"
 
 assert_instance_ready 'instance 1' "$log1" "$psql_calls1" "$curl_calls1"
 work_dir1="$work_dir"
 suffix1="$run_suffix"
 kept_port1="$kept_port"
+listener_pid1="${server_pid[listener]}"
+grep -q '^go build -o ' "$go_calls1" ||
+  fail "instance 1 built nothing through the fake go, so a run that records no go call proves nothing"
 declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
 printf "PASS: instance 1 started every process and took each port from that process's own report (issuer %s, broker %s, natsd %s, listener %s, dispatch %s; Dispatch keeper %s)\n" \
   "${port1[dev-oidc-issuer]}" "${port1[broker]}" "${port1[natsd]}" "${port1[listener]}" "${port1[dispatch]}" "$kept_port1"
+# The control for (j): a run without --callout runs natsd with no callout and one broker that runs
+# no auth service, gives the listener and Dispatch no NATS token, and exports nothing of a callout.
+grep -q 'fake broker: nats= seeds=,, nats-audience= services=$' "${work_dir1}/logs/broker.log" ||
+  fail "instance 1, run without --callout, gave its broker NATS auth service settings"
+[[ ! -e "${work_dir1}/logs/broker-2.log" ]] || fail "instance 1, run without --callout, started a second broker"
+grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, run without --callout, ran natsd with -callout-keys"
+grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
+[[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
+printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
 
 assert_instance_ready 'instance 2' "$log2" "$psql_calls2" "$curl_calls2"
 work_dir2="$work_dir"
 suffix2="$run_suffix"
 kept_port2="$kept_port"
+listener_pid2="${server_pid[listener]}"
 declare -A port2=()
 for name in "${!process_port[@]}"; do port2["$name"]="${process_port[$name]}"; done
 printf "PASS: instance 2 started every process and took each port from that process's own report (issuer %s, broker %s, natsd %s, listener %s, dispatch %s; Dispatch keeper %s)\n" \
@@ -609,6 +765,7 @@ grep -q 'dev-stack: a process of this stack stopped (status 0)' "$log1" ||
 process_port=()
 for name in "${!port1[@]}"; do process_port["$name"]="${port1[$name]}"; done
 kept_port="$kept_port1"
+server_pid=([listener]="$listener_pid1")
 assert_everything_stopped 'instance 1'
 assert_databases_dropped 'instance 1' "$psql_calls1" "$suffix1"
 printf 'PASS: a normal exit stopped every process instance 1 started and dropped both its databases\n'
@@ -620,6 +777,7 @@ wait_for_exit 2
 process_port=()
 for name in "${!port2[@]}"; do process_port["$name"]="${port2[$name]}"; done
 kept_port="$kept_port2"
+server_pid=([listener]="$listener_pid2")
 assert_everything_stopped 'instance 2'
 assert_databases_dropped 'instance 2' "$psql_calls2" "$suffix2"
 printf 'PASS: INT stopped every process instance 2 started, dropped both its databases and exited 130\n'
@@ -634,6 +792,7 @@ run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready 'the SIGTERM stop' "$log1" "$psql_calls1" "$curl_calls1"
 term_suffix="$run_suffix"
 term_kept_port="$kept_port"
+term_listener_pid="${server_pid[listener]}"
 declare -A term_port=()
 for name in "${!process_port[@]}"; do term_port["$name"]="${process_port[$name]}"; done
 # -PID is the instance's own process group, which set -m gave it. The signal is sent again, as
@@ -655,6 +814,7 @@ grep -q 'dev-stack: stopped; logs kept in' "$log1" ||
 process_port=()
 for name in "${!term_port[@]}"; do process_port["$name"]="${term_port[$name]}"; done
 kept_port="$term_kept_port"
+server_pid=([listener]="$term_listener_pid")
 assert_everything_stopped 'the SIGTERM stop'
 assert_databases_dropped 'the SIGTERM stop' "$psql_calls1" "$term_suffix"
 printf 'PASS: SIGTERM to the whole process group, sent again while the stop ran, stopped every process of the run and dropped both its databases\n'
@@ -669,17 +829,22 @@ if grep -q 'dev-stack: ready\.' "$log1"; then
 fi
 failed_work_dir="$(work_dir_of "$log1")"
 [[ -n "$failed_work_dir" ]] || fail "the failed run named no work directory"
+# natsd starts before the brokers, which with --callout read the seeds it makes, so it is running
+# when the broker refuses, and is stopped with the rest.
 process_port=()
+server_pid=()
 process_port[dev-oidc-issuer]="$(issuer_log_port "${failed_work_dir}/logs/dev-oidc-issuer.log")"
 [[ -n "${process_port[dev-oidc-issuer]}" ]] || fail "the failed run started no issuer to stop"
+process_port[natsd]="$(nats_log_port "${failed_work_dir}/logs/natsd.log")"
+[[ -n "${process_port[natsd]}" ]] || fail "the failed run started no natsd to stop"
 kept_port="$(cat "${failed_work_dir}/dispatch-port")"
 assert_everything_stopped 'the failed run'
 assert_databases_dropped 'the failed run' "$psql_calls1" "$(printf '%s' "${failed_work_dir##*.}" | tr '[:upper:]' '[:lower:]')"
-for name in natsd listener dispatch; do
+for name in listener dispatch; do
   [[ ! -s "${failed_work_dir}/logs/${name}.log" ]] ||
     fail "the failed run started $name after its broker had refused"
 done
-printf 'PASS: a broker that refuses to start leaves nothing running: the issuer and the keeper are stopped and both databases dropped\n'
+printf 'PASS: a broker that refuses to start leaves nothing running: the issuer, natsd and the keeper are stopped and both databases dropped\n'
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
@@ -695,5 +860,283 @@ for source in --database-url LEGION_TEST_PG_DSN DATABASE_URL scripts/dev-postgre
 done
 [[ ! -e "${temporary_dir}/psql-calls-refusal" ]] || fail "a run with no database URL still called psql"
 printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DSN, DATABASE_URL and dev-postgres.sh, and exits 2\n'
+
+# (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
+# makes a stub of each binary in a directory of its own, and a run given that directory with
+# --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
+# Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
+prebuilt="${temporary_dir}/prebuilt"
+# One list of the stack's packages; the binary names the copy check reads come from it.
+prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
+  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
+  "${prebuilt_packages[@]}"
+go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls_prebuilt" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --binaries "$prebuilt"
+assert_instance_ready 'the --binaries run' "$log1" "$psql_calls1" "$curl_calls1"
+[[ ! -s "$go_calls_prebuilt" ]] || fail "the --binaries run called go: $(cat "$go_calls_prebuilt")"
+for binary in "${prebuilt_packages[@]##*/}"; do
+  [[ -f "${work_dir}/bin/${binary}" && -x "${work_dir}/bin/${binary}" ]] ||
+    fail "the --binaries run put no executable $binary in its own bin directory"
+  cmp -s "${prebuilt}/${binary}" "${work_dir}/bin/${binary}" ||
+    fail "the --binaries run's own $binary is not the prebuilt one it was given"
+done
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the --binaries run exited $exited_status on INT, not 130"
+assert_everything_stopped 'the --binaries run'
+assert_databases_dropped 'the --binaries run' "$psql_calls1" "$run_suffix"
+printf 'PASS: --binaries called no go, copied the %d prebuilt stubs into its own bin directory (%s/bin) and ran them\n' "${#prebuilt_packages[@]}" "$work_dir"
+
+# (i) A --binaries directory that does not hold each of those executable files is refused with
+# exit 2, naming each file that is missing or not executable and no other, before anything is
+# created or started: no work directory, and no psql, curl or go call.
+work_dirs_made() { compgen -G "${temporary_dir}/dev-stack.*" | wc -l || true; }
+refuse_binaries() {
+  local label="$1" dir="$2" made_before tool
+  made_before="$(work_dirs_made)"
+  for tool in psql curl go; do
+    rm -f "${temporary_dir}/${tool}-calls-binaries"
+  done
+  refusal_status=0
+  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+    DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-binaries" \
+    DEV_STACK_TEST_CURL_CALL_FILE="${temporary_dir}/curl-calls-binaries" \
+    DEV_STACK_TEST_GO_CALL_FILE="${temporary_dir}/go-calls-binaries" \
+    bash "$driver" --database-url "$admin_url" --binaries "$dir" >"$refusal" 2>&1 || refusal_status=$?
+  [[ "$refusal_status" -eq 2 ]] || fail "$label exited $refusal_status, not 2"
+  [[ "$(work_dirs_made)" -eq "$made_before" ]] || fail "$label made a work directory before it refused"
+  for tool in psql curl go; do
+    [[ ! -e "${temporary_dir}/${tool}-calls-binaries" ]] || fail "$label still called $tool"
+  done
+}
+# The refusal's lines that name a file of dir are exactly the lines given, in the order given.
+refused_files_are() {
+  local label="$1" dir="$2" named want
+  shift 2
+  named="$(grep -F "  ${dir}/" "$refusal" || true)"
+  want="$(printf '%s\n' "$@")"
+  [[ "$named" == "$want" ]] || fail "$label named '$named', not '$want'"
+}
+
+no_natsd="${temporary_dir}/prebuilt-no-natsd"
+cp -R "$prebuilt" "$no_natsd"
+rm "${no_natsd}/natsd"
+refuse_binaries 'a --binaries directory with no natsd' "$no_natsd"
+refused_files_are 'a --binaries directory with no natsd' "$no_natsd" "  ${no_natsd}/natsd: missing"
+printf 'PASS: a --binaries directory with no natsd is refused with exit 2, naming %s/natsd, before anything is created or started\n' "$no_natsd"
+
+listener_unrunnable="${temporary_dir}/prebuilt-listener-not-executable"
+cp -R "$prebuilt" "$listener_unrunnable"
+chmod -x "${listener_unrunnable}/listener"
+refuse_binaries 'a --binaries directory whose listener is not executable' "$listener_unrunnable"
+refused_files_are 'a --binaries directory whose listener is not executable' "$listener_unrunnable" \
+  "  ${listener_unrunnable}/listener: not an executable file"
+printf 'PASS: a --binaries directory whose listener is not executable is refused with exit 2, naming %s/listener\n' "$listener_unrunnable"
+
+two_unusable="${temporary_dir}/prebuilt-two-unusable"
+cp -R "$prebuilt" "$two_unusable"
+chmod -x "${two_unusable}/listener"
+rm "${two_unusable}/natsd"
+refuse_binaries 'a --binaries directory with two unusable binaries' "$two_unusable"
+refused_files_are 'a --binaries directory with two unusable binaries' "$two_unusable" \
+  "  ${two_unusable}/listener: not an executable file" "  ${two_unusable}/natsd: missing"
+printf 'PASS: a --binaries directory with two unusable binaries names each of them\n'
+
+# (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
+# auth service on it with the listener and Dispatch listed under their machine ids, the issuer
+# writing each of those two a NATS-audience token, which each is started with, the exports
+# callout-check.sh reads, and a stack that outlives its second broker. Its server URL has no query
+# string, so the broker's pool_max_conns starts one (k).
+run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout --database-url "$admin_url_no_query"
+assert_instance_ready 'the --callout run' "$log1" "$psql_calls1" "$curl_calls1" ''
+callout_dir="${work_dir}/nats-callout"
+grep -q -- "fake natsd: args=-p -1 -store_dir ${work_dir}/nats-store -callout-keys ${callout_dir} -m -1$" "${work_dir}/logs/natsd.log" ||
+  fail "the --callout run did not run natsd behind the callout with a monitor port: $(grep 'fake natsd' "${work_dir}/logs/natsd.log")"
+second_broker_port="$(broker_log_port "${work_dir}/logs/broker-2.log")"
+if [[ -z "$second_broker_port" ]] || ! kill -0 "$second_broker_port" 2>/dev/null; then
+  fail "the --callout run started no second broker"
+fi
+want_services="listener/dev-stack-${run_suffix}/*=system:serviceaccount:example-ns:example-listener dispatch/dev-stack-dispatch/*=system:serviceaccount:example-ns:example-dispatch"
+for broker_log in broker.log broker-2.log; do
+  grep -qF "fake broker: nats=nats://127.0.0.1:${process_port[natsd]} seeds=${callout_dir}/service.seed,${callout_dir}/issuer.seed,${callout_dir}/xkey.seed nats-audience=envoy-nats services=${want_services}" \
+    "${work_dir}/logs/${broker_log}" || fail "the --callout run's ${broker_log} was not given the auth service's settings: $(grep 'fake broker: nats' "${work_dir}/logs/${broker_log}")"
+  grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}?pool_max_conns=10 issuer=" "${work_dir}/logs/${broker_log}" ||
+    fail "the --callout run's ${broker_log} was not given its database URL with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/${broker_log}")"
+done
+for token in listener-nats-token dispatch-nats-token; do
+  [[ -s "${work_dir}/${token}" ]] || fail "the --callout run's issuer wrote no ${token}"
+done
+grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/listener-nats-token$" "${work_dir}/logs/listener.log" ||
+  fail "the --callout run's listener was not started with its NATS token"
+grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
+  fail "the --callout run's Dispatch was not started with its NATS token"
+for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
+  "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
+  "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \
+  "DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:${process_port[natsd]}"; do
+  [[ "$(exported "$log1" "${pair%%=*}")" == "${pair#*=}" ]] ||
+    fail "the --callout run exported ${pair%%=*}=$(exported "$log1" "${pair%%=*}"), not ${pair#*=}"
+done
+kill -TERM "$second_broker_port"
+sleep 1
+kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped when its second broker did"
+if grep -q 'a process of this stack stopped' "$log1"; then
+  fail "the --callout run stopped when its second broker did"
+fi
+
+# (l) In-place restarts, on that same stack: SIGUSR1 restarts natsd on the client and monitor ports
+# it reported, with the same store and callout keys; SIGUSR2 restarts the listener on its keeper's
+# socket. The old process of each is gone and the new one runs, serving the port the old one did,
+# its predecessor's log is kept beside its own, the stack stays up, and each restart says so
+# naming the URL every client was told.
+# wait_for_line FILE TEXT waits up to 15 s for a line of FILE holding TEXT.
+wait_for_line() {
+  for _ in $(seq 1 150); do
+    grep -qF -- "$2" "$1" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  return 1
+}
+# The pid a restart line names as the new process: "(pid <old> -> <new>)".
+restarted_pid_in() { sed -n "s/^dev-stack: $2 restarted (pid [0-9]* -> \([0-9]*\)) .*/\1/p" "$1" | head -n1 || true; }
+old_natsd="$(sed -n 's/^fake natsd: pid=\([0-9]*\)$/\1/p' "${work_dir}/logs/natsd.log" | head -n1 || true)"
+[[ -n "$old_natsd" ]] || fail "the --callout run's natsd stub logged no pid"
+nats_port="${process_port[natsd]}"
+kill -USR1 "${instance_pid[1]}"
+wait_for_line "$log1" 'dev-stack: natsd restarted' || {
+  cat "$log1" >&2
+  fail "the --callout run did not restart natsd on SIGUSR1"
+}
+new_natsd="$(restarted_pid_in "$log1" natsd)"
+grep -qxF "dev-stack: natsd restarted (pid ${old_natsd} -> ${new_natsd}) nats://127.0.0.1:${nats_port}" "$log1" ||
+  fail "the natsd restart did not name the old pid ${old_natsd}, the new one and the URL nats://127.0.0.1:${nats_port}: $(grep 'natsd restarted' "$log1")"
+restarted_pids+=("$new_natsd")
+kill -0 "$old_natsd" 2>/dev/null && fail "the natsd restart left the old natsd (pid $old_natsd) running"
+kill -0 "$new_natsd" 2>/dev/null || fail "the restarted natsd (pid $new_natsd) is not running"
+grep -q -- "fake natsd: args=-p ${nats_port} -store_dir ${work_dir}/nats-store -callout-keys ${callout_dir} -m ${nats_port}$" "${work_dir}/logs/natsd.log" ||
+  fail "the restarted natsd was not given the old ports, store and callout keys: $(grep 'fake natsd: args' "${work_dir}/logs/natsd.log")"
+grep -q -- "fake natsd: args=-p -1 " "${work_dir}/logs/natsd.log.1" ||
+  fail "the natsd restart did not keep the first natsd's log as natsd.log.1"
+listener_url="$(exported "$log1" ENVOY_URL)"
+old_listener="${server_pid[listener]}"
+kill -USR2 "${instance_pid[1]}"
+wait_for_line "$log1" 'dev-stack: listener restarted' || {
+  cat "$log1" >&2
+  fail "the --callout run did not restart the listener on SIGUSR2"
+}
+new_listener="$(restarted_pid_in "$log1" listener)"
+grep -qxF "dev-stack: listener restarted (pid ${old_listener} -> ${new_listener}) ${listener_url}" "$log1" ||
+  fail "the listener restart did not name the old pid ${old_listener}, the new one and the URL ${listener_url}: $(grep 'listener restarted' "$log1")"
+restarted_pids+=("$new_listener")
+kill -0 "$old_listener" 2>/dev/null && fail "the listener restart left the old listener (pid $old_listener) running"
+kill -0 "$new_listener" 2>/dev/null || fail "the restarted listener (pid $new_listener) is not running"
+grep -q "fake listener: pid=${new_listener} public=http://127\.0\.0\.1:${process_port[listener]} listen-fd=3$" "${work_dir}/logs/listener.log" ||
+  fail "the restarted listener was not handed its keeper's socket and port: $(grep 'fake listener: pid' "${work_dir}/logs/listener.log")"
+grep -q "fake listener: pid=${old_listener} " "${work_dir}/logs/listener.log.1" ||
+  fail "the listener restart did not keep the first listener's log as listener.log.1"
+kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped across its restarts"
+if grep -q 'a process of this stack stopped' "$log1"; then
+  fail "the --callout run stopped across its restarts"
+fi
+kill -INT "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -eq 130 ]] || fail "the --callout run exited $exited_status on INT, not 130"
+assert_everything_stopped 'the --callout run'
+assert_databases_dropped 'the --callout run' "$psql_calls1" "$run_suffix"
+printf 'PASS: --callout ran natsd behind the callout, two brokers running the auth service, the listener and Dispatch with NATS tokens, exported what callout-check.sh reads, and outlived its second broker\n'
+printf 'PASS: SIGUSR1 restarted natsd (pid %s -> %s) on port %s with its store and callout keys, and SIGUSR2 the listener (pid %s -> %s) on its kept port, the stack up throughout\n' \
+  "$old_natsd" "$new_natsd" "$nats_port" "$old_listener" "$new_listener"
+
+# (m) The control for (l): a natsd that comes back on another port than it served is refused,
+# naming both, and the whole stack stops and drops its databases, since every client was told the
+# old port. The stub baked with DEV_STACK_TEST_NATSD_MOVES reports a port of its own choice.
+DEV_STACK_TEST_NATSD_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready 'the run whose natsd moves' "$log1" "$psql_calls1" "$curl_calls1"
+nats_port="${process_port[natsd]}"
+kill -USR1 "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -ne 0 ]] || fail "a run whose natsd came back on another port reported success"
+grep -Eq "^dev-stack: natsd came back on port [0-9]+ \(monitor none\), not port ${nats_port} \(monitor none\) it served before the restart; stopping$" "$log1" || {
+  cat "$log1" >&2
+  fail "a run whose natsd came back on another port did not name both ports"
+}
+if grep -q 'dev-stack: natsd restarted' "$log1"; then
+  fail "a run whose natsd came back on another port reported the restart done"
+fi
+restarted_pids+=("$(sed -n 's/^fake natsd: pid=\([0-9]*\)$/\1/p' "${work_dir}/logs/natsd.log" | head -n1 || true)")
+assert_everything_stopped 'the run whose natsd moves'
+assert_databases_dropped 'the run whose natsd moves' "$psql_calls1" "$run_suffix"
+printf 'PASS: a natsd that came back on another port than %s stopped the stack, naming both ports\n' "$nats_port"
+
+# (n) The same for the monitor port alone, under --callout: natsd comes back on its client port and
+# another monitor port, which callout-check.sh's connection list is read at.
+DEV_STACK_TEST_NATSD_MONITOR_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1" --callout
+assert_instance_ready 'the run whose natsd monitor moves' "$log1" "$psql_calls1" "$curl_calls1"
+nats_port="${process_port[natsd]}"
+kill -USR1 "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -ne 0 ]] || fail "a run whose natsd monitor came back on another port reported success"
+grep -Eq "^dev-stack: natsd came back on port ${nats_port} \(monitor [0-9]+\), not port ${nats_port} \(monitor ${nats_port}\) it served before the restart; stopping$" "$log1" || {
+  cat "$log1" >&2
+  fail "a run whose natsd monitor came back on another port did not name both monitor ports"
+}
+grep -q 'dev-stack: natsd restarted' "$log1" && fail "a run whose natsd monitor moved reported the restart done"
+restarted_pids+=("$(sed -n 's/^fake natsd: pid=\([0-9]*\)$/\1/p' "${work_dir}/logs/natsd.log" | head -n1 || true)")
+assert_everything_stopped 'the run whose natsd monitor moves'
+assert_databases_dropped 'the run whose natsd monitor moves' "$psql_calls1" "$run_suffix"
+printf 'PASS: a natsd whose monitor came back on another port than %s stopped the stack, naming both\n' "$nats_port"
+
+# (o) A listener that comes back on another port than its keeper's is refused, naming both, and
+# the stack stops: every session was told the kept one.
+DEV_STACK_TEST_LISTENER_MOVES=1 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready 'the run whose listener moves' "$log1" "$psql_calls1" "$curl_calls1"
+listener_url="$(exported "$log1" ENVOY_URL)"
+kill -USR2 "${instance_pid[1]}"
+wait_for_exit 1
+[[ "$exited_status" -ne 0 ]] || fail "a run whose listener came back on another port reported success"
+grep -Eq "^dev-stack: the listener came back at http://127\.0\.0\.1:[0-9]+, not ${listener_url} it served before the restart; stopping$" "$log1" || {
+  cat "$log1" >&2
+  fail "a run whose listener came back on another port did not name both addresses"
+}
+grep -q 'dev-stack: listener restarted' "$log1" && fail "a run whose listener moved reported the restart done"
+restarted_pids+=("$(sed -n 's/^fake listener: pid=\([0-9]*\) .*/\1/p' "${work_dir}/logs/listener.log" | head -n1 || true)")
+assert_everything_stopped 'the run whose listener moves'
+assert_databases_dropped 'the run whose listener moves' "$psql_calls1" "$run_suffix"
+printf 'PASS: a listener that came back at another address than %s stopped the stack, naming both\n' "$listener_url"
+
+# (p) The bash the driver needs: its last wait (`wait -n -p`) is bash 5.1's, and under an older
+# bash the loop around it spins forever, so the driver's first command refuses one
+# (`refuse_old_bash`, handed this bash's own BASH_VERSINFO). No older bash is on a runner, so the
+# gate is read out of the driver and run under this test's bash with each version's numbers: 4.4
+# and 5.0 are refused with exit 2 and the one line, 5.1 and 5.3 taken with nothing printed. And
+# the call stands before the driver's first other command and its one `wait -n -p`.
+gate="$(sed -n '/^refuse_old_bash() {$/,/^}$/p' "$driver")"
+[[ -n "$gate" ]] || fail "dev-stack.sh defines no refuse_old_bash() at the start of a line"
+gate_out="${temporary_dir}/bash-gate.out"
+for gate_case in "4 4 4.4.23(1)-release refused" "5 0 5.0.18(1)-release refused" \
+  "5 1 5.1.16(1)-release taken" "5 3 5.3.0(1)-release taken"; do
+  read -r major minor version verdict <<<"$gate_case"
+  gate_status=0
+  (eval "$gate" && refuse_old_bash "$major" "$minor" "$version") >"$gate_out" 2>&1 || gate_status=$?
+  if [[ "$verdict" == refused ]]; then
+    [[ "$gate_status" -eq 2 ]] || fail "bash $version: the gate exited $gate_status, not 2"
+    [[ "$(<"$gate_out")" == "dev-stack: needs bash 5.1 or newer (for wait -n -p), and this is bash $version" ]] ||
+      fail "bash $version: the gate printed $(<"$gate_out"), not the one line naming 5.1 and $version"
+  else
+    [[ "$gate_status" -eq 0 && ! -s "$gate_out" ]] ||
+      fail "bash $version: the gate exited $gate_status and printed '$(<"$gate_out")', not 0 and nothing"
+  fi
+done
+# shellcheck disable=SC2016 # the call as the driver writes it, its expansions unexpanded
+gate_call='refuse_old_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"'
+call_line="$(grep -n -x -F -- "$gate_call" "$driver" | head -n1 | cut -d: -f1 || true)"
+first_command_line="$(grep -n -E '^SCRIPT_DIR=' "$driver" | head -n1 | cut -d: -f1 || true)"
+wait_line="$(grep -n -E '^[[:space:]]*wait -n -p ' "$driver" | head -n1 | cut -d: -f1 || true)"
+[[ -n "$call_line" && -n "$first_command_line" && -n "$wait_line" ]] ||
+  fail "dev-stack.sh lacks the gate's call ($call_line), SCRIPT_DIR= ($first_command_line) or its wait -n -p ($wait_line)"
+((call_line < first_command_line && call_line < wait_line)) ||
+  fail "dev-stack.sh calls its bash gate at line $call_line, after its first command ($first_command_line) or its wait -n -p ($wait_line)"
+printf 'PASS: bash 4.4 and 5.0 are refused with exit 2 and one line naming 5.1, 5.1 and 5.3 are taken, and the gate runs before the first command\n'
 
 printf 'ALL PASS: dev-stack.test.sh\n'

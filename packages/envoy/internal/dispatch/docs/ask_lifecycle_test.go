@@ -215,7 +215,7 @@ func TestWritingIssueAskStatesLeavesTheLatestEditSourceAlone(t *testing.T) {
 			var marked []BlockRef
 			err := joinedWrite(service, func(ctx context.Context) (err error) {
 				tx, _ := txFromContext(ctx)
-				if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+				if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 					return fmt.Errorf("lock the issue: %w", err)
 				}
 				if test.edit {
@@ -405,7 +405,7 @@ func requireLatestEditSource(t *testing.T, service *Service, artifactID string, 
 	}
 	state := service.lockState(artifactID)
 	latest := state.lastActor
-	credit := settlementAuthors(state, owedAuthors, lastActor, durableLatest, everyCredit)
+	credit := settlementAuthors(state, owedAuthors, lastActor, false, durableLatest, everyCredit)
 	service.unlockState(artifactID, state)
 	if latest == nil || *latest != want {
 		t.Fatalf("the room's latest edit source = %+v, want %+v", latest, want)
@@ -416,8 +416,8 @@ func requireLatestEditSource(t *testing.T, service *Service, artifactID string, 
 }
 
 // A closed issue's documents refuse every ordinary write, and the close's own still reaches them,
-// since its caller holds the issue's row: a room flagged closed that a reader loaded again, and a
-// document no room holds, whose write the store keeps.
+// since its caller holds the issue's owner lock: a room flagged closed that a reader loaded again,
+// and a document no room holds, whose write the store keeps.
 func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 	for _, resident := range []bool{true, false} {
 		name := "no resident room"
@@ -463,7 +463,10 @@ func TestWritingIssueAskStatesReachesAClosedIssuesDocuments(t *testing.T) {
 
 // A reopen writes the withdrawn blocks back to open, so a document that had nothing else pending
 // renders as its latest version again, and the settlement the close and the reopen left owed
-// writes no version.
+// writes no version. That holds because no settlement ran while the issue was closed: the settle
+// delay here is an hour, and nothing resumes the documents. A settlement on the closed issue would
+// have saved the blocks resolved, and the reopen's settlement would then write a version with
+// them open again.
 func TestWritingAReopensAskStatesBackLeavesNoVersionToWrite(t *testing.T) {
 	service, original := newTestService(t)
 	service.settle = time.Hour
@@ -599,8 +602,8 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 	var marked []BlockRef
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
 		tx, _ := txFromContext(ctx)
-		// The issue route holds the issue's row before it writes any document.
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		// The issue route holds the issue's owner lock before it writes any document.
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		marked, err = service.WriteIssueAskStates(ctx, "DOC-1", asks, actor, markUnindexed)

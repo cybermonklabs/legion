@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -70,7 +71,7 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 // returns once that subscription leaves: the relay's generation stops with its last subscriber,
 // so nothing of it is left for the lifetime to end.
 func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
-	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)
@@ -79,7 +80,7 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	close(stream.gate)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
 	t.Cleanup(running.stop)
-	pollUntil(t, 5*time.Second, "the subscription subscribes to the relay", func() bool {
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {

@@ -250,10 +250,7 @@ start_dispatch() {
 }
 
 # The one difference from Stage 3's configuration: admission_cap 5, for the five issues this lane
-# runs at once. Five is this lane's peak under
-# the slot rule of dispatch://INFRA-2560, where an issue holds one of the cap's slots from the
-# moment the daemon starts it until its work is past its review — accepting, retro and merging
-# hold none — or until it is done or Dispatch takes it out of the workflow. Its
+# runs at once. Five is this lane's peak under the slot rule (root AGENTS.md, "Admission"). Its
 # three roots hold a row each from their admission on, through the wait on the person at their
 # gates and on to their reviews, and the two children of root 1
 # run beside them at rerun-a-closed-child, where all three roots are still short of their
@@ -434,7 +431,8 @@ tool_outcomes() {
 # ---- driving several issues at once ------------------------------------------------------------------
 declare -A gate_artifacts pr_of
 # gate_send ISSUE records the root's primary artifact and waits for its architect to register the
-# gate on its own, from the daemon's catch-up notice (architect_registers_gate); nobody prompts it.
+# gate on its own, from the task its start carries and the daemon's catch-up notice
+# (architect_registers_gate); the proof prompts it with nothing.
 gate_send() {
   local issue=$1
   gate_artifacts[$issue]=$(dispatch_get "issues/$issue" | jq -er .primary_artifact_id)
@@ -658,8 +656,9 @@ mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 cat >"$work/instructions.md" <<'EOF'
 # Acceptance proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
@@ -960,12 +959,14 @@ pass
 begin pr-closed-unmerged
 retarget_pr "$child"
 gh -R "$repo" pr close "${pr_of[$child]}" >/dev/null
-until_true 300 "the pr-closed-unmerged notice for $child on $root1's architect" notice_delivered "$root1" architect "$(notice_needle pr-closed-unmerged "$child")"
+# The notice is queued on the child and walks from it, and the child's rerun gave the child its own
+# architect back, which holds its role: the notice lands in that architect's session.
+until_true 300 "the pr-closed-unmerged notice for $child on $child's own architect" notice_delivered "$child" architect "$(notice_needle pr-closed-unmerged "$child")"
 sleep 30
-n=$(notice_deliveries "$root1" architect "$(notice_needle pr-closed-unmerged "$child")")
-[ "$n" = 1 ] || soft "$root1's architect received $n pr-closed-unmerged notices for $child, want 1"
-notice_line "$root1" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
-note "closed $repo#${pr_of[$child]} unmerged; $root1's architect got pr-closed-unmerged for $child $n time(s)"
+n=$(notice_deliveries "$child" architect "$(notice_needle pr-closed-unmerged "$child")")
+[ "$n" = 1 ] || soft "$child's own architect received $n pr-closed-unmerged notices for $child, want 1"
+notice_line "$child" architect "$(notice_needle pr-closed-unmerged "$child")" | head -1 >"$evidence/notice-pr-closed-unmerged.jsonl"
+note "closed $repo#${pr_of[$child]} unmerged; $child's own architect got pr-closed-unmerged for $child $n time(s)"
 set_status "$child" backlog
 note "the proof human parked $child (backlog) so it takes no further turns"
 pass
@@ -1089,13 +1090,14 @@ send_agent "$root1" merger "Acceptance merge operation: merge pull request #${pr
 await_merger_merge "$repo" "${pr_of[$root1]}"
 # The message the merger's own --subject and --body wrote: the pull request's title and number
 # alone. GitHub's default squash message joins every commit message of the branch, which would put
-# this tree's Dispatch key, its Omp-Session trailers and its skip-checks lines on the base.
+# this tree's Dispatch key, its Omp-Session and Legion-Role trailers and its skip-checks lines on the
+# base.
 merge_message=$(gh api "repos/$repo/commits/$merge_when_clean_commit" --jq .commit.message)
 printf '%s\n' "$merge_message" >"$evidence/merge-commit-message-$root1.txt"
 [ "$merge_message" = "$pr1_title (#${pr_of[$root1]})" ] ||
   soft "$repo#${pr_of[$root1]}'s squash commit message is '$merge_message', want the pull request's title and number alone"
 case "$merge_message" in
-  *"Omp-Session:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
+  *"Omp-Session:"* | *"Legion-Role:"* | *"skip-checks: true"* | *"Dispatch: $root1"*)
     soft "the squash commit message of $repo#${pr_of[$root1]} carries the branch's own commit messages: $merge_message" ;;
 esac
 # The merge closes the issue, and its architect is told no pr-merged: nothing of $root1's tree is

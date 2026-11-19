@@ -29,15 +29,16 @@ const maxRunSteps = 32
 
 // JudgementChanged says whether the settlement part of a pull request a head run replays differs
 // between before and after: a replay that changed it changes which settlement stands for the
-// head. A settlement never made (CheckRuns nil) differs from an empty one; the other lists are
-// compared by what they hold, which the store and the run keep in either form. GitHub's verdict
-// on merging the head, which the run replays too, is no part of the answer: its caller asks only
-// whether a CI settlement now says something else, and the record is written whole either way.
+// head. A settlement never made (CheckRuns nil) differs from an empty one; the other lists, the
+// commit statuses among them, are compared by what they hold, which the store and the run keep in
+// either form. GitHub's verdict on merging the head, which the run replays too, is no part of the
+// answer: its caller asks only whether a CI settlement now says something else, and the record is
+// written whole either way.
 func JudgementChanged(before, after record.PullRequest) bool {
 	b, a := judgementOf(before), judgementOf(after)
 	return b.HeadSHA != a.HeadSHA || b.CheckedHead != a.CheckedHead ||
 		!sameItems(b.Failing, a.Failing) || !sameItems(b.Cancelled, a.Cancelled) || !same(b.CheckRuns, a.CheckRuns) ||
-		b.Generation != a.Generation || b.Snapshot != a.Snapshot
+		b.Generation != a.Generation || b.Snapshot != a.Snapshot || !sameItems(b.Statuses, a.Statuses)
 }
 
 // runStep applies step to pr's open run and replays it.
@@ -86,13 +87,14 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 			}
 		}
 	}
-	// GitHub's verdict is its answer about the head the record stands at. A replay that leaves the
-	// record there - one replaying a push or a settlement - keeps it whatever the steps below it
-	// say, since those moves were judged when they arrived and the answer is of the head above
-	// them. A replay that takes the record to a new head judges the move to it like any other
-	// (advance), from the verdict the run was anchored with.
+	// GitHub's verdict is its answer about the head the record stands at, with the time that
+	// answer was read. A replay that leaves the record there - one replaying a push or a
+	// settlement - keeps them whatever the steps below it say, since those moves were judged when
+	// they arrived and the answer is of the head above them. A replay that takes the record to a
+	// new head judges the move to it like any other (advance), from the verdict the run was
+	// anchored with.
 	if pr.MergeState != record.MergeStateUnread && at.HeadSHA == pr.HeadSHA {
-		at.Mergeability, at.MergeState = pr.Mergeability, pr.MergeState
+		at.Mergeability, at.MergeState, at.StateReadAt = pr.Mergeability, pr.MergeState, pr.StateReadAt
 	}
 	waiting := len(run.Steps)
 	for _, i := range unchained {
@@ -120,6 +122,7 @@ func applyStep(pr record.PullRequest, step record.RunStep, names []record.Named,
 		pr, _ = settle(pr, candidateOf(*step.Settlement))
 	case step.Reopened:
 		pr.CheckedHead, pr.Failing, pr.Cancelled, pr.CheckRuns, pr.Generation, pr.Snapshot = "", []string{}, nil, nil, 0, ""
+		pr.Statuses = nil
 	}
 	return pr, true, names
 }
@@ -155,7 +158,8 @@ func ApplyCheckSettlement(pr record.PullRequest, candidate SettlementCandidate) 
 		return settle(pr, candidate)
 	}
 	step := record.Settlement{Head: candidate.Head, CheckRuns: clone(candidate.CheckRuns), Generation: candidate.Generation,
-		Snapshot: candidate.Snapshot, Failing: clone(candidate.Failing), Cancelled: clone(candidate.Cancelled)}
+		Snapshot: candidate.Snapshot, Failing: clone(candidate.Failing), Cancelled: clone(candidate.Cancelled),
+		Statuses: clone(candidate.Statuses)}
 	if redundantSettlement(pr.Run.Steps, step) {
 		return pr, false
 	}
@@ -182,10 +186,18 @@ func redundantSettlement(steps []record.RunStep, settlement record.Settlement) b
 	return false
 }
 
-// sameSettlement is whether a and b are the same report of the same settlement.
+// sameSettlement is whether a and b are the same report of the same settlement: every field of
+// each, the commit statuses with the rest. Two settlements of one generation and snapshot can
+// differ in their statuses alone: a redelivery whose list the daemon could not read names none
+// (workflow's checks), and a record the bucket's TTL removed numbers its settlements afresh, so a
+// settlement of the record written again can carry a generation and snapshot an earlier one
+// carried, with a status created later. Each such pair is two steps, and the replay decides the
+// second by its statuses (ClassifySettlement): one that names no newer status replays as the
+// duplicate it is, and one that names a newer status as newer for its statuses alone
+// (SettlementStatusesOnly).
 func sameSettlement(a, b record.Settlement) bool {
 	return a.Head == b.Head && a.Generation == b.Generation && a.Snapshot == b.Snapshot && sameItems(a.CheckRuns, b.CheckRuns) &&
-		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled)
+		sameItems(a.Failing, b.Failing) && sameItems(a.Cancelled, b.Cancelled) && sameItems(a.Statuses, b.Statuses)
 }
 
 // settle applies candidate when it stands for the head and is newer than the recorded settlement,
@@ -204,30 +216,33 @@ func settle(pr record.PullRequest, candidate SettlementCandidate) (record.PullRe
 
 func candidateOf(s record.Settlement) SettlementCandidate {
 	return SettlementCandidate{Head: s.Head, CheckRuns: clone(s.CheckRuns), Generation: s.Generation, Snapshot: s.Snapshot,
-		Failing: clone(s.Failing), Cancelled: clone(s.Cancelled)}
+		Failing: clone(s.Failing), Cancelled: clone(s.Cancelled), Statuses: clone(s.Statuses)}
 }
 
 // judgementOf is the part of pr a head run replays.
 func judgementOf(pr record.PullRequest) record.Judgement {
 	return record.Judgement{HeadSHA: pr.HeadSHA,
 		CheckedHead: pr.CheckedHead, Failing: clone(pr.Failing), Cancelled: clone(pr.Cancelled), CheckRuns: clone(pr.CheckRuns),
-		Generation: pr.Generation, Snapshot: pr.Snapshot, Moves: clone(pr.Moves),
-		Mergeability: pr.Mergeability, MergeState: pr.MergeState}
+		Generation: pr.Generation, Snapshot: pr.Snapshot, Statuses: clone(pr.Statuses), Moves: clone(pr.Moves),
+		Mergeability: pr.Mergeability, MergeState: pr.MergeState, StateReadAt: pr.StateReadAt}
 }
 
-// withJudgement is pr with j as its judgement. GitHub's verdict on merging the head is the one
-// part of it a record that holds one of its own keeps: the replay starts at the anchor's head,
-// where the anchor's verdict was read, and every step re-judges it (advance), but a read made
-// while the run was open answered for the head the run had reached by then - a read is dropped
-// unless the record still stands at the head GitHub answered for (workflow's mergeability) - and
-// that answer is newer than the anchor's about an older head.
+// withJudgement is pr with j as its judgement. GitHub's verdict on merging the head, and the time
+// it was read, are the one part of it a record that holds one of its own keeps: the replay starts
+// at the anchor's head, where the anchor's verdict was read, and every step re-judges it
+// (advance), but a read made while the run was open answered for the head the run had reached by
+// then - a read is dropped unless the record still stands at the head GitHub answered for
+// (workflow's mergeability) - and that answer is newer than the anchor's about an older head.
+// The read time moves under the same guard as the merge state it belongs to, so a replay moves the
+// pair together and never pairs one read's state with another read's time; a pair written without
+// a time stays without one (record.PullRequest.StateReadAt says when that is).
 func withJudgement(pr record.PullRequest, j record.Judgement) record.PullRequest {
 	pr.HeadSHA = j.HeadSHA
 	pr.CheckedHead, pr.Failing, pr.Cancelled, pr.CheckRuns = j.CheckedHead, clone(j.Failing), clone(j.Cancelled), clone(j.CheckRuns)
-	pr.Generation, pr.Snapshot = j.Generation, j.Snapshot
+	pr.Generation, pr.Snapshot, pr.Statuses = j.Generation, j.Snapshot, clone(j.Statuses)
 	pr.Moves = clone(j.Moves)
 	if pr.MergeState == record.MergeStateUnread {
-		pr.Mergeability, pr.MergeState = j.Mergeability, j.MergeState
+		pr.Mergeability, pr.MergeState, pr.StateReadAt = j.Mergeability, j.MergeState, j.StateReadAt
 	}
 	return pr
 }

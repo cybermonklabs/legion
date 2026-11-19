@@ -580,8 +580,11 @@ mint_app_tokens() {
   app_token_dir_ok mint_app_tokens "$dir"
   [ -d "$dir" ] || fail "mint_app_tokens: the token directory $dir is not a directory"
   [ "${#github_apps_read[@]}" -gt 0 ] || fail "mint_app_tokens: require_app_inputs has not run"
+  # An owner is a GitHub account login as the daemon reads one (ghrepo's ownerName): a letter or
+  # digit, then up to 38 letters, digits, hyphens and underscores, since a managed user's login
+  # ends in `_<shortcode>` (`mona-cat_octo`) and its repositories are ones a run may serve.
   for owner in "$@"; do
-    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] ||
+    [[ "$owner" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$ ]] ||
       fail "mint_app_tokens: '$owner' is not a GitHub account login"
   done
   app_token_owners=("$@")
@@ -703,8 +706,13 @@ write_github_apps() {
     else
       field=token_command
       if [ -n "$token_dir" ]; then
+        # The owner the daemon names is a lowercased login (ghrepo's ownerName): a letter or digit,
+        # then up to 38 letters, digits, hyphens and underscores, since a managed user's login ends
+        # in `_<shortcode>`. Nothing else names a release file: the release of every installation is
+        # the empty owner's `_all.json`, which no login names, since none opens with an underscore,
+        # and with no `.` or `/` admitted no owner's file lies outside the role's directory.
         # shellcheck disable=SC2016 # the expansions are the token command's own, run by its sh
-        command=$(printf 'owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr "[:upper:]" "[:lower:]"); case $owner in *[!a-z0-9-]*) echo "no release file for owner $owner" >&2; exit 2;; esac; cat -- '\''%s/%s/'\''"${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json"' "$token_dir" "$role")
+        command=$(printf 'owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr "[:upper:]" "[:lower:]"); case $owner in [!a-z0-9]* | *[!a-z0-9_-]*) false ;; esac && [ "${#owner}" -le 39 ] || { echo "no release file for owner $owner" >&2; exit 2; }; cat -- '\''%s/%s/'\''"${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json"' "$token_dir" "$role")
       else
         # The implement App is the one role whose token_command asks the broker, so its secret is
         # named here rather than reached through the role.

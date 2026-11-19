@@ -68,6 +68,8 @@ RUN bun install --frozen-lockfile --ignore-scripts \
 COPY packages/contracts packages/contracts
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
+# The SPA compiles in the document schema manifest the server embeds (web/src/features/doc/schema.ts).
+COPY packages/envoy/internal/dispatch/pmdoc/schema/blocks.json packages/envoy/internal/dispatch/pmdoc/schema/blocks.json
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
 # The stage ends with its working directory at /repo/packages/dispatch, which reaches nothing:
@@ -97,31 +99,19 @@ RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
 
-COPY packages/envoy/cmd ./cmd
-COPY packages/envoy/internal ./internal
-# agentloop: the model loop and the tools a model may call, a package outside internal/ so the
-# daemon runs the same loop. envoy-broker's judge compiles it in, so the build needs it here
-# beside cmd and internal.
-COPY packages/envoy/agentloop ./agentloop
-# listenfd: the inherited listening socket envoy-dispatch and envoy-listener serve on
-# (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD).
-COPY packages/envoy/listenfd ./listenfd
-# going: the chat client, the answer filter and the run the going routes answer with, a package
-# outside internal/ so the daemon can speak the same stream (going/events.go). envoy-dispatch
-# compiles it in, so the build needs it here beside cmd and internal.
-COPY packages/envoy/going ./going
-# migrationid: the rule a store's migration identifiers follow, which internal/pgmigrate reads to
-# name the remedy a collision takes in the set that refused it.
-COPY packages/envoy/migrationid ./migrationid
-# roleholder: the no-holder reasons envoy-listener's role publish refusal names.
-COPY packages/envoy/roleholder ./roleholder
-# The Go contracts file is generated from packages/contracts/schemas; never
+# The whole module, so a binary that imports a new package of it builds here with no edit to this
+# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
+# .dockerignore leaves out what no image compiles: test files, internal/integration,
+# internal/smoke, deploy, infra (the envoy-infra module) and the changelog fragments.
+COPY packages/envoy ./
+# The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
+COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's
-# own GOARCH, which decide them) and of the npm packages the SPA inlines. Fails the build when a
+# own GOARCH, which decide them) and of the npm packages the SPA inlines and the typeface it ships. Fails the build when a
 # module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
@@ -130,7 +120,7 @@ RUN mkdir -p /out \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
       "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
-      "npm packages inlined into the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
+      "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
 # `commit`. The release workflow passes its own github.sha, for the image it publishes and for

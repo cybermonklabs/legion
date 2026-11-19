@@ -32,10 +32,12 @@ const (
 // the root keeps its slot, no awaiting-person notice reaches the controller, and no phase starts,
 // because the record knows no document of that step to hand to a person. The same root with that
 // step registered and still closed enters awaiting_person and its notice does reach the
-// controller, which is what tells the two apart; it keeps its row through either, since an issue
-// holds one of the cap's slots from the moment the daemon starts it until its work is past its
-// review (record.KeepsSlot), and the root stands in admitted or awaiting_person throughout.
-// It starts once the step is registered and approved.
+// controller, which is what tells the two apart; it keeps its row through either, since a started
+// issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
+// this root stands in admitted with a gate that has never opened, or in awaiting_person,
+// throughout: those are two of the three roots that keep their row even while they wait on
+// another issue (blockers.waitsOf), and the third, a queued root carrying the row it held in
+// another tree, is not driven here. It starts once the step is registered and approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
@@ -210,8 +212,8 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
 		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
 	starts := architectStartRows(t, pool)
-	if len(starts) != 1 || starts[0].Task != want {
-		t.Fatalf("architect starts %#v, want one whose task is %q", starts, want)
+	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", want) {
+		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)
 	}
 	if kept := starts[0].Kept; kept == nil || kept.Step != record.DesignStepDecisions || kept.Approved != 2 || kept.Latest != 3 {
 		t.Fatalf("the start's kept record %#v, want the decisions step's own pair", kept)

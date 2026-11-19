@@ -38,13 +38,14 @@ versions. Never add the module to the root `go.work`.
 | `seed/` | `envoy-infra seed`: `Check`, `Generate`, `Verify` and the command over a `Store` (`Label`, `Describe`, `Versions`, `Put`, `Current`) and the `StoreType` each `--store` value names, the AWS Secrets Manager store (`awsstore.go`), the GCP Secret Manager store (`gcpstore.go`), the error naming and version paging both share (`errors.go`), and the contract every store's tests run (`store_contract_test.go`). |
 | `render/` | `envoy-infra render`: one subcommand per rendering of `aws/rendering`, each flag setting a component input. |
 | `host/` | `host:Listener` (`listener.go`) and its watchdog's texts (`watchdog.go`, golden-tested in `testdata/`). |
-| `nats/` | The schema types every NATS component shares, whatever its cloud, importing no cloud package: `RulesArgs`, `nats:Rules`, one direction's permissions of a NATS user, which `aws:User` and `gcp:Permissions` take (`rules.go`). A type shared by components of more than one cloud lives here, never in one cloud's package, so a single-cloud consumer's SDK shows no other cloud's types; `gcp/imports_test.go` fails if the `gcp` package compiles any `aws` package. |
+| `nats/` | The schema types every NATS component shares, whatever its cloud, importing no cloud package: `RulesArgs`, `nats:Rules`, one direction's permissions of a NATS user, which `aws:User` and `gcp:Permissions` take (`rules.go`). A type shared by components of more than one cloud lives here, never in one cloud's package, so a single-cloud consumer's SDK shows no other cloud's types; `internal/textcheck/gcp_imports_test.go` fails if the `gcp` package compiles any `aws` package. |
 | `aws/` | `aws:NatsService` (`natsservice.go`) and `aws:WebhookListener` (`webhooklistener.go`): their resources, refusals and outputs, with the goldens of their container definitions in `testdata/`. `fargate.go` holds what both register identically: each child's options, its tags, the log group and the task definition's base. |
 | `aws/rendering/` | What the AWS components render, with no Pulumi in it: the container definitions, the NATS start script, the listener's environment and read policy, the metric filters and the alarms' text. Its own tests hold `ListenerEnv.Check`'s refusals; `aws/`'s pin its texts, building each component from one example. |
 | `gcp/` | `gcp:NatsHub` (`natshub.go`, which also holds `authorization`, the users rendering both hubs share) and its VM's cloud-config, with the secret fetcher's, the listener's seed script's and the joined marker's scripts (`cloudconfig.go`, golden-tested in `testdata/cloud-config.golden`); `gcp:Dispatch` (`dispatch.go`, `dispatch_cloud.go`, `dispatch_kube.go`; `dispatch.go` also holds `podPriorityClass`, the priority-class rule `gcp:ClusteredNatsHub` shares) and its Kubernetes and Serve renderings, golden-tested in `testdata/dispatch-*.golden`, with its front door and the Tailscale Service `svc:<hostname>` it declares itself in `dispatch_frontdoor.go` (`newDispatchTailscaleService`), its one resource outside Google Cloud and the cluster, which is why it requires a `tailscale` provider wherever it builds the front door; `gcp:ClusteredNatsHub`: its inputs, refusals and sizing (`clusteredhub.go`, with its pods' Autopilot size rule in `clusteredhub_autopilot.go`), its Kubernetes provider, the `nats` chart with the transform that protects its StatefulSet, its NetworkPolicy and its PodMonitoring (`clusteredhub_kube.go`), its tailnet hosts (`clusteredhub_tailnet.go`) and the session listener's own workload, the Deployment the hosts forward port 9020 to (`clusteredhub_listener.go`), both golden-tested in `testdata/clustered-hub-*.golden`, with the chart's archive vendored for its render test (`testdata/nats-2.15.1.tgz`); and `tailnet_service.go`, a Tailscale Service host's parts (the tailscale container's environment, the serve configs, the advertiser and preStop scripts, the probes), functions of the Service's name and ports, which every multi-pod Tailscale Service host reuses rather than writing its own. |
 | `docs/` | Each component's operator document beside the module's README: `nats-hub.md` for `gcp:NatsHub`, and for how `gcp:ClusteredNatsHub` runs, updates and is watched beside it. It lives outside the component's package so that an edit to it cuts no release, which a file in a package the plugin compiles does (see Release contract). |
 | `internal/providers/` | `Require`, the providers check. |
 | `internal/pulumitest/` | The tests' harness: the mock engine a component's unit tests run on (`Mocks`, `Construct`, `mocks.go`), and the live tests' plugin build and pulumi CLI. |
+| `internal/textcheck/` | The module's checks whose subject is its source rather than its behaviour: `gcp_imports_test.go` (the `gcp` package compiles no `aws` package) and `core_imports_test.go` (`core` compiles no listener config package). They need no container and no cloud, so they run in `ci.yaml`'s `text-checks` job rather than in `envoy-infra-go`. |
 
 ## Rules for a component
 
@@ -112,7 +113,8 @@ versions. Never add the module to the root `go.work`.
   may hold no `"`, `$`, backtick, `\` or line break. A value that holds an nkey seed of any type, in
   any spelling (`bus.HoldsSeed`), is refused where it enters, before anything quotes or renders
   it, with `core.SeedRefusal`, which names its path and never the value: core refuses one in the
-  authorization's names, rule entries and `noAuthUser`, in `Render`'s and `StartScript`'s inputs,
+  authorization's names, rule entries, `noAuthUser` and callout fields (`callout.issuer`,
+  `callout.xkey`, `callout.serviceUser`), in `Render`'s and `StartScript`'s inputs,
   and in the listener's `machineId`, `listenHost` and NATS URLs; a component refuses
   one in its name and its own string inputs: host's listed in `host.stringInputs`, the AWS
   components' every plain string by reflection over their args (`aws.seededPlainInput`), and every
@@ -354,7 +356,7 @@ stamps it, for its `--version` (`cmd/envoy-infra/main_test.go`). The seed packag
 through `SSL_CERT_FILE`; setup any other seed test needs goes into it. The tests that start
 nats-server containers on this machine's Docker through `testnats` carry the `natslive` build
 tag, so a plain `go test ./...`, as that `build` job runs it, starts none. Each runs on
-`testnats.Image` and `testnats.HubImage`: `core/nats_auth_live_test.go` (the rendered authorization
+`testnats.Images`, which is `testnats.HubImage` alone (the listener refuses nats:2.10, `natsversion`): `core/nats_auth_live_test.go` (the rendered authorization
 on a real server: its users connect, a client with no credential is refused, the grants hold),
 `seed/seed_live_test.go` (a generated seed connects, and a client without it is refused) and
 `core/permissions_live_test.go` (the listener, built from `packages/envoy/cmd/listener` under the
@@ -384,6 +386,34 @@ publish, the agent stream relay, Dispatch creating the redelivery bucket, which 
 then reads and writes, and that Dispatch's own user is refused a publish to a session's frames; its
 negative control removes the delivery durable's filtered create permission and receives that server
 violation alone.
+`core/nats_callout_live_test.go` runs on `testnats.HubImage` alone, the server the hub runs, with
+an auth service in the test answering the server's requests through `github.com/nats-io/jwt/v2`:
+a stream written before the callout reads whole after the container restarts on the rendered
+callout block (the hub keeps its global account), a token client is placed in `$G` and its grant
+holds, a static user listed in `auth_users` reaches no callout and keeps its grant, a wrong token
+and no credential are refused, a session `noAuthUser` is reached with no callout request, and,
+as the control that `auth_users` must be derived, a static user edited out of it is sent to the
+callout and refused.
+`core/nats_ping_live_test.go`, on the same image, checks the rendered ping lines. In
+`TestAHungReplicaLeavesTheCalloutsQueueGroup`, two replicas of a test auth service answer in one
+queue group, replica A behind a proxy that stops reading: the server drops A from `/connz` within
+81 s of the hang, and the next 20 clients are all admitted. Its control,
+`TestWithoutThePingLinesAHungReplicaKeepsItsPlace`, runs under nats-server's defaults: A is still
+listed at 81 s, and clients are refused at 2 s. In
+`TestAClientThatStallsFifteenSecondsStaysConnected`, a keyed client behind a proxy that stops
+reading for 15 s keeps its server connection. Its control,
+`TestWithThreeSecondPingsAStalledClientIsClosed`, sets `ping_interval` to 3 s, and the server
+closes the same client as stale.
+`core/nats_callout_timeout_live_test.go`, on the same image, holds the rendered block to its
+answer budget: a nats.go client is admitted when the auth service answers 0.5 s before the
+rendered authorization timeout (nats-server's default 2 s, since the block sets none) and at
+1.5 s. A block that renders a timeout of 3 s or more fails it: the first answer then comes at
+2.5 s or later, after the server's first PING (2 s after the connect, plus up to 20%), which fails
+a nats.go client still waiting on the callout.
+`gcp/clusteredhub_callout_live_test.go` carries the tag too and starts no container: it reloads the
+clustered hub's rendered `auth.conf` on the nats-server v2.15.1 the test binary links in, which
+takes a grant change and refuses any change of the `auth_callout` block, one reason the hub's pods
+carry the `envoy-infra.sjawhar.dev/auth-callout` annotation.
 
 `gcp/clusteredhub_live_test.go` carries the `natslive` tag too, but starts no container and needs
 no Docker: it installs each tool it runs with `go install`, into a temporary `GOBIN` with
@@ -400,31 +430,50 @@ class, `auth.conf`, `nats.conf` blocks and selector labels the values give. A ch
 vendors the new archive with its published SHA-256. `TestClusteredNatsHubCluster` runs three
 nats-server processes on the `nats.conf` and `auth.conf` that render gave, with command-line
 overrides only for what a pod fixes (each process's ports, routes, PID file and server name, and
-the store directory in its copy of `nats.conf`) and with no NetworkPolicy, which nothing enforces
-on loopback: the three form one cluster and serve the users; a three-copy stream keeps every
+the store directory in its copy of `nats.conf`), plus `-D` (debug logging), so a failed run prints
+each server's Raft election and vote lines, and with no NetworkPolicy, which nothing enforces on
+loopback: the three form one cluster and serve the users; a three-copy stream keeps every
 acknowledged message exactly once across a SIGKILL of its leader; the exporter, run with the
 chart's arguments, serves one `nats_stream_last_seq` series per server holding a copy; the real
 reloader, run with the chart's arguments, applies a users change with no server restart and no
 client reconnect; and every server's reload refuses a session-user change
-(`config reload not supported for NoAuthUser`), which takes effect only on a restart. Installing
-the tools takes minutes on a cold module cache, which is why CI runs the `natslive` packages with
-`-timeout 30m`. To run them alone, from `packages/envoy/infra`:
+(`config reload not supported for NoAuthUser`), which takes effect only on a restart.
+`TestClusteredNatsHubRoutesKeepTheirPingBesideACallout` (`gcp/clusteredhub_ping_live_test.go`)
+renders the hub with a callout through helm and checks that `nats.conf`'s cluster block holds
+`ping_interval` "30s" and `ping_max` 2. It runs two servers on the rendered configuration, with the
+route through a `testnats.Proxy` started with `testnats.ProxyRate` at 400,000 B/s, and publishes
+40 MB on A to a subscriber on B, which takes about 100 s to drain. Each bound has its own clock.
+The pinned row counts from the burst's start: the route is not closed as stale within 60 s of it,
+because routes keep their 30 s ping, and at least 12 MB of the burst has crossed the route by
+then, so the row fails when the route closed early for another reason or the burst never crossed
+it. Its control, the same `nats.conf` without the pin, counts from the moment A has queued all of
+the burst: the route is closed as stale within 60.5 s of that moment, by the top-level 20 s ping.
+Installing the tools takes minutes on a cold module cache, which is why CI runs the `natslive`
+packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`:
 
 ```sh
 go test -count=1 -tags natslive -run 'TestClusteredNatsHub(Chart|Cluster)' -v -timeout 20m ./gcp/
 ```
 
-The `envoy-infra-go` job in `.github/workflows/ci.yaml` runs, from `packages/envoy/infra`:
+The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
+`.github/workflows/ci-job-envoy-infra-go.yaml`, and runs, from `packages/envoy/infra`:
 
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
-go test ./...
+flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
+go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```
 
-The `envoy-infra-go` job runs only when a file its `envoy_infra_go` filter in that workflow names
-changes. That filter includes every package `cmd/dispatch` and `cmd/listener` import, since
+`internal/textcheck` is left out of that unit-test step and runs in `ci.yaml`'s `text-checks`
+job instead (`.github/workflows/ci-job-text-checks.yaml`), beside the other two modules' text
+checks.
+
+The `envoy-infra-go` job runs only when a file its `envoy_infra_go` filter in
+`.github/workflows/ci.yaml` names changes. That filter includes every package `cmd/dispatch`
+and `cmd/listener` import, since
 `core/permissions_live_test.go:298-299` builds them; `packages/envoy/AGENTS.md` (Critical
 conventions) says what keeps it current.
 

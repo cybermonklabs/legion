@@ -13,19 +13,22 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 )
 
 // The class of every Verify failure. A caller logs the class and answers 401;
-// no error carries the token.
+// no error carries the token. ErrNotYetValid is IAPVerifier's alone: an
+// assertion issued further ahead of this process's clock than the skew allows.
 var (
-	ErrMalformed = errors.New("oidc: malformed token")
-	ErrIssuer    = errors.New("oidc: token from another issuer")
-	ErrAudience  = errors.New("oidc: token for another audience")
-	ErrExpired   = errors.New("oidc: token expired")
-	ErrCancelled = errors.New("oidc: verification context ended")
-	ErrSignature = errors.New("oidc: token signature not verified")
+	ErrMalformed   = errors.New("oidc: malformed token")
+	ErrIssuer      = errors.New("oidc: token from another issuer")
+	ErrAudience    = errors.New("oidc: token for another audience")
+	ErrExpired     = errors.New("oidc: token expired")
+	ErrNotYetValid = errors.New("oidc: token issued in the future")
+	ErrCancelled   = errors.New("oidc: verification context ended")
+	ErrSignature   = errors.New("oidc: token signature not verified")
 )
 
 // Reason names the class of a Verify failure in one word, for the log line and
@@ -54,6 +57,8 @@ func Reason(err error) string {
 		return "audience"
 	case errors.Is(err, ErrExpired):
 		return "expired"
+	case errors.Is(err, ErrNotYetValid):
+		return "not-yet-valid"
 	case errors.Is(err, ErrCancelled):
 		return "cancelled"
 	case errors.Is(err, ErrIssuerUnavailable):
@@ -102,6 +107,11 @@ type Verifier struct {
 	verifier *gooidc.IDTokenVerifier
 	issuer   string
 	audience string
+	// skipExpiry is set when verifier skips the exp check (gooidc.Config.SkipExpiryCheck), as
+	// IAPVerifier's does, which checks the verified exp itself. classify then reports no failure
+	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
+	// and says nothing about a token's age.
+	skipExpiry bool
 }
 
 // New reads the issuer's OIDC discovery document now and returns a verifier for
@@ -163,12 +173,14 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 }
 
 // Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer. A caller that trusts several issuers picks with it the one verifier a token is for, so
-// a token of one issuer never makes another's verifier fetch its keys; Verify still checks the
-// issuer with everything else.
+// issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
+// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
+// one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
+// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
+// caller: no claim anyone is admitted on comes from it.
 func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeClaims(raw)
-	return err == nil && claims.Issuer == v.issuer
+	claims, err := decodeUnverifiedClaims(raw)
+	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
 // Verify checks raw against the issuer's published keys, the configured
@@ -176,22 +188,61 @@ func (v *Verifier) Issues(raw string) bool {
 // ErrMalformed, ErrIssuer, ErrAudience, ErrExpired, ErrCancelled,
 // ErrIssuerUnavailable, and ErrSignature.
 func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {
+	_, claims, err := v.verify(ctx, raw)
+	return claims, err
+}
+
+// VerifyClaims is Verify that also unmarshals the verified token's payload into each of into: the
+// one way a caller reads a claim Claims does not carry, a private claim or iat. The payload is the
+// one the signature covers, never the token's text read again, so no claim a caller acts on can
+// differ from what the issuer signed. A payload a target cannot hold is ErrMalformed.
+func (v *Verifier) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, error) {
+	token, claims, err := v.verify(ctx, raw)
+	if err != nil {
+		return Claims{}, err
+	}
+	for _, target := range into {
+		if err := token.Claims(target); err != nil {
+			return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
+		}
+	}
+	return claims, nil
+}
+
+// verify is Verify's whole check, and it answers the verified token too: token.Claims reads the
+// payload the signature covers (go-oidc keeps the bytes the key set returned), which is where
+// every claim a caller is admitted on is read from.
+//
+// raw is read as go-jose's ParseSigned read a compact token before this check existed: every
+// space is removed (stripSpaces), so a token with a trailing line feed or an inner space verifies
+// as it always did. What is left must be the compact serialization, three base64url segments
+// joined by dots, and anything else is refused as malformed before go-oidc sees it: go-jose also
+// verifies the JWS JSON serialization, whose text can carry a second, unsigned claim set between
+// dots, so the one serialization taken is the one whose middle segment is the signed payload.
+// This refusal is the only compact check the sign-in's verifier has, since its keys come from
+// go-oidc's own RemoteKeySet (newVerifier). A refusal's class is read from raw as given, as it
+// was before.
+func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Claims, error) {
+	compact := stripSpaces(raw)
+	if !compactSerialization(compact) {
+		return nil, Claims{}, fmt.Errorf("%w: not a JWS compact serialization", ErrMalformed)
+	}
 	// The slot the key source's own error comes back in: go-oidc flattens it
 	// (keyset.go, keySetError).
 	keyCtx, keySetErr := withKeySetError(ctx)
-	token, err := v.verifier.Verify(keyCtx, raw)
+	token, err := v.verifier.Verify(keyCtx, compact)
 	if err != nil {
-		return Claims{}, v.classify(ctx, raw, err, keySetErr.err)
+		return nil, Claims{}, v.classify(ctx, raw, err, keySetErr.err)
 	}
 	var person cognitoClaims
 	if err := token.Claims(&person); err != nil {
-		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
+		return nil, Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
 	var providers []string
 	for _, identity := range person.Identities {
 		providers = append(providers, identity.ProviderName)
 	}
-	return Claims{
+	return token, Claims{
 		Subject:   token.Subject,
 		Issuer:    token.Issuer,
 		Audience:  token.Audience,
@@ -225,6 +276,10 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Claims, error) {
 // cancelled says "no verdict is trustworthy", where the alternative spends
 // "signature" — the word an operator reads as a forgery attempt — on callers
 // that merely hung up.
+//
+// A verifier that skips the exp check (skipExpiry) has no ErrExpired here at all: go-oidc returns
+// it no TokenExpiredError, and the exp case below is passed over, so a token whose signature
+// failed is a signature failure (or ErrIssuerUnavailable) whatever its payload's exp says.
 func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("%w: %v", ErrCancelled, ctxErr)
@@ -233,15 +288,15 @@ func (v *Verifier) classify(ctx context.Context, raw string, err, keySetErr erro
 	if errors.As(err, &expired) {
 		return fmt.Errorf("%w at %s", ErrExpired, expired.Expiry.UTC().Format(time.RFC3339))
 	}
-	claims, decodeErr := decodeClaims(raw)
+	claims, decodeErr := decodeUnverifiedClaims(raw)
 	switch {
 	case decodeErr != nil:
 		return fmt.Errorf("%w: %v", ErrMalformed, decodeErr)
-	case claims.Issuer != v.issuer:
+	case !v.namesIssuer(claims.Issuer):
 		return fmt.Errorf("%w: %q, want %q", ErrIssuer, claims.Issuer, v.issuer)
 	case !slices.Contains(claims.Audience, v.audience):
 		return fmt.Errorf("%w: %q, want %q", ErrAudience, []string(claims.Audience), v.audience)
-	case claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
+	case !v.skipExpiry && claims.Expiry != 0 && time.Unix(int64(claims.Expiry), 0).Before(time.Now()):
 		return fmt.Errorf("%w at %s", ErrExpired, time.Unix(int64(claims.Expiry), 0).UTC().Format(time.RFC3339))
 	case errors.Is(keySetErr, ErrKeySet):
 		return fmt.Errorf("%w: %w", ErrIssuerUnavailable, keySetErr)
@@ -293,7 +348,7 @@ func (a *audience) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func decodeClaims(raw string) (tokenClaims, error) {
+func decodeUnverifiedClaims(raw string) (tokenClaims, error) {
 	var claims tokenClaims
 	payload, err := tokenPayload(raw)
 	if err != nil {
@@ -316,4 +371,32 @@ func tokenPayload(raw string) ([]byte, error) {
 		return nil, fmt.Errorf("payload is not base64url: %w", err)
 	}
 	return payload, nil
+}
+
+// stripSpaces is raw with every space removed (unicode.IsSpace), go-jose's own stripWhitespace,
+// which its ParseSigned applied to every compact token before verify took the compact
+// serialization only; verify applies it first so a token verifies exactly when it did before,
+// the JSON serialization apart.
+func stripSpaces(raw string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, raw)
+}
+
+// compactSerialization reports whether raw is a JWS in the compact serialization: three non-empty
+// segments of the base64url alphabet, separated by dots. The JSON serialization, and anything
+// else, is not.
+func compactSerialization(raw string) bool {
+	if !LooksLikeJWT(raw) {
+		return false
+	}
+	for _, r := range raw {
+		if r != '.' && r != '-' && r != '_' && (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return false
+		}
+	}
+	return true
 }

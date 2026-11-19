@@ -50,7 +50,8 @@ func TestProvisionBoundIsZero(t *testing.T) {
 
 // A `-P -F` report is three tokens from new-window and two from split-window; anything else is a
 // launch failure naming the command and tmux's stderr, never the report (parsePaneReport, tmux.ts,
-// and tmux.test.ts's openWindow cases for a malformed report).
+// and tmux.test.ts's openWindow cases for a malformed report). A command that did not succeed is a
+// launch failure too, even where it printed a well-formed report before a signal ended it.
 func TestReadPaneReport(t *testing.T) {
 	report, err := readPaneReport("new-window", result{stdout: "@42 %1 4242\n"}, true)
 	if err != nil || report != (paneReport{window: "@42", pane: "%1", pid: 4242}) {
@@ -69,6 +70,8 @@ func TestReadPaneReport(t *testing.T) {
 		{"new-window", result{stdout: "GH_TOKEN=leaked-value\n", stderr: "unexpected output"}, true, "tmux new-window did not report a window id: unexpected output"},
 		{"new-window", result{stdout: "@42 leaked 1\n"}, true, "tmux new-window did not report a pane id: tmux printed nothing on stderr"},
 		{"split-window", result{stdout: "%7 0\n"}, false, "tmux split-window did not report a pane pid: tmux printed nothing on stderr"},
+		{"new-window", result{exitCode: -1, signal: "signal: killed", stdout: "@7 %9 4242\n", stderr: "lost server"}, true, "tmux new-window was ended by signal: killed: lost server"},
+		{"split-window", result{exitCode: 1, stdout: "%7 5151\n", stderr: "no space for new pane"}, false, "tmux split-window failed (exit 1): no space for new pane"},
 	} {
 		_, err := readPaneReport(tc.command, tc.result, tc.window)
 		if err == nil || err.Error() != tc.want {
@@ -102,7 +105,8 @@ func testSpec() runtime.SpawnSpec {
 // operator's own attributes and this launch's issue and role (here no operator sets any, so it is
 // the launch's two alone), the caller's own variables sorted, then one `<NAME>_FILE` pointer
 // per secret — the boot token's first. PATH is never a pair: tmux would discard it (LEGION-91); the
-// shell command exports it. No other tool path is a pair: a pane's git and jj are its PATH's. No
+// shell command exports it. No other tool path is a pair: a pane finds its jj and its git on its
+// PATH, whose launcher directory holds a git wrapper where workerbin.Install writes one. No
 // secret value is in any pair. This pane's repository is one the project names, so it carries
 // LEGION_ISSUE_TRAILER beside its issue, the key its commits are stamped with; the pane below,
 // whose repository the project does not name, carries no such pair rather than an empty one.

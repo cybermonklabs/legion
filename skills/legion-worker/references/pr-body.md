@@ -30,8 +30,8 @@ later phase keeps it current rather than replacing it:
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha>:
-<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)
+**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>:
+<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`) (in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
@@ -48,15 +48,18 @@ order. Each is the line `dispatch result` printed when the result was recorded, 
 
 ## Never waiting on CI
 
-The implementer runs the repository's fast local checks for the paths it changed before the push,
-then pushes and completes. It never waits for, watches or polls the pull request's remote CI
+Before the push and the hand-off, the implementer runs the repository's fast local checks for the
+paths it changed: the tests it added or changed, by name, and the build or vet of the packages it
+touched. It runs no whole test suite: CI runs the suites when it pushes, and a red job comes back
+to it (below). Then it pushes and completes. It never waits for, watches or polls the pull request's remote CI
 (`gh run watch`, `gh pr checks --watch`, `sleep` around `gh run view`) and never sleeps in a loop
 (the step's spaced reads of the pull request's head after a push are the one sleep this rule
 allows, and they read no check; `skill://legion-worker`, *Every role pushes its own commits*,
 gives them).
 Under the Go daemon a check that settles red on the head moves the issue nowhere: the daemon names
-every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's
-architect, the worker of the issue's current phase and the implementer, and judges none of them.
+every check GitHub reported, with the conclusion GitHub gave it, in one message to the architect
+that owns the issue, the worker of the issue's current phase and the implementer, and judges none
+of them.
 That message is the implementer's to act on while it still works the issue: a red that failed on
 its own is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks
 event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a
@@ -71,7 +74,12 @@ the pull request conflicts with its base (GitHub shows it `CONFLICTING`), no wor
 `on: pull_request` runs for any of its activity types, so a body edit re-judges nothing there; a
 push cures it only once the pull request is mergeable, so the implementer forward-merges a
 conflicting one first (*Reintegrating the base* in
-`skill://legion-worker/references/conflicts-and-rewrites.md`).
+`skill://legion-worker/references/conflicts-and-rewrites.md`). So when a required check has not
+appeared at the head, read `gh pr view <n> --json mergeStateStatus` first. `DIRTY` means the head
+conflicts with its base: GitHub builds no merge ref for it and creates no `pull_request` run, and
+the cure is that forward merge. Other runs can be green beside the missing one, because a
+`pull_request_target` run is built from the base and needs no merge ref, so its pass says nothing
+about whether the head merges.
 
 ## The brief for the human
 
@@ -99,10 +107,13 @@ spec; nothing else decides what must be proved.
 
 **A result** is one run of one check, recorded with
 `dispatch result --issue <issue> --check <block id> --role <your role> --verdict pass --commit <sha>`,
-with `--surface`, `--run`, `--observed` and `--negative-control` as the check asks for them. The
-command prints the pull request body's line for it, and that line goes into the body unchanged.
+with `--surface`, `--run`, `--observed` and `--negative-control` as the check asks for them. Each
+of these flags takes text and refuses a bare `-`. Text from a file or from stdin goes in
+`--run-file`, `--observed-file` or `--negative-control-file`. Only one of them per call may read
+stdin (`-`). The command prints the pull request body's line for it, and that line goes into the
+body unchanged.
 The surface is **production-like** — the repository's real-process test harness and fixtures, a
-sandbox repository, a real browser, a devN stack, staging, or a local stack with real migrations,
+sandbox repository, a real browser, a development stack, staging, or a local stack with real migrations,
 one that has the resource the change touches — and `--run` or `--observed` carries a **link** to
 that run, screenshot or e2e; human review does not replace user-facing verification, and a green
 unit suite is not it. A unit or integration test is a regression lock, never a check's result,
@@ -133,6 +144,15 @@ A push moves the head, with no Dispatch write of anyone's, so each check with no
 recorded again at the new head. `dispatch results --issue <issue>` prints each check with the
 results recorded against it and the commit each one was recorded at;
 `dispatch read --issue <issue>` names each requirement of the spec no check serves.
+Where a result's commit stands is read, not stored. A `before_merge` result is compared only with
+the heads of the pull requests attributed to the check's issue, with no fallback to the default
+branch. Dispatch attributes a pull request to the first issue its five ranked sources name in the
+pull request's repository (`packages/envoy/internal/dispatch/delivery/attribution.go`): the issue
+whose external link is the pull request, the issue linked to a GitHub issue its body cites, a key
+in its head branch, a key in its title or body, and a key in its commit messages. So a result reads
+as at another commit (`older` in a client before pi-envoy 17.1.0) when its commit is an earlier
+head, when no attributed head is its commit, as when the pull request is attributed to another
+issue, or when any field of the check changed after it was recorded.
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
 own Verification document, read at its own head, so a result a child recorded proves nothing for
@@ -162,13 +182,16 @@ and decides there, the only gate on such an issue.
   What a handoff does carry is `head`, the 40-character lower-case commit its work was done
   against, which the completion sends to the daemon.
 - **The tester judges the implementer's results and records its own.** It runs and records no
-  check with `ci_check`, whose result `dispatch results` derives. A derived fail, or a run that
+  check with `ci_check`, whose result `dispatch results` derives from that CI job's run, conclusion
+  and `completed_at` at the head, and it runs no check whose `run` is a whole test suite in the pod:
+  that check's words are wrong, and the architect rewrites it with `ci_check`. A derived fail, or a run that
   concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub
   unread, goes in `implementerProof.how` and fails no round. A name no run answers once the head's
   checks have settled goes to the architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in
   its `test` handoff as `implementerProof` (`{verdict, how}`). The tester runs the
-  application, not CI again. Try to break the changed surface — wrong and boundary inputs, the
+  application, not CI again, and by hand it drives only the changed behaviour on the real surface,
+  the negative controls, and named test files that no CI lane selects. Try to break the changed surface — wrong and boundary inputs, the
   second and the concurrent run, the party it must refuse — judge whether the implementer's tests
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
@@ -181,13 +204,16 @@ and decides there, the only gate on such an issue.
   with `implementerProof.verdict: "rejected"`, complete the phase with
   `verdict: "fail"`, and the daemon returns the issue to the implementer — the agent that developed the change owns
   proving it (a rejected verdict, or `failed > 0`, always comes with the failure recorded in
-  `failures`). Otherwise record your own result for each `before_merge` check before you complete,
+  `failures`). A check whose `run` is a whole test suite is the exception: its words are wrong, so
+  while the architect rewrites it, it fails no round, and the tester names it in
+  `implementerProof.how` and sends it to the architect. Otherwise record your own result for each
+  `before_merge` check before you complete,
   and put each printed line in the body. A code path whose first execution is after merge — a
   deploy workflow's inline step, a post-merge helper, a production-only resource — is a check
   marked `after_merge`, recorded after the merge on a look of the production check by the role
   the project's `production_check` names — the tester, unless the setting is `off`, where the
   close opens no check and nothing records it — unless the implementer can execute it against a
-  devN stack before then; if no surface can reach it, the
+  development stack before then; if no surface can reach it, the
   tester names that missing surface as the blocker instead of passing the phase. Environment or
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
   its `test` handoff, and only when a check calls for it — never
@@ -207,7 +233,7 @@ and decides there, the only gate on such an issue.
   between a clean review and the approval, so this is the one slot before the tester and the
   reviewer read the head; a later round answering a review runs no second pass. It is scoped to
   the pull request's own diff at that head: nothing applied leaves the head as it is; applied →
-  the implementer re-runs the repository's checks and the issue's own checks on the applied head
+  the implementer re-runs its fast local checks and the issue's own checks on the applied head
   for the surface the simplify diff touched, since a refactor that "preserves behaviour" is a
   claim until it is executed, and records each result at that head before it completes.
   That cost is why 0-applied is the expected outcome and a pass that applies is spent sparingly.
@@ -215,16 +241,19 @@ and decides there, the only gate on such an issue.
   defect it reports is fixed outside the pass with the results recorded again, never dropped as
   out of scope; the `Thermo` line's `defects reported` half names how many and the commit that
   fixed them, so a head that moved for a reported defect is not recorded as `0 applied` alone.
-  The reviewer's pair runs at the head each round reviews, when the diff touches runtime code.
-  Record both in the `Thermo` line.
+  The reviewer's pair runs at the head each round reviews, over the diff that round reads (the
+  whole change, or the difference from the commit the round's task names as
+  `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line,
+  the pair half with the range the pair read. When a later round's pair reads only a range, the
+  pair half of each earlier round stays in the line beside the new one, because a range is read
+  on top of the round that read the code up to its start.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,
-  is made in the running round: a later round costs a CI pass and a re-read of the whole
-  change. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only
+  is made in the running round: a later round costs a CI pass and another review. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only
   the deploy can show it and the plan names its observation;
   the `Fast-follow:` line never carries one, and reads `none` or names only cleanup in files
   this pull request does not touch. A base frozen for others to stack on is
-  never rewritten (*Rewriting pushed commits* in
+  never rewritten (*A wrong pushed commit* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`); the `Chain` line records it.
 - **GitHub refuses a pull request body over 65,536 characters.** Each verification round links its
   evidence (the run, the comment) rather than inlining it once the body passes about 48,000

@@ -17,10 +17,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
@@ -52,7 +53,7 @@ func openEmptyTestStore(t *testing.T) *Store {
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
-	store, err := Open(ctx, testpg.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"messages_replies_to_block",
 		"events_person_words_with_declines",
 		"comment_deliveries_session",
-		"message_deliveries_session_created",
+		"message_deliveries_session_taken",
 		"embeddings_window_owner",
 		"asks_issue_key",
 		"messages_issue_roots",
@@ -278,12 +279,14 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	// api.TestTheAuditedReadsSearchTheirIndex holds it to. Migration 20261111002445 drops
 	// events_person_words, the partial index 0145 built for the read that lists what people wrote
 	// to a session: that read names a fifth event type now and reads
-	// events_person_words_with_declines instead.
+	// events_person_words_with_declines instead. Migration 20261114081436 drops
+	// message_deliveries_session_created, 0147's index over a session's sent message deliveries:
+	// the same read takes queued ones too and reads message_deliveries_session_taken instead.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
 		select indexname
 		from pg_indexes
 		where schemaname = current_schema()
-	`, []string{"asks_open_artifact", "events_person_words"})
+	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created"})
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select viewname
 		from pg_views
@@ -631,6 +634,242 @@ func TestMigrateSkipsVersionRecordedOutsideTheRunner(t *testing.T) {
 	}
 	if !appliedAt.Equal(recordedAt) {
 		t.Errorf("version 8 applied_at changed from %s to %s; the runner re-recorded it", recordedAt, appliedAt)
+	}
+}
+
+// A migration's stored code can point the search_path at another schema for the rest of the
+// migration's transaction, as a column default that calls set_config(…, true) does, and the
+// runner inserts the migration's version in that transaction, after the migration's statements.
+// The schema other_1792 holds a schema_migrations table of its own, of the same shape, so an
+// insert that resolved the name under that search_path would record the version there, where
+// neither the census nor the runner's next check reads it. Exec pins the transaction again after
+// the migration's statements (pgmigrate.Pin), so the version lands in public.schema_migrations and
+// other_1792.schema_migrations stays empty. The value that sp_local's row holds is the control:
+// the default ran, and set_config gave the search_path the value it returned.
+func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	set := fstest.MapFS{
+		"migrations/0001_other_versions.up.sql": {Data: []byte(`create schema other_1792;
+			create table other_1792.schema_migrations (version bigint primary key, applied_at timestamptz not null default now());
+			create table sp_local (id int, sp text default set_config('search_path', 'other_1792, public', true));`)},
+		"migrations/0002_sp_local.up.sql": {Data: []byte("insert into sp_local (id) values (1)")},
+	}
+	if err := store.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var searchPath string
+	if err := store.Pool.QueryRow(ctx, "select sp from public.sp_local").Scan(&searchPath); err != nil || searchPath != "other_1792, public" {
+		t.Fatalf("sp_local holds %q, %v; want \"other_1792, public\": the default that moves the search_path did not run, so the row proves nothing", searchPath, err)
+	}
+	versions := func(table string) []int {
+		t.Helper()
+		rows, err := store.Pool.Query(ctx, "select version from "+table+" order by version")
+		if err != nil {
+			t.Fatalf("read %s: %v", table, err)
+		}
+		recorded, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read %s: %v", table, err)
+		}
+		return recorded
+	}
+	if got := versions("public.schema_migrations"); !reflect.DeepEqual(got, []int{1, 2}) {
+		t.Errorf("public.schema_migrations holds %v, want [1 2]", got)
+	}
+	if got := versions("other_1792.schema_migrations"); len(got) != 0 {
+		t.Errorf("other_1792.schema_migrations holds %v, want none: the runner recorded a version under the search_path that the migration's stored code set", got)
+	}
+}
+
+// openIsolatedStoreWithPool opens a database of its own and a pool of maxConns connections to it,
+// built as the shared pool is (scanTimestampsInUTC on each connection), so a test can hold every
+// connection the pool can give and read each one.
+func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
+	t.Helper()
+	ctx := context.Background()
+	baseURL, err := url.Parse(testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("parse test database URL: %v", err)
+	}
+	adminURL := *baseURL
+	adminURL.Path = "/postgres"
+	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	if err != nil {
+		t.Fatalf("parse the isolated database's URL: %v", err)
+	}
+	config.MaxConns = maxConns
+	config.AfterConnect = scanTimestampsInUTC
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("open the isolated pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return &Store{Pool: NewPool(pool)}
+}
+
+// connectForTest opens one connection of its own to store's database, closed when t ends.
+func connectForTest(t *testing.T, ctx context.Context, store *Store) *pgx.Conn {
+	t.Helper()
+	conn, err := pgx.Connect(ctx, store.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("connect to the test database: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
+}
+
+// A migration whose own text runs a session SET - one without LOCAL - leaves that setting on the
+// connection it ran on. The runner resets each connection it used before it goes back to the pool
+// (pgmigrate.ResetSession through unlockMigrations), so no connection the pool can give carries the
+// migration's statement_timeout or search_path after migrate returns. The test holds every
+// connection the pool can give and reads each, since the pool may hold several and the migration
+// ran on one of them. The control runs the same SET in a committed transaction on a connection of
+// its own and reads it back, which shows the SET is a session SET that survives a commit, so the
+// row proves the reset did the clearing.
+//
+// Control: remove pgmigrate.ResetSession from unlockMigrations' FreeSessionLockThenReset call (give
+// the connection back with duty.FreeSessionLock) and this fails, a pooled connection reading 77s
+// and the leak schema.
+func TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection(t *testing.T) {
+	ctx := context.Background()
+	const poolSize = 4
+	store := openIsolatedStoreWithPool(t, poolSize)
+	schema := "leak_" + randomDatabaseSuffix(t)
+	set := fstest.MapFS{
+		"migrations/0001_schema.up.sql": {Data: []byte("create schema " + schema)},
+		"migrations/0002_leak.up.sql":   {Data: []byte("set statement_timeout = '77s'; set search_path = " + schema + ", public")},
+	}
+	if err := store.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// The values a fresh connection reads are the reset values every pooled connection must show.
+	fresh := connectForTest(t, ctx, store)
+	var wantTimeout, wantSearchPath string
+	if err := fresh.QueryRow(ctx, "select current_setting('statement_timeout'), current_setting('search_path')").Scan(&wantTimeout, &wantSearchPath); err != nil {
+		t.Fatalf("read a fresh connection's settings: %v", err)
+	}
+	if wantTimeout == "77s" || strings.Contains(wantSearchPath, schema) {
+		t.Fatalf("a fresh connection already reads the leaked settings (%q, %q); the row proves nothing", wantTimeout, wantSearchPath)
+	}
+
+	var held []*pgxpool.Conn
+	for i := range poolSize {
+		conn, err := store.Pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire pooled connection %d: %v", i, err)
+		}
+		held = append(held, conn)
+	}
+	for _, conn := range held {
+		var timeout, searchPath string
+		if err := conn.QueryRow(ctx, "select current_setting('statement_timeout'), current_setting('search_path')").Scan(&timeout, &searchPath); err != nil {
+			t.Fatalf("read a pooled connection's settings: %v", err)
+		}
+		if timeout != wantTimeout || searchPath != wantSearchPath {
+			t.Errorf("a pooled connection reads statement_timeout %q and search_path %q; want %q and %q, the reset values: the migration's session SET leaked", timeout, searchPath, wantTimeout, wantSearchPath)
+		}
+	}
+	for _, conn := range held {
+		conn.Release()
+	}
+
+	control := connectForTest(t, ctx, store)
+	if _, err := control.Exec(ctx, "begin; set statement_timeout = '77s'; set search_path = "+schema+", public; commit"); err != nil {
+		t.Fatalf("control: run the SET in a committed transaction: %v", err)
+	}
+	var controlTimeout, controlSearchPath string
+	if err := control.QueryRow(ctx, "select current_setting('statement_timeout'), current_setting('search_path')").Scan(&controlTimeout, &controlSearchPath); err != nil {
+		t.Fatalf("control: read the settings: %v", err)
+	}
+	if controlTimeout != "77s" || controlSearchPath != schema+", public" {
+		t.Fatalf("control: after a committed SET the connection reads %q and %q; want 77s and %q: the SET does not survive a commit, so the row proves nothing", controlTimeout, controlSearchPath, schema+", public")
+	}
+}
+
+// The runner resets each connection it used before giving it back to the pool
+// (pgmigrate.ResetSession). The reset runs DISCARD ALL and then pgx's DeallocateAll. DISCARD ALL
+// deallocates the server's prepared statements, and DeallocateAll clears pgx's own cache of them,
+// so the next parameterized query on that connection prepares again rather than naming a statement
+// the server dropped. The runner prepares and caches its applied check once and reuses it for each
+// migration on one pooled connection (several migrations here). After migrate a query of that same
+// text on every connection the pool can give succeeds.
+//
+// Control: remove the DeallocateAll call from pgmigrate.ResetSession, keeping DISCARD ALL, and this
+// fails with SQLSTATE 26000 ("prepared statement ... does not exist"). The runner reuses its cached
+// statements on one pooled connection (the advisory lock's try, the applied check), so under the
+// control migrate itself fails at the first cached statement it runs after a reset, which names a
+// server statement that DISCARD ALL dropped while pgx's cache still holds it.
+func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
+	ctx := context.Background()
+	const poolSize = 4
+	store := openIsolatedStoreWithPool(t, poolSize)
+	set := fstest.MapFS{
+		"migrations/0001_a.up.sql": {Data: []byte("create table a (id int)")},
+		"migrations/0002_b.up.sql": {Data: []byte("create table b (id int)")},
+		"migrations/0003_c.up.sql": {Data: []byte("create table c (id int)")},
+		"migrations/0004_d.up.sql": {Data: []byte("create table d (id int)")},
+	}
+	if err := store.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// appliedCheck is the runner's own statement text, which it prepared and cached on the pooled
+	// connection as it applied the set (applyMigrationOnce). Its text must match byte for byte, so
+	// pgx finds it in the connection's statement cache.
+	const appliedCheck = "select exists(select 1 from schema_migrations where version = $1::bigint)"
+	var held []*pgxpool.Conn
+	for i := range poolSize {
+		conn, err := store.Pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire pooled connection %d: %v", i, err)
+		}
+		held = append(held, conn)
+	}
+	for _, conn := range held {
+		var applied bool
+		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&applied); err != nil {
+			t.Errorf("the runner's cached statement failed on a connection it reset: %v", err)
+		}
+	}
+	for _, conn := range held {
+		conn.Release()
+	}
+}
+
+// createVersionTable pins its transaction (pgmigrate.Pin), so the widen's ALTER TABLE, which takes
+// ACCESS EXCLUSIVE on schema_migrations, is bounded by LockTimeout. Here another connection holds
+// ACCESS SHARE on an integer schema_migrations in an open transaction, so the widen must wait for
+// it. With the pin the widen gives up after LockTimeout with a lock-timeout error (SQLSTATE 55P03)
+// rather than waiting without limit.
+//
+// Control: remove the pgmigrate.Pin call from createVersionTable's callback and the widen waits
+// without limit; the context deadline below fires and the error is not a lock timeout.
+func TestMigrateCreateVersionTableBoundsTheWidenLock(t *testing.T) {
+	store := openIsolatedStoreWithPool(t, 4)
+	setup := context.Background()
+	// An integer version column, as a database created before versions became timestamps has, so
+	// createVersionTable(widen) runs the ALTER TABLE.
+	if _, err := store.Pool.Exec(setup, "create table schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
+		t.Fatalf("seed an integer schema_migrations: %v", err)
+	}
+	holder := connectForTest(t, setup, store)
+	if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
+		t.Fatalf("hold a lock on schema_migrations: %v", err)
+	}
+	t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+
+	ctx, cancel := context.WithTimeout(setup, pgmigrate.LockTimeout+10*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := store.createVersionTable(ctx, true)
+	elapsed := time.Since(started)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("createVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03): the widen was not bounded", err, elapsed)
+	}
+	if elapsed > pgmigrate.LockTimeout+5*time.Second {
+		t.Errorf("createVersionTable returned after %v; want about LockTimeout (%v): it waited past its bound", elapsed, pgmigrate.LockTimeout)
 	}
 }
 
@@ -1481,5 +1720,72 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// legionCurrentVersion is 20261117022936_legion_current, which creates legion_current, the newest
+// row of each field legion_observations holds, fills it from the rows already stored and gives
+// legion_observations the trigger that keeps it.
+const legionCurrentVersion = 20261117022936
+
+// TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt: a database that
+// held observations before 20261117022936 reads the same newest rows from legion_current as from
+// the history, its `null` rows included, whatever order the rows were inserted in; and every insert
+// after it moves a field's row only where the row it inserts is newer than the one held.
+func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, legionCurrentVersion-1)
+	hour := func(hours int) time.Time { return time.Date(2026, 11, 16, hours, 0, 0, 0, time.UTC) }
+	observe := func(issue, field, value string, at time.Time) {
+		t.Helper()
+		if _, err := store.Pool.Exec(ctx, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('INFRA', $1, $2, $3::jsonb, $4)
+		`, issue, field, value, at); err != nil {
+			t.Fatalf("record %s's %s at %s: %v", issue, field, at, err)
+		}
+	}
+	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('INFRA', 'Infra', 'alice@d.example')`); err != nil {
+		t.Fatalf("seed the project: %v", err)
+	}
+	// Each field's newest row is inserted before an older one, so the fill must order by when a row
+	// was observed and not by when it was stored.
+	observe("INFRA-1", "phase", `"implementing"`, hour(2))
+	observe("INFRA-1", "phase", `"planning"`, hour(1))
+	observe("INFRA-1", "claim.planner", `null`, hour(2))
+	observe("INFRA-1", "claim.planner", `"working"`, hour(1))
+	observe("INFRA-2", "phase", `null`, hour(3))
+	observe("INFRA-2", "phase", `"testing"`, hour(1))
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through legion_current: %v", err)
+	}
+	current := func() []string {
+		t.Helper()
+		rows, err := store.Pool.Query(ctx, `
+			select issue_key || '/' || field || '=' || value::text || '@' || extract(hour from observed_at at time zone 'UTC')
+			from legion_current where project = 'INFRA' order by issue_key, field
+		`)
+		if err != nil {
+			t.Fatalf("read legion_current: %v", err)
+		}
+		listed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read legion_current: %v", err)
+		}
+		return listed
+	}
+	filled := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="implementing"@2`, `INFRA-2/phase=null@3`}
+	if got := current(); !slices.Equal(got, filled) {
+		t.Fatalf("legion_current after the migration = %v, want the newest row of each field the history holds, %v", got, filled)
+	}
+
+	// A newer row moves its field's row, and an older one leaves it, in the statement that wrote it.
+	observe("INFRA-1", "phase", `"reviewing"`, hour(4))
+	observe("INFRA-2", "phase", `"admitted"`, hour(0))
+	kept := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="reviewing"@4`, `INFRA-2/phase=null@3`}
+	if got := current(); !slices.Equal(got, kept) {
+		t.Fatalf("legion_current after two more rows = %v, want %v", got, kept)
 	}
 }

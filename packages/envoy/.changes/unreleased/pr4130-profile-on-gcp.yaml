@@ -1,0 +1,11 @@
+kind: Removed
+body: |-
+  `agent-secrets secret` no longer has a `--profile` flag on either backend; a form given it is a
+  usage error that names the environment variables to use instead. agent-secrets is not
+  opinionated about where the store credential comes from: it reads it from the environment, as the
+  AWS CLI, boto3 and gcloud do. On AWS set `AWS_PROFILE` (or `AWS_DEFAULT_PROFILE`); access keys
+  in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and `AWS_WEB_IDENTITY_TOKEN_FILE`, outrank
+  it, as in the AWS CLI, where `--profile` outranked them. On Google Cloud set
+  `CLOUDSDK_ACTIVE_CONFIG_NAME` (a gcloud configuration) or `CLOUDSDK_CORE_ACCOUNT` (a gcloud
+  login), which `CLOUDSDK_AUTH_ACCESS_TOKEN` and `GOOGLE_APPLICATION_CREDENTIALS` outrank. The AWS
+  `--profile` flag shipped in v30.x; this removes it.

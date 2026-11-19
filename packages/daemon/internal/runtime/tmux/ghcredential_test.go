@@ -296,8 +296,8 @@ func TestSpawnWritesTheClaimsGhBundleAndNamesItOnThePane(t *testing.T) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		t.Fatalf("gh root stat = %v, %v; want a 0700 directory", info, err)
 	}
-	if entries := ghDirEntries(t, root); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-		t.Errorf("the gh root holds %v, want one directory per owner and nothing else", entries)
+	if entries := ghDirEntries(t, root); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+		t.Errorf("the gh root holds %v, want one directory per owner, the bundle's pairs file and nothing else", entries)
 	}
 	for owner, token := range map[string]string{"acme": staticCredentialToken(claim.RoleTester), "sjawhar": staticOwnerToken(claim.RoleTester, "sjawhar")} {
 		dir := ghconfig.Dir(root, owner)
@@ -452,8 +452,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		t.Errorf("the refresher made a gh directory for %s (%v)", nameless, err)
 	}
 	for _, token := range []claim.Token{stale, current, gone, controller} {
-		if entries := ghDirEntries(t, root(token)); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-			t.Errorf("%s's gh root holds %v, want the two owners' directories alone", token, entries)
+		if entries := ghDirEntries(t, root(token)); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+			t.Errorf("%s's gh root holds %v, want the two owners' directories and the bundle's pairs file alone", token, entries)
 		}
 	}
 	refreshed := logLines(logs.String(), "github credential refreshed")
@@ -588,8 +588,8 @@ func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.
 			t.Errorf("the adopted tester's %s hosts.yml holds %q, want %q", owner, got, want)
 		}
 	}
-	if entries := ghDirEntries(t, root(tester)); !slices.Equal(entries, []string{"acme", "sjawhar"}) {
-		t.Errorf("the adopted tester's gh root holds %v, want the two owners' directories alone", entries)
+	if entries := ghDirEntries(t, root(tester)); !slices.Equal(entries, []string{"acme", ghconfig.PairsFile, "sjawhar"}) {
+		t.Errorf("the adopted tester's gh root holds %v, want the two owners' directories and the bundle's pairs file alone", entries)
 	}
 	for owner, want := range map[string]string{"acme": staticCredentialToken(claim.RoleController), "sjawhar": staticOwnerToken(claim.RoleController, "sjawhar")} {
 		if got := readHostsToken(t, ghconfig.Dir(root(controller), owner)); got != want {
@@ -694,7 +694,7 @@ func (leaseTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
-	bundle := appauth.GitHubCredential(leaseTokens{}, leaseTokens{},
+	bundle := appauth.GitHubCredential(leaseTokens{},
 		func() []ghrepo.Repository {
 			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
 		},
@@ -753,6 +753,58 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 	mu.Unlock()
 	if failed := logLines(logs.String(), "github credential refresh failed"); len(failed) != 0 {
 		t.Errorf("the runtime logged failures %q, want none", failed)
+	}
+}
+
+// pairTokens is leaseTokens with the App installed on both accounts of the pair sjawhar/legion ->
+// cybermonklabs/legion: cybermonklabs, which holds the repository the pair moved, and sjawhar,
+// which holds every other repository of that account.
+type pairTokens struct{ leaseTokens }
+
+func (pairTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return []string{"cybermonklabs", "sjawhar"}, nil
+}
+
+// A pane whose issue is recorded on a configured pair's `from` keeps refreshing: its bundle's
+// default is the directory its repository routes to (ghconfig.RouteDir), cybermonklabs, where
+// the repository GitHub serves for that name is, and the refresher holds the render to that same
+// rule. Held to the recorded owner instead, every refresh of the pane would be refused and its
+// tokens would expire within the hour.
+func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
+	ctx := context.Background()
+	var logs strings.Builder
+	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	credential := appauth.GitHubCredential(pairTokens{},
+		func() []ghrepo.Repository {
+			return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")}
+		},
+		pair, nil, nil, slog.Default())
+	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	token, err := claim.NewToken("omp", "LEGION-48", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.claimRepository = func(context.Context, claim.Token) (ghrepo.Repository, error) {
+		return ghrepo.MustParse("sjawhar/legion"), nil
+	}
+	f.track(runtime.Locator{
+		Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "4242:8",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%8"},
+	}, "", ghrepo.Repository{}, "")
+
+	f.refreshGitHubCredentials(ctx)
+
+	if failed := logLines(logs.String(), "github credential refresh failed"); len(failed) != 0 {
+		t.Fatalf("the runtime logged failures %q, want the pane refreshed", failed)
+	}
+	root := runtime.GHConfigDir(f.stateDir, token)
+	for _, owner := range []string{"cybermonklabs", "sjawhar"} {
+		if got := readHostsToken(t, ghconfig.Dir(root, owner)); got != "write-"+owner {
+			t.Errorf("the pane's %s hosts.yml holds %q, want that owner's own lease write-%s", owner, got, owner)
+		}
+	}
+	if pairs, err := ghconfig.ReadPairs(root); err != nil || len(pairs) != 1 {
+		t.Errorf("the pane's bundle routes by %v (%v), want the one configured pair", pairs, err)
 	}
 }
 

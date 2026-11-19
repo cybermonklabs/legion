@@ -80,6 +80,8 @@ async function watchMark(
   log: string[]
 ): Promise<void> {
   while (Date.now() - writtenAt < untilMs) {
+    // One sample of this instant, by design: the row measures when the span goes, so a read
+    // that waited for it to settle would move the sample and blur the log it builds.
     const present = (await markSpan(page, markId).count()) > 0;
     const at = Math.round((Date.now() - writtenAt) / SAMPLE_MS) * SAMPLE_MS;
     log.push(`${at}ms:${present ? "present" : "gone"}`);
@@ -117,6 +119,8 @@ async function openComposer(
   const span = documentEditor(page).locator('span[data-proof="comment"][data-id]');
   await expect(span).toHaveCount(1);
   const writtenAt = Date.now();
+  // The span's selector requires `data-id` and the count above waited for it, so this read
+  // is never null and the check below only narrows the type.
   const markId = await span.getAttribute("data-id");
   const by = await span.getAttribute("data-by");
   if (markId === null) throw new Error("The provisional comment mark has no data-id.");

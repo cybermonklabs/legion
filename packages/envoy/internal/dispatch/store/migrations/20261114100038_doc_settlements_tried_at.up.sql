@@ -1,0 +1,42 @@
+-- 20261114100038_doc_settlements_tried_at.up.sql
+--
+-- INFRA-1138: when the settlement resumption last armed a document's owed settlement
+-- (docs.Service.resumeOwedSettlements).
+--
+--   tried_at   the database's now() at the resumption pass that last armed the document's
+--              settlement, and null for a row no pass has armed yet. A pass arms at most
+--              docs.settlementResumeBatch documents: first the rows with no tried_at, oldest
+--              marked_at first, then the rows already tried, oldest tried_at first, and it
+--              stamps tried_at on each row it arms in the statement that picks them.
+--
+-- The release before this one arms every owed row in one pass, ordered by marked_at alone, and
+-- skips a closed issue's documents. This release settles a closed issue's documents too, and the
+-- count of those that owe a settlement when it reaches production is unknown, so a pass arms a
+-- bounded number. Ordered by marked_at alone, a bounded pass would arm the same oldest rows every
+-- time, and a set of documents that fails every settlement (outside the Proof schema, or a room
+-- that fails each time) would hold the whole bound for ever. A document a pass armed therefore
+-- waits behind those no pass has armed yet, whatever ended its settlement. The record of which
+-- rows were armed is a column rather than the memory of the process that ran the pass: the pass
+-- runs under a lease, so the next one may run in another process, which reads the same column.
+-- A settlement that commits deletes the row, and the stamp goes with it; an append's upsert of
+-- the row (docs.settlementPendingStatement) does not touch the column.
+--
+-- A row owed before this migration carries null here, so the first pass after the deploy takes
+-- the rows as the release before took them, oldest marked_at first. No backfill writes the
+-- column: a census that rewrites a row refuses the deploy (cmd/dispatch/README.md, "Pre-deploy
+-- census").
+--
+-- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
+-- takes ACCESS EXCLUSIVE on doc_settlements_pending, which every document append and every
+-- settlement writes, and holds it only for the catalog write. It must first wait for every
+-- transaction that holds the table, as 0129's alter of this table does: the runner bounds that
+-- wait at pgmigrate.LockTimeout (five seconds) and tries again up to
+-- pgmigrate.LockTimeoutAttempts times, after which the migration fails the boot, and every append
+-- queued behind the ALTER waits as long as it does. The table holds one row per document that
+-- owes a settlement, a few dozen in production.
+--
+-- The release before this one neither reads nor writes the column, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). While a process of that release holds the
+-- resumption's lease, its pass arms every owed row and stamps none, as it does today. Rolling
+-- back past this migration is an image rollback alone; the column left behind is read by nothing.
+alter table doc_settlements_pending add column tried_at timestamptz;

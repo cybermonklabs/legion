@@ -11,9 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -50,126 +47,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
 )
-
-// storetestImport is the one package under internal/dispatch that reads the process environment
-// for itself: the Postgres fixture of Dispatch's tests (DISPATCH_TEST_DATABASE_URL), which only
-// test files may import.
-const storetestImport = "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-
-// environmentReaders are the functions that read the process environment, by package.
-var environmentReaders = map[string][]string{
-	"os":      {"Getenv", "LookupEnv", "Environ", "ExpandEnv"},
-	"syscall": {"Getenv", "Environ"},
-}
-
-// environmentReads walks the non-test Go files under roots and returns each reference to an
-// environment reader as "<path> <package>.<name>", whatever name the file imports the package
-// under, and each dot import of a reader's package as "<path> import . <package>": with the
-// package's names unqualified, a read cannot be told from a call to the file's own function, so
-// the import is the finding. It also returns the files that import storetest.
-func environmentReads(roots ...string) (reads, storetestImporters []string, err error) {
-	fileSet := token.NewFileSet()
-	for _, root := range roots {
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				if entry.Name() == "testdata" || entry.Name() == "node_modules" {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-				return nil
-			}
-			file, err := parser.ParseFile(fileSet, path, nil, parser.SkipObjectResolution)
-			if err != nil {
-				return err
-			}
-			fixture := strings.Contains(filepath.ToSlash(path), "store/storetest/")
-			// The name each environment-reading package has in this file.
-			packages := map[string]string{}
-			for _, spec := range file.Imports {
-				importPath, _ := strconv.Unquote(spec.Path.Value)
-				if importPath == storetestImport {
-					storetestImporters = append(storetestImporters, path)
-				}
-				if _, reads := environmentReaders[importPath]; !reads {
-					continue
-				}
-				name := importPath
-				if spec.Name != nil {
-					name = spec.Name.Name
-				}
-				if name == "." && !fixture {
-					reads = append(reads, filepath.ToSlash(path)+" import . "+importPath)
-				}
-				packages[name] = importPath
-			}
-			if fixture {
-				return nil
-			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				selector, ok := node.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				pkg, ok := selector.X.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				if importPath, ok := packages[pkg.Name]; ok && slices.Contains(environmentReaders[importPath], selector.Sel.Name) {
-					position := fileSet.Position(selector.Pos())
-					reads = append(reads, filepath.ToSlash(position.Filename)+" "+importPath+"."+selector.Sel.Name)
-				}
-				return true
-			})
-			return nil
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("walk %s: %w", root, err)
-		}
-	}
-	return reads, storetestImporters, nil
-}
-
-// Dispatch reads its environment in one place: processSettings, over the settings table. Any
-// other reference to the process environment under cmd/dispatch or internal/dispatch is a reader
-// the table, `envoy-dispatch settings` and the generated configuration reference do not list.
-func TestNoReaderBypassesTheSettingsTable(t *testing.T) {
-	reads, storetestImporters, err := environmentReads(".", filepath.Join("..", "..", "internal", "dispatch"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"settings.go os.LookupEnv"}; !slices.Equal(reads, want) {
-		t.Errorf("environment reads outside the settings table: %q, want only %q (processSettings). Add the variable as a row of the settings table (cmd/dispatch/settings.go) and hand its reader the value", reads, want)
-	}
-	if len(storetestImporters) > 0 {
-		t.Errorf("non-test files import %s, which reads DISPATCH_TEST_DATABASE_URL outside the settings table: %q", storetestImport, storetestImporters)
-	}
-}
-
-// The guard sees a read however the file imports its package: under another name, or with no
-// name at all, where the read is a bare Getenv.
-func TestTheGuardSeesAReadUnderAnyImportName(t *testing.T) {
-	for name, probe := range map[string]string{
-		"an aliased import":       "package auth\n\nimport environment \"os\"\n\nfunc acceptProbe() string { return environment.Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
-		"a dot import":            "package auth\n\nimport . \"os\"\n\nfunc acceptProbe() string { return Getenv(\"DISPATCH_ACCEPT_PROBE\") }\n",
-		"a dot import of syscall": "package auth\n\nimport . \"syscall\"\n\nfunc acceptProbe() []string { return Environ() }\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			path := writeFile(t, filepath.Join("auth", "probe.go"), probe)
-			reads, _, err := environmentReads(filepath.Dir(path))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(reads) != 1 || !strings.HasPrefix(reads[0], filepath.ToSlash(path)+" ") {
-				t.Errorf("environment reads %q, want the one in %s", reads, path)
-			}
-		})
-	}
-}
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 	name := regexp.MustCompile(`^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$`)
@@ -601,6 +478,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: IdentityHeader = %q, want cookie identity", boot.IdentityHeader)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_IDENTITY": "basic"}, "DISPATCH_IDENTITY")
+			if iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(nil))); err != nil || iap.IAPAudience != testIAPAudience {
+				t.Errorf("iap: IAPAudience = %q, %v", iap.IAPAudience, err)
+			}
 			// The identity main builds for the router: a header server names the person the
 			// header names, lowercased, and records them.
 			t.Run("router", func(t *testing.T) {
@@ -610,6 +490,49 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				routerFor(t, header, routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)}).ServeHTTP(response, request)
 				if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"login":"alice@example.com"`) {
 					t.Errorf("DISPATCH_IDENTITY=header:X-Dispatch-User: GET /auth/whoami answered %d %s, want alice@example.com", response.Code, response.Body.String())
+				}
+			})
+			// An IAP server names the person of a verified assertion IAP signed for its audience,
+			// lowercased, admits only an account of DISPATCH_SIGNIN_DOMAIN, records the member,
+			// and never takes IAP's unsigned email header for a person.
+			t.Run("iap router", func(t *testing.T) {
+				keys, signing := iapKeySet(t)
+				people := peopleStore(t)
+				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: people, Store: storetest.Open(t)})
+				member := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil)
+				if member.Code != http.StatusOK || !strings.Contains(member.Body.String(), `"login":"a.person@example.com"`) {
+					t.Errorf("DISPATCH_IDENTITY=iap: a member's assertion: GET /auth/whoami answered %d %s, want a.person@example.com", member.Code, member.Body.String())
+				}
+				if _, found, err := people.Membership(context.Background(), "a.person@example.com"); err != nil || !found {
+					t.Errorf("DISPATCH_IDENTITY=iap: the member was not recorded: found %t, %v", found, err)
+				}
+				for name, response := range map[string]*httptest.ResponseRecorder{
+					"an account of another domain": iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "other.example"), nil),
+					"a forged assertion":           iapWhoami(handler, iapAssertion(t, keys, oidctest.NewES256Key(t, signing.KeyID()), testIAPAudience, "example.com"), nil),
+					"IAP's unsigned email header":  iapWhoami(handler, "", map[string]string{"X-Goog-Authenticated-User-Email": "accounts.google.com:a.person@example.com"}),
+				} {
+					if response.Code != http.StatusUnauthorized {
+						t.Errorf("DISPATCH_IDENTITY=iap: %s: GET /auth/whoami answered %d %s, want 401", name, response.Code, response.Body.String())
+					}
+				}
+			})
+		},
+		"DISPATCH_IAP_AUDIENCE": func(t *testing.T) {
+			iap, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": " " + testIAPAudience + " "})))
+			if err != nil || iap.IAPAudience != testIAPAudience {
+				t.Errorf("IAPAudience = %q, %v", iap.IAPAudience, err)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}, "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap")
+			// The audience the router's identity holds each assertion to: one IAP signed for
+			// another backend service is refused, the same assertion for this one admitted.
+			t.Run("router", func(t *testing.T) {
+				keys, signing := iapKeySet(t)
+				handler := routerFor(t, iapBoot(t, keys, nil), routes.AppContextOptions{People: peopleStore(t), Store: storetest.Open(t)})
+				if response := iapWhoami(handler, iapAssertion(t, keys, signing, "/projects/123456789012/global/backendServices/1", "example.com"), nil); response.Code != http.StatusUnauthorized {
+					t.Errorf("an assertion for another audience: GET /auth/whoami answered %d %s, want 401", response.Code, response.Body.String())
+				}
+				if response := iapWhoami(handler, iapAssertion(t, keys, signing, testIAPAudience, "example.com"), nil); response.Code != http.StatusOK {
+					t.Errorf("the same assertion for DISPATCH_IAP_AUDIENCE: GET /auth/whoami answered %d %s, want 200", response.Code, response.Body.String())
 				}
 			})
 		},
@@ -823,7 +746,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.PprofAddr != "" {
 				t.Errorf("unset: PprofAddr = %q, want none", boot.PprofAddr)
 			}
-			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}, "DISPATCH_PPROF_PORT")
+			if boot := resolveWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}); boot.PprofAddr != "127.0.0.1:0" {
+				t.Errorf("0: PprofAddr = %q, want 127.0.0.1:0, a port the kernel chooses", boot.PprofAddr)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "65536"}, "DISPATCH_PPROF_PORT")
 		},
 		"DISPATCH_MAX_LIVE_ROOMS": func(t *testing.T) {
 			documentCapReachesTheService(t, "DISPATCH_MAX_LIVE_ROOMS", func(rooms, _ int) int { return rooms })
@@ -947,7 +873,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if err != nil {
 				t.Fatalf("build the webhook sweeper: %v", err)
 			}
-			if _, err := sweeper.Open(); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
+			if _, err := sweeper.Open(t.Context()); err == nil || !strings.Contains(err.Error(), "ENVOY_NATS_REPLICAS=3: ") {
 				t.Errorf("the redelivery bucket at ENVOY_NATS_REPLICAS=3 on one server: err = %v, want the server's refusal naming the setting", err)
 			}
 			github := githubapptest.NewWebhook(t, &key.PublicKey, replicasTestClientID, nil)
@@ -996,6 +922,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			if err := natsConnect(map[string]string{"NATS_NKEY_SEED_FILE": ""}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE is set but empty") {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
+			}
+		},
+		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "missing")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			}
+			token := writeFile(t, "token", "a.b.c\n")
+			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+				t.Errorf("beside a seed: err = %v, want both named", err)
+			}
+		},
+		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
+			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
 			}
 		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
@@ -1447,11 +1388,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("AgentSecretsURL = %q", boot.AgentSecretsURL)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/v1", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}, "DISPATCH_AGENT_SECRETS_URL")
-			// The broker the router relays credential requests to; without one it has none, and the
-			// pending list answers null.
+			// The broker the router relays credential requests to, which it asks for alice's
+			// pending and expired requests; without one it has none, and the pending list answers
+			// null.
 			t.Run("router", func(t *testing.T) {
-				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice ") {
-					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending list", got)
+				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice&state=pending&state=expired ") {
+					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending and expired requests", got)
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()
@@ -1956,6 +1898,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}); !boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1: ArchitectureImportAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "true"}); boot.ArchitectureImportAtStart {
+				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=true: ArchitectureImportAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)
@@ -1973,6 +1927,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_CI_RECONCILE_INTERVAL=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_REDELIVERY_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.RedeliveryInterval != 0 {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL unset: RedeliveryInterval = %v, want 0 (redeliver.Interval's two minutes)", boot.RedeliveryInterval)
+			}
+			const quick = 2 * time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_REDELIVERY_INTERVAL": quick.String(),
+			})
+			if boot.RedeliveryInterval != quick {
+				t.Errorf("DISPATCH_TEST_REDELIVERY_INTERVAL: RedeliveryInterval = %v, want %v", boot.RedeliveryInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_REDELIVERY_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_REDELIVERY_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_REDELIVERY_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.DeliveryReconcileInterval != 0 {

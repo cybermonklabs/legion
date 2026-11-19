@@ -87,13 +87,13 @@ func TestThePeriodicTurnWithNothingWaitingReadsNothingFromDispatch(t *testing.T)
 func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	client := &tickDispatch{issues: map[string]dispatch.Issue{
-		"EXT-1": {Key: "EXT-1", Status: "done", LastSeq: 7},
+		"CAPTURE-B1": {Key: "CAPTURE-B1", Project: "CAPTURE", Status: "done", LastSeq: 7},
 	}}
 	w := tickRuntime(t, pool, client)
 
 	seedWaitingRoot(t, pool, "LEGION-BLOCKED", "A")
-	seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "EXT-1")
-	seedTickMirror(t, pool, "EXT-1", "todo", 1)
+	seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "CAPTURE-B1")
+	seedTickMirror(t, pool, "CAPTURE-B1", "todo", 1)
 	if slotted := tickSlotted(t, pool); len(slotted) != 0 {
 		t.Fatalf("slots = %v before the turn, want the blocked root waiting", slotted)
 	}
@@ -103,8 +103,8 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 	if slotted := tickSlotted(t, pool); !slices.Equal(slotted, []string{"LEGION-BLOCKED"}) {
 		t.Fatalf("slots = %v, want the root admitted once the turn saw its blocker is done", slotted)
 	}
-	if row := tickMirrored(t, pool)["EXT-1"]; row.Status != "done" || row.Seq != 7 {
-		t.Fatalf("the mirror holds EXT-1 at %q seq %d, want the turn's own reading (done, 7)", row.Status, row.Seq)
+	if row := tickMirrored(t, pool)["CAPTURE-B1"]; row.Status != "done" || row.Seq != 7 {
+		t.Fatalf("the mirror holds CAPTURE-B1 at %q seq %d, want the turn's own reading (done, 7)", row.Status, row.Seq)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 // the tick with what it has — here nothing, which leaves the blocked root exactly where it was.
 func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T) {
 	pool := isolatedOutboxPool(t)
-	registerTickController(t, pool)
+	registerProjectController(t, pool, "CAPTURE")
 	client := &tickDispatch{err: errors.New("dispatch is unreachable")}
 	w := tickRuntime(t, pool, client)
 
@@ -150,7 +150,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
-			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "done", LastSeq: 7})
+			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "done", LastSeq: 7})
 		}
 		w := tickRuntime(t, pool, client)
 		seedBlockedRoots(t, pool, blockerReadFanout+1)
@@ -162,7 +162,7 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 		}
 		mirrored := tickMirrored(t, pool)
 		for i := 1; i <= blockerReadFanout+1; i++ {
-			key := fmt.Sprintf("EXT-%d", i)
+			key := ownBlocker(i)
 			if row := mirrored[key]; row.Status != "done" || row.Seq != 7 {
 				t.Fatalf("the mirror holds %s at %q seq %d, want the listing's own reading (done, 7)", key, row.Status, row.Seq)
 			}
@@ -176,32 +176,32 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 	t.Run("a single read", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
-			"EXT-1": {Key: "EXT-1", Status: "in_progress", LastSeq: 7, Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
+			"CAPTURE-B1": {Key: "CAPTURE-B1", Project: "CAPTURE", Status: "in_progress", LastSeq: 7, Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
 		}}
 		w := tickRuntime(t, pool, client)
 		seedWaitingRoot(t, pool, "LEGION-BLOCKED", "A")
-		seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "EXT-1")
-		seedTickMirror(t, pool, "EXT-1", "todo", 1)
+		seedTickMirror(t, pool, "LEGION-BLOCKED", "todo", 1, "CAPTURE-B1")
+		seedTickMirror(t, pool, "CAPTURE-B1", "todo", 1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 
-		if row := tickMirrored(t, pool)["EXT-1"]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
-			t.Fatalf("the mirror holds EXT-1's claim as %q at %d, want the turn's reading (user:alice, 7)", row.ClaimedBy, row.ClaimSeq)
+		if row := tickMirrored(t, pool)["CAPTURE-B1"]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
+			t.Fatalf("the mirror holds CAPTURE-B1's claim as %q at %d, want the turn's reading (user:alice, 7)", row.ClaimedBy, row.ClaimSeq)
 		}
 	})
 	t.Run("the listing", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{}
 		for i := 1; i <= blockerReadFanout+1; i++ {
-			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: fmt.Sprintf("EXT-%d", i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})
+			client.summaries = append(client.summaries, dispatch.IssueSummary{Key: ownBlocker(i), Status: "in_progress", LastSeq: 7, ClaimedBy: "user:alice"})
 		}
 		w := tickRuntime(t, pool, client)
 		seedBlockedRoots(t, pool, blockerReadFanout+1)
 
 		w.applyControllerTick(context.Background(), time.Now())
 
-		if row := tickMirrored(t, pool)["EXT-1"]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
-			t.Fatalf("the mirror holds EXT-1's claim as %q at %d, want the listing's reading (user:alice, 7)", row.ClaimedBy, row.ClaimSeq)
+		if row := tickMirrored(t, pool)[ownBlocker(1)]; row.ClaimedBy != "user:alice" || row.ClaimSeq != 7 {
+			t.Fatalf("the mirror holds %s's claim as %q at %d, want the listing's reading (user:alice, 7)", ownBlocker(1), row.ClaimedBy, row.ClaimSeq)
 		}
 	})
 }
@@ -257,6 +257,17 @@ func (d *tickDispatch) listings() int {
 	return d.lists
 }
 
+// serve is what Dispatch answers for an issue from now on, which is how a test moves a blocker
+// between two turns.
+func (d *tickDispatch) serve(issue dispatch.Issue) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.issues == nil {
+		d.issues = map[string]dispatch.Issue{}
+	}
+	d.issues[issue.Key] = issue
+}
+
 func (d *tickDispatch) SetStatus(context.Context, string, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
@@ -283,8 +294,9 @@ func (d *tickDispatch) Handoff(context.Context, string) (dispatch.Handoff, error
 func (d *tickDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
 	return nil, nil
 }
-func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *tickDispatch) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *tickDispatch) PutGatedSteps(context.Context, string, []string) error             { return nil }
+func (d *tickDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *tickDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }
@@ -334,14 +346,15 @@ func seedHeldChild(t *testing.T, pool *store.Pool, key, tree string) {
 	})
 }
 
-// seedBlockedRoots records count roots, each waiting on a distinct blocker of its own that the
-// mirror has never seen a row for, so the waiting set holds exactly count keys.
+// seedBlockedRoots records count roots, each waiting on a distinct blocker of this daemon's own
+// project that the mirror has never seen a row for, so the waiting set holds exactly count keys,
+// all of them keys the turn's listing branch covers.
 func seedBlockedRoots(t *testing.T, pool *store.Pool, count int) {
 	t.Helper()
 	for i := 1; i <= count; i++ {
 		key := fmt.Sprintf("LEGION-%d", i)
 		seedWaitingRoot(t, pool, key, fmt.Sprintf("A%03d", i))
-		seedTickMirror(t, pool, key, "todo", 1, fmt.Sprintf("EXT-%d", i))
+		seedTickMirror(t, pool, key, "todo", 1, ownBlocker(i))
 	}
 }
 
@@ -364,17 +377,18 @@ func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int6
 	}
 }
 
-// registerTickController registers a controller for this project, the daemon's own path: `legion
+// registerProjectController registers a controller for project, the daemon's own path: `legion
 // controller start` mints the capability and its session registers with it, both under the
-// project token (api/controller.go). Without one, a tick's wake is queued for nobody.
-func registerTickController(t *testing.T, pool *store.Pool) {
+// project token (api/controller.go). Without one, a tick's wake, and every wake of the daemon that
+// keeps a mark, is queued for nobody.
+func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 	t.Helper()
 	st, err := store.Open(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
-	token, err := claim.ProjectToken("CAPTURE")
+	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)
 	}

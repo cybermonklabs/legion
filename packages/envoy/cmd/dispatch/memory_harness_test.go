@@ -12,7 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
+	"regexp"
 	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +37,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -108,16 +111,57 @@ func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 	}
 }
 
+// memoryTestCollectEnv makes a memory test's server collect its heap each time it is sent SIGUSR1
+// and then report that collection on its standard error (collectOnSignal).
+const memoryTestCollectEnv = "DISPATCH_MEMORY_TEST_COLLECT_ON_SIGNAL"
+
+// collectedLine is the line a server running with memoryTestCollectEnv writes once the collection
+// a SIGUSR1 asked for has run: its number and the heap it found live, in bytes.
+var collectedLine = regexp.MustCompile(`memory test: collection (\d+) found (\d+) bytes live\n`)
+
 // memoryServer is a Dispatch server: this test binary running main.
 type memoryServer struct {
 	command *exec.Cmd
 	base    string
-	output  *lockedBuffer
-	exited  chan struct{}
-	idle    int64
+	// output and exited are the process's (cmdtest.Process): its combined output, and closed
+	// once it has exited and released its connections.
+	output *cmdtest.LockedBuffer
+	exited <-chan struct{}
+	idle   int64
 	// database is the harness's own handle on the database this server serves, which a measured
 	// window takes the block-index lease on (holdBlockIndexLease).
 	database *store.Store
+}
+
+func init() {
+	if os.Getenv(memoryTestServeEnv) == "1" && os.Getenv(memoryTestCollectEnv) == "1" {
+		collectOnSignal()
+	}
+}
+
+// collectOnSignal collects the heap and gives its free memory back to the system
+// (debug.FreeOSMemory) each time the process is sent SIGUSR1, and then writes the number of the
+// last collection the runtime completed and the heap it found live (collectedLine), read again
+// until no collection completed between two reads of the number, so the heap is that collection's.
+// It is installed before main runs, so the server never meets a SIGUSR1 it would die of.
+func collectOnSignal() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGUSR1)
+	go func() {
+		samples := []metrics.Sample{{Name: "/gc/cycles/total:gc-cycles"}, {Name: "/gc/heap/live:bytes"}}
+		for range signals {
+			debug.FreeOSMemory()
+			for {
+				metrics.Read(samples)
+				number, live := samples[0].Value.Uint64(), samples[1].Value.Uint64()
+				metrics.Read(samples[:1])
+				if samples[0].Value.Uint64() == number {
+					fmt.Fprintf(os.Stderr, "memory test: collection %d found %d bytes live\n", number, live)
+					break
+				}
+			}
+		}
+	}()
 }
 
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
@@ -150,22 +194,22 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		// about twice what it holds. A test that needs another value sets GOGC in
 		// memoryHarness.env, which is appended after this and wins.
 		"GOGC=25",
+		// Every server collects and gives its free memory back to the system when it is sent
+		// SIGUSR1 (collectOnSignal), which start asks for before it reads the server's idle.
+		memoryTestCollectEnv + "=1",
 	}
 	command.Env = append(command.Env, h.env...)
 	held.Pass(command, "DISPATCH_LISTEN_FD")
-	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: &lockedBuffer{}, exited: make(chan struct{}), database: h.database}
-	command.Stdout, command.Stderr = server.output, server.output
-	err := command.Start()
-	// The server holds its own copy of the socket from here on, so it releases the port when it
+	// This server is a Dispatch process like any other a test starts, so the connection guard
+	// counts it, and releases it before exited closes, so a test that sees the exit sees the
+	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
+	// of the held socket once the server has started, so the server releases the port when it
 	// exits.
-	cmdtest.CloseExtraFiles(command)
-	if err != nil {
-		t.Fatalf("start a Dispatch server: %v", err)
-	}
-	go func() {
-		_ = command.Wait()
-		close(server.exited)
-	}()
+	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
+	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
+	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
+	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
 	t.Cleanup(func() { server.stop(t) })
 	deadline := time.Now().Add(time.Minute)
 	// The kernel queues a request on the held socket until the server serves it, so each one is
@@ -185,16 +229,30 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		}
 		select {
 		case <-server.exited:
-			t.Fatalf("the Dispatch server exited while starting:\n%s", server.output.tail())
+			t.Fatalf("the Dispatch server exited while starting:\n%s", server.outputTail())
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the Dispatch server did not answer /healthz:\n%s", server.output.tail())
+			t.Fatalf("the Dispatch server did not answer /healthz:\n%s", server.outputTail())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	// The idle is read after a collection that gives the heap's free memory back to the system.
+	// Every boot compiles the pg_query WebAssembly module its migrations parse with
+	// (pgmigrate.Load, wazero), which holds about 220 MiB of the heap until it is done, and whether
+	// a collection frees that before /healthz answers is the luck of where the boot's collections
+	// fall: read at once, the idle was about 90 MiB on one server and about 330 MiB on the next,
+	// and a request then reused the dead pages, so its peak above idle read up to about 240 MiB
+	// low, and below zero (INFRA-3904).
+	server.collect(t)
 	server.idle = server.resident(t, "VmRSS")
 	return server
+}
+
+// collection is one collection the server reports: its number and the heap it found live.
+type collection struct {
+	number int
+	live   int64
 }
 
 // owedBeforeStart is what the test's database owes when a server is about to start: the documents
@@ -437,12 +495,47 @@ func (p *memoryServer) stop(t *testing.T) {
 	}
 }
 
+// collect asks the server for a collection (collectOnSignal), waits until the server has reported
+// it, and returns it with the length of the server's output up to the end of its report, where
+// whatever the server writes after it begins.
+func (p *memoryServer) collect(t *testing.T) (collection, int) {
+	t.Helper()
+	offset := p.output.Len()
+	if err := p.command.Process.Signal(syscall.SIGUSR1); err != nil {
+		t.Fatalf("ask the server for a collection: %v\n%s", err, p.outputTail())
+	}
+	deadline := time.Now().Add(time.Minute)
+	for {
+		logged := p.outputFrom(offset)
+		if at := collectedLine.FindStringSubmatchIndex(logged); at != nil {
+			number, err := strconv.Atoi(logged[at[2]:at[3]])
+			if err != nil {
+				t.Fatalf("read the collection's number %q: %v", logged[at[2]:at[3]], err)
+			}
+			live, err := strconv.ParseInt(logged[at[4]:at[5]], 10, 64)
+			if err != nil {
+				t.Fatalf("read the collection's live heap %q: %v", logged[at[4]:at[5]], err)
+			}
+			return collection{number: number, live: live}, offset + at[1]
+		}
+		select {
+		case <-p.exited:
+			t.Fatalf("the server exited before it reported the collection it was asked for:\n%s", p.outputTail())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server did not report the collection it was asked for within a minute: is %s=1 set?\n%s", memoryTestCollectEnv, p.outputTail())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // resident is the server's resident memory in bytes, VmRSS now or VmHWM its peak.
 func (p *memoryServer) resident(t *testing.T, field string) int64 {
 	t.Helper()
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", p.command.Process.Pid))
 	if err != nil {
-		t.Fatalf("read the server's memory (has it died?): %v\n%s", err, p.output.tail())
+		t.Fatalf("read the server's memory (has it died?): %v\n%s", err, p.outputTail())
 	}
 	for _, line := range strings.Split(string(status), "\n") {
 		if value, ok := strings.CutPrefix(line, field+":"); ok {
@@ -471,24 +564,30 @@ func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 	if err := os.WriteFile(fmt.Sprintf("/proc/%d/clear_refs", p.command.Process.Pid), []byte("5"), 0); err != nil {
 		t.Fatalf("reset the server's peak memory: %v", err)
 	}
-	written := p.output.len()
+	written := p.output.Len()
 	during()
-	// A block-index pass reads whole documents of its own, so one inside the window would make the
-	// peak that pass's memory rather than the request's. start leaves nothing owed, and a pass
-	// that finds nothing owed logs nothing, so a clean window holds no such line. What a drain
-	// taken before the server started cannot cover is a window that fills an owed queue itself -
-	// any window that stores a document - since that row is owed while the measurement runs and
-	// the server's next tick would index it there; the pass is held off for the window's length by
-	// its own lease (holdBlockIndexLease) instead, and this guard stays as the proof that it was.
-	// The handler is the slog.NewTextHandler main installs with slog.SetDefault in
-	// cmd/dispatch/main.go, which writes the message mid-line as msg="dispatch: block index", so
-	// the substring is the match and not a line's prefix.
-	for _, line := range strings.Split(p.output.from(written), "\n") {
+	requireNoBlockIndexPass(t, p.outputFrom(written))
+	return p.resident(t, "VmHWM") - p.idle
+}
+
+// requireNoBlockIndexPass fails the test where window, what the server logged during a measured
+// window, holds a block-index pass. A block-index pass reads whole documents of its own, so one
+// inside the window would make what the window measured that pass's memory rather than the
+// request's. start leaves nothing owed, and a pass that finds nothing owed logs nothing, so a
+// clean window holds no such line. What a drain taken before the server started cannot cover is a
+// window that fills an owed queue itself - any window that stores a document - since that row is
+// owed while the measurement runs and the server's next tick would index it there; the pass is
+// held off for the window's length by its own lease (holdBlockIndexLease) instead, and this guard
+// stays as the proof that it was. The handler is the slog.NewTextHandler main installs with
+// slog.SetDefault in cmd/dispatch/main.go, which writes the message mid-line as
+// msg="dispatch: block index", so the substring is the match and not a line's prefix.
+func requireNoBlockIndexPass(t *testing.T, window string) {
+	t.Helper()
+	for _, line := range strings.Split(window, "\n") {
 		if strings.Contains(line, "dispatch: block index") {
-			t.Fatalf("the server indexed blocks inside the measured window, so the peak is that pass's memory: %s", line)
+			t.Fatalf("the server indexed blocks inside the measured window, so what it measured is that pass's memory: %s", line)
 		}
 	}
-	return p.resident(t, "VmHWM") - p.idle
 }
 
 // blockIndexLeaseNamespace is the first key every loop lease is taken under - duty's
@@ -533,7 +632,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("the block-index pass held the %q lease for more than %s, so this window could not be measured with the pass held off:\n%s",
-				docs.BlockIndexLease, blockIndexLeaseWait, p.output.tail())
+				docs.BlockIndexLease, blockIndexLeaseWait, p.outputTail())
 		}
 		// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass
 		// running at this moment is waited out here: it gives the lease back when it ends.
@@ -573,7 +672,7 @@ func (p *memoryServer) trySend(method, path, contentType string, body io.Reader,
 	}
 	answer, err := (&http.Client{Timeout: 20 * time.Minute}).Do(request)
 	if err != nil {
-		return response{}, fmt.Errorf("%s %s: %w\n%s", method, path, err, p.output.tail())
+		return response{}, fmt.Errorf("%s %s: %w\n%s", method, path, err, p.outputTail())
 	}
 	defer answer.Body.Close()
 	read, err := io.ReadAll(answer.Body)
@@ -713,28 +812,20 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	time.Sleep(3 * time.Second)
 }
 
-// lockedBuffer is the server's output, written by the process's copying goroutine and read by the
-// test when it fails.
-type lockedBuffer struct {
-	logtest.Buffer
-}
-
-func (b *lockedBuffer) tail() string {
-	output := b.String()
+// outputTail is the last 4,000 bytes the server has written, for a failure to show.
+func (p *memoryServer) outputTail() string {
+	output := p.output.String()
 	if len(output) > 4000 {
 		output = output[len(output)-4000:]
 	}
 	return output
 }
 
-// len is how much the server has written, and from everything it wrote past offset: what one
-// measured window logged (peakAboveIdle), which tail's last 4,000 bytes do not answer for.
-func (b *lockedBuffer) len() int {
-	return b.Len()
-}
-
-func (b *lockedBuffer) from(offset int) string {
-	output := b.String()
+// outputFrom is everything the server wrote past offset, a length of its output read earlier:
+// what one measured window logged (peakAboveIdle), which outputTail's last 4,000 bytes do not
+// answer for.
+func (p *memoryServer) outputFrom(offset int) string {
+	output := p.output.String()
 	if offset >= len(output) {
 		return ""
 	}

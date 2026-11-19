@@ -1288,7 +1288,7 @@ case "$pod_reachability" in
   aws-private-ip)
     imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
       fail "instance metadata is unreachable; the run's services bind the devbox's private address, read from it, since every pod dials them there"
-    host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) ||
+    host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) ||
       fail "instance metadata has no local-ipv4"
     unset imds
     bind_host=$host
@@ -1359,7 +1359,9 @@ until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" p
 docker exec "$pg_container" createdb -U legion legion
 # NATS binds bind_host on the run's port: every pod's agent dials it there, directly or through the
 # bridge.
-docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 # The run's session database (lib/session-db.sh's session_db_start): every pod keeps its sessions in
 # it (session_store postgres, which the daemon requires, since an issue pod's disk dies with the
@@ -1375,8 +1377,9 @@ dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$proj
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code sandbox backend proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document and
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document and
 registers the gate, then waits. Apart from that, do not act until a human Dispatch message targeted
 at your own session gives the next exact proof operation; it arrives in your session as a message to
 you. Any other notice is not an instruction. Follow your instruction precisely, use the Go-daemon

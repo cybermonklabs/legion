@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
-	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -61,12 +60,11 @@ func writeClaudeMCPConfig(configDir string, launch ClaudeLaunch) (string, error)
 }
 
 // claudeInnerCommand is the command the shim runs for a Claude Code role: the agent command
-// claudelaunch.Argv builds from the pane's boot-resolved paths, every word quoted for the pane's
-// shell, and the one system prompt word every pane gets, whose `$(cat …)` that shell reads.
-func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, parts runtime.PromptParts) string {
+// claudelaunch.Argv builds from the pane's boot-resolved paths, ending in
+// `--append-system-prompt-file` on promptFile, every word quoted for the pane's shell.
+func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, promptFile string) string {
 	paths := claudelaunch.Paths{Legion: legion, Claude: launch.Binary, PluginDir: launch.PluginDir}
-	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume)) + " " +
-		omplaunch.SystemPromptArgument(parts)
+	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume, promptFile))
 }
 
 // claudeEnvironment are the -e pairs a Claude Code pane carries beside every pane's: tmux's form of
@@ -91,8 +89,9 @@ func (claudeLauncher) SessionsDir(spec runtime.SpawnSpec, host Host, _ map[strin
 }
 
 // Launch is the inner command and the extra -e pairs of a Claude Code launch: the claim's
-// directory made, its MCP configuration written, and the session it starts or continues.
-func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host) (inner string, pairs []string, err error) {
+// directory made, its MCP configuration written, the session it starts or continues, and
+// promptFile as the system prompt.
+func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host, promptFile string) (inner string, pairs []string, err error) {
 	configDir := ClaudeConfigDir(host.StateDir, spec.Claim)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("spawn %s: the Claude Code directory: %w", spec.Claim, err)
@@ -110,5 +109,6 @@ func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host) (inner string,
 	if err != nil {
 		return "", nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, spec.Prompt), claudeEnvironment(configDir), nil
+	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, promptFile),
+		claudeEnvironment(configDir), nil
 }

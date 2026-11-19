@@ -58,7 +58,7 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 			}
 			if !publishedToSession(t, deps, issue.Key, created.ID, "s1") {
 				t.Fatalf("no event of comment %s was published to %s, and its mention failed: s1 got no copy of the comment",
-					created.ID, contracts.AgentSubject("s1"))
+					created.ID, contracts.LegacyAgentSubject("s1"))
 			}
 		})
 	}
@@ -110,7 +110,7 @@ func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID 
 		if err := rows.Scan(&destinations); err != nil {
 			t.Fatalf("scan destinations: %v", err)
 		}
-		if slices.Contains(destinations, contracts.AgentSubject(sessionID)) {
+		if slices.Contains(destinations, contracts.LegacyAgentSubject(sessionID)) {
 			return true
 		}
 	}
@@ -337,7 +337,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		select (select count(*) from events
 		        where issue_key = $1 and (payload->>'id' = $2 or payload->>'comment_id' = $2) and $3 = any(published_destinations))
 		     + (select count(*) from comment_fallback_copies where comment_id::text = $2 and destination = $3 and published)
-	`, issue.Key, claimed.ID, contracts.AgentSubject("s1")).Scan(&copies); err != nil {
+	`, issue.Key, claimed.ID, contracts.LegacyAgentSubject("s1")).Scan(&copies); err != nil {
 		t.Fatalf("count s1's copies: %v", err)
 	}
 	for _, send := range state.sent() {

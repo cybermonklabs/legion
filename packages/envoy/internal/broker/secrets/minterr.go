@@ -2,30 +2,58 @@ package secrets
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
-// MintRequest is one release's input to a minter: the secret's stored value, its name and
-// whether the policy snapshot checked for this release holds it as human tier. The Azure
-// minter requires that name to match its configured secret and HumanTier to be true.
+// MintRequest is one release's input to a minter: the secret's stored value, its name, its type
+// and whether the policy snapshot checked for this release holds it as human tier. The Azure
+// minter requires that name to match its configured secret and HumanTier to be true. Type is the
+// secret's type tag, which the HTTP minters count their attempts under
+// (broker_mint_attempts_total).
 // GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
-// kind leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
+// type leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
 // owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
 // google-service-account secret's scopes tag as the whole OAuth scope URLs
 // policy.Secret.ScopeURLs answers, and nil both for such a secret that names no scopes and for
-// every other kind; the service-account minter then asks Google for the cloud-platform scope
+// every other type; the service-account minter then asks Google for the cloud-platform scope
 // alone, which is what it asked for before the tag existed.
 type MintRequest struct {
 	Name            string
+	Type            string
 	HumanTier       bool
 	Value           string
 	GitHubOwners    []string
 	GoogleScopes    []string
 	GitHubNarrowing *GitHubNarrowing
+
+	// Check asks the minter whether it could serve this request, without serving it; only the
+	// github-app minter reads it. A check of a narrowing that names repositories or read-only
+	// mints exactly what a release would mint, by the same calls in the same order but for a
+	// token request that may have reached GitHub and failed, which it does not send again where a
+	// release does, so such a request that GitHub served leaves one token live at GitHub, which
+	// nothing can name, until it lapses; a token request known to have failed before a connection
+	// (a name that did not resolve, a failed dial, a proxy's refused tunnel, a certificate the
+	// broker did not trust) is sent again. It releases no token: it sends GitHub the revoke of
+	// every token GitHub answers it with as soon as GitHub answers, among them a token whose
+	// answer it cannot use (cut off, past its cap, undecodable, with no expiry) wherever the part
+	// that arrived names it, and answers Minted{} with the error the release would have answered,
+	// nil where the release would have succeeded. The revoke of a whole answer's token runs under
+	// the caller's context; the revoke of a token whose answer it cannot use runs to a bound of its
+	// own, as a release's does, since the check's own bound is the likeliest thing to have cut that
+	// answer off. A revoke GitHub does not confirm is logged and leaves its token live until it
+	// lapses. A check of a narrowing to its owner alone mints nothing: it lists the App's
+	// installations and answers from that list alone, the refusal of an account with no
+	// installation or nil, since GitHub's answer to a token request with no access_tokens body can
+	// refuse the App but never the narrowing (GitHubApp.Mint). So a caller learns the verdict
+	// before it spends anything on the release itself. Check without GitHubNarrowing is a
+	// programming error: there is nothing to find out about a release the broker already makes
+	// owner-wide, and the minter refuses it before it asks GitHub anything.
+	Check bool
 }
 
 // Minted is one minted token: the value a release hands over, and when it stops working, zero
-// when the kind's upstream does not say. The airlock's proxy mints again five minutes before
+// when the type's upstream does not say. The airlock's proxy mints again five minutes before
 // Expires, so no call starts on a token about to end.
 type Minted struct {
 	Value   string
@@ -59,7 +87,7 @@ type GitHubNarrowing struct {
 // access_tokens body takes 500, but its answer carries a full repository object for each one,
 // about 5 KB, and the minter reads that answer to a cap sized for this many
 // (accessTokensResponseLimit): a token GitHub minted whose answer the minter cannot read whole
-// cannot be released or revoked.
+// cannot be released, and its revoke is sent only where the part it read names the token.
 const MaxNarrowedRepositories = 100
 
 // The classes of a minter's failure. Every error a minter returns wraps exactly one, so the
@@ -72,7 +100,9 @@ var (
 	// ErrMintRefused: the minter refuses the release (an Azure login that is not the configured
 	// human-tier secret), or GitHub or Google refused (a 4xx other than GitHub's 422 to a narrowed
 	// token, a Google login that needs a new sign-in, an App with no installation on a listed
-	// account). A refusal of the narrowing a release asked for is ErrMintNarrowingRefused.
+	// account, a 401 to the App's own JWT). A refusal of the narrowing a release asked for is
+	// ErrMintNarrowingRefused, and the one refusal that is about the account alone is
+	// ErrMintNoInstallation.
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the narrowing the release asked for cannot be served: it names an
 	// account the secret's github-owners tag does not list, which requests.Machine.Values refuses
@@ -95,6 +125,21 @@ var (
 	// refused before any credential is resolved and before any call reaches Google.
 	ErrMintNotBound = errors.New("the deployment binds no such account to this secret")
 )
+
+// ErrMintNoInstallation is the one refusal of GitHub's that is about the account a release is
+// for: the App has no installation on the account the narrowing names, or on any account the
+// secret's github-owners tag lists (GitHubApp.Mint). It is no class of its own: it wraps
+// ErrMintRefused, so MintErrorClass still reads "refused" and a release still answers it as the
+// mint failure it is.
+//
+// It exists because the broker's narrowing check must tell this refusal from every other 4xx
+// GitHub answers (mintStatusError.Unwrap wraps them all in ErrMintRefused): a 401 to the App's
+// JWT, a 403 that is no rate limit and a 404 on the token route say nothing about the narrowing
+// the caller asked for, and a check that read them as a refusal would tell the caller to fix a
+// narrowing that is not at fault. Its own text is ErrMintRefused's, which it wraps, so a
+// refusal naming it reads word for word as it did when it named the class alone: a released
+// client matches "has no installation on" in those words (packages/daemon's appauth).
+var ErrMintNoInstallation = fmt.Errorf("%w", ErrMintRefused)
 
 // MintErrorClass names the class err wraps, for the broker's log line: "stored-value",
 // "refused", "narrowing", "binding", "upstream", or "unknown" for an error that wraps none.

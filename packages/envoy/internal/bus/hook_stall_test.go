@@ -29,7 +29,7 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 	t.Cleanup(client.Close)
 	var runs atomic.Int32
 	hooked := make(chan struct{}, 8)
-	client.AddReconnectHook(func(*natsgo.Conn) error {
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		defer func() { hooked <- struct{}{} }()
 		if runs.Add(1) == 1 {
 			// The first run times out on a server that is still coming back, as a watcher's
@@ -81,7 +81,7 @@ func TestHookStallReportsTheStallAndTheLastHookError(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	errRewatch := errors.New("rewatch interest cache: nats: no responders available for request")
-	client.AddReconnectHook(func(*natsgo.Conn) error { return errRewatch })
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error { return errRewatch })
 
 	captureBusLogs(t)
 	if err := client.Conn.ForceReconnect(); err != nil {

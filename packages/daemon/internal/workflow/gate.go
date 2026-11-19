@@ -38,8 +38,8 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // held before; once every step the deployment gates is open the registration advances the
 // admitted tree. What register_gate read of Dispatch's approval travels with the registration, so
 // a person's review given before the architect registered is applied here: an approval of the
-// latest version (ApprovedVersion) records the gate open, and the root keeps its slot and starts
-// planning; a changes request on it (ChangesRequestedVersion) records it closed with the architect
+// latest version (ApprovedVersion) records the gate open, and the root starts planning, keeping
+// its slot unless it waits on another issue (blockers.waitsOf), since the gate has now opened; a changes request on it (ChangesRequestedVersion) records it closed with the architect
 // told, unless the gate already records that same review as told, and the root keeps its slot at
 // admitted to revise. The architect is told the version the gate opened at, which an approval
 // carried to a later version makes the later one, and is not told it again when the gate of that
@@ -229,10 +229,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 //
 // The notice is work the daemon hands the running architect, so it is a handout whatever slot the
 // root holds: the cap counts the issues the daemon has started, and a root whose gate has opened
-// once keeps the row it was started with while its architect revises the spec
-// (record.KeepsSlot). What that architect handed back at or before the review is part of the
-// spec it is now asked to revise, and only a hand-back after the review starts the next wait
-// (record.Store.TakeInThrough). A hand-back newer than the review, applied first, still stands.
+// once keeps the row it was started with while its architect revises the spec (record.KeepsSlot),
+// except while it waits on another issue — an unfinished blocked_by link, or under an open gate an
+// open child of its own — when it has given that row back (blockers.waitsOf, admit's
+// releaseSlotsForWaits) and is told the request all the same. What that architect handed back at
+// or before the review is part of the spec it is now asked to revise, and only a hand-back after
+// the review starts the next wait (record.Store.TakeInThrough). A hand-back newer than the
+// review, applied first, still stands.
 // A review with no sequence cannot be placed, so it takes in everything the record holds
 // (record.Store.StartHandout), as the notice did before hand-backs were placed.
 //
@@ -945,7 +948,10 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
 // closed (the daemon's supervise row) and releases it at the opening, and every other worker
 // decides for itself what the version means for the work in hand. A phase no worker holds names
-// nobody, and the architect, which holds accepting itself, is told once.
+// nobody. The gate is the root's, so the root's architect is told, once. A member in accepting is
+// passed over, since that phase is an architect's own: the root's is the root's architect, told
+// once as such, and a child's own architect is not told of the root's gate, whose merge hold
+// reaches the child's merger once it holds merging.
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
@@ -968,9 +974,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil {
 		return err
 	}
-	// The members first, then the tree's architect, which owns the tree and so is named on the
-	// tree root; the phase it works itself (accepting) is that same claim, and is told once with
-	// it.
+	// The members first, then the root's architect, since the gate is the root's. A member in
+	// accepting is passed over, since that phase is an architect's own: the root's is the root's
+	// architect, told once below, and a child's own architect is not told of the root's gate, whose
+	// merge hold reaches the child's merger once it holds merging.
 	recipients := make([]roleRecipient, 0, len(members)+1)
 	for _, member := range members {
 		if role := RoleFor(member.Phase); role != claim.RoleArchitect {
@@ -1002,21 +1009,21 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			return err
 		}
 	}
-	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
+	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
-// every phase holder of the tree (tellGateMoved). It is the one way a gate row that can move the
-// standing gate is written, so that no path writes one silently: the artifact event's own apply
-// (applyArtifact), the registration (gateRegistered) and the reset of a gate recorded above the
-// version Dispatch holds (gateAboveDispatch) all go through it, and the gate seed reaches it
-// through the last two, since what the seed reads is applied as one of those facts (the outbox's
-// seedGate). A registration alone can take the standing gate either way — it writes a row at a new
-// version, which closes it, or carries the approval its read found, which opens it — and before
-// this helper only the artifact path told anyone, so a merger could be left merging under a
-// document nobody had approved, or waiting for an opening it was never told of
+// every phase worker of the tree and the root's architect (tellGateMoved). It is the one way a
+// gate row that can move the standing gate is written, so that no path writes one silently: the
+// artifact event's own apply (applyArtifact), the registration (gateRegistered) and the reset of a
+// gate recorded above the version Dispatch holds (gateAboveDispatch) all go through it, and the
+// gate seed reaches it through the last two, since what the seed reads is applied as one of those
+// facts (the outbox's seedGate). A registration alone can take the standing gate either way — it
+// writes a row at a new version, which closes it, or carries the approval its read found, which
+// opens it — and before this helper only the artifact path told anyone, so a merger could be left
+// merging under a document nobody had approved, or waiting for an opening it was never told of
 // (dispatch://INFRA-714/spec R5).
 //
 // Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record

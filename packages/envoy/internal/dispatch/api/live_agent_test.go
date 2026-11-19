@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // plannerSessionID is the session whose conversation the agent views below watch: an agent view
@@ -409,9 +410,7 @@ func TestARelayDropEndsTheSubscriptionAsDropped(t *testing.T) {
 // it skipped in one WARN when it ends, the count alone and never the bytes.
 func TestAFrameThatIsNotJSONIsSkipped(t *testing.T) {
 	logs := &storetest.LockedLog{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	source := agentstream.NewMemory()
 	source.SetReplay(plannerSessionID, agentstream.Frame(`replay-secret not json`))
 	rig := newLiveSocketRig(t, testServerOptions{agentStream: source}, nil)
@@ -617,5 +616,23 @@ func TestTheAgentStreamRouteIsGone(t *testing.T) {
 	}
 	if replay, err := source.Replay(t.Context(), plannerSessionID); err != nil || string(replay) != `{"v":1}` {
 		t.Fatalf("the hook set the replay %s (%v), want the body it was sent", replay, err)
+	}
+}
+
+// The responder test hook refuses a member it does not declare, as every test hook does
+// (decodeJSONTestHook): a browser row that misspells `responding` would otherwise be answered 200
+// with the session's verdict left as it was.
+func TestTheResponderTestHookRefusesAMemberItDoesNotDeclare(t *testing.T) {
+	rig := newLiveSocketRig(t, testServerOptions{testHooks: true, agentStream: agentstream.NewMemory()}, nil)
+	hook := "/api/v1/agents/" + plannerSessionID + "/stream/_test/publish?as=responder"
+	refused := dispatchRequest(t, rig.handler, http.MethodPost, hook, map[string]any{"responding": true, "respondng": true}, "alice")
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("the responder hook sent a member it does not declare: status=%d body=%s, want 400", refused.Code, refused.Body.String())
+	}
+	if !strings.Contains(refused.Body.String(), "respondng") {
+		t.Fatalf("the refusal is %s, want it naming the member respondng", refused.Body.String())
+	}
+	if taken := dispatchRequest(t, rig.handler, http.MethodPost, hook, map[string]any{"responding": true}, "alice"); taken.Code != http.StatusOK {
+		t.Fatalf("the responder hook sent only the member it declares: status=%d body=%s, want 200", taken.Code, taken.Body.String())
 	}
 }

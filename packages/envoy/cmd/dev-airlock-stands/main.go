@@ -36,20 +36,29 @@
 //
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
-// body is {"verdict": "approve"|"refer", "reason": "…"} for a structured reply, {"text": "…"}
+// body is {"verdict": "grant"|"deny", "reason": "…"} for a structured reply, {"text": "…"}
 // for a reply that is no such object, and {"delay": "30s"} for an answer held back past the
-// caller's own time bound. The report names that address (model_answer_url), and until a check
-// calls it the model approves.
+// caller's own time bound, beside either. The report names that address (model_answer_url), and
+// until a check calls it the model grants.
 //
 // The GitHub stand answers what each token request's body asked for - the repositories it names
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
 // scope holds that repository, so a check spends a narrowed token as a caller does. What it
 // answers a token request is set while it runs by the same device as the model's: POST
-// <records URL>/answers/github, whose body is {"mode": "ordinary"|"refuse"|"widen"}. The three
-// are the answer each body asked for; the HTTP 422 that mints nothing, as GitHub answers a body
-// naming a permission the installation does not hold; and a token wider than the body asked for,
-// which the broker must refuse to release. The report names that address (github_answer_url),
-// and until a check calls it the stand answers each token request what its body asked for.
+// <records URL>/answers/github, whose body is {"mode": "<word>", "repository": "<name>"}, where
+// the repository is the one the refuse-repository mode reads and every other mode leaves out.
+// The six modes are ordinary, the answer each body asked for; refuse, the HTTP 422 that mints
+// nothing, as GitHub answers a body naming a permission the installation does not hold;
+// refuse-repository, that same 422 to a token request whose repositories name the one this body
+// named and the ordinary answer to every other, which is how a check drives a caller that asks
+// GitHub again with less of a narrowing to find the refused part; refuse-permissions, that 422
+// to a token request whose body names any permissions and the ordinary answer to every other;
+// widen, a token wider than the body asked for, which the broker must refuse to release; and
+// fail-once, one HTTP 503 to the next token request, as a GitHub outage answers, before the
+// ordinary answer again, which the broker's minter retries. A refuse-repository that names no
+// repository is refused 400, as a mode outside the six is. The
+// report names that address (github_answer_url), and until a check calls it the stand answers
+// each token request what its body asked for.
 //
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
@@ -116,7 +125,7 @@ var stands = []string{
 	standModel, standDispatch, standMetadata,
 }
 
-// plainStands are the five served over http rather than https. The broker mints a kind's value
+// plainStands are the five served over http rather than https. The broker mints a type's value
 // with an HTTP client that trusts the host's own roots and nothing else, so a minter endpoint
 // behind TLS would need a root in the pod's trust store, and the three the model judge calls
 // are reached by that same sort of client; the metadata server could be nothing else, since
@@ -164,22 +173,36 @@ func writeGitHubAppKey(dir string) (string, error) {
 // drives both the issue a reader may act on and the issue it must not. Every other key is a
 // 404, which is the third case and needs no fixture.
 const (
-	standInOpenIssue = "INFRA-1353"
-	standInDoneIssue = "INFRA-1200"
+	standInOpenIssue = "ACME-1353"
+	standInDoneIssue = "ACME-1200"
 )
+
+// The one ask the dispatch stand holds: an answered ask on the open issue, which the judge reads
+// as data for the model when a reason cites it. Its answering login is --ask-answered-by, since
+// the login a local stack's approver signs in as is that stack's own.
+const (
+	standInAnsweredAsk = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
+	standInAskQuestion = "Let the judge spend the judged token on this issue's own runs?"
+	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the rules give the judge."
+)
+
+// defaultAskAnsweredBy is who answered that ask when no flag names a login. A local stack passes
+// the login its own approver signs in as, and nothing here opens anything.
+const defaultAskAnsweredBy = "approver@example.test"
 
 // standInSpec is the open issue's spec document. It is written to the house outline, because a
 // reader of a spec takes its Summary and Requirements sections out of it and shows those alone.
 const standInSpec = `## Summary
 
 The secrets broker asks one model whether a pending human-tier credential request should be
-approved in the place of the person who decides it today.
+granted in the place of the person who decides it today.
 
 ## Requirements
 
-- The judge decides a request the airlock rules give it seconds for, and refers every other.
-- The judge never denies: a request it does not approve waits for its person exactly as it does
-  today.
+- The judge decides a request for a key the airlock rules give it seconds for, with the key's
+  guidance, and a person decides every other.
+- The judge grants or denies, and a denial is final; a request it cannot decide goes to its
+  person once.
 - Every verdict is recorded against the request, with what the model was asked and answered.
 `
 
@@ -191,6 +214,17 @@ func standInIssues() []airlocktest.DispatchIssue {
 		{Key: standInOpenIssue, Title: "The secrets broker's model judge", Status: "in_progress", Spec: standInSpec},
 		{Key: standInDoneIssue, Title: "The airlock's own local stack", Status: "done"},
 	}
+}
+
+// standInAsks is the ask fixture: one ask on the open issue, answered by the login the flag
+// names. Every other id is a 404, which is how a check drives an ask the reason cites and
+// Dispatch does not hold.
+func standInAsks(answeredBy string) []airlocktest.DispatchAsk {
+	return []airlocktest.DispatchAsk{{
+		ID: standInAnsweredAsk, IssueKey: standInOpenIssue, State: "answered",
+		Question: standInAskQuestion, Options: []string{"Let it", "Leave it to me"},
+		AnsweredBy: answeredBy, Selected: []string{"Let it"}, Text: standInAskAnswer,
+	}}
 }
 
 func main() {
@@ -211,6 +245,7 @@ type options struct {
 	awsSecretKey    string
 	awsSessionToken string
 	recordsAddress  string
+	askAnsweredBy   string
 }
 
 // run reads the subcommand, if there is one, and otherwise serves the stands. The subcommands
@@ -242,6 +277,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.recordsAddress, "records-address", "127.0.0.1:0", "serve the recording routes at `<host:port>`")
 	awsKey := fs.String("aws-key", "", "the AWS stand verifies each call against `<key id>=<secret key>`, and with none a pair of its own")
 	fs.StringVar(&o.awsSessionToken, "aws-session-token", "", "the AWS stand requires `<token>` as the X-Amz-Security-Token of each call; with none it refuses a call that carries any, which is the pair that has no session token")
+	fs.StringVar(&o.askAnsweredBy, "ask-answered-by", defaultAskAnsweredBy, "the dispatch stand's one answered ask reads `<login>` as the person who answered it")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -377,6 +413,12 @@ type report struct {
 	// all.
 	DispatchOpenIssue string `json:"dispatch_open_issue"`
 	DispatchDoneIssue string `json:"dispatch_done_issue"`
+	// DispatchAnsweredAsk is the one ask the dispatch stand holds: an answered ask on
+	// DispatchOpenIssue, which a reason may cite as dispatch://<open issue>/ask/<this id>, and
+	// which the judge then reads as data for the model. DispatchAskAnsweredBy is the login it
+	// reads as having answered it, which --ask-answered-by names. Any other ask id is 404.
+	DispatchAnsweredAsk   string `json:"dispatch_answered_ask"`
+	DispatchAskAnsweredBy string `json:"dispatch_ask_answered_by"`
 	// AWSKeyID and AWSSecretKey are the pair the AWS stand verifies a call against, which a
 	// script signs its calls with and the broker's fake secret store holds as the real key.
 	AWSKeyID     string `json:"aws_key_id"`
@@ -434,6 +476,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		AWSKeyID: o.awsKeyID, AWSSecretKey: o.awsSecretKey,
 		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile,
 		DispatchOpenIssue: standInOpenIssue, DispatchDoneIssue: standInDoneIssue,
+		DispatchAnsweredAsk: standInAnsweredAsk, DispatchAskAnsweredBy: o.askAnsweredBy,
 		Stands: map[string]standReport{},
 	}
 	for _, name := range stands {
@@ -465,8 +508,11 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	// one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
 	// The GitHub stand answers each token request what its body asked for until a check sets
-	// another answer, so a stack driven with no call to its answer route mints as GitHub does.
-	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations})
+	// another answer, so a stack driven with no call to its answer route mints as GitHub does. It
+	// mints a token of its own for every request, as GitHub does (DistinctTokens): the broker
+	// revokes a token it minted and hands to nobody, and a stand that answered one string for a
+	// scope would have that revoke end the token the airlock's proxy holds for the same scope.
+	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations, DistinctTokens: true})
 	services[standGitHub].AnswerWith(github.Answer)
 	services[standGoogle].AnswerWith(airlocktest.NewGoogleStand(airlocktest.GoogleOptions{Lifetime: o.googleLifetime}).Answer)
 	// The Microsoft stand plays both hosts of its one certificate: the authority a federated
@@ -478,16 +524,18 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standAWS].AnswerWith(airlocktest.NewAWSStand(airlocktest.AWSOptions{
 		KeyID: o.awsKeyID, SecretKey: o.awsSecretKey, SessionToken: o.awsSessionToken,
 	}).Answer)
-	// The model stand approves until a check sets another answer, so a stack driven with no
+	// The model stand grants until a check sets another answer, so a stack driven with no
 	// call to the answer route judges a request through to a grant.
-	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "approve"})
+	firstAnswer, err := modelAnswerOf(modelAnswerRequest{Verdict: "grant"})
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: the model stand's first answer: %v\n", err)
 		return 1
 	}
 	model := airlocktest.NewModelStand(airlocktest.ModelOptions{Answer: firstAnswer})
 	services[standModel].AnswerWith(model.Answer)
-	services[standDispatch].AnswerWith(airlocktest.NewDispatchStand(airlocktest.DispatchOptions{Issues: standInIssues()}).Answer)
+	services[standDispatch].AnswerWith(airlocktest.NewDispatchStand(airlocktest.DispatchOptions{
+		Issues: standInIssues(), Asks: standInAsks(o.askAnsweredBy),
+	}).Answer)
 	services[standMetadata].AnswerWith(airlocktest.NewMetadataStand(airlocktest.MetadataOptions{}).Answer)
 
 	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}
@@ -550,8 +598,8 @@ func recordsHandler(services map[string]*airlocktest.Service, model *airlocktest
 			return map[string]string{"text": answer.Text, "delay": answer.Delay.String()}
 		}))
 	mux.HandleFunc("POST "+githubAnswerPath, answerRoute(githubAnswerOf, github.Answers,
-		func(answer airlocktest.GitHubTokenAnswer) map[string]string {
-			return map[string]string{"mode": string(answer)}
+		func(answer airlocktest.GitHubAnswer) map[string]string {
+			return map[string]string{"mode": string(answer.Mode), "repository": answer.Repository}
 		}))
 	return mux
 }
@@ -581,8 +629,8 @@ func answerRoute[Body, Answer any](read func(Body) (Answer, error), set func(Ans
 
 // modelAnswerPath and githubAnswerPath are where a check sets what the model stand and the
 // GitHub stand answer from there on, and maxAnswerBody what one such request is read of: a reply
-// is a sentence or two and a mode is one word, so a body past this is a mistake rather than an
-// answer.
+// is a sentence or two and an answer a word and a repository name, so a body past this is a
+// mistake rather than an answer.
 const (
 	modelAnswerPath  = "/answers/model"
 	githubAnswerPath = "/answers/github"
@@ -591,21 +639,44 @@ const (
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.
 type githubAnswerRequest struct {
-	// Mode is which of the GitHub stand's three answers every token request from then on gets:
-	// ordinary, refuse or widen (airlocktest.GitHubTokenAnswer).
+	// Mode is which of the GitHub stand's six answers the token requests from then on get:
+	// ordinary, refuse, refuse-repository, refuse-permissions or widen for every one, or
+	// fail-once for the next one alone, after which the stand answers as ordinary
+	// (airlocktest.GitHubTokenAnswer).
 	Mode string `json:"mode"`
+	// Repository is the repository the refuse-repository mode refuses a token request for. It is
+	// the one mode that reads it, and every other leaves it out.
+	Repository string `json:"repository"`
 }
 
 // githubAnswerOf is one such request as the answer it sets, and what is wrong with a request
-// that sets none: a mode outside the three is named back with the three, since a check that
-// misspelled one must read that rather than leave the last answer quietly in place.
-func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubTokenAnswer, error) {
-	switch answer := airlocktest.GitHubTokenAnswer(body.Mode); answer {
-	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider:
+// that sets none: a mode outside the six is named back with the six, and a refuse-repository
+// that names no repository is named back with what it is missing, since a check that misspelled
+// a mode or left that name out must read it rather than drive its next case against the answer
+// still in place.
+func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubAnswer, error) {
+	answer := airlocktest.GitHubAnswer{
+		Mode:       airlocktest.GitHubTokenAnswer(body.Mode),
+		Repository: body.Repository,
+	}
+	switch answer.Mode {
+	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused,
+		airlocktest.GitHubTokensRefusedPermissions, airlocktest.GitHubTokensWider,
+		airlocktest.GitHubTokensFailOnce:
+		return answer, nil
+	case airlocktest.GitHubTokensRefusedRepository:
+		if answer.Repository == "" {
+			return airlocktest.GitHubAnswer{}, fmt.Errorf(
+				"the mode %s names no repository to refuse: name it in the answer's repository field",
+				airlocktest.GitHubTokensRefusedRepository)
+		}
 		return answer, nil
 	default:
-		return "", fmt.Errorf("the mode %q is none of the GitHub stand's three answers: %s, %s and %s",
-			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused, airlocktest.GitHubTokensWider)
+		return airlocktest.GitHubAnswer{}, fmt.Errorf(
+			"the mode %q is none of the GitHub stand's six answers: %s, %s, %s, %s, %s and %s",
+			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused,
+			airlocktest.GitHubTokensRefusedRepository, airlocktest.GitHubTokensRefusedPermissions,
+			airlocktest.GitHubTokensWider, airlocktest.GitHubTokensFailOnce)
 	}
 }
 

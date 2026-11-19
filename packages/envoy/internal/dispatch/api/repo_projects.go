@@ -200,8 +200,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // deleteRepoProject removes a mapping, whether or not issues name its repository: an issue's own
-// repository is any owner/name and needs no mapping, so those issues keep the repository they
-// name and resolve it through their parent chain or their project's default from here on.
+// repository is any owner/name and needs no mapping, so an issue that names this repository
+// keeps it and still resolves to it. An issue that names none resolves, as before, through its
+// parent chain and then its project's default, which is gone where this mapping was that default.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {

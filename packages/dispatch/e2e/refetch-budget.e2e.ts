@@ -451,7 +451,7 @@ test("assignee write: an assignee moved between two other people sends no read f
   browser,
 }, testInfo) => {
   // CORE names carol, so nothing the shared token makes here is ever alice's.
-  await createProject({ key: "CORE", name: "Core" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
   // The page's own issue carries no question either, so no Inbox row names it: the barrier's
   // title writes on an issue her list holds would be a read she is owed as well, and would
   // count below as if the move had sent it.
@@ -517,8 +517,8 @@ test("project default: a project's default moved between two other people reads 
   // the issue nobody holds, which her Inbox lists, is the one the move carries between their two
   // lists. OPS is carol's own project, which is how she is a person who has signed in and so a
   // person the route takes; it holds no question, and the second write moves it to bob.
-  await createProject({ key: "CORE", name: "Core" }, "bob");
-  await createProject({ key: "OPS", name: "Ops" }, "carol");
+  await createProject({ key: "CORE", name: "Core" }, { login: "bob" });
+  await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
   // The page's own issue carries no question, for the reason the row above gives.
   const open = await createIssue({ project: "CORE", title: "Alice's open page" });
   const hers = await createIssue({ project: "CORE", title: "Alice's own" });

@@ -1,0 +1,15 @@
+{"Time":"2026-11-16T17:37:09.729906134Z","Action":"start","Package":"example.com/acme/gotest/latepanic"}
+{"Time":"2026-11-16T17:37:09.762733064Z","Action":"run","Package":"example.com/acme/gotest/latepanic","Test":"TestCompleted"}
+{"Time":"2026-11-16T17:37:09.762804825Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Test":"TestCompleted","Output":"=== RUN   TestCompleted\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:09.762833702Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Test":"TestCompleted","Output":"--- PASS: TestCompleted (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:09.762845889Z","Action":"pass","Package":"example.com/acme/gotest/latepanic","Test":"TestCompleted","Elapsed":0}
+{"Time":"2026-11-16T17:37:09.762876618Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:09.764897962Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"panic: work that the test started panics after its end\n"}
+{"Time":"2026-11-16T17:37:09.764906464Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"\n"}
+{"Time":"2026-11-16T17:37:09.764908509Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"goroutine 307 [running]:\n"}
+{"Time":"2026-11-16T17:37:09.764910979Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"example.com/acme/gotest/latepanic.TestCompleted.func1()\n"}
+{"Time":"2026-11-16T17:37:09.764914648Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"\texample.com/acme/gotest/latepanic/latepanic_test.go:23 +0x2f\n"}
+{"Time":"2026-11-16T17:37:09.764920145Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"created by example.com/acme/gotest/latepanic.TestCompleted in goroutine 306\n"}
+{"Time":"2026-11-16T17:37:09.764922409Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"\texample.com/acme/gotest/latepanic/latepanic_test.go:21 +0x1a\n"}
+{"Time":"2026-11-16T17:37:09.770989178Z","Action":"output","Package":"example.com/acme/gotest/latepanic","Output":"FAIL\texample.com/acme/gotest/latepanic\t0.037s\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:09.771017489Z","Action":"fail","Package":"example.com/acme/gotest/latepanic","Elapsed":0.041}

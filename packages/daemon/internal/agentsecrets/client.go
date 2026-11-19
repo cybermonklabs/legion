@@ -1,12 +1,14 @@
-// Package agentsecrets is the daemon's side of the secrets broker's token-login and enrollment
-// routes: it logs the daemon in with its own projected Kubernetes ServiceAccount token
-// (POST /v1/launcher-credentials/token), which no person approves, holding the key the launcher
-// credential is bound to in process memory only, logs in again before that credential expires,
-// and enrolls a pod's key under it — authenticating every call with a launcher proof signed by the
-// key, never a bearer token. Revoke tears the enrollment down when the pod is gone. No key, no
-// token, no launcher credential id, and no grant or brokered secret value ever goes into an error,
-// a log line, or the daemon's state; the pod's own `agent-secrets` client handles brokered secret
-// values with the pod's own key.
+// Package agentsecrets is the daemon's side of the secrets broker's token-login, enrollment and
+// pod-session registration routes: it logs the daemon in with its own projected Kubernetes
+// ServiceAccount token (POST /v1/launcher-credentials/token), which no person approves, holding the
+// key the launcher credential is bound to in process memory only, logs in again before that
+// credential expires, and enrolls a pod's key under it — authenticating each enrollment call with a
+// launcher proof signed by the key. Revoke tears the enrollment down when the pod is gone. The one
+// route it calls with a bearer is the pod-session registration (RegisterPodSession), whose class
+// authenticates a service by that same ServiceAccount token. No key, no token, no launcher
+// credential id, and no grant or brokered secret value ever goes into an error, a log line, or the
+// daemon's state; the pod's own `agent-secrets` client handles brokered secret values with the
+// pod's own key.
 package agentsecrets
 
 import (
@@ -140,11 +142,14 @@ type LoginState struct {
 // PodEnrollment is one pod generation's identity as the daemon knows it: the pod UID the runtime
 // recorded at spawn, the thumbprint and projected token the shim's hello carried, and the
 // agent's session id — "" before the agent registered, which the broker records as null. The
-// broker picks a request's approver at request time; the enrollment carries no issue.
+// broker picks a request's approver at request time, so the enrollment names none.
 // Slot names one of several pod enrollments when an issue pod holds role processes side by side
-// (`<role>-g<generation>`); empty is the pod's one identity.
+// (`<role>-g<generation>`); empty is the pod's one identity. Claim is the role claim token the
+// process runs for, which every later generation and replacement pod of the role states again, so
+// the broker files the pod's requests under that claim rather than under this one enrollment;
+// empty states none.
 type PodEnrollment struct {
-	PodUID, Slot, Thumbprint, PodToken, Session string
+	PodUID, Slot, Thumbprint, PodToken, Session, Claim string
 }
 
 // Enrollment is what the broker answered: the id every later call names, and the lease the pod's
@@ -167,23 +172,36 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.Code, e.Message)
 }
 
-// Permanent is a refusal a retry cannot change: every 4xx but 429 and POD_TOKEN_EXPIRED. A
-// client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent — the caller retries once the
-// daemon's next token login wins a credential — and neither is an expired pod token, which the
-// pod's current token replaces under the same key (TokenExpired).
+// Permanent is a refusal a retry cannot change: every 4xx but 429, POD_TOKEN_EXPIRED and
+// POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent —
+// the caller retries once the daemon's next token login wins a credential — and neither is an
+// expired pod token, which the pod's current token replaces under the same key (TokenExpired), nor
+// a registrar the broker does not yet list (RegistrarNotListed).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired()
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired() && !e.RegistrarNotListed()
 }
 
 // TokenExpired is the broker refusing the pod token presented because it has expired
 // (POD_TOKEN_EXPIRED): the key stands, and the pod's current token enrolls it.
 func (e *APIError) TokenExpired() bool { return e.Code == "POD_TOKEN_EXPIRED" }
 
-// IsPermanent reports whether err is a permanent broker refusal. A transport failure, a 5xx, a
-// 429, an expired pod token and a daemon with no credential yet are all transient.
+// RegistrarNotListed is the broker refusing a pod-session registration with 403
+// POD_REGISTRAR_NOT_LISTED: its BROKER_POD_REGISTRARS does not pair the daemon's account with the
+// pod's. The broker answers it until the deployment's registrar rows are applied, so a later write
+// of the same registration can succeed with nothing about the daemon changed. Every other 403
+// stays permanent.
+func (e *APIError) RegistrarNotListed() bool {
+	return e.Status == http.StatusForbidden && e.Code == "POD_REGISTRAR_NOT_LISTED"
+}
+
+// IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
+// (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
+// or at a later generation than sent (*SupersededError), or one named with no key
+// (*MissingThumbprintError). A transport failure, a 5xx, a 429, an expired pod token and a daemon
+// with no credential yet are all transient.
 func IsPermanent(err error) bool {
-	var api *APIError
-	return errors.As(err, &api) && api.Permanent()
+	var permanent interface{ Permanent() bool }
+	return errors.As(err, &permanent) && permanent.Permanent()
 }
 
 // Start logs the daemon in with its token now and keeps it logged in until ctx ends
@@ -231,13 +249,9 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 // failure that is a fault on the daemon's own side is wrapped the same way, and classify reads it
 // out of the wrapper, so the login loop waits the long schedule for that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
-	raw, err := os.ReadFile(c.TokenFile)
+	token, err := c.serviceToken()
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets login: read the ServiceAccount token: %w", err)
-	}
-	token := strings.TrimSpace(string(raw))
-	if token == "" {
-		return nil, fmt.Errorf("agent-secrets login: the ServiceAccount token file %s is empty", c.TokenFile)
+		return nil, fmt.Errorf("agent-secrets login: %w", err)
 	}
 	var key *ecdsa.PrivateKey
 	if held := c.snapshot().cred; held != nil {
@@ -250,7 +264,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets login: sign request object: %w", err)
 	}
-	status, body, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, nil)
+	status, body, err := c.do(ctx, http.MethodPost, "/v1/launcher-credentials/token", map[string]string{"token": token, "request": request}, answerBytes, nil)
 	if err != nil {
 		if ctx.Err() == nil {
 			return nil, &brokerUnavailableError{err: err}
@@ -274,6 +288,20 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		return nil, fmt.Errorf("broker answered %d with no credential_id or no expires_at", status)
 	}
 	return &credential{key: key, id: answer.CredentialID, expires: answer.ExpiresAt, renewAt: now.Add(answer.ExpiresAt.Sub(now) / 2)}, nil
+}
+
+// serviceToken is the daemon's projected ServiceAccount token as the file holds it now: read at
+// every use, so the kubelet's rotation is always picked up. Its errors name the file, never a token.
+func (c *Client) serviceToken() (string, error) {
+	raw, err := os.ReadFile(c.TokenFile)
+	if err != nil {
+		return "", fmt.Errorf("read the ServiceAccount token: %w", err)
+	}
+	token := strings.TrimSpace(string(raw))
+	if token == "" {
+		return "", fmt.Errorf("the ServiceAccount token file %s is empty", c.TokenFile)
+	}
+	return token, nil
 }
 
 // daemonSideFault reports whether err, from a login POST that got no HTTP answer, is a fault on
@@ -400,6 +428,8 @@ func (c *Client) log() *slog.Logger {
 	return slog.Default()
 }
 
+// enrollmentBody is POST /v1/enrollments's body as the daemon sends it. Claim is newer than the
+// rest, so a broker from before it refuses a body that carries it (withoutNewFields).
 type enrollmentBody struct {
 	Kind       string  `json:"kind"`
 	RuntimeID  string  `json:"runtime_id"`
@@ -408,6 +438,23 @@ type enrollmentBody struct {
 	Thumbprint string  `json:"thumbprint"`
 	SessionID  *string `json:"session_id"`
 	PodToken   string  `json:"pod_token"`
+	Claim      string  `json:"claim,omitempty"`
+}
+
+// withoutNewFields is b with every field a broker from before the claim does not declare left
+// empty, which omitempty then leaves out of the JSON: the body such a broker enrols.
+func (b enrollmentBody) withoutNewFields() enrollmentBody {
+	b.Claim = ""
+	return b
+}
+
+// refusesAnUnknownField reports whether a broker answered status and raw the way a broker from
+// before a field refuses a body carrying it: 400 INVALID_ENROLLMENT naming an unknown field, since
+// its readJSON decodes the body with DisallowUnknownFields.
+func refusesAnUnknownField(status int, raw []byte) bool {
+	var api *APIError
+	return status == http.StatusBadRequest && errors.As(refusal(status, raw), &api) &&
+		api.Code == "INVALID_ENROLLMENT" && strings.Contains(api.Message, "unknown field")
 }
 
 type enrollmentAnswer struct {
@@ -421,18 +468,33 @@ type enrollmentAnswer struct {
 // won, or just refused — it returns a non-permanent *APIError{Code: "NO_MACHINE_CREDENTIAL"}, so
 // the caller retries after the next token login. Any other broker answer is an *APIError, a
 // transport failure a plain error.
+//
+// A broker from before the claim refuses the field as unknown, and a 4xx is permanent to the
+// caller, which would drop the pod's identity and enrol it never (supervise.PermanentError). So
+// that one refusal, met by a body that carries a new field, is asked once more without the new
+// fields (withoutNewFields), and what that answers is the enrollment: the pod enrols, and its
+// requests stay its own enrollment's, as every pod's were before the claim. Any other refusal,
+// and the second answer whatever it is, is returned as it came.
 func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error) {
 	body := enrollmentBody{
 		Kind: "pod", RuntimeID: e.PodUID, Slot: e.Slot, Operator: nil,
-		Thumbprint: e.Thumbprint, PodToken: e.PodToken,
+		Thumbprint: e.Thumbprint, PodToken: e.PodToken, Claim: e.Claim,
 	}
 	if e.Session != "" {
 		session := e.Session
 		body.SessionID = &session
 	}
-	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body)
+	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body, answerBytes)
 	if err != nil {
 		return Enrollment{}, err
+	}
+	if older := body.withoutNewFields(); older != body && refusesAnUnknownField(status, raw) {
+		c.log().Warn("agent-secrets: the broker does not read an enrollment's claim; enrolling the pod without it, so its requests stay this enrollment's alone",
+			"pod_uid", e.PodUID, "slot", e.Slot)
+		status, raw, err = c.doProof(ctx, http.MethodPost, "/v1/enrollments", older, answerBytes)
+		if err != nil {
+			return Enrollment{}, err
+		}
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
 		return Enrollment{}, refusal(status, raw)
@@ -450,7 +512,7 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 // Revoke is DELETE /v1/enrollments/{id}, authenticated with a launcher proof: 204 and 404 are
 // both "revoked" (the route is idempotent).
 func (c *Client) Revoke(ctx context.Context, id string) error {
-	status, raw, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil)
+	status, raw, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil, answerBytes)
 	if err != nil {
 		return err
 	}
@@ -460,14 +522,204 @@ func (c *Client) Revoke(ctx context.Context, id string) error {
 	return refusal(status, raw)
 }
 
+// CarriedEnrollment is one enrollment POST /v1/enrollments/carried answers: a pod enrollment this
+// daemon's login launched, of one of the session ids asked, that is live or still carries a grant
+// or a request for the next enrollment of its session id. State is "live" or "dormant"; EndsAt is
+// when the live one's lease ends, unless its process renews it, or the dormant one's carry ends.
+type CarriedEnrollment struct {
+	SessionID    string    `json:"session_id"`
+	EnrollmentID string    `json:"enrollment_id"`
+	State        string    `json:"state"`
+	EndsAt       time.Time `json:"ends_at"`
+}
+
+type carriedBody struct {
+	SessionIDs []string `json:"session_ids"`
+}
+
+type carriedAnswer struct {
+	Carried *[]CarriedEnrollment `json:"carried"`
+}
+
+// carriedAnswerBytes bounds the Carried answer the daemon reads, in place of answerBytes, which
+// holds about 390 rows of 36-byte ids and would cut a longer answer short (side review of #4355).
+// The broker answers at most 4,096 ids a question (envoy's enroll.MaxCarriedSessionIDs), each of
+// at most 255 bytes; one row of the longest id, every byte written as JSON's longest escape, is
+// under 1,700 bytes, so 8 MiB holds a row for each of 4,096 such ids. A longer answer is a
+// CarriedAnswerTooLargeError.
+const carriedAnswerBytes = 8 << 20
+
+// CarriedAnswerTooLargeError is a 200 Carried answer longer than Limit bytes: more enrollments
+// carry something for the ids than one answer the daemon reads can list. It is no outage, since
+// the broker answered, and an answer that long names at least one enrollment, so the machine reads
+// it as a carry it cannot list (supervise.UnlistedCarryError).
+type CarriedAnswerTooLargeError struct{ Limit int }
+
+func (e *CarriedAnswerTooLargeError) Error() string {
+	return fmt.Sprintf("the broker's answer is longer than the %d bytes the daemon reads of one, so it names more enrollments than it can list", e.Limit)
+}
+
+// UnlistedCarry is true: the answer named enrollments the daemon could not read.
+func (*CarriedAnswerTooLargeError) UnlistedCarry() bool { return true }
+
+// Carried is POST /v1/enrollments/carried, authenticated with a launcher proof: every enrollment
+// this daemon's login launched, of one of sessionIDs, that the broker still carries something
+// for. An empty answer is none; a 200 whose body names no carried list at all is not the
+// contract's shape and an error, never read as none; a 200 longer than carriedAnswerBytes is a
+// CarriedAnswerTooLargeError. With no live launcher credential it answers the non-permanent
+// NO_MACHINE_CREDENTIAL, as Enroll does; any other refusal is an *APIError.
+func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
+	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments/carried", carriedBody{SessionIDs: sessionIDs}, carriedAnswerBytes)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, refusal(status, raw[:min(len(raw), carriedAnswerBytes)])
+	}
+	if len(raw) > carriedAnswerBytes {
+		return nil, &CarriedAnswerTooLargeError{Limit: carriedAnswerBytes}
+	}
+	var answer carriedAnswer
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return nil, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
+	}
+	if answer.Carried == nil {
+		return nil, fmt.Errorf("broker answered %d with no carried list", status)
+	}
+	return *answer.Carried, nil
+}
+
+// podSessionBody is POST /v1/oauth/exchange/pod-sessions's body: the pod's own projected token for
+// the broker's audience, which names the pod (its account and uid), the session name that pod may
+// trade under, the RFC 7638 thumbprint of the role's own key, which binds the registration to
+// that key (the broker refuses a trade for the session proved with any other), and the launch
+// generation of the process the registration is for, by which the broker orders two processes'
+// writes of one registration: it writes one only when its generation is at least the one it holds.
+type podSessionBody struct {
+	PodToken   string `json:"pod_token"`
+	Session    string `json:"session"`
+	Thumbprint string `json:"thumbprint,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
+}
+
+// RegisterPodSession is POST /v1/oauth/exchange/pod-sessions: it records at the broker that the pod
+// podToken names — podUID, by the daemon's own record of the process — may trade under session
+// with the key thumbprint names, the role's own, and answers when the broker stops honouring that
+// registration unless it is written again (expires_at). The route's class is the broker's
+// serviceAuth, which verifies the Authorization bearer with the token login's own check
+// (serviceCaller, MachineLogin.VerifyServiceToken), so the call carries the daemon's own projected
+// ServiceAccount token as that bearer, read from TokenFile at each call as a login reads it, and
+// no launcher proof; it needs no won launcher credential.
+//
+// It sends nothing for an empty thumbprint — a registration with none would leave the session to
+// every role of the pod — and answers a *MissingThumbprintError, permanent; nor for a token file it
+// cannot read. It sends generation, the launch generation of the process it registers, which rises
+// with each launch of a claim. The broker answers the registration as it stands after the write:
+// the pod uid it read from the token (pod_uid), its generation and the key the row is bound to
+// (thumbprint). An answer at a later generation than sent is a registration the broker kept: a
+// *SupersededError, permanent. An answer naming another pod than podUID, or
+// another key than thumbprint, is an *AnswerMismatchError, permanent, since the token presented
+// was not that pod's or the broker did not bind the role's key. Any other answer than 200 is an
+// *APIError carrying the broker's code (Permanent says which a retry can change), and a transport
+// failure is a plain error; none repeats a token.
+func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, session, thumbprint string, generation int64) (time.Time, error) {
+	if thumbprint == "" {
+		return time.Time{}, &MissingThumbprintError{Session: session}
+	}
+	token, err := c.serviceToken()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
+	}
+	status, raw, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint, Generation: generation}, answerBytes, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	if status != http.StatusOK {
+		return time.Time{}, refusal(status, raw)
+	}
+	var answer struct {
+		PodUID     string    `json:"pod_uid"`
+		Thumbprint string    `json:"thumbprint"`
+		Generation int64     `json:"generation"`
+		ExpiresAt  time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return time.Time{}, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
+	}
+	if answer.PodUID != podUID {
+		return time.Time{}, &AnswerMismatchError{Field: "pod_uid", Pod: podUID, Session: session, Sent: podUID, Answered: answer.PodUID}
+	}
+	if answer.Generation > generation {
+		return time.Time{}, &SupersededError{Pod: podUID, Session: session, Sent: generation, Answered: answer.Generation}
+	}
+	if answer.Thumbprint != thumbprint {
+		return time.Time{}, &AnswerMismatchError{Field: "thumbprint", Pod: podUID, Session: session, Sent: thumbprint, Answered: answer.Thumbprint}
+	}
+	if answer.ExpiresAt.IsZero() {
+		return time.Time{}, fmt.Errorf("broker answered %d with no expires_at", status)
+	}
+	return answer.ExpiresAt, nil
+}
+
+// AnswerMismatchError is a registration the broker answered otherwise than the daemon wrote it:
+// for Pod under Session, the answer's Field (pod_uid, the pod the broker read from the token
+// presented, or thumbprint, the key the row is bound to) is Answered where the daemon sent Sent.
+// Its message names the pod, the session and both values, never a token.
+type AnswerMismatchError struct {
+	Field, Pod, Session, Sent, Answered string
+}
+
+func (e *AnswerMismatchError) Error() string {
+	return fmt.Sprintf("the broker answered the registration of pod %s for session %s with %s %q, where the daemon sent %q", e.Pod, e.Session, e.Field, e.Answered, e.Sent)
+}
+
+// Permanent is true: no later write of the same registration presents another token or key.
+func (*AnswerMismatchError) Permanent() bool { return true }
+
+// MissingThumbprintError is a registration of Session named with no thumbprint, which
+// RegisterPodSession never sends.
+type MissingThumbprintError struct{ Session string }
+
+func (e *MissingThumbprintError) Error() string {
+	return fmt.Sprintf("the registration of session %s names no thumbprint of the role's own key; a registration is never sent without one", e.Session)
+}
+
+// Permanent is true: the registration names no key, however often it is tried.
+func (*MissingThumbprintError) Permanent() bool { return true }
+
+// SupersededError is a registration of Pod under Session written at generation Sent and answered
+// at generation Answered, a later one: the broker holds a registration it took at that generation
+// and kept. Foreign is whether Answered is above Latest, the claim's current generation
+// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim registered
+// the session, or another service login wrote the row; otherwise a later process of this claim
+// registered the session since. Its message names the pod, the session and the generations, never
+// a token.
+type SupersededError struct {
+	Pod, Session           string
+	Sent, Answered, Latest int64
+	Foreign                bool
+}
+
+func (e *SupersededError) Error() string {
+	if e.Foreign {
+		return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, above this claim's generation %d (this write's was generation %d): a registration this daemon never made", e.Pod, e.Session, e.Answered, e.Latest, e.Sent)
+	}
+	return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, later than this write's generation %d: a later process of this claim registered the session", e.Pod, e.Session, e.Answered, e.Sent)
+}
+
+// Permanent is true: this process's generation never rises, so no later write of it is taken.
+func (*SupersededError) Permanent() bool { return true }
+
 // doProof signs a launcher proof over this call with the held credential's key and sends it as
-// the Proof header — never Authorization, which no route on this client uses. It takes no lock: a
-// renewal proves the same key again, so the broker keeps the credential's id and key and a proof
-// in flight during one stays valid. With no live credential it wakes the login loop and answers
-// NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed, wakes the
-// login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already replaced
-// clears nothing.
-func (c *Client) doProof(ctx context.Context, method, path string, body any) (int, []byte, error) {
+// the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes
+// no lock: a renewal proves the same key again, so the broker keeps the credential's id and key
+// and a proof in flight during one stays valid. With no live credential it wakes the login loop
+// and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
+// wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
+// replaced clears nothing. It reads the answer as do does, up to limit bytes and one more.
+func (c *Client) doProof(ctx context.Context, method, path string, body any, limit int) (int, []byte, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
@@ -477,7 +729,7 @@ func (c *Client) doProof(ctx context.Context, method, path string, body any) (in
 	if err != nil {
 		return 0, nil, err
 	}
-	status, raw, err := c.do(ctx, method, path, body, func(req *http.Request) {
+	status, raw, err := c.do(ctx, method, path, body, limit, func(req *http.Request) {
 		req.Header.Set("Proof", proof)
 	})
 	if err != nil {
@@ -622,7 +874,14 @@ func (c *Client) noCredentialError() error {
 	return &APIError{Code: "NO_MACHINE_CREDENTIAL", Message: message}
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any, mutate func(*http.Request)) (int, []byte, error) {
+// answerBytes bounds the answer of every broker call but Carried (carriedAnswerBytes): none of
+// their answers comes near it, and a longer one is cut there.
+const answerBytes = 1 << 16
+
+// do sends one broker call and reads its answer: at most limit bytes and one more, so a caller
+// that must tell a whole answer from one cut short (Carried) reads a body longer than limit as
+// one that was; every other caller reads the cut body as its contract's shape or not.
+func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, error) {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -650,7 +909,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, mutate f
 		return 0, nil, fmt.Errorf("broker %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return 0, nil, fmt.Errorf("broker %s %s: read the answer: %w", method, path, err)
 	}

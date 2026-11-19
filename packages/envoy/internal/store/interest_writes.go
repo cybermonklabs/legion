@@ -483,7 +483,8 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // The one thing release decides is which claims are freed, and a release that authorises none
 // frees none - which is a request from a second process that resumed this session's id, or one
 // from a client that cannot say which process it is, and neither may take a role from the
-// process that holds it.
+// process that holds it. A claim that names no process is no exception: it names no process a
+// release could match, so only the administrator's force frees it (RoleReleaseAuthority.frees).
 //
 // What the release freed decides one thing in the interest half too. A role lane topic the
 // caller named whose claim still names this session and which this release did not free stays
@@ -532,7 +533,7 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // of no one role, so it marks nothing whatever those topics turn out to be. A release that names
 // a process frees the claims of that process and leaves another process's alone, and the
 // administrator's force frees them all; neither leaves a mark, since a mark is for the hand-back
-// that could free nothing.
+// that could free nothing, whether the claim it marks names a process or none.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	if len(topics) == 0 {
 		record, _, err := r.getWithRevision(ctx, sessionID, true)
@@ -553,10 +554,36 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 	if len(removed) == 0 {
 		return removed, nil
 	}
+	// Removing a topic removes every form of it the record holds (Remove), so the answer names
+	// those too: a client that followed both forms reads that the one it did not name is gone,
+	// rather than finding it missing later. They are read from the row as it stands before the
+	// removal, which is the row the removal starts from unless another writer races it.
+	others := r.otherFormsHeld(ctx, sessionID, removed)
 	if err := r.removeInterestTopics(ctx, sessionID, removed); err != nil {
 		return nil, err
 	}
-	return removed, nil
+	return slices.Concat(removed, others), nil
+}
+
+// otherFormsHeld is each topic sessionID's record holds that is another form of one of topics
+// (oneInterest) and not itself among them, in the record's order; none when the record cannot be
+// read.
+func (r *Registry) otherFormsHeld(ctx context.Context, sessionID string, topics []string) []string {
+	record, _, err := r.getWithRevision(ctx, sessionID, false)
+	if err != nil {
+		return nil
+	}
+	interests := make(map[string]bool, len(topics))
+	for _, topic := range topics {
+		interests[oneInterest(topic)] = true
+	}
+	var others []string
+	for _, topic := range record.Topics {
+		if interests[oneInterest(topic)] && !slices.Contains(topics, topic) {
+			others = append(others, topic)
+		}
+	}
+	return others
 }
 
 // topicsExcept is topics less the ones in kept, which releaseRoleClaims left standing. It

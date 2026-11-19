@@ -11,14 +11,17 @@ import (
 )
 
 // stubTestPG puts a `legion-testpg` on PATH that appends one line per call — the subcommand, the
-// DSN it was given and the directory it was told — to a file, and answers the exit code the file
-// `exit` holds. It answers what the worker image's script answers, so the launcher's side is what
-// the test reads.
+// DSN it was given, the directory it was told, the log it was told, and `present` or `absent` for
+// whether that log was a file when it ran — to a file, and answers the exit code the file `exit`
+// holds. It answers what the worker image's script answers, so the launcher's side is what the
+// test reads.
 func stubTestPG(t *testing.T) (calls string) {
 	t.Helper()
 	dir := t.TempDir()
 	calls = filepath.Join(dir, "calls")
-	script := "#!/bin/sh\nprintf '%s %s %s\\n' \"$1\" \"$" + TestPGVariable + "\" \"$" + testPGDirVariable + "\" >> " + calls + "\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
+	script := "#!/bin/sh\nif [ -f \"$" + testPGLogVariable + "\" ]; then log=present; else log=absent; fi\n" +
+		"printf '%s %s %s %s %s\\n' \"$1\" \"$" + TestPGVariable + "\" \"$" + testPGDirVariable + "\" \"$" + testPGLogVariable + "\" \"$log\" >> " + calls +
+		"\nexit $(cat " + filepath.Join(dir, "exit") + ")\n"
 	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -29,13 +32,14 @@ func stubTestPG(t *testing.T) (calls string) {
 	return calls
 }
 
-// toldDSN starts generation with env as its start command's own Env, answers what TestPGVariable
-// held in the child's environment, and stops the generation. A child that held no such variable
-// answers "unset": the shell's `${name-unset}` answers the value for a name set to anything,
-// including the empty string, and "unset" only for a name its environment does not hold.
-func (g *rig) toldDSN(generation uint64, env []string) string {
+// toldTestPG starts generation with env as its start command's own Env, answers what
+// TestPGVariable and TestPGLogVariable held in the child's environment, in that order and joined
+// by "|", and stops the generation. A variable the child did not hold answers "unset": the shell's
+// `${name-unset}` answers the value for a name set to anything, including the empty string, and
+// "unset" only for a name its environment does not hold.
+func (g *rig) toldTestPG(generation uint64, env []string) string {
 	g.t.Helper()
-	return g.told(generation, "${"+TestPGVariable+"-unset}", env, "")
+	return g.told(generation, "${"+TestPGVariable+"-unset}|${"+TestPGLogVariable+"-unset}", env, "")
 }
 
 // The launcher that serves the pod's test database names it to every generation it starts, over
@@ -45,30 +49,41 @@ func (g *rig) toldDSN(generation uint64, env []string) string {
 // creates the database is the one that names it: a role is told a database its own pod's server
 // holds whichever of the two builds is older. It reads whether this launcher was told to serve a
 // database, never whether a server answers: the first `ensure` runs before any role and its
-// failure is logged rather than thrown, so neither rig here runs a server at all.
+// failure is logged rather than thrown, so neither rig here runs a server at all. The server's
+// log goes with the DSN: a serving launcher's generation is told the path its role-init binds
+// the log at, under the fixed root, over whatever its environment carried, and a launcher that
+// serves none tells its generation of no log.
 func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
-	// What a daemon of another build sends: the database every image's server serves.
+	// What a daemon of another build sends: the database every image's server serves. No daemon
+	// sends the log's path; a value a start command carried all the same is replaced by this
+	// launcher's own, or dropped, as the DSN is.
 	const fromTheDaemon = "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable"
+	const fromElsewhere = "/somewhere/else.log"
+	carried := []string{TestPGVariable + "=" + fromTheDaemon, TestPGLogVariable + "=" + fromElsewhere}
+	// The DSN this launcher serves and the path role-init binds the server's log at.
+	want := TestPGDSN + "|" + filepath.Join(roleFixedRoot, RoleTestPGLog)
 	serving := newSessionRig(t, Config{TestPostgres: true})
-	if got := serving.toldDSN(1, []string{TestPGVariable + "=" + fromTheDaemon}); got != TestPGDSN {
-		t.Errorf("a generation whose start command carried %s=%q ran with %q, want this launcher's own %q",
-			TestPGVariable, fromTheDaemon, got, TestPGDSN)
+	if got := serving.toldTestPG(1, carried); got != want {
+		t.Errorf("a generation whose start command carried %s=%q and %s=%q ran with %s|%s=%q, want this launcher's own %q",
+			TestPGVariable, fromTheDaemon, TestPGLogVariable, fromElsewhere, TestPGVariable, TestPGLogVariable, got, want)
 	}
-	if got := serving.toldDSN(2, nil); got != TestPGDSN {
-		t.Errorf("a generation whose start command named no DSN ran with %s=%q, want this launcher's own %q",
-			TestPGVariable, got, TestPGDSN)
+	if got := serving.toldTestPG(2, nil); got != want {
+		t.Errorf("a generation whose start command named neither ran with %s|%s=%q, want this launcher's own %q",
+			TestPGVariable, TestPGLogVariable, got, want)
 	}
 	none := newSessionRig(t, Config{})
-	if got := none.toldDSN(1, []string{TestPGVariable + "=" + fromTheDaemon}); got != "unset" {
-		t.Errorf("a generation of a launcher that serves no test database ran with %s=%q, want no such variable",
-			TestPGVariable, got)
+	if got := none.toldTestPG(1, carried); got != "unset|unset" {
+		t.Errorf("a generation of a launcher that serves no test database ran with %s|%s=%q, want neither variable",
+			TestPGVariable, TestPGLogVariable, got)
 	}
 }
 
 // The launcher serves the pod's test database before it accepts a role start: serveTestPG's first
 // `ensure` has returned when it does, so a role that starts at once finds the server listening.
 // Each tick asks again, which is what starts a postmaster that has died, and every call carries
-// the DSN the roles are told and the cluster's directory under the roles directory.
+// the DSN the roles are told, the cluster's directory under the roles directory and the server's
+// log in it, which is a file before the first `ensure` runs: every role started after it has the
+// log to bind, whatever that `ensure` came to.
 func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.T) {
 	calls := stubTestPG(t)
 	testPGInterval = 20 * time.Millisecond
@@ -84,7 +99,7 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 	if err != nil {
 		t.Fatalf("serveTestPG returned before its first ensure ran: %v", err)
 	}
-	want := "ensure " + TestPGDSN + " " + filepath.Join(rolesDir, TestPGDirName) + "\n"
+	want := "ensure " + TestPGDSN + " " + filepath.Join(rolesDir, TestPGDirName) + " " + testPGLog(rolesDir) + " present\n"
 	if string(first) != want {
 		t.Errorf("the first call is %q, want %q", first, want)
 	}
@@ -101,6 +116,54 @@ func TestTheLauncherServesTheTestDatabaseBeforeAnyRoleAndKeepsAsking(t *testing.
 			t.Fatalf("the launcher asked once and never again: %q", again)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A log the launcher finds is kept as it is: a launcher that restarts in a pod whose server has
+// run leaves that server's lines where every role reads them. And a log that cannot be made is
+// logged and nothing else, as a script that fails is: the script still runs, and the pod still
+// runs its roles.
+func TestATestDatabaseLogIsKeptAndOneThatCannotBeMadeOnlyLogs(t *testing.T) {
+	calls := stubTestPG(t)
+	testPGInterval = time.Hour
+	t.Cleanup(func() { testPGInterval = 15 * time.Second })
+	serve := func(rolesDir string) string {
+		t.Helper()
+		log := &lockedBuffer{}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := serveTestPG(ctx, Config{RolesDir: rolesDir, TestPostgres: true}, &roleLog{stdout: log, stderr: log}, &pidGuard{})
+		cancel()
+		<-done
+		return log.String()
+	}
+	rolesDir := t.TempDir()
+	const earlier = "an earlier server's line\n"
+	if err := os.MkdirAll(testPGDir(rolesDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(testPGLog(rolesDir), []byte(earlier), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if said := serve(rolesDir); strings.Contains(said, "launcher: test database:") {
+		t.Errorf("over a log already there the container log holds %q, want no refusal", said)
+	}
+	if kept, err := os.ReadFile(testPGLog(rolesDir)); err != nil || string(kept) != earlier {
+		t.Errorf("the log the launcher found holds %q (%v), want it kept as %q", kept, err, earlier)
+	}
+	// A roles directory that is a file: nothing can be made under it.
+	blocked := filepath.Join(t.TempDir(), "roles")
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(calls); err != nil {
+		t.Fatal(err)
+	}
+	if said := serve(blocked); !strings.Contains(said, "launcher: test database: make the server's directory:") {
+		t.Errorf("over a log that cannot be made the container log holds %q, want the refusal named", said)
+	}
+	want := "ensure " + TestPGDSN + " " + testPGDir(blocked) + " " + testPGLog(blocked) + " absent\n"
+	if ran, err := os.ReadFile(calls); err != nil || string(ran) != want {
+		t.Errorf("after a log that could not be made the script ran %q (%v), want %q", ran, err, want)
 	}
 }
 

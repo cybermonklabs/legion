@@ -10,8 +10,8 @@ import { commandFlags, commandLine, commandName, fieldFlag } from "./dispatch-co
  *
  * `aboutAFlag` false leaves the list of flags out: the problem is the value a flag carries and
  * not which flags the command takes, so a list of them is noise the reader must read past. The
- * example stays, since it shows the value's own shape. `dispatch comment --reply-to-ask` raises
- * its refusal of an ask id this way, and every other refusal keeps the list.
+ * example stays, since it shows the value's own shape. A refusal leaves the list out only when
+ * every problem it lists is about the value a flag carries. Every other refusal keeps it.
  */
 export class ToolInputError extends Error {
   readonly tool: string;

@@ -235,8 +235,13 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// — is none of the work a completion could be of, and is refused below, whether the claim
 	// answered for it (supervise's serving reads such a task too, for a claim that has served
 	// nothing) or answered for nothing. Why the held task is not the issue's current task is one
-	// question with one answer (heldTaskNotCurrent), and this is its one reader, so the 409 can
-	// never describe a rule this route does not apply.
+	// question with one answer (heldTaskNotCurrent), and this route is its one reader, so the 409
+	// can never describe a rule this route does not apply. The refusal asks it too when the
+	// fallback did not: a claim that has retired no run and holds a task the agent read or a turn
+	// confirmed, which carries no run — an operator's own, or the daemon's own delivery of what its
+	// relaunch ended (supervise.Delivery.Relaunch), which the turn that reads it confirms — serves
+	// no run either, and the refusal says what the claim holds rather than giving no reason
+	// (noRunCompletion).
 	//
 	// What the narrowness does not buy is a claim with no earlier run to confuse this completion
 	// with. Nothing on this route confirms a delivery or retires a run, so a claim whose held task
@@ -263,6 +268,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		}
 	}
 	if serving == 0 {
+		if notCurrent == "" {
+			notCurrent = heldTaskNotCurrent(grant.Issue, issue.Generation, issue.Phase, c.Pending)
+		}
 		writeFailure(w, http.StatusConflict, "HANDOFF_NO_RUN", noRunCompletion(grant.Issue, issue.Generation, issue.Phase, notCurrent))
 		return
 	}
@@ -343,9 +351,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			return
 		}
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -443,11 +451,19 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // back a completion cannot leave the 409 describing a rule the route no longer applies.
 //
 // An empty answer also says the claim holds a task at all, which is what lets the route read
-// Pending on the strength of it: every case that returns a reason covers the nil.
+// Pending on the strength of it: the first case asks supervise.HoldsTask, so every case after it
+// reads a task. A claim holds none when it holds nothing and when it holds only the daemon's own
+// delivery of a relaunch's record (supervise.Delivery.Relaunch), which carries the sentence of
+// what the relaunch ended and no work; the reason says which, so that delivery is said as what it
+// is rather than read as a task of no run, which is an operator's own.
 func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *supervise.Delivery) string {
 	switch {
-	case pending == nil:
-		return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)
+	case !supervise.HoldsTask(pending):
+		if pending == nil {
+			return fmt.Sprintf("this claim holds no task at all, and %s is on generation %d in %s", issue, current, p)
+		}
+		return fmt.Sprintf("this claim holds no task, only the daemon's own delivery of what its relaunch ended (%s), and %s is on generation %d in %s",
+			pending.ID, issue, current, p)
 	case pending.Generation != current:
 		run := fmt.Sprintf("generation %d's", pending.Generation)
 		if pending.Generation == 0 {
@@ -523,6 +539,12 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // for a completion of a phase it no longer works, in the engine's own words for it
 // (intake.NotCurrentPhase).
 //
+// A completion at admitted is answered so too, whichever role sends it. Admitted is the
+// architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's
+// handoff refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at
+// admitted had while no role was named for that phase (dispatch://INFRA-2614, R2), now that a
+// root's architect holds an entry there.
+//
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name.
@@ -533,7 +555,7 @@ func entryFence(grant credential.Grant, position completionPosition, entry int64
 		return nil
 	}
 	p := position.issue.Phase
-	if phase.RoleFor(p) != grant.Role {
+	if p == phase.Admitted || phase.RoleFor(p) != grant.Role {
 		return intake.NotCurrentPhase(grant.Role, p, grant.Issue)
 	}
 	if entry > position.entry {
@@ -772,7 +794,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 	fact, read := intake.OpenedRead(issue.Project, issue.GitHubRepo, branch, pull, issue.Generation, recorded)
-	if _, err := intake.ApplyFact(ctx, s.pool, "github", read, fact, s.handlers...); err != nil {
+	if _, err := s.apply(ctx, "github", read, fact); err != nil {
 		s.logRequestFailure(r, err, "api: apply the open pull request a completing implementer's branch shows", "issue", issue.Key, "pullRequest", pull.Number)
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the open pull request read from GitHub; this completion changed nothing")
 		return false
@@ -857,8 +879,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
-		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
+		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return

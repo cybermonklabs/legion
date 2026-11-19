@@ -54,15 +54,27 @@ func architectToken(t *testing.T, root string) claim.Token {
 // seedArchitectClaim records session as the architect of the tree rooted at root, running a turn
 // it has taken its task for: the session SessionClaimsTree finds within that tree, and an
 // architect that owes nothing (workflow's owed), so the root may wait on a person.
+//
+// It holds the architect's phases row at entry 1 with its claim given and serving that entry,
+// which is where every architect this release started stands: the admission that starts one
+// raises its entry (workflow.Engine.EnterArchitect) and the delivery records it as given. An
+// architect claim beside a row that names no entry is the one shape the sweep hands an entry to
+// (admit's resumeSlottedWorkers), so a running architect seeded without it would be sent a first
+// task here.
 func seedArchitectSession(t *testing.T, pool *pgxpool.Pool, root, session string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, err := tx.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-			values ($1, 'LEGION', $2, $2, 'architect', 1, $3, '', 'working', 0, 0, 0, 0)
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry, served_entry)
+			values ($1, 'LEGION', $2, $2, 'architect', 1, $3, '', 'working', 0, 0, 0, 0, 1, 1)
 			on conflict (token) do update set session = excluded.session, state = excluded.state`,
 			string(architectToken(t, root)), root, session); err != nil {
 			t.Fatalf("seed architect claim: %v", err)
+		}
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root,
+			Role: claim.RoleArchitect, Claim: architectToken(t, root), Entry: 1,
+			EntryTask: root + " is yours.", EntryRaisedAt: fixedNow}); err != nil {
+			t.Fatalf("seed the architect's phases row of %s: %v", root, err)
 		}
 	})
 }
@@ -312,8 +324,9 @@ func seedRequestedGate(t *testing.T, pool *pgxpool.Pool, gate record.DesignGate)
 	mirrorAsk(t, pool, record.RootAsk{Issue: gate.Issue, Ask: "ask-approval", Kind: record.AskApproval, Artifact: gate.ArtifactID})
 }
 
-// handBackOnAClosedGate leaves LEGION-100 waiting on its gate at version 4, its slot taken by
-// LEGION-NEXT, after its own architect handed the approval request back to the person at handBack.
+// handBackOnAClosedGate leaves LEGION-100 waiting on its gate at version 4, keeping its slot while
+// LEGION-NEXT waits in the line, after its own architect handed the approval request back to the
+// person at handBack.
 func handBackOnAClosedGate(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	handBackOnAClosedGateAt(t, pool, admission, handBack)
@@ -334,8 +347,8 @@ func handBackOnAClosedGateAt(t *testing.T, pool *pgxpool.Pool, admission *Admiss
 	}
 }
 
-// resumedTask frees LEGION-RUN's slot, so the answered LEGION-100 is promoted, and returns the
-// task its architect resumes with.
+// resumedTask closes LEGION-RUN, a fact whose admission pass resumes the answered LEGION-100 on
+// the slot it holds, and returns the task its architect resumes with.
 func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
 	t.Helper()
 	apply(t, pool, admission, "run-finished", intake.DispatchIssue{
@@ -1843,7 +1856,7 @@ func TestAPersonsActDeliveredBeforeTheEventThatStartsItsWaitStartsNoWait(t *test
 
 // A registration reads the approval and nothing else: the mirror row it writes is its request's,
 // so it fences no question (second-review round-21 P3-2, same-model P3-2). An ordinary question its
-// read never saw, delivered late, still releases the root's slot and waits on the person.
+// read never saw, delivered late, still puts the root in a wait on the person, keeping its slot.
 func TestARegistrationFencesNoQuestion(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)

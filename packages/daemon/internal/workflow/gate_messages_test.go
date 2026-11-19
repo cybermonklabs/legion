@@ -81,7 +81,7 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 		LatestVersion: 1, ApprovedVersion: new(1)})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	engine := stepsEngine(twoSteps(), nil)
 
 	// The spec's new version closes the standing gate; the Verification document's own new
@@ -119,7 +119,7 @@ func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 	// merger's hold lets it go and the tree's work stands released.
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	engine := stepsEngine(twoSteps(), nil)
 
 	applyMirrored(t, pool, engine, "spec-4", intake.DispatchArtifact{
@@ -143,7 +143,7 @@ func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 		LatestVersion: 1, ApprovedVersion: new(1)})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	engine := stepsEngine(twoSteps(), nil)
 
 	applyMirrored(t, pool, engine, "register-spec-4", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepSpec,
@@ -168,7 +168,7 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 	// The spec step stands at a version with its reviewer, so the merger's hold holds it.
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 4})
-	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	seedTreeLifecycle(t, pool, gatedRoot)
 	engine := stepsEngine(twoSteps(), nil)
 
 	applyMirrored(t, pool, engine, "register-approved-4", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepSpec,

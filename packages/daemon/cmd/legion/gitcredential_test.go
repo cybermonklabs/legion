@@ -20,7 +20,7 @@ import (
 
 // gitCredentialBundle writes a gh bundle of a role whose issue is acme's: one directory per
 // owner the role's App is installed on, each holding that owner's own write token — acme's,
-// sjawhar's and theorem-labs', the last an owner the App is installed on and the project maps
+// sjawhar's and example-org's, the last an owner the App is installed on and the project maps
 // no repository of, since a lease reaches every repository its installation holds and the
 // installation is the whole of a role's reach (appauth.GitHubCredential, INFRA-2543). It
 // returns the bundle's root and acme's directory, which GH_CONFIG_DIR names.
@@ -29,9 +29,9 @@ func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 	root = filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
-		"acme":         ghconfig.Render("ghs_acme_write", "implement", expires),
-		"sjawhar":      ghconfig.Render("ghs_sjawhar_write", "implement", expires),
-		"theorem-labs": ghconfig.Render("ghs_theorem_labs_write", "implement", expires),
+		"acme":        ghconfig.Render("ghs_acme_write", "implement", expires),
+		"sjawhar":     ghconfig.Render("ghs_sjawhar_write", "implement", expires),
+		"example-org": ghconfig.Render("ghs_example_org_write", "implement", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -49,10 +49,14 @@ func runGitCredentialHere(t *testing.T, stdin string, args ...string) (code int,
 }
 
 // `legion git-credential get` answers git's credential protocol from the hosts.yml of the
-// owner the path git asks about names (credential.useHttpPath), lowercased: from that owner's
+// owner the path git asks about names (credential.useHttpPath), lowercased — a managed user's
+// login, which ends in `_<shortcode>`, among them: from that owner's
 // directory of LEGION_GH_OWNERS_DIR, whatever the path's second segment is — a repository of
 // that owner, and a segment no repository could be named for alike, since the owner's lease
-// reaches every repository its installation holds — and from nothing else: it answers nothing,
+// reaches every repository its installation holds, and since no configured rename of this
+// bundle moved one of them (a pair routes by that second segment, which
+// TestThePairsRepositoryTakesTheDirectoryOfTheOwnerHoldingItAndItsSiblingsTheirOwn reads) —
+// and from nothing else: it answers nothing,
 // exit 1, naming why, for any host but github.com over https, a request with no path, a path
 // whose owner is no GitHub login or one the bundle holds no directory for, an unset
 // LEGION_GH_OWNERS_DIR, and a hosts.yml with no token. GH_CONFIG_DIR, the issue owner's write
@@ -64,6 +68,12 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "empty", ghconfig.HostsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A managed user's directory is written on its own (ghconfig.Write) rather than through
+	// WriteBundle, so the row reading it reads this command's own check of the path's owner and
+	// not the bundle's.
+	if _, err := ghconfig.Write(ghconfig.Dir(root, "mona-cat_octo"), ghconfig.Render("ghs_mona_cat_octo_write", "implement", time.Now().Add(time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	both := map[string]string{"GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root}
@@ -108,8 +118,15 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			name:   "a repository of an owner the project maps nothing of",
 			env:    both,
 			args:   []string{"get"},
-			stdin:  "protocol=https\nhost=github.com\npath=theorem-labs/agent-infra.git\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_theorem_labs_write", 1),
+			stdin:  "protocol=https\nhost=github.com\npath=example-org/deployment.git\n\n",
+			stdout: strings.Replace(answer, "%s", "ghs_example_org_write", 1),
+		},
+		{
+			name:   "a managed user's repository",
+			env:    both,
+			args:   []string{"get"},
+			stdin:  "protocol=https\nhost=github.com\npath=mona-cat_octo/widgets.git\n\n",
+			stdout: strings.Replace(answer, "%s", "ghs_mona_cat_octo_write", 1),
 		},
 		{
 			name:   "the issue owner's directory",
@@ -217,9 +234,8 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 	}
 }
 
-// Each operation the usage line names answers --help, exit 0, with its own usage, as the docs
-// site's CLI generator reads every subcommand a usage line names (docs/site/generators/legion-cli.sh),
-// and reads no request.
+// Each operation the usage line names answers --help, exit 0, with its own usage, and reads no
+// request: git-credential reads its own arguments (passThrough), so a help request is its own.
 func TestGitCredentialOperationsAnswerHelp(t *testing.T) {
 	for _, op := range []string{"get", "store", "erase"} {
 		code, stdout, stderr := runGitCredentialHere(t, "protocol=https\nhost=github.com\n\n", op, "--help")
@@ -252,11 +268,12 @@ func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, 
 // renamedCredentialBundle writes to disk the bundle appauth.GitHubCredential builds for an
 // implementer whose issue's record names sjawhar/legion — the repository as it was recorded
 // before the transfer — in a project that serves served, under renames. It returns the bundle's
-// root and sjawhar's directory, which the pod's GH_CONFIG_DIR names.
+// root and its default directory, which the pod's GH_CONFIG_DIR names: the directory the record's
+// repository routes to (ghconfig.RouteDir), cybermonklabs' wherever the pair resolves.
 func renamedCredentialBundle(t *testing.T, served []ghrepo.Repository, renames ghrepo.Renames) (root, defaultDir string) {
 	t.Helper()
 	repos := func() []ghrepo.Repository { return served }
-	credential := appauth.GitHubCredential(namedTokens{}, namedTokens{}, repos, renames, nil, nil, slog.Default())
+	credential := appauth.GitHubCredential(namedTokens{}, repos, renames, nil, nil, slog.Default())
 	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)

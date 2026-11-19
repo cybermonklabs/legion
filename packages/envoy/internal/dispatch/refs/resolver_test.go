@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // resolverServer is the dashboard the resolver tests read their text with.
@@ -147,7 +148,8 @@ func TestMentionsStoreTheWholeIdOfAShortReferenceAndTheKeysThatExist(t *testing.
 	} {
 		source := resolverSource(index + 1)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
+		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -223,7 +225,8 @@ func TestMentionsStoreTheWholeIdOfAProjectDocumentsShortReference(t *testing.T) 
 	} {
 		source := resolverSource(index + 100)
 		insertPrefixComment(t, tx, source, "ACME-1", test.body)
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", source, resolverServer), test.body); err != nil {
+		located := NewReader(ctx, tx, "comment", source, resolverServer).Mentions(test.body)
+		if _, err := replaceRefs(ctx, tx, "comment", source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", source); !reflect.DeepEqual(got, test.want) {
@@ -292,7 +295,8 @@ func TestQuestionReferencesResolveAgainstTheTextsOwnDocument(t *testing.T) {
 		if test.source != anchored {
 			insertPrefixComment(t, tx, test.source, "ACME-1", test.body)
 		}
-		if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", test.source, resolverServer), test.body); err != nil {
+		located := NewReader(ctx, tx, "comment", test.source, resolverServer).Mentions(test.body)
+		if _, err := replaceRefs(ctx, tx, "comment", test.source, text.Refs(located), nil); err != nil {
 			t.Fatalf("index %s: %v", test.name, err)
 		}
 		if got := storedRefs(t, tx, "comment", test.source); !reflect.DeepEqual(got, test.want) {
@@ -317,9 +321,7 @@ func TestABareKeyLeavesALaterBlockMentionInItsOwnBlock(t *testing.T) {
 	body := "ACME-1 is the issue.\n\nSee dispatch://ACME-1/artifact/notes#b-two."
 	insertPrefixComment(t, tx, source, "ACME-1", body)
 	at := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
-	if _, err := ReplaceCountedItem(ctx, tx, ItemComment, source, body, resolverServer, at); err != nil {
-		t.Fatalf("index the comment: %v", err)
-	}
+	indexItemAsAWriteDoes(t, tx, ItemComment, source, body, resolverServer, at)
 
 	rows, err := tx.Query(ctx, `
 		select block_id, to_kind, to_id from comment_block_refs where comment_id = $1::uuid
@@ -457,9 +459,7 @@ func TestAFailedResolverLeavesTheWriteStoringTheTextAsWritten(t *testing.T) {
 	insertPrefixComment(t, tx, source, "ACME-1", body)
 
 	logged := &countingHandler{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(logged))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, logged)
 
 	located := NewReader(ctx, failingQueryer{}, "comment", source, resolverServer).Mentions(body)
 	if want := text.ExtractAt(body, resolverServer); !reflect.DeepEqual(located, want) {

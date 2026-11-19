@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const (
@@ -247,11 +248,11 @@ func runServerChange(t *testing.T, run serverChangeRun) {
 		}
 	})
 	s.awaitReplicated(t)
-	if bus.UsesCoreTransport(serverChangeCaptured) || bus.UsesCoreTransport(serverChangeTeam) {
+	if (&bus.Client{}).UsesCoreTransport(serverChangeCaptured) || (&bus.Client{}).UsesCoreTransport(serverChangeTeam) {
 		t.Fatalf("the stream must store the team topic %s and the captured topic %s: a session reads only what its own consumer holds",
 			serverChangeTeam, serverChangeCaptured)
 	}
-	if !bus.UsesCoreTransport(serverChangeKinds[kindRole].topic) {
+	if !(&bus.Client{}).UsesCoreTransport(serverChangeKinds[kindRole].topic) {
 		t.Fatalf("the role lane %s must take core NATS, so its sender's message reaches the stand-in only as the listener's stored forward",
 			serverChangeKinds[kindRole].topic)
 	}
@@ -322,7 +323,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 	s.standIn = conn
-	agentSubject := contracts.AgentSubject(serverChangeSession)
+	agentSubject := contracts.LegacyAgentSubject(serverChangeSession)
 	if _, err := conn.Subscribe(bus.DeliverSubject(serverChangeSession), s.receive); err != nil {
 		t.Fatalf("the stand-in subscribe its relay subject: %v", err)
 	}
@@ -330,13 +331,13 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 		t.Fatalf("flush the stand-in's subscription: %v", err)
 	}
 
-	registration, err := json.Marshal(subscribeBody{
+	registration, err := json.Marshal(listenerwire.SubscribeRequest{
 		SessionID:      serverChangeSession,
 		Dir:            "/server-change",
 		Topics:         []string{agentSubject, serverChangeTeam, serverChangeCaptured},
 		Title:          "server-change stand-in",
 		SelfSubscribed: true,
-		Delivery:       &subscribeDelivery{Consumer: true, Epoch: "epoch-1"},
+		Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "epoch-1"},
 	})
 	if err != nil {
 		t.Fatalf("marshal the stand-in's registration: %v", err)
@@ -353,11 +354,11 @@ func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
 	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
-		var sessions []sessionInfo
+		var sessions []listenerwire.SessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {
 			return false
 		}
-		listed := slices.ContainsFunc(sessions, func(info sessionInfo) bool {
+		listed := slices.ContainsFunc(sessions, func(info listenerwire.SessionInfo) bool {
 			return info.SessionID == serverChangeSession &&
 				slices.Contains(info.Topics, serverChangeTeam) && slices.Contains(info.Topics, serverChangeCaptured)
 		})
@@ -375,8 +376,18 @@ func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 // receive is the stand-in's handler on its relay subject: it answers the frame received and then
 // done, as a session that wrote the message does, and records the copy. The answer goes out from
 // the handler itself, so a stand-in whose connection is up never keeps the relay waiting
-// relayReceiptWait for a receipt.
+// relayReceiptWait for a receipt. The send route's connection probe (bus.ConnectionProbeHeader)
+// is no frame: it is answered done before anything is decoded, as a plugin answers it, and is
+// neither recorded nor a stray.
 func (s *serverChangeSoak) receive(msg *natsgo.Msg) {
+	if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+		if msg.Reply != "" {
+			// A probe answer that does not go out reads as the probe's silence, which is
+			// connected too, so it is no failure of the soak's.
+			_ = msg.Respond([]byte(relayReplyDone))
+		}
+		return
+	}
 	at := time.Now()
 	subject := msg.Header.Get(relayHeaderSubject)
 	var envelope contracts.Envelope

@@ -14,11 +14,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 )
 
-// listedRequester is the one person GCLOUD_SAMI's requesters tag names below, and it is not the
+// listedRequester is the one person GCLOUD_DEMO's requesters tag names below, and it is not the
 // person whose session asks: the refusal under test is the list's, not the owner's or the tier's.
 const listedRequester = "someone-else@example.com"
 
-// listedLifetime is the lifetime every request below signs, an hour in seconds. GCLOUD_SAMI caps
+// listedLifetime is the lifetime every request below signs, an hour in seconds. GCLOUD_DEMO caps
 // its grants at an hour of its own accord (policytest.FixtureMaxGrant), and a request signing
 // longer than a secret's own max-grant is refused 400 before the policy decides it at all, which
 // is not this file's question. The cap is no rule of the list's — policy.TagRules demands one of
@@ -58,12 +58,12 @@ func detailText(t *testing.T, raw json.RawMessage) string {
 // there is nothing to explain.
 func TestARefusedRequestNamesTheSecretAndTheRuleOnBothRoutes(t *testing.T) {
 	ts := newTestServer(t)
-	listed := policytest.Secret("GCLOUD_SAMI", testApprover, policy.TierAgent, "listed-v1")
+	listed := policytest.Secret("GCLOUD_DEMO", testApprover, policy.TierAgent, "listed-v1")
 	listed.Tags[policy.TagRequesters] = listedRequester
 	listed.Tags[policy.TagMaxGrant] = policytest.FixtureMaxGrant
 	ts.Secrets.Put(listed)
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/GCLOUD_SAMI/reread", nil, nil); status != http.StatusOK {
-		t.Fatalf("reread GCLOUD_SAMI = %d: %s", status, body)
+	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/GCLOUD_DEMO/reread", nil, nil); status != http.StatusOK {
+		t.Fatalf("reread GCLOUD_DEMO = %d: %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 
@@ -73,7 +73,7 @@ func TestARefusedRequestNamesTheSecretAndTheRuleOnBothRoutes(t *testing.T) {
 		state  string
 		detail string // "" for null
 	}{
-		{"a secret whose requesters do not name the session", "GCLOUD_SAMI", "denied", "GCLOUD_SAMI: " + policy.ReasonRequesterNotListed},
+		{"a secret whose requesters do not name the session", "GCLOUD_DEMO", "denied", "GCLOUD_DEMO: " + policy.ReasonRequesterNotListed},
 		{"a secret the policy grants at once", "WORKER_TOKEN", "granted", ""},
 		{"a secret a person must approve", "DEEL_API_KEY", "pending", ""},
 	} {

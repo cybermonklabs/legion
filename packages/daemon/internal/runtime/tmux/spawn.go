@@ -224,13 +224,14 @@ type PaneInputs struct {
 	GHOwnersDir, GHDefault, GH string
 	// OperatorEnv is the operator's pane variables (runtime.tmux.pane_env), PiConfigFiles the
 	// operator's Oh My Pi overlays every pane names (runtime.tmux.pi_config_files),
-	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and
-	// MemoryConfigFiles the project's own (memory.config_files), which only a pane whose tree is
-	// in the memory group is given (runtime.SpawnSpec.Memory); nil for none.
-	OperatorEnv       map[string]string
-	PiConfigFiles     []string
-	RoleConfigFiles   []string
-	MemoryConfigFiles []string
+	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and Variants the
+	// arms of the project's declared experiments this pane's unit was drawn into
+	// (runtime.SpawnSpec.Variants), whose own overlays the pane names last, in the order the
+	// project's file declares the experiments; nil for none.
+	OperatorEnv     map[string]string
+	PiConfigFiles   []string
+	RoleConfigFiles []string
+	Variants        []runtime.Variant
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
 	// the pane is then told no such variable and refuses every public write with the setup error
@@ -248,9 +249,11 @@ type PaneInputs struct {
 // token in the daemon's environment outranks the file — a non-empty GH_TOKEN would — then
 // LEGION_GH_OWNERS_DIR, the bundle's root, and
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
-// PI_SHELL_PREFIX, which keeps this daemon's launcher directory (its legion and gh) first in the
-// agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
-// project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
+// PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
+// (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
+// operator's overlays, then the role's own, then the
+// overlays of each arm this pane's unit was drawn into, in the order the project's file declares
+// the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
@@ -260,7 +263,9 @@ type PaneInputs struct {
 // issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
-// is told: a pane's git and jj are whatever its PATH, the daemon's, gives.
+// is told: a pane's jj is the first jj on its PATH, the daemon's, and its git is the launcher
+// directory's git wrapper where workerbin.Install writes one, and the first git on that PATH
+// otherwise.
 //
 // A composed name is told once, which is why the operator's loop leaves it out: a second pair of
 // one name leaves the value the pane's process reads to the C library's lookup, which answers
@@ -311,7 +316,7 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_GH_PATH", in.GH)
 	}
 	add("PI_SHELL_PREFIX", shellprefix.For(workerbin.LauncherDir(in.StateDir)))
-	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, in.MemoryConfigFiles), ":"))
+	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, runtime.VariantOverlays(in.Variants)), ":"))
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
@@ -380,9 +385,12 @@ var (
 )
 
 // readPaneReport reads new-window's `"#{window_id} #{pane_id} #{pane_pid}"` or split-window's
-// `"#{pane_id} #{pane_pid}"`. A malformed report is a launch failure naming the command and
-// tmux's stderr, never the report itself (parsePaneReport, tmux.ts).
+// `"#{pane_id} #{pane_pid}"`. A command that did not succeed, and a malformed report, are a launch
+// failure naming the command and tmux's stderr, never the report itself (parsePaneReport, tmux.ts).
 func readPaneReport(command string, res result, expectWindow bool) (paneReport, error) {
+	if res.exitCode != 0 {
+		return paneReport{}, fmt.Errorf("tmux %s%s", command, failed(res))
+	}
 	tokens := strings.Fields(res.stdout)
 	var report paneReport
 	if expectWindow {
@@ -405,9 +413,9 @@ func readPaneReport(command string, res result, expectWindow bool) (paneReport, 
 }
 
 // Spawn starts a fresh agent for spec's claim: under the launch lock, a refusal while the claim's
-// process still runs, then the pane's secrets written as files and a pane in the issue's window, or
-// a new window for it, running `legion worker-shim` around OMP. The returned locator carries the
-// incarnation read at launch.
+// process still runs, then the pane's secrets and its composed system prompt written as files and a
+// pane in the issue's window, or a new window for it, running `legion worker-shim` around OMP. The
+// returned locator carries the incarnation read at launch.
 // A spec with a ResumeSessionFile is refused: continuing a recorded agent is Resume's, so there is
 // one path to `--resume`.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
@@ -473,27 +481,27 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 	return nil
 }
 
-// launch is Spawn's and Resume's shared half: every check that needs no tmux, then, under the launch
-// lock, the refusal of a claim whose process still runs, the secret files, the claim's gh bundle
-// and the pane. The refusal comes first, so a refused launch rewrites none of the files the live
-// process reads. A session found in no folder it searched is runtime.ErrSessionFileMissing,
-// whatever the claim recorded and whether or not the operator's takeover is on
-// (takingOverSession): the search is the same search either way, and a session nothing holds is
-// the same fact however the daemon is configured. The caller starts a fresh agent in its place,
-// charged nothing and reported (supervise's start), which is also what a taken-over runtime's
-// session gets, since nothing tells it from this host's own (sessionfile.go).
+// launch is Spawn's and Resume's shared half: every check that needs no tmux, the composed system
+// prompt among them (runtime.ComposePrompt), then, under the launch lock, the refusal of a claim
+// whose process still runs, the secret files, the prompt's file, the claim's gh bundle and the
+// pane. The prompt is composed before anything is written, so a prompt file that cannot be read
+// leaves no file behind. The refusal of a live claim comes before the
+// writes, so a refused launch rewrites none of the files the live process reads. The prompt's
+// file is written before the pane opens (runtime.WriteSystemPrompt says why).
+//
+// A session found in no folder it searched is runtime.ErrSessionFileMissing, whatever the claim
+// recorded and whether or not the operator's takeover is on (takingOverSession): the search is the
+// same search either way, and a session nothing holds is the same fact however the daemon is
+// configured. The caller starts a fresh agent in its place, charged nothing and reported
+// (supervise's start), which is also what a taken-over runtime's session gets, since nothing tells
+// it from this host's own (sessionfile.go).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
 	}
-	for _, path := range slices.Concat(spec.Prompt.RolePromptPaths,
-		[]string{spec.Prompt.DeploymentInstructionsPath, spec.Prompt.MemoryInstructionsPath}) {
-		if path == "" {
-			continue
-		}
-		if _, err := os.Stat(path); err != nil {
-			return runtime.Locator{}, fmt.Errorf("spawn %s: prompt file: %w", spec.Claim, err)
-		}
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	backend := runtime.Of(spec.Backend)
 	launcher, ok := r.launchers[backend]
@@ -547,6 +555,10 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := runtime.WriteSecretFiles(r.stateDir, files); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+	}
 	ghDefault, err := r.writeGitHubCredential(spec, credential)
 	if err != nil {
 		return runtime.Locator{}, err
@@ -556,17 +568,11 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		path = spec.Env["PATH"]
 	}
 	path = workerbin.Path(path, r.stateDir)
-	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion})
+	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
-	// Only a pane whose tree was drawn into the memory group names the project's memory overlays;
-	// every other pane's PI_CONFIG_FILES is the one it had before the block existed.
-	var memoryOverlays []string
-	if spec.Memory {
-		memoryOverlays = r.memoryConfigFiles
-	}
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
 	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
@@ -581,7 +587,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		MemoryConfigFiles: memoryOverlays, LeakCheck: leakCheck,
+		Variants: spec.Variants, LeakCheck: leakCheck,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }
@@ -727,18 +733,14 @@ func (r *Runtime) awaitPaneCommand(ctx context.Context, report paneReport) error
 }
 
 // killUnrecorded kills report's pane after an error left its process unrecorded: no locator is
-// returned for it, so nothing else would end it (runtime.Runtime's Spawn and Resume). It runs even
-// once ctx has ended, since the caller's deadline may be what ended the launch. A pane already gone
-// is gone; any other failure is returned, so the launch error says the process may still run.
+// returned for it, so nothing else would end it (runtime.Runtime's Spawn and Resume). A pane
+// already gone is gone; any other failure is returned (killLaunched), so the launch error says the
+// process may still run.
 func (r *Runtime) killUnrecorded(ctx context.Context, report paneReport) error {
-	res, err := r.run(context.WithoutCancel(ctx), killPaneArgv(r.socket, report.pane))
-	if err == nil && (res.exitCode == 0 || paneGoneStderr.MatchString(res.stderr)) {
-		return nil
+	if err := r.killLaunched(ctx, killPaneArgv(r.socket, report.pane), paneGoneStderr); err != nil {
+		return fmt.Errorf("kill pane %s, whose process pid %d was never recorded: %w", report.pane, report.pid, err)
 	}
-	if err == nil {
-		err = fmt.Errorf("tmux exited %d: %s", res.exitCode, strings.TrimSpace(res.stderr))
-	}
-	return fmt.Errorf("kill pane %s, whose process pid %d was never recorded: %w", report.pane, report.pid, err)
+	return nil
 }
 
 // refuseLiveIncarnation refuses a launch for a claim whose watched process still runs: one claim,
@@ -817,7 +819,7 @@ func (r *Runtime) ensureSession(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if res.exitCode != 0 {
-		return false, fmt.Errorf("tmux new-session failed (exit %d)%s", res.exitCode, failure(res))
+		return false, fmt.Errorf("tmux new-session%s", failed(res))
 	}
 	return true, nil
 }
@@ -835,12 +837,14 @@ func (r *Runtime) openWindow(ctx context.Context, name string, pane []string) (p
 	if first == nil {
 		return report, nil
 	}
-	if created && !noServerStderr.MatchString(first.Error()) {
+	// Once the launch's context has ended, no retry can run, and the first failure is what says a
+	// window the launch opened may still run (killOpened).
+	if ctx.Err() != nil || created && !noServerStderr.MatchString(first.Error()) {
 		return paneReport{}, first
 	}
 	recreated, err := r.ensureSession(ctx)
 	if err != nil {
-		return paneReport{}, err
+		return paneReport{}, errors.Join(first, err)
 	}
 	if !recreated {
 		return paneReport{}, first
@@ -854,52 +858,79 @@ func (r *Runtime) openWindow(ctx context.Context, name string, pane []string) (p
 	return report, nil
 }
 
-// openWindowIn is one new-window: the creator of the session kills its bootstrap window right
-// after, before the result is read. The pane marks its own window before it starts the shim, so a
-// crash that loses the report still leaves a reapable owner marker; after the report this method
-// repeats the marker and treats a failure as a launch failure (markOwner and openWindow, tmux.ts).
+// openWindowIn is one new-window: its answer is read, then the creator of the session kills its
+// bootstrap window, then a failed new-window is the launch's failure. The pane marks its own
+// window before it starts the shim, so a crash that loses the report still leaves a reapable owner
+// marker; after the report this method repeats the marker and treats a failure as a launch failure
+// (markOwner and openWindow, tmux.ts). Every failure after new-window opened its window, the
+// bootstrap cleanup's or the marker's, by an exit or by a signal ending the client, kills that
+// window (killOpened).
 func (r *Runtime) openWindowIn(ctx context.Context, name string, pane []string, createdSession bool) (paneReport, error) {
 	res, err := r.run(ctx, newWindowArgv(r.socket, r.socket, name, pane))
 	if err != nil {
 		return paneReport{}, err
 	}
+	report, unopened := readPaneReport("new-window", res, true)
 	if createdSession {
 		cleanup, err := r.run(ctx, killBootstrapWindowArgv(r.socket, r.socket))
+		if err == nil && cleanup.exitCode != 0 {
+			err = fmt.Errorf("tmux bootstrap window cleanup%s", failed(cleanup))
+		}
 		if err != nil {
+			if unopened == nil {
+				return paneReport{}, r.killOpened(ctx, report.window, err)
+			}
 			return paneReport{}, err
 		}
-		if cleanup.exitCode != 0 {
-			return paneReport{}, fmt.Errorf("tmux bootstrap window cleanup failed (exit %d)%s", cleanup.exitCode, failure(cleanup))
-		}
 	}
-	if res.exitCode != 0 {
-		return paneReport{}, fmt.Errorf("tmux new-window failed (exit %d)%s", res.exitCode, failure(res))
-	}
-	report, err := readPaneReport("new-window", res, true)
-	if err != nil {
-		return paneReport{}, err
+	if unopened != nil {
+		return paneReport{}, unopened
 	}
 	marker, err := r.run(ctx, markWindowOwnerArgv(r.socket, report.window, r.socket))
-	if err != nil {
-		return paneReport{}, err
+	if err == nil && marker.exitCode != 0 {
+		err = fmt.Errorf("tmux window ownership marker%s", failed(marker))
 	}
-	if marker.exitCode != 0 {
-		if _, err := r.run(ctx, killWindowArgv(r.socket, report.window)); err != nil {
-			return paneReport{}, err
-		}
-		return paneReport{}, fmt.Errorf("tmux window ownership marker failed (exit %d)%s", marker.exitCode, failure(marker))
+	if err != nil {
+		return paneReport{}, r.killOpened(ctx, report.window, err)
 	}
 	return report, nil
 }
 
-// splitWindow splits pane into window and tiles the layout (splitWindow, tmux.ts).
+// killOpened kills window, which new-window opened for a launch that then failed with err, and
+// answers err, joined with the kill's failure where it did not succeed (killLaunched), so the
+// launch error says the window's agent may still run, until ReconcileOrphans reaps it by its owner
+// marker.
+func (r *Runtime) killOpened(ctx context.Context, window string, err error) error {
+	if killErr := r.killLaunched(ctx, killWindowArgv(r.socket, window), windowGoneStderr); killErr != nil {
+		return errors.Join(err, fmt.Errorf("kill window %s, which the failed launch opened: %w", window, killErr))
+	}
+	return err
+}
+
+// killLaunched runs argv, the kill-pane or kill-window of what a failed launch left unrecorded
+// (killUnrecorded, killOpened). It runs even once ctx has ended, since the caller's deadline may be
+// what failed the launch, bounded by runTmux's own timeout. A kill whose stderr matches gone found
+// its target already gone, and succeeded. A kill that could not run answers its own error, and one
+// that exited non-zero, timed out or that a signal ended answers `tmux<exited>`.
+func (r *Runtime) killLaunched(ctx context.Context, argv []string, gone *regexp.Regexp) error {
+	res, err := r.run(context.WithoutCancel(ctx), argv)
+	switch {
+	case err != nil:
+		return err
+	case res.exitCode == 0 || gone.MatchString(res.stderr):
+		return nil
+	}
+	return fmt.Errorf("tmux%s", exited(res))
+}
+
+// splitWindow splits pane into window and tiles the layout (splitWindow, tmux.ts). The pane is open
+// once split-window reports it, so a select-layout that does not succeed, by its exit, by a signal
+// ending its client or by a client that could not run, is logged and the pane returned: the launch
+// then records the pane, or kills it (killUnrecorded) when a later step fails.
 func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string) (paneReport, error) {
 	res, err := r.run(ctx, splitWindowArgv(r.socket, window, pane))
 	if err != nil {
 		return paneReport{}, err
-	}
-	if res.exitCode != 0 {
-		return paneReport{}, fmt.Errorf("tmux split-window failed (exit %d)%s", res.exitCode, failure(res))
 	}
 	report, err := readPaneReport("split-window", res, false)
 	if err != nil {
@@ -907,9 +938,9 @@ func (r *Runtime) splitWindow(ctx context.Context, window string, pane []string)
 	}
 	report.window = window
 	if res, err := r.run(ctx, selectLayoutArgv(r.socket, window)); err != nil {
-		return paneReport{}, err
+		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", err.Error())
 	} else if res.exitCode != 0 {
-		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", failure(res))
+		r.log.Warn("tmux runtime: select-layout failed after a split", "window", window, "detail", strings.TrimSpace(failed(res)))
 	}
 	return report, nil
 }

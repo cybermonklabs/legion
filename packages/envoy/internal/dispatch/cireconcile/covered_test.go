@@ -21,7 +21,7 @@ func TestEveryMappingIsReadWhenAnotherNamesARename(t *testing.T) {
 	h.mapRenamedRepository(renamedAwayRow, rowRepository)
 	h.mapRepository(unrenamedRow)
 
-	repositories, err := h.reconciler.covered(h.ctx)
+	repositories, _, err := h.reconciler.covered(h.ctx)
 	if err != nil {
 		t.Fatalf("read the covered repositories: %v", err)
 	}

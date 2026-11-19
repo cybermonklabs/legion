@@ -13,19 +13,23 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cmdMachineLogin implements "machine login". It asks agent-secrets-helper to start a machine
 // login, prints the broker's confirmation code and where to type it — AGENT_SECRETS_APPROVE_URL's
 // /credentials/machine when that is set, else the broker's verification_uri the helper relays,
 // else the Dispatch credential page by name — then polls the helper until the login reaches a
-// terminal state.
+// terminal state. The login op waits helper.BrokerCallWait, because its answer is the outcome of
+// a broker call; each login-status poll reads the helper's own state and waits 10 s.
 func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	if err := newFlagSet("machine login", stderr).Parse(flagArgs); err != nil {
@@ -36,7 +40,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	sock, _ := helperSocket()
-	resp, err := helper.Call(sock, helper.Request{Op: "login"}, 10*time.Second)
+	resp, err := helper.Call(sock, helper.Request{Op: "login"}, helper.BrokerCallWait)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %v\n", err)
 		return 1
@@ -45,11 +49,14 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets machine login: %s: %s\n", resp.Code, resp.Error)
 		return 1
 	}
-	fmt.Fprintf(stdout, "machine login code: %s\n", resp.Code)
+	// The code and the page are the broker's, as the helper relayed them, so each prints on
+	// one line (redact.OneLine): as it came, or Go-quoted where a control character in it
+	// would start a line of its own or rewrite this one.
+	fmt.Fprintf(stdout, "machine login code: %s\n", redact.OneLine(resp.Code))
 	if base := approveURL(); base != "" {
 		fmt.Fprintf(stdout, "enter it at %s/credentials/machine — approve only if the code matches this terminal\n", base)
 	} else if resp.VerificationURI != "" {
-		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", resp.VerificationURI)
+		fmt.Fprintf(stdout, "enter it at %s — approve only if the code matches this terminal\n", redact.OneLine(resp.VerificationURI))
 	} else {
 		fmt.Fprintln(stdout, "enter it on the Dispatch credential page")
 	}
@@ -125,31 +132,31 @@ func cmdMachineLoginStatus(args []string, stdout, stderr io.Writer) int {
 	if resp.CredentialHeld || state == "issued" {
 		fmt.Fprintln(stdout, "issued")
 		const held = "the helper still holds the launcher credential an earlier login issued"
+		// The most recent login's code is the broker's, so it prints on one line as machine
+		// login prints it.
+		code := redact.OneLine(resp.Code)
 		switch state {
 		case "pending":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: a machine login is waiting for approval (code %s); %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: a machine login is waiting for approval (code %s); %s\n", code, held)
 		case "denied":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) was denied; %s\n", code, held)
 		case "expired":
-			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", resp.Code, held)
+			fmt.Fprintf(stderr, "agent-secrets machine login-status: the most recent machine login (code %s) expired before anyone approved it; %s\n", code, held)
 		}
-		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now()))
+		fmt.Fprintln(stderr, "agent-secrets machine login-status: "+credentialExpiry(resp.CredentialExpiresAt, time.Now(), resp.NoCredentialFailure()))
 		return 0
 	}
 	fmt.Fprintln(stdout, state)
 	reason := helper.NoCredentialReason(resp.LoginState, resp.LoginRefused, resp.CredentialDropped)
 	if state == "pending" {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, resp.Code)
+		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s (code %s)\n", reason, redact.OneLine(resp.Code))
 	} else {
-		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; run: agent-secrets machine login\n", reason)
+		fmt.Fprintf(stderr, "agent-secrets machine login-status: %s; %s\n", reason, brokerclient.Hint(resp.NoCredentialFailure()))
 	}
 	return 1
 }
 
-// credentialExpiry is login-status's line about when the held launcher credential lapses: the
-// machine login renews itself while the helper's refresh reaches the broker, so the time is when
-// it lapses only if no refresh does.
-func credentialExpiry(expiresAt string, now time.Time) string {
+func credentialExpiry(expiresAt string, now time.Time, failure brokerclient.Failure) string {
 	if expiresAt == "" {
 		return "the helper does not know when the launcher credential expires (it, or its broker, is older than this client)"
 	}
@@ -159,9 +166,9 @@ func credentialExpiry(expiresAt string, now time.Time) string {
 	}
 	left := at.Sub(now)
 	if left <= 0 {
-		return fmt.Sprintf("the launcher credential expired at %s; run: agent-secrets machine login", expiresAt)
+		return fmt.Sprintf("the launcher credential expired at %s; %s", expiresAt, brokerclient.Hint(failure))
 	}
-	return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", expiresAt, roughDuration(left))
+	return brokerclient.Lapse(failure, expiresAt, roughDuration(left))
 }
 
 // roughDuration is d to the minute, with days: 6d23h59m, 3h5m, 0m.
@@ -201,7 +208,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	}
 	machines, raw, err := newClient(base).OperatorMachines(context.Background(), signer)
 	if err != nil {
-		return operatorFail(stderr, form, brokerSource(base), err)
+		return operatorFail(stderr, form, brokerSource(base), signer.failure, err)
 	}
 	if *asJSON {
 		writeVerbatim(stdout, raw)
@@ -210,12 +217,7 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "CREDENTIAL_ID\tHOST\tAPPROVED_BY\tISSUED\tEXPIRES\tSTATE")
 	for _, m := range machines.Credentials {
-		state := "ok"
-		if m.Expired {
-			state = "expired"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", m.CredentialID, m.Host, orDash(m.ApprovedBy),
-			m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state)
+		fmt.Fprintln(tw, strings.Join(machineRow(m), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -228,6 +230,20 @@ func cmdMachineList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "STATE expired: the login enrolls no more sessions, but sessions it enrolled still run until they end; revoking it ends them.")
 	}
 	return 0
+}
+
+// machineRow is one machine login's cells, in the table's column order: its credential id, its
+// host, who approved it ("-" for none), when it was issued and expires, and its state. The first
+// three are the broker's, so each prints on one line (redact.OneLine): as it came, or Go-quoted
+// where a control character in it, a tab among them, would start a line of its own or split the
+// cell.
+func machineRow(m OperatorMachine) []string {
+	state := "ok"
+	if m.Expired {
+		state = "expired"
+	}
+	return []string{redact.OneLine(m.CredentialID), redact.OneLine(m.Host), redact.OneLine(orDash(m.ApprovedBy)),
+		m.IssuedAt.UTC().Format(time.RFC3339), m.ExpiresAt.UTC().Format(time.RFC3339), state}
 }
 
 // cmdMachineRevoke implements "machine revoke CREDENTIAL_ID": it ends one of the operator's own
@@ -251,7 +267,7 @@ func cmdMachineRevoke(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if err := newClient(base).RevokeOperatorMachine(context.Background(), signer, id); err != nil {
-		return operatorFail(stderr, form, brokerSource(base), err)
+		return operatorFail(stderr, form, brokerSource(base), signer.failure, err)
 	}
 	if sameID(id, signer.credentialID) {
 		fmt.Fprintf(stderr, "agent-secrets %s: revoking this machine's own login ends every session it enrolled, this one's broker access included\n", form)
@@ -271,15 +287,17 @@ func sameID(a, b string) bool {
 // operatorFail prints a machine or grant command's failure and answers 1, naming the broker it
 // asked (src), so a refusal is never read as another secrets CLI's answer. The helper's refusal
 // to sign (launcherRefusal) prints as it stands: it is this machine's own helper refusing, with
-// no broker asked anything. The broker refusing the machine's login says to log it in again.
-func operatorFail(stderr io.Writer, form string, src source, err error) int {
+// no broker asked anything. The broker refusing the machine's credential is followed by the hint
+// of failure, the class of the helper's mode the signer read (launcherSigner.failure): a machine
+// login in machine-login mode, the helper's own trade loop in identity mode.
+func operatorFail(stderr io.Writer, form string, src source, failure brokerclient.Failure, err error) int {
 	var broker *apiError
 	var refused *launcherRefusal
 	switch {
 	case errors.As(err, &refused):
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, refused)
 	case errors.As(err, &broker) && broker.Status == http.StatusUnauthorized && broker.Code == "LAUNCHER_INVALID":
-		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's login to %s is expired or revoked (run: agent-secrets machine login)\n", form, broker, src)
+		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's launcher credential at %s is expired or revoked; %s\n", form, broker, src, brokerclient.Hint(failure))
 	default:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, refusalText(src, err))
 	}

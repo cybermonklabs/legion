@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The daemon's migration runner now resets the session of the connection that a migration ran on
+  before the connection returns to the pool. So a migration's `set` without `local`, or its
+  stored code that calls `set_config(..., false)`, no longer stays on a pooled connection for the
+  daemon's next queries. No migration of the daemon does either today. A connection whose reset
+  fails is closed, and the pool does not get it back.

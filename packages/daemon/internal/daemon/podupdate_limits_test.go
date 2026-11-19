@@ -326,6 +326,93 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 	rig.awaitRounds("three sweeps with a free slot and nothing left that has drifted", "INFRA-1")
 }
 
+// A round over a pod its claims no longer record is a round over a pod that is gone, and it is
+// carrying nothing: the walk ends it at the very sweep that reads it (reconcileIssuePodUpdate).
+// So the count of the slots at the top of the sweep leaves it out, and an issue waiting for the
+// one slot opens in that same sweep. The waiting issue is walked before the dead round's own, so
+// nothing the walk does to the dead round can be what freed the slot: the slots are counted once,
+// before the walk, and no end in the walk gives one back. The opening is read off the waiting
+// issue's claim recording its round: the sweep asks the round's roles only at a tick after the
+// one that opened it, once the claims record the round (askRound).
+func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
+	// LEGION-483 sorts before the rig's own LEGION-484, so the walk reaches it first.
+	const waiting, waitingPod = "LEGION-483", "7d2b5e90-1c4a-4e36-b8f7-03a9c6d1e5b8"
+	rig := newPodUpdateRig(t,
+		// The round's own replacement took its pod, and its end never reached this member,
+		// which records the pod built in its place.
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod},
+	)
+	rig.drifts(podUpdateDrift)
+	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
+	token := rig.driftingIssue(waiting, waitingPod)
+
+	rig.tick()
+
+	testwait.Eventually(t, waiting+" to hold the round over its own pod after the one sweep", func() bool {
+		return rig.machineClaim(token).UpdateRound == supervise.PodRound(waitingPod)
+	})
+	rounds := rig.s.podUpdateRoundsView()
+	if !slices.Equal(rounds.InRound, []string{waiting}) || len(rounds.WaitingOnMaxOpenRounds) != 0 {
+		t.Errorf("the sweep recorded in a round %v and waiting on the open-round limit %v, want %s alone in a round and nothing waiting",
+			rounds.InRound, rounds.WaitingOnMaxOpenRounds, waiting)
+	}
+	rig.awaitClaim(claim.RoleImplementer, "the round over the pod that went to end at the same sweep",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+}
+
+// Which group holds a slot, read over each shape a sweep can find (holdsOpenRound). A round is
+// carried where a claim holds the round over the pod the claims record, wherever that claim
+// sorts, and where the claims record two pods with a round open, which is a replacement in
+// flight. A round over a pod no claim records holds none, nor does a round no claim records any
+// pod for, nor a group in no round.
+func TestPodUpdateHoldsASlotOnlyForARoundItsClaimsCarry(t *testing.T) {
+	recording := func(role claim.Role, pod, round string) supervise.Claim {
+		token := mustClaimToken(t, podUpdateIssue, role)
+		c := supervise.Claim{Token: token, Issue: podUpdateIssue, Role: role, UpdateRound: round}
+		if pod != "" {
+			c.Locator = podUpdateLocator(token, podUpdateIssue, pod)
+		}
+		return c
+	}
+	dead, live := podUpdateRound, supervise.PodRound(podUpdateReplacementPod)
+	for name, tc := range map[string]struct {
+		group []supervise.Claim
+		holds bool
+	}{
+		"a round over the pod the claims record": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdatePod, podUpdateRound),
+			recording(claim.RoleTester, podUpdatePod, ""),
+		}, holds: true},
+		"a round over a pod no claim records": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdateReplacementPod, dead),
+			recording(claim.RoleTester, podUpdateReplacementPod, ""),
+		}},
+		"the dead round on the first claim and the live one on the next": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdateReplacementPod, dead),
+			recording(claim.RoleTester, podUpdateReplacementPod, live),
+		}, holds: true},
+		"two pods with a round open, a replacement in flight": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdateReplacementPod, dead),
+			recording(claim.RoleTester, podUpdatePod, ""),
+		}, holds: true},
+		"a round no claim records a pod for": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, "", podUpdateRound),
+		}},
+		"no round": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdatePod, ""),
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := holdsOpenRound(tc.group); got != tc.holds {
+				t.Errorf("holdsOpenRound = %t, want %t", got, tc.holds)
+			}
+		})
+	}
+}
+
 // An opening is an ask that reached a worker. An issue no agent has run for has nobody to ask,
 // so the sweep posts it nothing and its claims record no round: charged a slot and an opening all
 // the same, such an issue would take the one opening of every sweep for ever — it can never
@@ -672,6 +759,29 @@ func TestPodUpdateMaxOpenRoundsFreesTheSlotOfAnOpeningWhosePodChangedToADriftedO
 	}
 }
 
+// askRowsOf is the id of every update-ask row of issue's role the outbox holds, oldest first.
+func (r *fleetRig) askRowsOf(issue string, role claim.Role) []int64 {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select id from outbox where kind = 'update_ask' and issue = $1 and payload->>'role' = $2 order by id`,
+		issue, string(role))
+	if err != nil {
+		r.t.Fatalf("read the update asks of %s's %s: %v", issue, role, err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			r.t.Fatalf("read an update ask of %s's %s: %v", issue, role, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the update asks of %s's %s: %v", issue, role, err)
+	}
+	return ids
+}
+
 // The per-minute limit is what paces a fleet-wide roll in time rather than in slots: with it, the
 // workers of the fleet are asked a few at a minute, so a change lands as a sequence of small
 // interruptions rather than one that stops everyone at once. It paces openings and nothing else
@@ -682,7 +792,7 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	rig := newLimitRig(t, keys...)
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
-	asked := map[string]time.Time{}
+	asked := map[string]int64{}
 	for i := range keys {
 		if i > 0 {
 			rig.clock.advance(time.Minute)
@@ -690,28 +800,29 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
 		// The sweep asks a round's roles at the tick after the one that opened it, once the
-		// claims record the round, and never again.
+		// claims record the round, and never again. No lane runs here, so each ask is the row
+		// the sweep enqueued, still queued, and the sweep asks no claim whose ask is queued.
 		for _, prev := range keys[:i] {
-			c := rig.claimOf(prev, claim.RoleArchitect)
-			if c.UpdateTaskedAt == nil {
-				t.Fatalf("%s holds the round with no ask recorded a sweep after it opened: %+v", prev, c)
+			rows := rig.askRowsOf(prev, claim.RoleArchitect)
+			if len(rows) != 1 {
+				t.Fatalf("%s holds the round with %d asks queued a sweep after it opened, want one", prev, len(rows))
 			}
-			if at, ok := asked[prev]; ok && !c.UpdateTaskedAt.Equal(at) {
-				t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", prev, c.UpdateTaskedAt, at)
+			if id, ok := asked[prev]; ok && rows[0] != id {
+				t.Errorf("%s was asked in row %d, want the first ask's row %d: the limit asks no open round again", prev, rows[0], id)
 			}
-			asked[prev] = *c.UpdateTaskedAt
+			asked[prev] = rows[0]
 		}
 	}
 	// The last key opened is asked at the sweep after its opening, as every key before it was.
 	rig.clock.advance(time.Minute)
 	rig.tick()
 	for _, key := range keys {
-		c := rig.claimOf(key, claim.RoleArchitect)
-		if c.UpdateTaskedAt == nil {
-			t.Fatalf("%s holds the round with no ask recorded a sweep after the last opening: %+v", key, c)
+		rows := rig.askRowsOf(key, claim.RoleArchitect)
+		if len(rows) != 1 {
+			t.Fatalf("%s holds the round with %d asks queued a sweep after the last opening, want one", key, len(rows))
 		}
-		if at, ok := asked[key]; ok && !c.UpdateTaskedAt.Equal(at) {
-			t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", key, c.UpdateTaskedAt, at)
+		if id, ok := asked[key]; ok && rows[0] != id {
+			t.Errorf("%s was asked in row %d, want the first ask's row %d: the limit asks no open round again", key, rows[0], id)
 		}
 	}
 

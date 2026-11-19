@@ -654,8 +654,6 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
     // The Conversation's live-agent query.
     `/api/v1/issues/${issue.key}/subscribers`,
-    // The one block-schema fetch every document surface shares for the session.
-    "/api/v1/schema/blocks",
     // The header's read of the project's architecture sources: the `Components:` line offers
     // its picker only when the project has one. The component tree itself,
     // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
@@ -704,7 +702,9 @@ test("live: the Reconnecting pill never covers the phone margin sheet toggle @ph
   const pill = page.getByTestId("connection-pill");
   await expect(pill).toBeVisible();
 
+  // The waits above drew the toggle and the pill, and a drawn element has a box, so it is there.
   const toggleBox = await toggle.boundingBox();
+  // The pill was waited for above as well, so its box is there as the toggle's is.
   const pillBox = await pill.boundingBox();
   expect(toggleBox).not.toBeNull();
   expect(pillBox).not.toBeNull();

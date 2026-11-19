@@ -27,6 +27,7 @@ import (
 	"authelia.com/provider/oauth2/token/jose"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -59,19 +60,30 @@ var (
 	// ErrNotASession is a live token that is not a session's credential: the broker's answer
 	// names no session, or names neither a person nor a service, or the token was issued to a
 	// client other than the exchange every Dispatch access token comes from (ExchangeClientID),
-	// or its project scope is a word this package does not know. A machine login's own access
-	// token is exactly that — the credential a dev box holds to ask the broker for other
-	// credentials, DPoP-bound and perfectly live, for which no exchange ever decided a session,
-	// a person or a project scope — and so is any other token the broker issued for something
-	// other than acting as a session. Whoever mounts this check acts as the session a token
-	// names, so a token that names none is refused here rather than admitted for a request body
-	// to name one in its place.
+	// or its project scope and its OAuth scope together are no shape this verifier serves
+	// (shapeOf): a project-scope word this package does not know, the project scope none in any
+	// shape but a read-only token's, the scope read beside the project scope named or person,
+	// or a read-only token presented to a verifier built without Options.ServesReadOnly; or its
+	// list of projects is one no exchange mints. A machine login's own access token is exactly
+	// that — the credential a dev box holds to ask the broker for other credentials, DPoP-bound
+	// and perfectly live, for which no exchange ever decided a session, a person or a project
+	// scope — and so is any other token the broker issued for something other than acting as a
+	// session. Whoever mounts this check acts as the session a token names, so a token that names
+	// none is refused here rather than admitted for a request body to name one in its place.
 	//
-	// The scope is refused for the same reason it is read at all: it says what Project means, so
-	// a word this package does not know is a token it cannot read rather than one that names no
-	// project. Reading an unknown scope as unscoped would hand its caller every project the
+	// The scope is refused for the same reason it is read at all: it says what Projects means,
+	// so a word this package does not know is a token it cannot read rather than one that names
+	// no project. Reading an unknown scope as unscoped would hand its caller every project the
 	// moment the broker learns a third word, which is the one mistake a check deciding what a
 	// credential covers must not make.
+	//
+	// A read-only token is refused here by every verifier but one whose service asked for it,
+	// exactly as a build that predates the token refuses it: a service that did not ask reads no
+	// Caller.ReadOnly, so admitting the token there would open every route that service serves
+	// to a token minted only to read. The scope read beside named or person, and none in any
+	// other shape, are refused by every verifier, the switch or not. The broker mints neither,
+	// and a token that holds read is one its broker meant to read only, so reading it by its
+	// project scope alone would let it write: a read-scoped token fails closed.
 	ErrNotASession = errors.New("brokertoken: the access token is not a session's credential")
 )
 
@@ -151,8 +163,8 @@ var proofAlgorithmNames = func() []string {
 	return names
 }()
 
-// Caller is who a verified token names: what a writer is recorded under, and nothing else the
-// broker's answer carries. It never carries the token.
+// Caller is who a verified token names and whether that token only reads: what a writer is
+// recorded under, and nothing else the broker's answer carries. It never carries the token.
 type Caller struct {
 	// Session is the session the writes are recorded as, which a Caller always names: an answer
 	// naming none is ErrNotASession and never reaches one.
@@ -165,15 +177,23 @@ type Caller struct {
 	// check decides what such a caller may do; what this package promises is that one of the two
 	// is set.
 	Service string
-	// Project is the one project key this caller may write, and is empty for a caller that is
-	// held to no single project. callerOf applies the broker's named-scope rule, so a reader
-	// takes this field as it stands rather than reading the scope beside it.
-	Project string
+	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
+	// token's one project, or none for an account entry naming none (the shared public-session
+	// account's), and the projects a ProjectScopePerson token's trade asked for, each one its
+	// person could see then, nil for none. A read-only caller (ReadOnly) names none, since it
+	// writes none. Sorted, each once.
+	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
 	// to its person" from every other answer, and an absent or misspelt scope must not read as
-	// ProjectScopePerson.
+	// ProjectScopePerson. It is ProjectScopeNone exactly when ReadOnly is set.
 	ProjectScope string
+	// ReadOnly is true exactly when the verifier accepted a read-only token: the project scope
+	// ProjectScopeNone beside the one scope ScopeRead, a service, and no person and no project
+	// (shapeOf). Only a verifier built with Options.ServesReadOnly answers such a Caller, and
+	// the service that set the switch is the one that decides which of its routes the caller
+	// may call; it writes none of them.
+	ReadOnly bool
 }
 
 // Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
@@ -210,6 +230,18 @@ type Options struct {
 	// does an answer's 'exp', which the broker dated — so a test's clock starts from the real one
 	// and moves forward from there rather than naming an arbitrary instant.
 	Now func() time.Time
+	// ServesReadOnly is this service serving a read-only token on the routes it chooses: the
+	// project scope ProjectScopeNone beside the one scope ScopeRead, a service, and no person and
+	// no project (shapeOf). A verifier built with it accepts that token and marks its Caller
+	// ReadOnly, and the service holds every route it does not choose closed to such a caller.
+	// Only Dispatch sets it, whose read list names those routes (cmd/dispatch,
+	// brokerTokenVerifier).
+	//
+	// Without it a read-only token is ErrNotASession, as on a build before the switch existed:
+	// a service that leaves it unset, the Envoy listener among them, reads no Caller.ReadOnly,
+	// so admitting the token there would open every route that service serves to a token minted
+	// only to read.
+	ServesReadOnly bool
 }
 
 // Verifier decides callers presenting a broker-issued DPoP token. It is safe for concurrent use
@@ -229,6 +261,9 @@ type Verifier struct {
 	cache     *answerCache
 	flight    singleflight.Group
 	now       func() time.Time
+
+	// servesReadOnly is Options.ServesReadOnly: whether live lets a read-only answer through.
+	servesReadOnly bool
 }
 
 // New builds a Verifier, refusing options it cannot serve a single request with rather than
@@ -285,6 +320,8 @@ func New(options Options) (*Verifier, error) {
 		addresses: ratelimit.NewKeyed(limit),
 		cache:     newAnswerCache(),
 		now:       now,
+
+		servesReadOnly: options.ServesReadOnly,
 	}, nil
 }
 
@@ -319,7 +356,7 @@ func Presented(r *http.Request) (string, bool) {
 // Its error is one of the sentinels above, and the Caller it answers is only ever one the broker
 // called live and whose proof verified.
 func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) {
-	token, answer, err := v.live(ctx, r)
+	token, answer, caller, err := v.live(ctx, r)
 	if err != nil {
 		return Caller{}, err
 	}
@@ -327,7 +364,7 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 	if _, err := v.strategy.ValidateResourceAccess(ctx, signed, token, answer.Thumbprint, false); err != nil {
 		return Caller{}, v.refused(err, signed, answer.Thumbprint)
 	}
-	return callerOf(answer), nil
+	return caller, nil
 }
 
 // Live is Verify without the proof check: the broker's answer alone, cached or fresh.
@@ -339,44 +376,127 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 // and would close a sound connection; what is left to ask of an open connection is whether the
 // token is still live, which is this. Nothing admits a caller through it.
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, answer, err := v.live(ctx, r)
-	if err != nil {
-		return Caller{}, err
-	}
-	return callerOf(answer), nil
+	_, _, caller, err := v.live(ctx, r)
+	return caller, err
 }
 
-// live is the broker's half of both checks: the token r presents and an answer saying it is
-// live, bound to a key, issued for acting as a session, and scoped by a word this package reads.
-func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, error) {
+// live is the broker's half of both checks: the token r presents, the broker's answer about it,
+// and the caller sessionCaller reads that answer as, held to this verifier's read-only switch.
+// Verify and Live both read the answer through here, so an open connection's heartbeat is held to
+// the same rule as the request that opened it, the read-only switch included.
+func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, Caller, error) {
 	token, ok := Presented(r)
 	if !ok {
-		return "", Introspection{}, ErrNotPresented
+		return "", Introspection{}, Caller{}, ErrNotPresented
 	}
 	answer, err := v.known(ctx, r, token)
 	if err != nil {
-		return "", Introspection{}, err
+		return "", Introspection{}, Caller{}, err
 	}
+	caller, err := sessionCaller(answer, v.servesReadOnly)
+	if err != nil {
+		return "", Introspection{}, Caller{}, err
+	}
+	return token, answer, caller, nil
+}
+
+// SessionCaller is the NATS auth service's reading of the broker's answer about a token as a
+// session's caller (internal/broker/natscallout): sessionCaller with the read-only switch off, so it
+// serves no read-only token, as a verifier built without Options.ServesReadOnly serves none. It
+// holds no proof to the key; whoever calls it checks the proof its credential carries against
+// answer.Thumbprint.
+func SessionCaller(answer Introspection) (Caller, error) {
+	return sessionCaller(answer, false)
+}
+
+// sessionCaller is the one reading of the broker's answer about a token as a session's caller:
+// Verify and Live make it through live with their verifier's Options.ServesReadOnly, and the NATS
+// auth service through SessionCaller with the switch off. The token is live (ErrNotActive), bound
+// to a key (ErrKeyMismatch: no proof can be the key it does not have), and issued for acting as a
+// session in a shape this package reads, a read-only one only when servesReadOnly is set
+// (ErrNotASession); the Caller it names is callerOf the answer.
+func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	if !answer.Active {
-		return "", Introspection{}, ErrNotActive
+		return Caller{}, ErrNotActive
 	}
 	if answer.Thumbprint == "" {
-		return "", Introspection{}, ErrKeyMismatch
+		return Caller{}, ErrKeyMismatch
 	}
 	// A token names a person or a service: an exchange decided one of the two for every token
 	// issued for acting as a session, and one that names neither is no session's credential
 	// whatever else it carries.
 	//
-	// The last two clauses are the scope the Project beside it is read under: a word this package
-	// does not know is a token it cannot read, and is refused here rather than taken as a token
-	// that names no project at all (ErrNotASession). A named scope with no project beside it is
-	// the same case: it is refused rather than read as a caller no project check covers.
+	// The rest is the shape and the list the Projects beside it are read under. The shape is the
+	// project scope read together with the OAuth scope: a project-scope word this package does
+	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
+	// here rather than taken as a token that names no project at all (ErrNotASession). A
+	// read-only token passes only a verifier whose service serves one. A named token is an
+	// operator's entry's, which names one project, or none for an account entry that names none,
+	// and always a person: a named answer naming two or more projects, which a reader holding a
+	// write to one project would take as no limit at all, or naming none and no person, is the
+	// same case. A list no exchange mints (oauthwire.ValidProjects) and a service's token naming
+	// a project, which the exchange refuses to mint, are refused for the same reason.
+	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
-		(answer.ProjectScope != ProjectScopeNamed && answer.ProjectScope != ProjectScopePerson) ||
-		(answer.ProjectScope == ProjectScopeNamed && answer.Project == "") {
-		return "", Introspection{}, ErrNotASession
+		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
+		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
+		(answer.Person == "" && len(answer.Projects) > 0) ||
+		oauthwire.ValidProjects(answer.Projects) != nil {
+		return Caller{}, ErrNotASession
 	}
-	return token, answer, nil
+	return callerOf(answer, shape), nil
+}
+
+// tokenShape is what an answer's project scope and its OAuth scope together make of a token
+// issued for acting as a session (shapeOf).
+type tokenShape int
+
+const (
+	// shapeNotASession is an answer no verifier reads as a session's token, whatever its
+	// switch: a project scope that is absent or a word this package does not know, the project
+	// scope none in any shape but shapeReadOnly's, or the scope read beside the project scope
+	// named or person.
+	shapeNotASession tokenShape = iota
+	// shapeOrdinary is the project scope named or person with no scope read beside it: every
+	// token the broker minted before read entries existed, and every token it mints from any
+	// other entry now.
+	shapeOrdinary
+	// shapeReadOnly is the token a read entry mints (BROKER_EXCHANGE_READ_ACCOUNTS): the
+	// project scope none, the scope exactly the one word read, a service, and no person and no
+	// projects. A verifier accepts it only under Options.ServesReadOnly.
+	shapeReadOnly
+)
+
+// shapeOf is the one rule that says what a read-only token is, and so what every other answer
+// is beside it. The read-only shape is exact: the project scope ProjectScopeNone, a Scope that
+// is the one word ScopeRead, a service, and no person and no projects. An answer carrying none
+// in any other shape is no session's token, and so is one whose Scope holds the word read
+// beside the project scope named or person, since no broker mints either and read beside a
+// project scope that writes would let a token meant to read write.
+//
+// Scope is read as RFC 7662 spells it, words separated by spaces, one word at a time and with
+// no slice built of them, because this runs on every request a verifier decides, an answer
+// served from the cache included.
+func shapeOf(answer Introspection) tokenShape {
+	words, read := 0, false
+	for word := range strings.FieldsSeq(answer.Scope) {
+		words++
+		if word == ScopeRead {
+			read = true
+		}
+	}
+	switch answer.ProjectScope {
+	case ProjectScopeNamed, ProjectScopePerson:
+		if read {
+			return shapeNotASession
+		}
+		return shapeOrdinary
+	case ProjectScopeNone:
+		if read && words == 1 && answer.Person == "" && len(answer.Projects) == 0 && answer.Service != "" {
+			return shapeReadOnly
+		}
+	}
+	return shapeNotASession
 }
 
 // known is the broker's answer about token: the one remembered for it while that answer is still

@@ -628,33 +628,39 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	// Step 8: an owner edits LINEAR_API_KEY's owner tag to a GitHub login, which names no person.
-	// The live reload refuses that one secret, logging its name and why in the line the
-	// deployment's alarm filters on, and a fresh request for it answers 400 UNKNOWN_SECRET while
-	// every other secret is still served; once the tag names a person again the next reload
-	// serves it again.
+	// The live reload refuses that one secret, writing its name, why and the owner it lacks in one
+	// line for the change however many reloads find it refused, and a fresh request for it answers
+	// 400 UNKNOWN_SECRET while every other secret is still served; once the tag names a person
+	// again the next reload serves it again, writing the one line that says it is servable.
 	t.Run("8_MalformedOwnerTagIsRefusedByTheLiveReload", func(t *testing.T) {
 		linear := policytest.Secret("LINEAR_API_KEY", "sjawhar", policy.TierHuman, "linear-v1")
 		ts.Secrets.Put(linear)
-		refused := "ERROR agent secret policy refused name=" + policytest.ID("LINEAR_API_KEY") + " reason=owner-tag-malformed\n"
+		refused := "ERROR " + policy.RefusedMessage + " name=" + policytest.ID("LINEAR_API_KEY") + " reason=owner-tag-malformed owner=\"\" first_load=false\n"
 		ts.awaitStatus(t, "LINEAR_API_KEY", http.StatusBadRequest, "UNKNOWN_SECRET")
-		if !strings.Contains(ts.Log.String(), refused) {
-			t.Fatalf("broker log has no line %q:\n%s", refused, ts.Log.String())
-		}
 		ts.createPending(t, sessionKey, enrollmentID, "e2e other secrets still served", "SLACK_MCP_XOXP_TOKEN")
 
 		ts.Secrets.Put(policytest.Secret("LINEAR_API_KEY", testApprover, policy.TierHuman, "linear-v1"))
 		ts.awaitStatus(t, "LINEAR_API_KEY", http.StatusOK, "")
+		// Every reload since the edit, a reloadInterval apart, found the secret as the one before
+		// did, but the two that changed its state.
+		servable := "INFO " + policy.ServableMessage + " name=" + policytest.ID("LINEAR_API_KEY") + " reason=owner-tag-malformed owner=\"\" now=servable\n"
+		if log := ts.Log.String(); strings.Count(log, refused) != 1 || strings.Count(log, servable) != 1 || strings.Index(log, refused) > strings.Index(log, servable) {
+			t.Fatalf("broker log holds %d of the line %q and %d of %q, want one of each in that order:\n%s",
+				strings.Count(log, refused), refused, strings.Count(log, servable), servable, log)
+		}
 	})
 
-	// Step 9: a shared human-tier secret's request names "anyone" as its approver, reaches the
-	// pending list of a person who is neither its requester's operator nor anyone the policy names,
-	// and that person's approval on the broker's page releases its value.
+	// Step 9: a shared human-tier secret's request names "anyone" as its approver and is listed for
+	// the person responsible for the session that asked, its operator, and for nobody else; a
+	// person who is neither its requester's operator nor anyone the policy names still approves it
+	// on the broker's page, and that approval releases its value.
 	t.Run("9_AnyoneSignedInApprovesASharedHumanTierSecret", func(t *testing.T) {
 		requestID, recordID := ts.createPending(t, sessionKey, enrollmentID, "e2e shared deploy", "SHARED_DEPLOY_KEY")
 		if read := ts.status(t, sessionKey, enrollmentID, requestID); read.Approver == nil || *read.Approver != record.AnyoneApprover {
 			t.Fatalf("shared request = %+v, want approver %q", read, record.AnyoneApprover)
 		}
-		ts.awaitPendingFor(t, otherPerson, recordID)
+		ts.awaitPendingFor(t, testApprover, recordID)
+		ts.refutePendingFor(t, otherPerson, recordID)
 
 		ts.signedIn(t, otherPerson, recordID).Decide(t, recordID, true)
 		ts.awaitValue(t, sessionKey, enrollmentID, ts.grantOf(t, sessionKey, enrollmentID, requestID), "SHARED_DEPLOY_KEY", "shared-deploy-v1")
@@ -686,8 +692,8 @@ func TestEndToEnd(t *testing.T) {
 
 	// Step 11: a human-tier secret owned by one identity that is neither the asking session's
 	// operator nor policy.OwnerShared. Step 9 is this step's control: there a shared-owner
-	// human-tier secret's card is on every signed-in person's page, its approver being
-	// record.AnyoneApprover, so any of them may release it. Here the card is on exactly one
+	// human-tier secret's card waits on record.AnyoneApprover, so a person whose page does not
+	// list it may still release it. Here the card is on exactly one
 	// person's page — the owner's — and on nobody else's: not the requesting session's own
 	// operator's, and not the shared approver's pending list. Only that one owner, signed in to
 	// the broker, decides it on the broker's own page, as step 3's approver does, and only then

@@ -20,19 +20,21 @@ The stream captures every agent subject, so it stores each forward there, and th
 consumer delivers it once — also after a restart or a dropped connection (below). No session
 answers a receipt: a message sent through the listener's `POST /v1/messages/publish` waits only
 for the stream's acknowledgement that it stored the forward, and answers the sender with an error
-once four seconds pass without one. A role message no live holder can take is kept for the
-session that claims the role next: that session is handed it once, within one hour of the keep,
-and the publish answers 202 to say the listener kept it. A
-`notifications.team.<name>` topic is stored like any other followed topic; every other
-`notifications.` topic the stream does not capture is refused by name, at publish and at
-subscribe, because no session would ever be delivered it.
+once four seconds pass without one. A role message no live holder can take is kept for one
+hour: the next session to hold the role live in that hour is handed it once, and the publish
+answers 202 with `kept_until`, the end of that hour. If no session takes it, the listener drops
+it and sends a dead letter, an Envoy card that names it, to the session the publish named as its
+source, unless it drops it more than an hour late. A `notifications.team.<name>` topic is stored
+like any other followed topic; every other `notifications.` topic the stream does not capture is
+refused by name, at publish and at subscribe, because no session would ever be delivered it.
 
-This extension claims the role for the session the host has open, and every automatic claim is
-soft: it names the session it continues, which is a fork's or branch's parent, or the session
-this process last held the role under. The listener moves the role off that predecessor only
-when the predecessor has no live registration, when its live registration carries this extension
-instance's own client instance id, or when either side carries no instance id. A predecessor
-another process still runs keeps the role, and the claim is refused naming that holder. A claim
+This extension claims the role for the session the host has open, and every automatic claim but
+the launch role's (below) is soft: it names the session it continues, which is a fork's or
+branch's parent, or the session this process last held the role under. The listener moves the
+role off that predecessor only when the predecessor has no live registration, when its live
+registration carries this extension instance's own client instance id, or when either side
+carries no instance id. A predecessor another process still runs keeps the role, and the claim
+is refused naming that holder. A claim
 of a role already held under this session's own id is decided on the standing claim rather than
 on the registration: the listener grants it to the process that claim names, grants it once
 nobody renewed the claim inside its live window, and otherwise refuses it naming this very
@@ -67,6 +69,47 @@ another process wrote is pressed only while this process holds none. The queues,
 shared role state behind all of this are `src/registration-state.ts`, beside the extension's
 other `src/` modules: a queued task acts through a handle that refuses every step past the
 task's deadline, or once its session is no longer the open session.
+
+A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
+session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
+--session-id`). The deployment repository's sessions workload sets both once t-e-32 lands (it sets
+`AGENT_SESSION_ROLE` today). While the named session's own records name no other role, every
+pass that registers it — its start, each session event and each heartbeat — claims that role for
+it outright, last-claim-wins, under the session's own credential, which the listener holds to
+that very session. A holder that is another session is stale or wrong, such as an evicted pod's
+session the registry still lists as live for some minutes, so the role comes back to the live
+session at its next registration. The claim writes its transcript record once: a later claim the
+newest record already names writes none. A move the model makes with `envoy_role_set` is a
+record of its own, which no pass undoes. Without the variables no pass claims a role the
+session's records do not name.
+
+The role is that one session's alone, and each pass compares the session open then. Nothing
+takes the variables out of the environment, so every process the agent starts in the pod gets
+them, such as an `omp -p` review, whether it was started from the shell's environment or by a
+`Bun.spawn` that names no `env`; so does an ACP host's other session, another extension instance
+of the same process. Each of those is another session id, as is an id a `/new`, a `/fork` or a
+tree branch mints, and none of them claims the role by any path: not at a registration, not from
+the record of the claim a fork's or a branch's transcript copies, and not through `envoy_role_set`
+or the Legion plugin's claim, which refuse it. A session the process moves to from the named one
+hands the role back, and a resume of the named session claims it again. (A `task` subagent's
+instance registers nothing at all, so it never claims a role.) A launch that names the role and
+no session, or an empty one, names no holder, and no session claims it; an empty role names no
+role. The first time a session the process decides for is refused the role, the process logs one
+line, once for the process: `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">;
+this session <id> claims nothing`. Each refused session also shows the person one notice on
+screen: `envoy: role <role> stays with the pod's session <id>; messages to the role are not
+delivered here. /resume <id> takes it back`, or, when the launch names no session, `envoy: role
+<role> is the pod's, but the pod names no session for it, so no session claims it; messages to
+the role are not delivered here`. A role name given to `envoy_role_set` or the Legion claim is read
+with the white space Go's `strings.TrimSpace` takes trimmed from both ends, as the listener reads
+it (U+0085 included), so a padded name is the same role.
+
+So a `/new`, a `/fork` or a tree branch in a pod moves the person off the role: its messages are
+not delivered to the new session. The process hands the role back when it leaves the named
+session, so nobody holds it until the named session runs again. The listener keeps a message sent
+to a role nobody holds for an hour, unless its sender set `keep: false`, and hands it to the next
+session that claims the role, so `/resume <id>` of the named session within that hour still gets
+them: that session's own record of the claim is acted on, and it claims the role again.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
@@ -130,7 +173,7 @@ set -g set-clipboard on
 ## What every model request carries
 
 A session with Dispatch configured — a top-level session, a Legion pane or a `task` subagent —
-sends two extra user messages with every model request of its conversation. At the head, after
+sends extra user messages with every model request of its conversation. At the head, after
 any compaction summary, it sends the `dispatch-first` skill, whose text never changes. It also
 sends what people wrote to the session in the last 72
 hours that Dispatch delivered to it: answers to its asks, replies on them and in its comment
@@ -138,7 +181,7 @@ threads, comments on its documents and routed issues, mentions, and messages, ne
 word for word. A subagent reads its parent's list. The list stays under 8,000 characters (at most 7,999): the oldest
 items that do not fit are left out, and its last line says how many and that `dispatch answers`
 prints them all. It is read on every request and waits at most 800 ms for Dispatch. Past that,
-or when the read fails, the request carries the last list read, with the time it was read and why
+or when the read fails, the read gives the last list read, with the time it was read and why
 this read failed, or, when no list read has an item from the last 72 hours, one line saying the
 list could not be read and why. A Dispatch build older than the answers route answers it with its
 own `404 NOT_FOUND` "no route for …". Against that Dispatch a request carries no such line, since
@@ -147,18 +190,75 @@ left-out line naming no command; the log says once per session that the Dispatch
 route; and that Dispatch is not asked again for 5 minutes. Any other answer, a proxy's 404 page or
 a 200 that is no answers list included, is a failed read.
 
-The list goes after the request's last message only on the request where it first shows an item,
-or new words in one. On every request after that it stays right after the message it followed
-there, so the request ends with its own last message and the model does not take a list with
-nothing new in it for a new turn; it keeps that place when it only loses items or its header
-changes. After a compaction summarizes that message, or in a new process, the list goes after the
-last message once more. It is never at the head, so a change in it costs only the bytes after it,
-and a list that keeps its place is inside the cached prefix of the next request.
+What people wrote goes to the model in answers messages: user messages of their own, never at
+the head and never merged into a message of the conversation. A list is one message of two text
+blocks: the list, then the sentence "This list replaces every earlier list of people's answers
+in this conversation, and every earlier line saying the list could not be read: read only the
+newest one as current." The line saying the list could not be read is a message of one block,
+with no sentence. The session file records each answers message a request sends, with its exact
+text and the message it followed. Every later request of the session, in the same process or
+in one that resumed the session, carries each of them again right after that message, with the
+same bytes. So a request changes no byte that an earlier request sent, with two exceptions: a
+request made while a compaction runs (below), and a message the session file did not record,
+because the host moved to another session while the read waited or the write failed. The
+session's next request does not carry such a message again, and adds the list anew after its own
+last message when its read still shows it. A request whose read shows nothing new adds nothing
+and ends with its own last message, so the model does not take a list with nothing new in it
+for a new turn.
+
+A request adds an answers message after its last message when its read gives a list or the
+failure line and the request holds no answers message. Otherwise it adds one only when the read
+shows a change against the newest answers message it holds: a new item, new words in one, or an
+item withdrawn while its time is still inside the 72 hours. Items the 8,000-character limit
+leaves out count too: a new message longer than the limit, or a comment an edit made too long
+to fit, adds a list whose last line says how many items were left out. The answers messages sent
+before stay where they went. An item that only aged out of the 72 hours adds nothing, and so
+does a list that differs only in the read it names. The request then still carries the newest
+list sent, which can name an older read than the request's own and still show an item that has
+since left the 72 hours. When a read finds no item for the session but an item of the newest list
+sent was withdrawn inside the 72 hours, as when a person retracts the only answer, the request
+adds a list with no item: the list's first line, then "No item: every item an earlier list
+showed was withdrawn or is now older than 72 hours.", then the same sentence. An older copy of
+the extension adds its list after the last message of every request. This copy takes that list
+as its own read, under the same rules, and compares its text, except its read time and reason,
+with the newest answers message sent.
+
+A read with no list to give adds the line saying the list could not be read, and adds it once:
+later failed reads add nothing, and the line stays the newest answers message until a read
+gives a list, which goes after the last message. A read that Dispatch answers with no item
+adds nothing after that line, so the line stays the newest answers message, unless an item of
+the newest list sent was withdrawn inside the 72 hours: then the request adds the list with no
+item. A read that fails but still gives the last list read, with the same items, adds nothing,
+so that request does not tell the model that its read failed. The log says why a read failed
+once per failure episode, whether the request tells the model or not. A failure episode runs
+from a failed read to the next read that Dispatch answers, and a read that misses the 800 ms
+deadline is a failed read, so a failure that lasts is one line. A Dispatch with no answers
+route, when no list read before from it has an item from the last 72 hours (none was read, or
+every item of it has aged out), or no Dispatch at all, adds nothing and keeps every answers
+message sent.
+
+When a compaction summarizes the message an answers message followed, or the branch moves away
+from it, that answers message leaves the request and is no longer compared. When none is left,
+the next read with a list or the failure line adds its text after the last message. While Oh My
+Pi compacts the session, a request carries none of the answers messages sent: its read's list or
+failure line goes after its last message and is not recorded. So a request made while a
+speculative compaction runs in the background changes bytes from the first answers message sent
+on, which is a known limit. On Anthropic, Oh My Pi puts no cache anchor on a message the
+extension adds, so every byte before the answers message that a change adds, the answers
+messages sent before it included, is in the cached prefix of the request before it.
 
 Oh My Pi also builds requests that are not turns of the conversation from it; those carry the
-skill but no list, and wait on no read: a side turn (a Dispatch BTW, the stop-time self-check,
-`/btw`), whose last message stays its question; the handoff, whose last message stays the handoff
-prompt; and a remote compaction's request, which ends where the compaction cuts the conversation.
+skill but no answers message, and record none: a side turn (a Dispatch BTW, the stop-time
+self-check, `/btw`), whose last message stays its question and which waits on no read; the
+handoff, whose last message stays the handoff prompt and which waits on no read either; and a
+remote compaction's request, which ends where the compaction cuts the conversation. Two others
+that the extension cannot tell from a turn, Oh My Pi's LLM-request dump and Codex live steering,
+can add and record a list after their own last message, and so can a request the host never
+sends (a stop or an abort after the extension ran). The next request then carries that list
+after that message, and no byte already sent changes. The requests of one session decide in the
+order they started. So when a new request starts while a stopped one still waits on its read,
+the new request decides after the stopped one and reads the session file again first: it
+carries the stopped request's list where it went, and the two never both add the same change.
 
 ## Development install
 
@@ -383,10 +483,11 @@ a path that reaches a file descriptor of whichever process opens it (`/dev/stdin
 `/proc/self/fd/N`, `/proc/thread-self/fd/N`, `/proc/<n>/fd/N`, and any link to one): AskGate
 would open it in Oh My Pi's process and the command in its shell. For text from standard input,
 use `--<field>-file -` with a quoted here-document. For an upload, that is `--content-file -`:
-the CLI reads `--path -` as a file named `-`. The gate cuts all arguments at 64 KiB as one JSON
-block, so it reviews only part of a long document. It judges an upload against content failure
-10 alone: a plan or a report is long by nature. An upload of any other file is not reviewed. A
-`task` subagent is not reviewed.
+the CLI reads `--path -` as a file named `-`. Only one flag of a call may read standard input.
+The CLI refuses `--<field> -` for each text flag except an upload's `--path`. The gate cuts all
+arguments at 64 KiB as one JSON block, so it reviews only part of a long document. It judges an
+upload against content failure 10 alone: a plan or a report is long by nature. An upload of any
+other file is not reviewed. A `task` subagent is not reviewed.
 
 **A file a call of the same message writes.** Oh My Pi runs the gate for every call of a message
 before any call of that message runs. So the gate reads a file before an earlier call of the same
@@ -495,12 +596,12 @@ gated write only when it consumes one, so a write sent any other way is refused 
   help only: the gate refuses nothing for it.
 - **The unmarked write that carries an ask.** The `unmarked` entry reaches only this machine's
   disk. Where such a write carries at least one ask for a person, the CLI counts those asks from
-  the write's own text (`newAsks` in `@legion/envoy-client/askgate-new-asks`) and writes the count
-  into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record for it on
-  Dispatch (below), with the tool, the mode and that count and no ask text. The count is of the
-  asks the write carries, so a re-upload of ask blocks the stored version already holds counts
-  them as carried: in `warn` mode the write has already posted when the ledger is read, so a read
-  of the stored version would see the new text and count nothing.
+  the write's own text (`newAskCount` in `@legion/envoy-client/askgate-new-asks`) and writes the
+  count into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record
+  for it on Dispatch (below), with the tool, the mode and that count and no ask text.
+  The count is of the asks the write carries, so a re-upload of ask blocks the stored version
+  already holds counts them as carried: in `warn` mode the write has already posted when the
+  ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
@@ -838,9 +939,16 @@ documents and prints the day's refusals by rule, the refusals the agent overrode
 judged on part of their asks and those that judged none, the unmarked writes by mode with the asks
 they carried, and the rules-call error rate, each split by `source`, with the documents and lines
 it could not read, and the records it read twice, counted beside them. An unmarked write is in no
-rules-call count and in no override count: no check judged it. Its `asksCarried` counts every ask
-and ask block the write carries, so a re-upload of blocks a stored version already holds counts
-them as carried. The same script's `--sessions <dir>` mode still reports the entries on disk, the
+rules-call count and in no override count: no check judged it.
+Its `asksCarried` counts each ask and ask block the write carries as one, and groups none of them
+by id or by text, so two ask blocks that open with the same words count two.
+`newAskCount` reads a `doc-edit` `replace`'s `with` as every string the server might parse it as,
+and the server parses one of them, so a `replace` counts as the most asks any one of those
+readings opens.
+The count is taken before the write goes out, so it cannot know which reading the server takes,
+and the largest can only over-count.
+A re-upload of blocks a stored version already holds counts them as carried.
+The same script's `--sessions <dir>` mode still reports the entries on disk, the
 decision records not confirmed among them. Each flag is given once: the
 script refuses a flag given twice by name, rather than reading only its last value.
 

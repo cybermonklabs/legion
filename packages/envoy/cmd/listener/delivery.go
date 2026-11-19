@@ -78,11 +78,28 @@ type listenerDeliveryHandlerConfig struct {
 	// session to read when it answers again.
 	fanoutUnresponsiveSkips *metrics.Counter
 	deliveryDuration        *metrics.Histogram
-	// roleKeptExpired counts the kept role messages a claim's drain dropped unforwarded because
-	// the stream had held them longer than roleKeepWindow (envoy_role_kept_expired_total,
-	// drainKeptRole). A reading that climbs says roles are being claimed long after the messages
-	// meant for them were sent, which is a routing problem rather than a delivery one.
+	// roleKeptExpired counts the kept role copies a walk dropped at the end of their hour
+	// (envoy_role_kept_expired_total, keptRoleDroppedReport), whether or not a session held the
+	// role, under two labels: kept_by, listener or dispatch_outbox for a copy Dispatch's outbox
+	// kept (isOutboxCopy), and stale, true for a copy no walk had claimed whose hour ended more
+	// than an hour before the walk that dropped it (roleKeepStaleAge). A listener copy dropped
+	// with stale false is one whose sender is sent a dead letter when its publish named one, so
+	// a reading that climbs says messages kept for roles go unread by any holder in their hour.
 	roleKeptExpired *metrics.Counter
+	// roleDeadLetters counts the dead letters a walk sent the sender of a kept copy it dropped
+	// (envoy_role_dead_letters_total, reportKeptRoleDeadLetter), under the label result: stored
+	// for one the stream took, refused for one it refused for good, which is not sent again.
+	roleDeadLetters *metrics.Counter
+	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
+	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
+	roleKeptUndecodable *metrics.Counter
+	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
+	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
+	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).
+	// main.go sets it to client.PublishStoredAs, and so does every test that builds a config,
+	// while a test that must fail a dead letter's publish alone, with the cursor's writes going
+	// through, replaces it on its copy.
+	publishDeadLetter func(ctx context.Context, subject string, item contracts.Envelope, msgID string) error
 	// unplaceableRetryWindow is how long an agent delivery this listener cannot place is held
 	// in the stream and redelivered before it is given up with a record of its own
 	// (agentSubjectDelivery). main.go reads it from ENVOY_UNPLACEABLE_RETRY_WINDOW, defaulting
@@ -107,6 +124,15 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
+	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
+	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
+	// handovers the claim route, the keep and a registration that makes a holder live again
+	// start (runKeptRoleDrain) and the sweep's (sweepKeptRoleLanes), and the sweep's repeated
+	// wake report, which it dates and names the interval of (raiseKeptRoleWake). It is required:
+	// main.go sets it to time.Now, and so does every test that builds a config, while a test that
+	// must cross a copy's hour moves this clock rather than waiting the hour out, since the store
+	// time is the stream's own and no caller chooses it.
+	now func() time.Time
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -281,14 +307,16 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 }
 
 // publishDeliveryException publishes item's delivery exception for reason, on the transport its
-// own lane takes (bus.Client.Publish, bus.UsesCoreTransport): the stream stores the lane of an
-// agent subject and of a team topic, and a role lane's exception keeps core NATS, since no stream
-// subject captures it. Every fanout refusal took core NATS until team topics were stored, which
-// keeps nothing: the report of a team message reached only a reader subscribed at that moment,
-// where the stream's copy reaches a session's consumer whenever that session comes back. origin,
-// when not empty, identifies the stored message the exception is about (exceptionOrigin): an
-// exception the stream stores then carries Nats-Msg-Id exception.<reason>.<origin>, so the stream
-// keeps one copy however many listeners raise it for that message, each from its own durable.
+// own lane takes (bus.Client.Publish, bus.Client.UsesCoreTransport): the stream stores the lane
+// of an agent subject and of a team topic, and a role lane's exception keeps core NATS, since no
+// stream subject captures it. Every fanout refusal took core NATS until team topics were stored,
+// which keeps nothing: the report of a team message reached only a reader subscribed at that
+// moment, where the stream's copy reaches a session's consumer whenever that session comes back.
+// origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
+// an exception on a lane the deployed stream captures (bus.Client.DeployedStreamCaptures, the
+// judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
+// stream keeps one copy however many listeners raise it for that message, each from its own
+// durable, a lane only a newer build's subjects capture among them.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -297,7 +325,7 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 	if err != nil {
 		return err
 	}
-	if origin != "" && bus.StreamCaptures(exception.Topic) {
+	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
 		// The stream keeps one copy however many listeners raise it, each from its own durable.
 		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
 			return fmt.Errorf("publish delivery exception: %w", err)
@@ -431,7 +459,7 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 		// own, delivered by the relay of its session consumer, and not a message for this
 		// listener to deliver again.
 		if message.mode == durableDelivery && strings.HasPrefix(message.msg.Subject, contracts.AgentTopicPrefix) && item.Topic != message.msg.Subject {
-			cfg.logger.DeliveryLog(slog.LevelDebug, "listener acknowledged a stored forward copy", strings.TrimPrefix(message.msg.Subject, contracts.AgentTopicPrefix), item.Topic, item.EventID, "forward_copy", slog.String("subject", message.msg.Subject))
+			cfg.logger.DeliveryLog(slog.LevelDebug, "listener acknowledged a stored forward copy", agentSubjectSession(message.msg.Subject), item.Topic, item.EventID, "forward_copy", slog.String("subject", message.msg.Subject))
 			message.finalize(false)
 			return
 		}
@@ -467,31 +495,36 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery
 // (roles.ResolveHolder, which reads the role's claim record from the role bucket), applying the
 // terminal outcome itself and reporting ok=false when there is nobody to deliver to. A resolution
-// that found no live holder keeps the message for the role's next holder first
-// (keepRoleLaneMessage), in one decision for both give-up branches: roleKeepable says which states
-// a copy is kept for - an unclaimed role, since no resolution of this build releases a claim - and
-// a copy that was kept publishes no delivery exception, since the message is not lost.
+// that found no live holder keeps the message for the role's next live holder first
+// (keepRoleLaneMessage), in one decision for both give-up branches: roleKeptReason says which
+// states a copy is kept for and under which reason - a role nobody claims, under
+// roleKeptUnclaimed, and a claim whose holder is not live, under roleKeptLapsed with that holder
+// named on the kept line - and a copy that was kept publishes no delivery exception, since the
+// message is not lost.
 //
 // A claim read that did not answer forwards nothing and keeps the message too, under
 // roleClaimUnread: a read that failed is no evidence that the role has no holder, nor that it has
 // whichever holder a copy of the bucket names, and the lane is a core subscription with no
-// redelivery, so a kept copy is how the message waits for a read that answers. The copy goes only
-// to a live holder: the handover the keep starts resolves the holder again once a read answers
-// and forwards the copy where that holder is live, and the kept-role sweep starts a handover when
-// that one could not (sweepKeptRoleLanes). A holder the resolution finds lapsed ends a handover
-// with no outcome (handOverKeptRole), the sweep's as well, so the copy then waits on the lane,
-// with no delivery exception published for it, until a handover - a claim's, a keep's or the
-// sweep's - finds a live holder: the holder answering again, or a successor that claimed the
-// role. The walk that handover makes forwards the copy while it is inside the one-hour keep window
-// (roleKeepWindow) and drops it with a WARN once it is older.
+// redelivery, so a kept copy is how the message waits for a read that answers. Every kept copy
+// goes only to a live holder: the handover the keep starts resolves the holder again and forwards
+// the copy where that holder is live, and the kept-role sweep hands every lane over again each
+// pass (sweepKeptRoleLanes). A handover that finds no live holder, the holder lapsed among the
+// cases, forwards nothing (handOverKeptRole), so the copy then waits on the lane, with no delivery
+// exception published for it, until a handover - a claim's, a keep's, the sweep's, that of the
+// registration that makes a holder live again (subscribeHandler), or that of the claim route's
+// refresh of a claimant that was not live (roleSetHandler) - finds a live holder: the holder
+// answering again, or a successor that claimed the role. The walk that handover makes forwards
+// the copy while it is inside its hour (roleKeepWindow); once it is older, the first walk that
+// reads it drops it with a WARN, with a holder or without one, and sends its sender a dead letter
+// (judgeKeptRoleCopy).
 //
 // Every other case leaves its branch as it was before the kept lane: an unclaimed role whose keep
-// failed is no_holder; a holder that is not answering, a holder whose session read failed and a
+// failed is no_holder; a lapsed holder whose keep failed, a holder whose session read failed and a
 // failed claim read whose keep failed are delivery_failed, each under a log line that names which
-// it was. A holder that is not answering keeps its claim through all of them: the lane takes
-// nothing from it. Role delivery answers no caller, so it resolves under context.Background(),
-// and each of its two reads is bounded on its own by roleHolderReadTimeout: the claim read by
-// roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
+// it was. A holder that is not answering keeps its claim through all of them, kept copy or not:
+// the lane takes nothing from it. Role delivery answers no caller, so it resolves under
+// context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
+// the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
 	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
 	sessionID := resolved.Holder
@@ -506,7 +539,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 		if resolved.State == roles.Live {
 			return sessionID, resolved.Entry, true
 		}
-		if roleKeepable(resolved) && keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed) {
+		if reason, keepable := roleKeptReason(resolved); keepable && keepRoleLaneMessage(cfg, role, item, reason, sessionID) {
 			return "", session.SessionEntry{}, false
 		}
 		if resolved.State == roles.Unclaimed {
@@ -531,7 +564,7 @@ func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Env
 	}
 	switch failure.Step {
 	case roles.ClaimRead:
-		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread) {
+		if keepRoleLaneMessage(cfg, role, item, roleClaimUnread, "") {
 			cfg.logger.Warn("listener role holder lookup failed, so the message was kept until a claim read answers",
 				slog.String("role", role),
 				slog.String("event_id", item.EventID),
@@ -585,7 +618,9 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	role := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
+	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
+	// keyed by the bare role name either way (store.Registry.ClaimedRole).
+	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
 		message.finalize(false)
@@ -693,14 +728,16 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 // and the alternative - taking the cache's miss for an answer - ACKs the message away.
 const deliverySessionReadTimeout = 2 * time.Second
 
-// agentSubjectDelivery delivers to the session named by the topic
-// (notifications.agent.<session>), which takes the message from its own consumer, relayed by the
+// agentSubjectDelivery delivers to the session named by the topic, in either form
+// (notifications.agent.<session> or notifications.agent.<PROJECT or _>.<session>,
+// agentSubjectSession), which takes the message from its own consumer, relayed by the
 // listener that owns the session, as session.HandleAgentMessage decides. A session another
 // listener owns is that listener's to deliver, so this one acknowledges the message silently; a
-// session that records no way of receiving at all is held and retried, then given up
+// gone session - no record, or a record that reads gone - and one this listener answers for that
+// records no way of receiving at all, is held and retried, then given up with a wake report
 // (unplaceableAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
-	sessionID := strings.TrimPrefix(item.Topic, contracts.AgentTopicPrefix)
+	sessionID := agentSubjectSession(item.Topic)
 	// The JetStream metadata the durable's handler read carries everything unplaceableAgentDelivery
 	// bounds this message by - its delivery count, against the deferrals the window buys and
 	// against unplaceableMaxDeliveries - and its stream sequence, the key of the slot a deferral
@@ -748,15 +785,18 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// refilled after its bus connection came back, so a session registered a moment ago, or one
 	// this listener has not re-read since the reconnect, is in the bucket before it is in the
 	// cache - and a message dropped on that miss is gone, since it is already ACKed away.
-	// nats.ErrKeyNotFound is the bucket's own word that no record exists; any other error is a
-	// read that did not answer, which is no evidence of absence at all - the bucket was never
-	// consulted, so nothing about this session was learned, and an attempt that learned nothing
-	// can never be the ground for giving a message up. Neither needs to be told from the other
-	// below: both leave this delivery with no entry to deliver through, and an attempt with no
-	// entry is held and retried for the whole window before it is given up
-	// (unplaceableAgentDelivery), while the interest path's own failures NAK with an error
-	// instead and never reach that branch.
+	// nats.ErrKeyNotFound is the bucket's own word that the session is gone: it holds no record
+	// of it, or holds one that reads gone, which liveSessionEntry refuses with the same error
+	// (notGone). Any other error is a read that did not answer, which is no evidence of absence
+	// at all - the bucket was never consulted, so nothing about this session was learned, and an
+	// attempt that learned nothing can never be the ground for giving a message up. Both leave
+	// this delivery with no entry to deliver through, and with no interest naming this listener
+	// an attempt with no entry is held and retried for the whole window before it is given up
+	// (unplaceableAgentDelivery). The interest path tells the two apart (gone): a gone session is
+	// held and given up the same way, with the wake that brings a released session back, while a
+	// read that did not answer fails and is NAKed.
 	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
+	gone := errors.Is(entryErr, nats.ErrKeyNotFound)
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {
 		entryPtr = &entry
@@ -764,8 +804,10 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
-	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0).
-	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq())
+	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
+	// capture is the deployed stream's, which the session's consumer filter is judged on too.
+	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr,
+		gone, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
 		// The session's own consumer holds this message and the relay of that consumer delivers it
 		// (session.SessionEntry.ConsumerRelaysStored), as on the fan-out path below. The attempt
@@ -790,7 +832,8 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		return
 	}
 	if result.Err != nil {
-		// The interest path's resolution failed, which is the one outcome this delivery NAKs:
+		// The interest path's resolution failed - a record that names no way of receiving, or no
+		// record from a read that did not answer - which is the one outcome this delivery NAKs:
 		// the message is reported as a delivery exception and redelivered. The attempt recorded
 		// above is rolled back, since the redelivery must not be skipped as one already on its
 		// way.
@@ -810,10 +853,12 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		return
 	}
 	// The resolution found no way the session receives this message and reported no error of
-	// its own, so there is nothing to deliver and nothing to report: the message is held and
-	// retried for the whole window before it is given up. A delivery of its own is no longer
-	// an outcome here - a session's own consumer is the one way a message reaches it, and
-	// the relay of that consumer carries it, which the Relayed branch above answers.
+	// its own: the session is gone, or no interest names its owner and its read did not answer
+	// or its record names no way of receiving. There is nothing to deliver and nothing
+	// to report yet: the message is held and retried for the whole window before it is given
+	// up, with the wake that brings a released session back. A delivery of its own is no
+	// longer an outcome here - a session's own consumer is the one way a message reaches it,
+	// and the relay of that consumer carries it, which the Relayed branch above answers.
 	unplaceableAgentDelivery(cfg, message, item, sessionID, metadata)
 }
 
@@ -869,7 +914,7 @@ const (
 // advertise, since a mode nobody can name cannot be matched against any entry.
 //
 // mode is the delivery mode the envelope targets, "" when it targets none, and modeErr the failure
-// of reading it (envelopeDeliveryMode): both are read once per message rather than once per
+// of reading it (payloadDeliveryMode): both are read once per message rather than once per
 // recipient.
 //
 // It returns the session's live entry whenever one was read, for every verdict and not only the
@@ -979,7 +1024,7 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		message.finalize(false)
 		return
 	}
-	mode, modeErr := envelopeDeliveryMode(item)
+	mode, modeErr := payloadDeliveryMode(item.Payload)
 
 	var failed bool
 	var deadDeliveries int
@@ -1013,8 +1058,10 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		deliveryTimer := metrics.NewTimer()
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own.
-		err := session.Resolve(item, interest.SessionID, target, message.storedSeq())
+		// of its own. The capture is the deployed stream's, which the session's consumer filter is
+		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
+		// is one that consumer relays.
+		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// Refusals are decided before the take case, since the session whose own consumer relays
 		// the message is one this path still reports a refusal of: that relay judges nothing it

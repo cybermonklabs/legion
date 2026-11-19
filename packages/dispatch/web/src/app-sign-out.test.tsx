@@ -18,6 +18,11 @@ import {
   type UnsentChange,
 } from "./features/shell/sign-in-channel";
 import { plainWrite, writesOf } from "./features/writes/write-store";
+// The margin is a lazy part of the shell (`MarginColumn.tsx`), which loads it at `/` too. No row
+// here reads it, and a load that lands between two `act` scopes of a row is React's report of a
+// suspended resource outside `act`. So the module is loaded here, with the test file, and no row
+// starts or waits for it.
+import "./features/margin/Margin";
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -99,23 +104,32 @@ function aliceWrite(
   label: string,
   refuse = false
 ): Promise<unknown> {
-  return writesOf(queryClient)
-    .run({
-      detail: null,
-      kind: plainWrite,
-      label,
-      presentation: "indicator",
-      write: (bounds) => {
-        attempts.push(label);
-        bounds.sent?.({ body: { status: "done" }, method: "PATCH", path: "/api/v1/issues/CORE-1" });
-        return Promise.reject(
-          refuse
-            ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
-            : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
-        );
-      },
-    })
-    .catch((error: unknown) => error);
+  // The press is the person's: what it starts on the page lands inside `act`, as a press does.
+  let pressed: Promise<unknown> = Promise.resolve();
+  act(() => {
+    pressed = writesOf(queryClient)
+      .run({
+        detail: null,
+        kind: plainWrite,
+        label,
+        presentation: "indicator",
+        write: (bounds) => {
+          attempts.push(label);
+          bounds.sent?.({
+            body: { status: "done" },
+            method: "PATCH",
+            path: "/api/v1/issues/CORE-1",
+          });
+          return Promise.reject(
+            refuse
+              ? new ApiError(422, { code: "ISSUE_INPUT", error: "refused" })
+              : new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+          );
+        },
+      })
+      .catch((error: unknown) => error);
+  });
+  return pressed;
 }
 
 /** The names of the writes this tab keeps across a reload. */

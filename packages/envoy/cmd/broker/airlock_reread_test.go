@@ -17,11 +17,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,23 +32,21 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// airlockProxyLine is the line main logs once the proxy port is bound, and the pattern that
-// reads the address out of it. The address the release names is BROKER_AIRLOCK_PROXY_URL, which
-// a deployment sets to the Service a command reaches; a test binds port 0 and so reads the
-// address the process actually took.
+// airlockProxyLine is the line main logs once the proxy port is bound, whose addr field is the
+// address it took. The address the release names is BROKER_AIRLOCK_PROXY_URL, which a deployment
+// sets to the Service a command reaches; a test binds port 0 and so reads the address the
+// process actually took.
 const airlockProxyLine = "airlock proxy listening"
-
-var airlockAddrPattern = regexp.MustCompile(`airlock proxy listening addr=(\S+)`)
 
 // airlockProxyAddr is the address the broker bound its proxy port to.
 func airlockProxyAddr(t *testing.T, broker *brokerProcess) string {
 	t.Helper()
-	log := broker.Await(t, airlockProxyLine)
-	match := airlockAddrPattern.FindStringSubmatch(log)
-	if match == nil {
-		t.Fatalf("the broker's %q line names no address:\n%s", airlockProxyLine, log)
+	record := broker.AwaitRecord(t, airlockProxyLine, nil)
+	addr, _ := record["addr"].(string)
+	if addr == "" {
+		t.Fatalf("the broker's %q line names no address: %v", airlockProxyLine, record)
 	}
-	return match[1]
+	return addr
 }
 
 // airlockOf is the airlock half of a grant's release: the password every connection to the proxy
@@ -90,11 +89,15 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		loginAccount = "system:serviceaccount:example-system:example-service-login"
 		podAccount   = "system:serviceaccount:example:example-worker"
 		secretName   = "AIRLOCK_TOKEN"
-		// boundAddress is a public address literal the entry binds, so that the CONNECT this
-		// row makes is neither refused as a local address nor dependent on a resolver this
-		// process may not have: an address literal resolves to itself, and the proxy signs the
-		// bound host's certificate with that address as its IP SAN.
-		boundAddress = "93.184.216.34"
+		// boundHost is a name no resolver answers, which BROKER_AIRLOCK_TEST_RESOLVE gives
+		// boundAddress, RFC 5737's TEST-NET-1, so that the CONNECT this row makes is neither
+		// refused as a local address nor dependent on a resolver this process may not have, and
+		// no request of this test can reach the internet. The entry binds the name rather than
+		// the address, since the rules validation refuses an address literal: a TLS client sends
+		// no server name for one, and the airlock refuses a request whose server name is not its
+		// CONNECT host.
+		boundHost    = "reread.airlock.test"
+		boundAddress = "192.0.2.1"
 	)
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
@@ -118,8 +121,9 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
 		"BROKER_AIRLOCK_RULES_FILE=" + airlockRulesFile(t,
-			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundAddress+`"], "headers": ["authorization"]}]}`),
+			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}]}`),
 	}})
 	requireHealthy(t, broker.Addr)
 	proxyAddr := airlockProxyAddr(t, broker)
@@ -158,7 +162,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 	}}
 	call := func(path string) {
 		t.Helper()
-		request, err := http.NewRequest(http.MethodGet, "https://"+boundAddress+path, nil)
+		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,10 +172,12 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 			t.Fatalf("GET %s through the airlock's proxy: %v", path, err)
 		}
 		defer answer.Body.Close()
-		// The rules file allows no method or path, so the decision refuses every request -
-		// after the values the decision needs have been read, which is what this row counts.
-		if answer.StatusCode != http.StatusForbidden {
-			t.Fatalf("GET %s through the airlock's proxy = %d, want 403: the rules allow nothing", path, answer.StatusCode)
+		// The entry's allow list is empty, which allows nothing, so the decision refuses every
+		// request - after the values the decision needs have been read, which is what this row
+		// counts - and nothing is forwarded or dialled.
+		body, _ := io.ReadAll(answer.Body)
+		if answer.StatusCode != http.StatusForbidden || !strings.Contains(string(body), "not allowed by rule") {
+			t.Fatalf("GET %s through the airlock's proxy = %d %q, want 403 naming \"not allowed by rule\": the entry allows nothing", path, answer.StatusCode, body)
 		}
 	}
 

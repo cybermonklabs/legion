@@ -81,7 +81,8 @@ of the three. Text of any other shape is never a command argument: report
 Each `curl` in these references reads `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`. `legion controller
 start` sets them only when `controller.yaml` names `dispatch_url`; the daemon's pod sets
 `DISPATCH_URL` when the daemon has one. When they are unset, every `curl` fails: act on nothing it
-would decide and name it in your summary.
+would decide and name it in your summary. Each passes its token as a header file (`-H @<(…)`), so
+that no process's arguments hold it: run it in bash, because `sh` refuses that form.
 
 ## Taking the controller over by hand
 

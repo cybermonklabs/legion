@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -109,15 +111,18 @@ func TestSecretWriteSignInAcceptsAWSPartitions(t *testing.T) {
 func TestSecretAStoppedPromptWritesNothingAndNamesTheRetry(t *testing.T) {
 	for _, args := range [][]string{
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"},
-		{"set", "HELD_KEY", "--profile", "ada's work"},
+		{"set", "HELD_KEY"},
 	} {
 		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
+		if args[0] == "set" {
+			t.Setenv("AWS_PROFILE", "ada's work")
+		}
 		useTerminal(t)
-		readHidden = func(_ int, prompt, onStop func()) ([]byte, error) {
+		readHidden = func(_ int, _ time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
 			prompt()
-			onStop()
+			onDiscard(errPromptStopped)
 			return nil, errPromptStopped
 		}
 		out, errOut, code := runSecret(args...)
@@ -127,7 +132,7 @@ func TestSecretAStoppedPromptWritesNothingAndNamesTheRetry(t *testing.T) {
 		}
 		retry := "agent-secrets secret create NEW_KEY --owner me --tier agent"
 		if args[0] == "set" {
-			retry = "agent-secrets secret set HELD_KEY --profile 'ada'\\''s work'"
+			retry = "AWS_PROFILE='ada'\\''s work' agent-secrets secret set HELD_KEY"
 		}
 		if !strings.Contains(errOut, retry) {
 			t.Fatalf("retry command missing from %q", errOut)
@@ -167,10 +172,19 @@ func (b *secretBroker) failRereads(status int) {
 }
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
-// GET /v1/settings with policytest's namespace in testAccount.
+// GET /v1/settings with policytest's namespace in testAccount, as a broker of this release that
+// reads the type tag.
 func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
 	t.Helper()
-	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1"}, answer)
+	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
+}
+
+// readNoTypeTag makes the broker answer GET /v1/settings from now on as a broker from before the
+// type tag does: with no secret_type_tag, which such a broker never sends.
+func (b *secretBroker) readNoTypeTag() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.settings.SecretTypeTag = false
 }
 
 // startSecretBrokerWith is startSecretBroker with settings of the caller's choosing, so a test for
@@ -181,7 +195,10 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/settings":
-			writeJSON(w, b.settings)
+			b.mu.Lock()
+			settings := b.settings
+			b.mu.Unlock()
+			writeJSON(w, settings)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
@@ -216,7 +233,7 @@ func (b *secretBroker) recorded() ([]string, []Reread) {
 
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
 // not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version,
-// served otherwise, as the kind its kind tag names.
+// served otherwise, as the type its type tag names.
 func servedBy(sm secretsAPI) func(name string) Reread {
 	return func(name string) Reread {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
@@ -226,17 +243,25 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 		case !secrets.HasCurrentVersion(out.VersionIdsToStages):
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Kind: secrets.TagMap(out.Tags)[policy.TagKind]}
+		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
 	}
 }
 
-// useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, for the
-// rest of t.
+// useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, with no
+// credential sources reported, for the rest of t, and clears every variable that chooses where the
+// AWS SDK takes the sign-in from, so a developer's own shell names no other source.
 func useAWS(t *testing.T, sm secretsAPI, account, arn string) {
 	t.Helper()
+	for _, name := range []string{
+		"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY",
+		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
+		"AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+	} {
+		t.Setenv(name, "")
+	}
 	restore := awsClients
-	awsClients = func(context.Context, string, string) (secretsAPI, stsAPI, error) {
-		return sm, fakeSTS{account: account, arn: arn}, nil
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+		return sm, fakeSTS{account: account, arn: arn}, nil, nil
 	}
 	t.Cleanup(func() { awsClients = restore })
 }
@@ -254,6 +279,45 @@ func runSecret(args ...string) (stdout, stderr string, code int) {
 	var out, errOut bytes.Buffer
 	code = cmdSecret(args, &out, &errOut)
 	return out.String(), errOut.String(), code
+}
+
+// TestSecretFormsRefuseProfileFlag: --profile is gone from every secret form, on both backends.
+// A form given it is a usage error, before any broker call, naming the environment variables that
+// choose a credential instead - never a flag.
+func TestSecretFormsRefuseProfileFlag(t *testing.T) {
+	// No broker and no store are set up: the refusal comes before a form opens either, so it is
+	// the same whichever backend the broker would have named.
+	for _, form := range [][]string{
+		{"list"}, {"show", "X"}, {"create", "X", "--owner", "shared", "--tier", "agent"},
+		{"set", "X"}, {"retag", "X", "--tier", "human"}, {"delete", "X"}, {"restore", "X"},
+	} {
+		for _, flag := range [][]string{{"--profile", "p"}, {"--profile=p"}} {
+			args := append(append([]string{}, form...), flag...)
+			t.Run(form[0]+" "+flag[0], func(t *testing.T) {
+				_, stderr, code := runSecret(args...)
+				if code != exitUsageError {
+					t.Fatalf("exit %d, stderr %q; want %d", code, stderr, exitUsageError)
+				}
+				for _, said := range []string{"--profile is not a flag", "AWS_PROFILE", "CLOUDSDK_ACTIVE_CONFIG_NAME"} {
+					if !strings.Contains(stderr, said) {
+						t.Fatalf("stderr %q does not name %q", stderr, said)
+					}
+				}
+			})
+		}
+	}
+}
+
+// afterUsing is stderr less its first line, which must be the one line form prints, before its
+// first store call, naming the credential it signs in with (openSession); it fails t when that
+// line is not there.
+func afterUsing(t *testing.T, stderr, form string) string {
+	t.Helper()
+	first, rest, _ := strings.Cut(stderr, "\n")
+	if !strings.HasPrefix(first, "agent-secrets "+form+": using ") {
+		t.Fatalf("stderr %q does not start with the line naming the credential %s uses", stderr, form)
+	}
+	return rest
 }
 
 // describe is what local holds for the secret a session asks for as name.
@@ -283,31 +347,195 @@ func (f fakeSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput,
 	return &sts.GetCallerIdentityOutput{Account: aws.String(f.account), Arn: aws.String(f.arn)}, nil
 }
 
-func TestSecretCreateRefusesAMachinesOwnRole(t *testing.T) {
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/settings" {
-			json.NewEncoder(w).Encode(Settings{SecretsPrefix: "example/agent-secrets/", KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1"})
+// refusingCreates is a secrets.Local whose CreateSecret IAM refuses, as it refuses a sign-in no
+// policy grants secretsmanager:CreateSecret.
+type refusingCreates struct{ *secrets.Local }
+
+func (refusingCreates) CreateSecret(context.Context, *secretsmanager.CreateSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+	return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform: secretsmanager:CreateSecret"}
+}
+
+// TestAWSRefusalNamesTheSourceAndTheChoice: the using line, a store refusal and the account
+// refusal on AWS name the source the AWS SDK takes the sign-in from, in its own order (keys in the
+// environment, then a web identity token file, then AWS_PROFILE, then AWS_DEFAULT_PROFILE, then
+// the rest of its chain), its ARN, and the variable that chooses another: one that a source higher
+// in that order outranks is never named as the one that chose. Where the profile a variable names
+// holds no credential of its own, the SDK signs in with a container's credentials endpoint or the
+// instance's role, and the sources it resolved say so (aws.CredentialProviderSource), so the line
+// names that too. A command it prints for running again carries the profile variable only where
+// that profile was chosen.
+func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
+	const tokenFile = "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+	const endpoint = "http://127.0.0.1:9/credentials"
+	for _, row := range []struct {
+		name            string
+		env             map[string]string
+		sources         []aws.CredentialSource
+		source, another string
+		prefix          string
+	}{
+		{"AWS_PROFILE", map[string]string{"AWS_PROFILE": "work"}, nil,
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"AWS_DEFAULT_PROFILE", map[string]string{"AWS_DEFAULT_PROFILE": "work"}, nil,
+			"the AWS profile work (AWS_DEFAULT_PROFILE)", "choose another with AWS_PROFILE, which outranks AWS_DEFAULT_PROFILE", "AWS_DEFAULT_PROFILE=work "},
+		{"AWS_PROFILE over AWS_DEFAULT_PROFILE", map[string]string{"AWS_PROFILE": "work", "AWS_DEFAULT_PROFILE": "other"}, nil,
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"neither", nil, nil,
+			"the AWS SDK's default credential chain", "choose another with AWS_PROFILE", ""},
+		{"keys outrank AWS_PROFILE", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_PROFILE": "admin"}, nil,
+			"the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE",
+			"choose another by unsetting AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
+		{"keys alone, by their older names", map[string]string{"AWS_ACCESS_KEY": "AKIAEXAMPLE", "AWS_SECRET_KEY": "not-a-secret"}, nil,
+			"the access keys in AWS_ACCESS_KEY and AWS_SECRET_KEY",
+			"choose another by unsetting AWS_ACCESS_KEY and AWS_SECRET_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
+		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"}, nil,
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"}, nil,
+			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + tokenFile + "), which outranks AWS_PROFILE",
+			"choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
+			"AWS_WEB_IDENTITY_TOKEN_FILE=" + tokenFile + " AWS_ROLE_ARN=arn:aws:iam::111122223333:role/agent "},
+		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile}, nil,
+			"the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
+			"choose another by unsetting AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
+		{"a profile that holds its own keys", map[string]string{"AWS_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceProfile},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"a profile that holds an SSO sign-in", map[string]string{"AWS_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceSSO, aws.CredentialSourceProfileSSO},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"a profile that names the instance as its credential source", map[string]string{"AWS_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceProfileNamedProvider, aws.CredentialSourceIMDS},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"a profile with no credential, then a container endpoint", map[string]string{"AWS_PROFILE": "work", "AWS_CONTAINER_CREDENTIALS_FULL_URI": endpoint}, []aws.CredentialSource{aws.CredentialSourceHTTP},
+			"the AWS profile work (AWS_PROFILE), which holds no credential, so the container credentials endpoint AWS_CONTAINER_CREDENTIALS_FULL_URI names signed in",
+			"choose another with AWS_PROFILE, naming a profile that holds a credential", "AWS_PROFILE=work "},
+		{"AWS_DEFAULT_PROFILE with no credential, then the instance role", map[string]string{"AWS_DEFAULT_PROFILE": "work"}, []aws.CredentialSource{aws.CredentialSourceIMDS},
+			"the AWS profile work (AWS_DEFAULT_PROFILE), which holds no credential, so this machine's instance role signed in",
+			"choose another with AWS_PROFILE, which outranks AWS_DEFAULT_PROFILE, naming a profile that holds a credential", "AWS_DEFAULT_PROFILE=work "},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, refusingCreates{local}, testAccount, adaSignIn)
+			useAWSSources(t, row.sources)
+			for name, value := range row.env {
+				t.Setenv(name, value)
+			}
+			useStdin(t, "value")
+			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "shared", "--tier", "agent")
+			if code != 1 || !strings.Contains(stderr, "AccessDeniedException") {
+				t.Fatalf("exit %d, stderr %q; want 1 with the store's AccessDeniedException", code, stderr)
+			}
+			for _, said := range []string{
+				"agent-secrets secret create: using " + row.source + ": " + adaSignIn + "\n",
+				"the store refused " + row.source + ": " + adaSignIn + "; " + row.another,
+			} {
+				if !strings.Contains(stderr, said) {
+					t.Fatalf("stderr %q does not say %q", stderr, said)
+				}
+			}
+			if strings.Contains(stderr, "not-a-secret") {
+				t.Fatalf("stderr %q quotes a secret access key", stderr)
+			}
+
+			// The pipe command a prompt that cannot run names signs in as this one did.
+			useTerminal(t)
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errNoValuePrompt }
+			_, stderr, code = runSecret("set", "HELD_KEY")
+			if want := "pipe the value in: " + row.prefix + "agent-secrets secret set HELD_KEY < FILE"; code != exitUsageError || !strings.Contains(stderr, want) {
+				t.Fatalf("set: exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, want)
+			}
+
+			// A sign-in in another account is refused, and the refusal says how to choose another.
+			inner := awsClients
+			awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+				sm, _, sources, err := inner(ctx, region)
+				return sm, fakeSTS{account: "999999999999", arn: "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"}, sources, err
+			}
+			_, stderr, code = runSecret("list")
+			if want := "sign in to account " + testAccount + "; " + row.another; code != 1 || !strings.Contains(stderr, want) {
+				t.Fatalf("list in another account: exit %d, stderr %q; want 1 naming %q", code, stderr, want)
+			}
+		})
+	}
+}
+
+// useAWSSources makes the AWS clients awsClients answers for the rest of t report sources as the
+// sources the SDK resolved their credential from.
+func useAWSSources(t *testing.T, sources []aws.CredentialSource) {
+	t.Helper()
+	inner := awsClients
+	awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+		sm, st, _, err := inner(ctx, region)
+		return sm, st, sources, err
+	}
+	t.Cleanup(func() { awsClients = inner })
+}
+
+// TestEverySecretFormNamesTheSourceItUses: every secret form, on each store, prints exactly one
+// line naming the credential it signs in to the store with, and prints it before its first call of
+// the store.
+func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
+		for _, form := range []struct {
+			stdin string
+			args  []string
+		}{
+			{"", []string{"list"}},
+			{"", []string{"show", "HELD_TEST"}},
+			{"first", []string{"create", "NEW_TEST", "--owner", "shared", "--tier", "agent"}},
+			{"second", []string{"set", "HELD_TEST"}},
+			{"", []string{"retag", "HELD_TEST", "--tier", "human"}},
+			{"", []string{"delete", "HELD_TEST"}},
+			{"", []string{"restore", "HELD_TEST"}},
+		} {
+			t.Run(form.args[0], func(t *testing.T) {
+				useStdin(t, form.stdin)
+				prefix := "agent-secrets secret " + form.args[0] + ": using "
+				stderr := &usingWatch{prefix: prefix, calls: store.calls, callsBefore: -1}
+				started := store.calls()
+				if code := cmdSecret(form.args, io.Discard, stderr); code != 0 {
+					t.Fatalf("exit %d, stderr %q; want 0", code, stderr.String())
+				}
+				var using int
+				for _, line := range strings.Split(stderr.String(), "\n") {
+					if strings.HasPrefix(line, prefix) {
+						using++
+					}
+				}
+				if using != 1 {
+					t.Fatalf("stderr %q holds %d lines starting %q, want exactly one", stderr.String(), using, prefix)
+				}
+				if made := store.calls() - started; stderr.callsBefore != started || made == 0 {
+					t.Fatalf("the form made %d store calls before the line naming its credential and %d in all; want none before it, and at least one", stderr.callsBefore-started, made)
+				}
+			})
 		}
-	}))
-	defer broker.Close()
-	t.Setenv("AGENT_SECRETS_URL", broker.URL)
-	restore := awsClients
-	awsClients = func(ctx context.Context, profile, region string) (secretsAPI, stsAPI, error) {
-		return secrets.NewLocal(), fakeSTS{account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/example-devbox-admin-instance-role/i-0abc"}, nil
+	})
+}
+
+// usingWatch is a form's standard error: it keeps what the form writes and, when the form writes
+// the line that starts with prefix, how many store calls (calls) had been made by then, in
+// callsBefore, which is -1 until then.
+type usingWatch struct {
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	prefix      string
+	calls       func() int
+	callsBefore int
+}
+
+func (w *usingWatch) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.callsBefore < 0 && bytes.Contains(p, []byte(w.prefix)) {
+		w.callsBefore = w.calls()
 	}
-	t.Cleanup(func() { awsClients = restore })
-	stdin := secretStdin
-	secretStdin = strings.NewReader("v1")
-	t.Cleanup(func() { secretStdin = stdin })
-	var out, errOut bytes.Buffer
-	if code := cmdSecret([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, &out, &errOut); code != 1 {
-		t.Fatalf("exit %d, stderr %q; want 1", code, errOut.String())
-	}
-	for _, want := range []string{"not a person's Identity Center sign-in", "example-devbox-admin-instance-role"} {
-		if !strings.Contains(errOut.String(), want) {
-			t.Fatalf("stderr %q must name %q", errOut.String(), want)
-		}
-	}
+	return w.buf.Write(p)
+}
+
+func (w *usingWatch) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 // The secret forms refuse settings whose aws_account_id or aws_region disagrees with the account and
@@ -316,9 +544,9 @@ func TestSecretCreateRefusesAMachinesOwnRole(t *testing.T) {
 func TestSecretRefusesSettingsInconsistentWithKeyARN(t *testing.T) {
 	calledAWS := false
 	restore := awsClients
-	awsClients = func(context.Context, string, string) (secretsAPI, stsAPI, error) {
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 		calledAWS = true
-		return nil, nil, fmt.Errorf("awsClients must not run")
+		return nil, nil, nil, fmt.Errorf("awsClients must not run")
 	}
 	t.Cleanup(func() { awsClients = restore })
 	region, account := secrets.AWSKeyARNParts(policytest.KeyARN)
@@ -357,9 +585,9 @@ func TestSecretRefusesSettingsInconsistentWithKeyARN(t *testing.T) {
 func TestSecretRefusesNonLoopbackHTTPBrokerURL(t *testing.T) {
 	calledAWS := false
 	restore := awsClients
-	awsClients = func(context.Context, string, string) (secretsAPI, stsAPI, error) {
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
 		calledAWS = true
-		return nil, nil, fmt.Errorf("awsClients must not run")
+		return nil, nil, nil, fmt.Errorf("awsClients must not run")
 	}
 	t.Cleanup(func() { awsClients = restore })
 	t.Setenv("AGENT_SECRETS_URL", "http://example.internal")
@@ -435,9 +663,6 @@ func TestSecretCreateRefusesAnotherAccount(t *testing.T) {
 			t.Fatalf("stderr %q must name %q", stderr, want)
 		}
 	}
-	if strings.Contains(stderr, "not a person's Identity Center sign-in") {
-		t.Fatalf("stderr %q calls a person's own sign-in a machine's", stderr)
-	}
 	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
 		t.Fatal("NEW_KEY was created under a sign-in in another account")
 	}
@@ -458,7 +683,7 @@ func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
 		{"malformed name", "v1", "not an agent secret name", []string{"create", "new-key", "--owner", "me", "--tier", "agent"}},
 		{"no name", "v1", "exactly one secret NAME", []string{"create", "--owner", "me", "--tier", "agent"}},
 		{"no tier", "v1", "--tier", []string{"create", "NEW_KEY", "--owner", "me"}},
-		{"an owner that is neither", "v1", "--owner", []string{"create", "NEW_KEY", "--owner", "bob@example.com", "--tier", "agent"}},
+		{"an owner that is neither", "v1", "--owner", []string{"create", "NEW_KEY", "--owner", "bob@example", "--tier", "agent"}},
 		{"a tier that is neither", "v1", "--tier", []string{"create", "NEW_KEY", "--owner", "me", "--tier", "robot"}},
 		{"no form", "", "a form is required", nil},
 		{"an unknown form", "", "unknown form", []string{"rename"}},
@@ -480,18 +705,18 @@ func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
 }
 
 // TestTheValueReaderRemovesATrailingLineEndingBeforeItStores: the value a write pipes in is
-// stored as the broker's own shape rule reads it (policy.TrimForShape), so a value stored
-// through this client and a value stored by any other writer are spent alike: a one-line
+// stored as the broker's own line-ending rule reads it (policy.TrimLineEnding), so a value
+// stored through this client and a value stored by any other writer are spent alike: a one-line
 // credential loses its whole trailing run of carriage returns and line feeds, however many and
 // in whichever order, rather than keeping a carriage return an editor or a shell left behind.
-// Where the rule changes nothing — a document, whose every byte is part of it, and a value that
-// holds a line ending inside it — one final line feed goes, which is what this reader has always
-// removed. A value that is only line endings is not emptied by the rule, so it keeps every line
-// feed but the last, and a single one of them is refused as an empty value.
+// Where the rule changes nothing — a value that holds a line ending inside it — one final line
+// feed goes, which is what this reader has always removed. A value that is only line endings is
+// not emptied by the rule, so it keeps every line feed but the last, and a single one of them is
+// refused as an empty value.
 func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
 	for _, tc := range []struct {
-		name, piped, shape, stored, refusal string
+		name, piped, stored, refusal string
 	}{
 		{name: "token-and-a-line-feed", piped: "tok\n", stored: "tok"},
 		{name: "token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", stored: "tok"},
@@ -500,20 +725,13 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 		{name: "a-pem-document", piped: pem, stored: "-----BEGIN KEY-----\nabc\n-----END KEY-----"},
 		{name: "one-line-feed-alone", piped: "\n", refusal: "standard input, which was empty"},
 		{name: "two-line-feeds", piped: "\n\n", stored: "\n"},
-		// An owner who declared the secret a document asked for its bytes to be kept, so only
-		// the one final line feed goes and the carriage return before it stays.
-		{name: "a-document-token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", shape: policy.ShapeDocument, stored: "tok\r"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			local := secrets.NewLocal()
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, local, testAccount, adaSignIn)
 			useStdin(t, tc.piped)
-			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
-			if tc.shape != "" {
-				args = append(args, "--shape", tc.shape)
-			}
-			_, stderr, code := runSecret(args...)
+			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 			if tc.refusal != "" {
 				if code != exitUsageError || !strings.Contains(stderr, tc.refusal) {
 					t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.refusal)
@@ -533,25 +751,112 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 	}
 }
 
-// TestSecretSetReadsTheSecretsOwnShape: a set names no tag, so it reads the shape the secret
-// already carries and stores the value under it. The value is one line, a carriage return and a
-// line feed: under the document reading the carriage return stays and only the final line feed
-// goes, while the untagged reading would store the line alone, so the test fails if the set
-// stores the value under no shape at all.
-func TestSecretSetReadsTheSecretsOwnShape(t *testing.T) {
-	const piped, want = "tok\r\n", "tok\r"
-	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "old")
-	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
-	local := secrets.NewLocal(wholeFile)
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, piped)
-	if _, stderr, code := runSecret("set", "DOCUMENT_KEY"); code != 0 {
-		t.Fatalf("set: exit %d, stderr %q", code, stderr)
-	}
-	if v := valueOf(t, local, "DOCUMENT_KEY"); v != want {
-		t.Fatalf("stored %q, want %q", v, want)
-	}
+// TestSecretCreateAndRetagRefuseShape: `--shape` is a flag of no form of this CLI. A create that
+// names it is refused by the flag reader itself, exiting 2 with the reader's own words, before
+// the store is called and before standard input is read — the value is never asked for, so a
+// writer who typed the old flag loses nothing — and a retag that names it is refused the same
+// way, leaving the secret's tags as they were.
+func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
+		before := store.tags(t, "API_KEY")
+		read := countingStdin(t, "value-never-read")
+
+		for _, args := range [][]string{
+			{"create", "NEW_KEY", "--owner", "shared", "--tier", "agent", "--shape", "token"},
+			{"retag", "API_KEY", "--shape", "none"},
+		} {
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError || !strings.Contains(stderr, "flag provided but not defined: -shape") {
+				t.Fatalf("%v: exit %d stderr %q; want %d naming the flag the reader does not define", args, code, stderr, exitUsageError)
+			}
+		}
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("the refused create made NEW_KEY")
+		}
+		if got := store.tags(t, "API_KEY"); !maps.Equal(got, before) {
+			t.Fatalf("tags after the refused retag = %v, were %v", got, before)
+		}
+		if n := read(); n != 0 {
+			t.Fatalf("the refused create read %d bytes of standard input; want none", n)
+		}
+		if rereads, _ := broker.recorded(); len(rereads) != 0 {
+			t.Fatalf("rereads = %v after two refused forms; want none", rereads)
+		}
+	})
+}
+
+// countingStdin makes value the secret forms' standard input for the rest of t and answers how
+// many of its bytes were read, so a test can say that a form never asked for the value.
+func countingStdin(t *testing.T, value string) func() int {
+	t.Helper()
+	counted := &countingReader{r: strings.NewReader(value)}
+	restore := secretStdin
+	secretStdin = counted
+	t.Cleanup(func() { secretStdin = restore })
+	return func() int { return counted.read }
+}
+
+// countingReader is a reader that counts the bytes read from it.
+type countingReader struct {
+	r    io.Reader
+	read int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += n
+	return n, err
+}
+
+// TestSecretSetReadsTheSecretsOwnType: a set names no tag, so it reads the type the secret
+// already carries and checks the value as that type's minter reads it. A value that minter
+// refuses is refused in its words, and nothing is written; one it reads is stored, less its
+// trailing line ending.
+func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
+	notALogin := appValue(t, map[string]string{"type": "service_account"})
+	says := mintRefusal(t, policy.TypeGoogleLogin, notALogin)
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		store.put(t, "LOGIN_KEY", policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, "old")
+		useStdin(t, notALogin+"\n")
+		_, stderr, code := runSecret("set", "LOGIN_KEY")
+		if code != exitUsageError || !strings.Contains(stderr, says) {
+			t.Fatalf("set of a value the type's minter refuses: exit %d stderr %q; want %d naming %q", code, stderr, exitUsageError, says)
+		}
+		if got := store.value(t, "LOGIN_KEY"); got != "old" {
+			t.Fatalf("the refused set stored %q; want the value the secret held", got)
+		}
+		login := policytest.TypeValue(policy.TypeGoogleLogin)
+		useStdin(t, login+"\n")
+		if _, stderr, code := runSecret("set", "LOGIN_KEY"); code != 0 {
+			t.Fatalf("set of a value the type's minter reads: exit %d stderr %q", code, stderr)
+		}
+		if got := store.value(t, "LOGIN_KEY"); got != login {
+			t.Fatalf("stored %q; want the piped value less its trailing line ending", got)
+		}
+	})
+}
+
+// TestSecretSetRefusedTagReadNamesThePermission: a set reads the secret's tags for the type it
+// checks the value as, so whoever stores a value may read that secret's tags. When the store
+// refuses that read, the refusal names the permission the read needs, and the value is never
+// asked for.
+func TestSecretSetRefusedTagReadNamesThePermission(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
+		read := countingStdin(t, "a-new-value")
+		store.refuseTagReads()
+		_, stderr, code := runSecret("set", "API_KEY")
+		if code != 1 || !strings.Contains(stderr, store.tagReadPermission()) {
+			t.Fatalf("set whose tag read is refused: exit %d stderr %q; want 1 naming %s", code, stderr, store.tagReadPermission())
+		}
+		if n := read(); n != 0 {
+			t.Fatalf("the refused set read %d bytes of standard input; want none", n)
+		}
+		if got := store.value(t, "API_KEY"); got != "v1" {
+			t.Fatalf("the refused set stored %q", got)
+		}
+	})
 }
 
 // TestSecretRetagSendsBothTags: a retag naming one tag sends both, the other re-sent as the secret
@@ -607,13 +912,15 @@ func (refusingTags) TagResource(context.Context, *secretsmanager.TagResourceInpu
 
 // TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt: IAM refuses a person's change to a
 // shared secret's owner or tier, and a person making their own secret shared; the CLI prints AWS's
-// refusal and says whose change it is, and nothing changes. Any other refused retag says only what
-// AWS said.
+// refusal, the sign-in AWS refused, and says whose change it is, and nothing changes. Any other
+// refused retag says only what AWS said, and whom it refused.
 func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 	local := secrets.NewLocal(
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "v1"),
 		policytest.Secret("OWNED_KEY", "ada@example.com", policy.TierHuman, "v1"),
 	)
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, refusingTags{local}, testAccount, adaSignIn)
 	for _, args := range [][]string{{"retag", "SHARED_KEY", "--tier", "agent"}, {"retag", "OWNED_KEY", "--owner", "shared"}} {
@@ -621,7 +928,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("%v: exit %d, stderr %q; want 1", args, code, stderr)
 		}
-		for _, want := range []string{accessDenied, "a shared secret's owner and tier are an administrator's to change"} {
+		for _, want := range []string{accessDenied, "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("%v: stderr %q must contain %q", args, stderr, want)
 			}
@@ -634,7 +941,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		t.Fatalf("tags = %v, want OWNED_KEY's owner unchanged", tags)
 	}
 	_, stderr, code := runSecret("retag", "OWNED_KEY", "--tier", "agent")
-	if code != 1 || !strings.Contains(stderr, accessDenied) || strings.Contains(stderr, "administrator") {
+	if code != 1 || !strings.Contains(stderr, accessDenied) || !strings.Contains(stderr, "the store refused the AWS SDK's default credential chain: "+adaSignIn) || strings.Contains(stderr, "administrator") {
 		t.Fatalf("an owned secret's refused retag: exit %d, stderr %q; want 1 with AWS's refusal alone", code, stderr)
 	}
 	if rereads, _ := broker.recorded(); len(rereads) != 0 {
@@ -670,30 +977,33 @@ func (f failingStdin) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
-// TestSecretWritesCheckTheSignInBeforeReadingTheValue: create and set refuse a machine's role or
-// another account before they read the value, so nobody pastes a secret only to be refused.
+// TestSecretWritesCheckTheSignInBeforeReadingTheValue: create and set refuse a sign-in in another
+// account, and create refuses --owner me under a sign-in that names no person, before they read
+// the value, so nobody pastes a secret only to be refused.
 func TestSecretWritesCheckTheSignInBeforeReadingTheValue(t *testing.T) {
-	restore := secretStdin
-	secretStdin = failingStdin{t}
-	t.Cleanup(func() { secretStdin = restore })
-	for _, signIn := range []struct{ account, arn, refusal string }{
-		{testAccount, "arn:aws:sts::111122223333:assumed-role/example-service-role/session", "not a person's Identity Center sign-in"},
-		{"999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com", "in account 999999999999"},
+	refuseValueReads(t)
+	const otherAccount = "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"
+	for _, row := range []struct {
+		account, arn, refusal string
+		code                  int
+		args                  []string
+	}{
+		{testAccount, "arn:aws:sts::111122223333:assumed-role/example-service-role/session", "--owner <email>", exitUsageError, []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}},
+		{"999999999999", otherAccount, "in account 999999999999", 1, []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}},
+		{"999999999999", otherAccount, "in account 999999999999", 1, []string{"set", "HELD_KEY"}},
 	} {
-		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
-			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-			startSecretBroker(t, servedBy(local))
-			useAWS(t, local, signIn.account, signIn.arn)
-			_, stderr, code := runSecret(args...)
-			if code != 1 || !strings.Contains(stderr, signIn.refusal) {
-				t.Fatalf("%v as %s: exit %d, stderr %q; want 1 naming %q", args, signIn.arn, code, stderr, signIn.refusal)
-			}
-			if valueOf(t, local, "HELD_KEY") != "v1" {
-				t.Fatalf("%v as %s changed HELD_KEY's value", args, signIn.arn)
-			}
-			if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-				t.Fatalf("%v as %s created NEW_KEY", args, signIn.arn)
-			}
+		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		startSecretBroker(t, servedBy(local))
+		useAWS(t, local, row.account, row.arn)
+		_, stderr, code := runSecret(row.args...)
+		if code != row.code || !strings.Contains(stderr, row.refusal) {
+			t.Fatalf("%v as %s: exit %d, stderr %q; want %d naming %q", row.args, row.arn, code, stderr, row.code, row.refusal)
+		}
+		if valueOf(t, local, "HELD_KEY") != "v1" {
+			t.Fatalf("%v as %s changed HELD_KEY's value", row.args, row.arn)
+		}
+		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
+			t.Fatalf("%v as %s created NEW_KEY", row.args, row.arn)
 		}
 	}
 }
@@ -725,7 +1035,7 @@ func useTerminal(t *testing.T, typed ...string) *[]int {
 		return terminalFD, true
 	}
 	reads := &[]int{}
-	readHidden = func(fd int, prompt, _ func()) ([]byte, error) {
+	readHidden = func(fd int, _ time.Time, prompt func(), _ func(error)) ([]byte, error) {
 		prompt()
 		*reads = append(*reads, fd)
 		if len(*reads) > len(typed) {
@@ -755,7 +1065,7 @@ func TestSecretCreateAndSetPromptForTheValueAtATerminal(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("%v: exit %d, stderr %q; want 0", tc.args, code, stderr)
 		}
-		if want := "Value for " + tc.name + ": \n"; stderr != want {
+		if want := "Value for " + tc.name + ": \n"; afterUsing(t, stderr, "secret "+tc.args[0]) != want {
 			t.Fatalf("%v: stderr %q, want exactly the prompt %q", tc.args, stderr, want)
 		}
 		if strings.Contains(stdout+stderr, tc.value) {
@@ -768,10 +1078,10 @@ func TestSecretCreateAndSetPromptForTheValueAtATerminal(t *testing.T) {
 	if len(*reads) != 2 || (*reads)[0] != terminalFD || (*reads)[1] != terminalFD {
 		t.Fatalf("hidden reads = %v, want two at the terminal's descriptor %d", *reads, terminalFD)
 	}
-	useAWS(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/example-service-role/session")
+	useAWS(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
 	_, stderr, code := runSecret("set", "HELD_KEY")
 	if code != 1 || strings.Contains(stderr, "Value for") || len(*reads) != 2 {
-		t.Fatalf("set under a machine's role: exit %d, stderr %q, hidden reads %v; want 1 with no prompt and no read", code, stderr, *reads)
+		t.Fatalf("set under a sign-in in another account: exit %d, stderr %q, hidden reads %v; want 1 with no prompt and no read", code, stderr, *reads)
 	}
 }
 
@@ -783,7 +1093,7 @@ func TestSecretAPromptThatNeverHoldsTheTerminalShowsNoLabel(t *testing.T) {
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
 	useTerminal(t)
-	readHidden = func(int, func(), func()) ([]byte, error) { return nil, errValueCutShort }
+	readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
 	_, stderr, code := runSecret("set", "HELD_KEY")
 	if code != 1 || strings.Contains(stderr, "Value for") || strings.HasPrefix(stderr, "\n") {
 		t.Fatalf("exit %d, stderr %q; want 1 with no label and no leading line ending", code, stderr)
@@ -802,9 +1112,10 @@ func TestSecretAPromptThatCannotRunNamesThePipeCommand(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, refusal }
-		_, stderr, code := runSecret("set", "HELD_KEY", "--profile", "work")
-		want := refusal.Error() + "; pipe the value in: agent-secrets secret set HELD_KEY --profile work < FILE"
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, refusal }
+		t.Setenv("AWS_PROFILE", "work")
+		_, stderr, code := runSecret("set", "HELD_KEY")
+		want := refusal.Error() + "; pipe the value in: AWS_PROFILE=work agent-secrets secret set HELD_KEY < FILE"
 		if code != exitUsageError || !strings.Contains(stderr, want) || strings.Contains(stderr, "Value for") {
 			t.Fatalf("%v: exit %d, stderr %q; want %d naming %q and no label", refusal, code, stderr, exitUsageError, want)
 		}
@@ -834,7 +1145,7 @@ func TestSecretAnEmptyValueAtATerminalIsAUsageError(t *testing.T) {
 // TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused: when the reader answers that more than one
 // line was entered (a paste; TestPromptRefusesAPasteOfMoreThanOneLineAndLeavesNothingForTheShell),
 // create and set exit 2, write nothing, and name the command that pipes the value in: the form as
-// the person ran it, --profile included and shell-quoted, so it signs in the way they chose.
+// the person ran it, with the AWS_PROFILE prefix shell-quoted, so it signs in the way they chose.
 func TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
@@ -842,14 +1153,12 @@ func TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused(t *testing.T) {
 	}{
 		{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, "agent-secrets secret create NEW_KEY --owner me --tier agent < FILE"},
 		{[]string{"set", "HELD_KEY"}, "agent-secrets secret set HELD_KEY < FILE"},
-		{[]string{"create", "NEW_KEY", "--owner", "shared", "--tier", "human", "--profile", "work"}, "agent-secrets secret create NEW_KEY --owner shared --tier human --profile work < FILE"},
-		{[]string{"set", "HELD_KEY", "--profile", "ada's work"}, `agent-secrets secret set HELD_KEY --profile 'ada'\''s work' < FILE`},
 	} {
 		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errMoreThanOneLine }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errMoreThanOneLine }
 		_, stderr, code := runSecret(tc.args...)
 		want := "a value of more than one line must be piped in: " + tc.want
 		if code != exitUsageError || !strings.Contains(stderr, want) {
@@ -873,7 +1182,7 @@ func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errPasteCutShort }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errPasteCutShort }
 		_, stderr, code := runSecret(args...)
 		if code != 1 || !strings.Contains(stderr, errPasteCutShort.Error()) {
 			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errPasteCutShort)
@@ -887,36 +1196,100 @@ func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
 	}
 }
 
-// testControlByteError is a reader error that names a control byte the prompt refused. It has the
-// interface the form uses, so the form test proves that the byte becomes a usage error rather than
-// a generic terminal failure.
-type testControlByteError byte
-
-func (e testControlByteError) Error() string {
-	return fmt.Sprintf("the control byte 0x%02x cannot be typed at the prompt", byte(e))
+// TestSecretAControlByteAtATerminalIsAUsageError: an unhandled terminal control byte is a usage
+// error, never a stored byte and never a value trimmed of it. It names the byte by its number and
+// its name, where it came in the value, and, for a Tab at either end, that a paste often adds one
+// there; then what to do: enter the value again without it, or pipe the value in where the byte
+// is part of it, naming the command that does.
+func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
+	for _, row := range []struct {
+		refused   promptControlByteError
+		want, not string
+	}{
+		{promptControlByteError{c: 0x01, textBefore: true, textAfter: true}, "the control byte 0x01 cannot be typed at the prompt: a Ctrl-A inside the value. Nothing was stored, and the value was not trimmed: enter it again without the Ctrl-A, or, if the Ctrl-A is part of it, pipe the value in: ", "paste"},
+		{promptControlByteError{c: '\t', textBefore: true}, "the control byte 0x09 cannot be typed at the prompt: a Tab at the end of the value, where a paste often adds one. Nothing was stored, and the value was not trimmed: enter it again without the Tab, or, if the Tab is part of it, pipe the value in: ", ""},
+		{promptControlByteError{c: '\t', textAfter: true}, "the control byte 0x09 cannot be typed at the prompt: a Tab at the start of the value, where a paste often adds one.", ""},
+		{promptControlByteError{c: '\t', textBefore: true, textAfter: true}, "the control byte 0x09 cannot be typed at the prompt: a Tab inside the value. Nothing", "paste"},
+		{promptControlByteError{c: 0x1b}, "the control byte 0x1b cannot be typed at the prompt: an Escape as the whole value. Nothing was stored, and the value was not trimmed: enter it again without the Escape", "paste"},
+		{promptControlByteError{c: 0x1c, textBefore: true}, `the control byte 0x1c cannot be typed at the prompt: a Ctrl-\ at the end of the value. Nothing`, "paste"},
+	} {
+		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, local, testAccount, adaSignIn)
+			useTerminal(t)
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, row.refused }
+			_, stderr, code := runSecret(args...)
+			pipe := "pipe the value in: agent-secrets secret " + args[0]
+			if code != exitUsageError || !strings.Contains(stderr, row.want) || !strings.Contains(stderr, pipe) || !strings.Contains(stderr, " < FILE") || (row.not != "" && strings.Contains(stderr, row.not)) {
+				t.Fatalf("%v, %+v: exit %d, stderr %q; want %d naming %q and %q ... < FILE, without %q", args, row.refused, code, stderr, exitUsageError, row.want, pipe, row.not)
+			}
+			if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
+				t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
+			}
+			if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
+				t.Fatalf("%v created NEW_KEY", args)
+			}
+		}
+	}
 }
 
-func (e testControlByteError) ControlByte() byte { return byte(e) }
-
-// TestSecretAControlByteAtATerminalIsAUsageError: an unhandled terminal control byte is a usage
-// error naming the byte and the command that pipes the value in, never a stored byte.
-func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
-	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
-		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
-		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, testControlByteError(0x01) }
-		_, stderr, code := runSecret(args...)
-		want := "the control byte 0x01 cannot be typed at the prompt; pipe the value in"
-		if code != exitUsageError || !strings.Contains(stderr, want) {
-			t.Fatalf("%v: exit %d, stderr %q; want %d naming %q", args, code, stderr, exitUsageError, want)
-		}
-		if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-			t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
-		}
-		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-			t.Fatalf("%v created NEW_KEY", args)
+// TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice: a space can be part of a
+// secret, so a value that starts or ends with one is stored as given, neither trimmed nor refused,
+// whether it is piped in or typed at the prompt, by create and by set alike; the form then prints
+// one line on stderr saying that the value starts, ends, or starts and ends with a space and was
+// stored as given, which names the secret and never prints the value. A value with a space inside
+// it alone prints no such line.
+func TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice(t *testing.T) {
+	for _, row := range []struct {
+		value, where string // where is "" for a value that needs no notice
+	}{
+		{" sk-lead", "starts"},
+		{"sk-trail ", "ends"},
+		{"  sk-both  ", "starts and ends"},
+		{"sk in ner", ""},
+	} {
+		for _, route := range []string{"piped", "typed"} {
+			for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+				t.Run(fmt.Sprintf("%q %s %s", row.value, route, args[0]), func(t *testing.T) {
+					local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+					startSecretBroker(t, servedBy(local))
+					useAWS(t, local, testAccount, adaSignIn)
+					if route == "piped" {
+						useStdin(t, row.value+"\n")
+					} else {
+						useTerminal(t, row.value)
+					}
+					stdout, stderr, code := runSecret(args...)
+					if code != 0 {
+						t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
+					}
+					if got := valueOf(t, local, args[1]); got != row.value {
+						t.Fatalf("%s = %q, want %q stored as given", args[1], got, row.value)
+					}
+					secretPart := strings.TrimSpace(row.value)
+					if strings.Contains(stdout+stderr, secretPart) {
+						t.Fatalf("stdout %q, stderr %q print the value", stdout, stderr)
+					}
+					if row.where == "" {
+						if strings.Contains(stderr, "space") {
+							t.Fatalf("stderr %q; want no notice for a space inside the value", stderr)
+						}
+						return
+					}
+					// The notice is one line naming the form, the secret and which end, and saying
+					// the value was stored as given; its wording is free.
+					var notices []string
+					for _, line := range strings.Split(stderr, "\n") {
+						if strings.Contains(line, "space") {
+							notices = append(notices, line)
+						}
+					}
+					if len(notices) != 1 || !strings.Contains(notices[0], "secret "+args[0]) || !strings.Contains(notices[0], args[1]) || !strings.Contains(notices[0], " "+row.where+" ") || !strings.Contains(notices[0], "stored as given") {
+						t.Fatalf("stderr %q; want one line naming %s, %s, that the value %s with a space, and that it was stored as given", stderr, args[0], args[1], row.where)
+					}
+				})
+			}
 		}
 	}
 }
@@ -929,7 +1302,7 @@ func TestSecretAValueCutShortAtATerminalWritesNothing(t *testing.T) {
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		useTerminal(t)
-		readHidden = func(int, func(), func()) ([]byte, error) { return nil, errValueCutShort }
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
 		_, stderr, code := runSecret(args...)
 		if code != 1 || !strings.Contains(stderr, errValueCutShort.Error()) {
 			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errValueCutShort)
@@ -986,7 +1359,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	}
 	rows := map[string][]string{}
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND SHAPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
+	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER TYPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
 		t.Fatalf("header = %q", lines[0])
 	}
 	for _, line := range lines[1:] {
@@ -994,10 +1367,10 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 		rows[fields[0]] = fields
 	}
 	want := map[string][]string{
-		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "-", "no", "-", "-"},
-		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
-		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "-", "session", "yes", "-", "-"},
-		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "-", "yes", "-", "-"},
+		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "no", "-", "-"},
+		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
+		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "session", "yes", "-", "-"},
+		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "yes", "-", "-"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %v, want exactly %v", rows, want)
@@ -1096,7 +1469,7 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	for _, want := range []string{
 		"name: SHOWN_KEY\n", "secret_name: " + policytest.ID("SHOWN_KEY") + "\n",
 		"owner: ada@example.com\n", "tier: human\n", "requesters: -\n", "created: -\n", "last_changed: -\n",
-		"version: local-current AWSCURRENT\n",
+		"version: local-1 AWSCURRENT\n",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout %q must contain %q", stdout, want)
@@ -1119,98 +1492,89 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 }
 
-// TestSecretShowAndListPrintTheShape: show prints a shape line holding the shape tag the store
-// holds, and "-" for a secret carrying none; list prints the same value in a SHAPE column, since
-// the shape is a one-word tag as the kind, the max grant and the default grant are. Each form's
-// --json carries the tag as the store holds it, "" for a secret carrying none, so a reader of
-// the JSON tells a secret tagged nothing from one tagged a word the broker refuses it for.
-func TestSecretShowAndListPrintTheShape(t *testing.T) {
-	oneLine := policytest.Secret("TOKEN_KEY", "ada@example.com", policy.TierAgent, "tok-abc")
-	oneLine.Tags[policy.TagShape] = policy.ShapeToken
-	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "-----BEGIN KEY-----\n")
-	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
-	untagged := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
-	local := secrets.NewLocal(oneLine, wholeFile, untagged)
-	startSecretBroker(t, servedBy(local))
+// TestSecretShowSaysWhoDecidesAndOnWhatGuidance: show prints who decides a request for the key and
+// the guidance the judge decides it on, so an agent can meet the guidance on its first request.
+// The model judge for a key the broker's rules give a judge entry (GET /v1/settings's judge_keys),
+// whoever owns it, with its seconds and its guidance; a person, on the broker page, for a key with
+// no entry, and for an administrator's key even where the rules name it; and, for an agent-tier
+// key, nobody for a session its tags allow, since only another session's request waits at all.
+func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
+	admin := policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a")
+	admin.Tags[policy.TagAdmin] = "true"
+	local := secrets.NewLocal(
+		policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"),
+		policytest.Secret("PAGE_KEY", "ada@example.com", policy.TierHuman, "p"),
+		admin,
+		policytest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"),
+		policytest.Secret("AGENT_KEY", "ada@example.com", policy.TierAgent, "g"),
+	)
+	startSecretBrokerWith(t, Settings{
+		SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
+		JudgeKeys: map[string]JudgeKey{
+			"JUDGED_KEY":        {Seconds: 900, Guidance: "grant for the release job named in the reason"},
+			"ADMIN_JUDGED_KEY":  {Seconds: 900, Guidance: "grant for anything"},
+			"SHARED_JUDGED_KEY": {Seconds: 300},
+		},
+	}, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-
-	for _, tc := range []struct{ name, stored, printed string }{
-		{"TOKEN_KEY", policy.ShapeToken, policy.ShapeToken},
-		{"DOCUMENT_KEY", policy.ShapeDocument, policy.ShapeDocument},
-		{"PLAIN_KEY", "", "-"},
+	const person = "decides: a person, on the broker page\nguidance: -\n"
+	for name, want := range map[string]string{
+		"JUDGED_KEY":        "decides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: grant for the release job named in the reason\n",
+		"PAGE_KEY":          person,
+		"ADMIN_JUDGED_KEY":  "decides: a person, on the broker page: an administrator's key, which the judge never decides\nguidance: -\n",
+		"SHARED_JUDGED_KEY": "decides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: -\n",
+		"AGENT_KEY":         "decides: nobody, for a session its tags allow; otherwise a person, on the broker page\nguidance: -\n",
 	} {
-		stdout, stderr, code := runSecret("show", tc.name)
+		stdout, stderr, code := runSecret("show", name)
+		if code != 0 || !strings.Contains(stdout, want) {
+			t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
+		}
+	}
+}
+
+// TestSecretShowAndListNameNoShape: this CLI reads no shape tag, so a secret a writer left one
+// on prints as any other secret does: show writes no line opening `shape:`, its --json object
+// holds no `shape` key, and list's header carries no SHAPE column. The leftover tag is left in
+// the store untouched; nothing here removes it.
+func TestSecretShowAndListNameNoShape(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		leftover := policytest.Secret("LEFTOVER_KEY", "ada@example.com", policy.TierAgent, "v1").Tags
+		leftover["shape"] = "token"
+		store.put(t, "LEFTOVER_KEY", leftover, "tok-abc")
+
+		stdout, stderr, code := runSecret("show", "LEFTOVER_KEY")
 		if code != 0 {
-			t.Fatalf("show %s: exit %d, stderr %q", tc.name, code, stderr)
+			t.Fatalf("show: exit %d, stderr %q", code, stderr)
 		}
-		if want := "shape: " + tc.printed + "\n"; !strings.Contains(stdout, want) {
-			t.Fatalf("show %s stdout %q must contain %q", tc.name, stdout, want)
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.HasPrefix(line, "shape:") {
+				t.Fatalf("show printed %q; this CLI reads no shape tag", line)
+			}
 		}
-		jsonOut, stderr, code := runSecret("show", tc.name, "--json")
+		jsonOut, stderr, code := runSecret("show", "LEFTOVER_KEY", "--json")
 		if code != 0 {
-			t.Fatalf("show %s --json: exit %d, stderr %q", tc.name, code, stderr)
+			t.Fatalf("show --json: exit %d, stderr %q", code, stderr)
 		}
-		var view struct {
-			Shape string `json:"shape"`
-		}
+		var view map[string]any
 		if err := json.Unmarshal([]byte(jsonOut), &view); err != nil {
-			t.Fatalf("show %s --json is not a secret: %v: %s", tc.name, err, jsonOut)
+			t.Fatalf("show --json is not a secret: %v: %s", err, jsonOut)
 		}
-		if view.Shape != tc.stored {
-			t.Fatalf("show %s --json shape = %q, want the tag the store holds, %q", tc.name, view.Shape, tc.stored)
+		if _, named := view["shape"]; named {
+			t.Fatalf("show --json = %s; want no shape key", jsonOut)
 		}
-	}
 
-	stdout, stderr, code := runSecret("list")
-	if code != 0 {
-		t.Fatalf("list: exit %d, stderr %q; want 0", code, stderr)
-	}
-	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	header := strings.Fields(lines[0])
-	column := -1
-	for i, name := range header {
-		if name == "SHAPE" {
-			column = i
+		stdout, stderr, code = runSecret("list")
+		if code != 0 {
+			t.Fatalf("list: exit %d, stderr %q", code, stderr)
 		}
-	}
-	if column < 0 {
-		t.Fatalf("list header = %q, want a SHAPE column", lines[0])
-	}
-	shapes := map[string]string{}
-	for _, line := range lines[1:] {
-		fields := strings.Fields(line)
-		shapes[fields[0]] = fields[column]
-	}
-	want := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": "-"}
-	if len(shapes) != len(want) {
-		t.Fatalf("list SHAPE column = %v, want exactly %v", shapes, want)
-	}
-	for name, shape := range want {
-		if shapes[name] != shape {
-			t.Fatalf("list %s SHAPE = %q, want %q", name, shapes[name], shape)
+		header := strings.Fields(strings.SplitN(stdout, "\n", 2)[0])
+		if slices.Contains(header, "SHAPE") {
+			t.Fatalf("list header = %q; want no SHAPE column", header)
 		}
-	}
-
-	stdout, stderr, code = runSecret("list", "--json")
-	if code != 0 {
-		t.Fatalf("list --json: exit %d, stderr %q", code, stderr)
-	}
-	var views []struct {
-		Name  string `json:"name"`
-		Shape string `json:"shape"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &views); err != nil {
-		t.Fatalf("list --json is not a JSON array of secrets: %v: %s", err, stdout)
-	}
-	stored := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": ""}
-	if len(views) != len(stored) {
-		t.Fatalf("list --json = %s, want one row per secret", stdout)
-	}
-	for _, v := range views {
-		if v.Shape != stored[v.Name] {
-			t.Fatalf("list --json %s shape = %q, want the tag the store holds, %q", v.Name, v.Shape, stored[v.Name])
+		if tags := store.tags(t, "LEFTOVER_KEY"); tags["shape"] != "token" {
+			t.Fatalf("the leftover tag reads %q after show and list; want them to have left it alone", tags["shape"])
 		}
-	}
+	})
 }
 
 // TestSecretDeleteThenRestoreRereads: delete schedules a 30-day deletion and the broker's reread
@@ -1331,40 +1695,80 @@ func TestSecretWriteExitsOneWhenTheBrokerCannotBeAsked(t *testing.T) {
 	}
 }
 
-// TestSecretWritesRefuseAMachinesOwnRoleBeforeWriting: every write form refuses a machine's own
-// role before it calls AWS to write; the reads take a machine's role in the broker's account (IAM
-// answers them).
-func TestSecretWritesRefuseAMachinesOwnRoleBeforeWriting(t *testing.T) {
+// TestSecretWritesRunUnderAnyRoleInTheBrokersAccount: a sign-in in the broker's account writes
+// whatever kind of principal it is - here an assumed service role, which names no person - since
+// the store's IAM, not this CLI, decides what it may write: set, retag, delete and restore write,
+// and so does a create that names its owner outright. --owner me is refused under it (exit 2),
+// naming --owner <email>, before a value is read or anything is written, because the role names no
+// person. A sign-in in another account is still refused (exit 1), naming both accounts.
+func TestSecretWritesRunUnderAnyRoleInTheBrokersAccount(t *testing.T) {
 	const machine = "arn:aws:sts::111122223333:assumed-role/example-service-role/session"
-	for _, args := range [][]string{
-		{"set", "HELD_KEY"}, {"retag", "HELD_KEY", "--tier", "human"}, {"delete", "HELD_KEY"}, {"restore", "HELD_KEY"},
-	} {
-		t.Run(args[0], func(t *testing.T) {
+	t.Run("writes", func(t *testing.T) {
+		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		broker := startSecretBroker(t, servedBy(local))
+		useAWS(t, local, testAccount, machine)
+		for _, step := range []struct {
+			stdin string
+			args  []string
+		}{
+			{"v2", []string{"set", "HELD_KEY"}},
+			{"", []string{"retag", "HELD_KEY", "--tier", "human"}},
+			{"", []string{"delete", "HELD_KEY"}},
+			{"", []string{"restore", "HELD_KEY"}},
+			{"v1", []string{"create", "NEW_KEY", "--owner", "Grace@Example.com", "--tier", "agent"}},
+		} {
+			useStdin(t, step.stdin)
+			if _, stderr, code := runSecret(step.args...); code != 0 {
+				t.Fatalf("%v under a service role: exit %d, stderr %q; want 0", step.args, code, stderr)
+			}
+		}
+		got := describe(t, local, "HELD_KEY")
+		if got.DeletedDate != nil || secrets.TagMap(got.Tags)[policy.TagTier] != policy.TierHuman || valueOf(t, local, "HELD_KEY") != "v2" {
+			t.Fatalf("HELD_KEY after the writes: %+v, value %q; want tier human, value v2, not deleted", got, valueOf(t, local, "HELD_KEY"))
+		}
+		if owner := secrets.TagMap(describe(t, local, "NEW_KEY").Tags)[policy.TagOwner]; owner != "grace@example.com" {
+			t.Fatalf("NEW_KEY's owner = %q, want the email --owner named, lowercased", owner)
+		}
+		if rereads, _ := broker.recorded(); !slices.Equal(rereads, []string{"HELD_KEY", "HELD_KEY", "HELD_KEY", "HELD_KEY", "NEW_KEY"}) {
+			t.Fatalf("rereads = %v, want one after each write", rereads)
+		}
+	})
+	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"retag", "HELD_KEY", "--owner", "me"}} {
+		t.Run(args[0]+" --owner me", func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			broker := startSecretBroker(t, servedBy(local))
 			useAWS(t, local, testAccount, machine)
-			useStdin(t, "v2")
+			refuseValueReads(t)
 			_, stderr, code := runSecret(args...)
-			if code != 1 || !strings.Contains(stderr, "not a person's Identity Center sign-in") || !strings.Contains(stderr, "example-service-role") {
-				t.Fatalf("exit %d, stderr %q; want 1 naming the role", code, stderr)
+			if code != exitUsageError || !strings.Contains(stderr, "--owner <email>") || !strings.Contains(stderr, "example-service-role") {
+				t.Fatalf("exit %d, stderr %q; want %d naming the role and --owner <email>", code, stderr, exitUsageError)
 			}
-			got := describe(t, local, "HELD_KEY")
-			if got.DeletedDate != nil || secrets.TagMap(got.Tags)[policy.TagTier] != policy.TierAgent || valueOf(t, local, "HELD_KEY") != "v1" {
-				t.Fatalf("HELD_KEY changed under a machine's role: %+v", got)
+			if owner := secrets.TagMap(describe(t, local, "HELD_KEY").Tags)[policy.TagOwner]; owner != "ada@example.com" {
+				t.Fatalf("HELD_KEY's owner = %q after a refused retag", owner)
+			}
+			if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
+				t.Fatal("a refused create wrote NEW_KEY")
 			}
 			if rereads, _ := broker.recorded(); len(rereads) != 0 {
 				t.Fatalf("rereads = %v, want none", rereads)
 			}
 		})
 	}
-	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, machine)
-	for _, args := range [][]string{{"list"}, {"show", "HELD_KEY"}} {
-		if _, stderr, code := runSecret(args...); code != 0 {
-			t.Fatalf("%s under a machine's role: exit %d, stderr %q; want 0 (IAM decides reads)", args[0], code, stderr)
+	t.Run("another account", func(t *testing.T) {
+		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		broker := startSecretBroker(t, servedBy(local))
+		useAWS(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/example-service-role/session")
+		_, stderr, code := runSecret("retag", "HELD_KEY", "--tier", "human")
+		if code != 1 || !strings.Contains(stderr, "in account 999999999999") || !strings.Contains(stderr, "account "+testAccount) {
+			t.Fatalf("exit %d, stderr %q; want 1 naming both accounts", code, stderr)
 		}
-	}
+		if tier := secrets.TagMap(describe(t, local, "HELD_KEY").Tags)[policy.TagTier]; tier != policy.TierAgent {
+			t.Fatalf("HELD_KEY's tier = %q after a refused retag", tier)
+		}
+		if rereads, _ := broker.recorded(); len(rereads) != 0 {
+			t.Fatalf("rereads = %v, want none", rereads)
+		}
+	})
 }
 
 // TestSecretSetOrCreateWithASharedOwner: create --owner shared tags the secret shared, whoever is
@@ -1393,28 +1797,27 @@ func TestSecretSetOrCreateWithASharedOwner(t *testing.T) {
 	}
 }
 
-// TestSecretFormsSignInWithTheProfileInTheBrokersRegion: every form loads the person's AWS sign-in
-// with the profile --profile names ("" leaves it to AWS_PROFILE and the SDK's default chain),
-// pinned to the region the broker's settings answer.
-func TestSecretFormsSignInWithTheProfileInTheBrokersRegion(t *testing.T) {
+// TestSecretFormsSignInInTheBrokersRegion: every form loads the person's AWS sign-in pinned to the
+// region the broker's settings answer; the SDK reads AWS_PROFILE (and the rest of its chain) from
+// the environment itself, so the forms pass it no profile.
+func TestSecretFormsSignInInTheBrokersRegion(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local))
-	type load struct{ profile, region string }
-	var loads []load
+	var regions []string
 	restore := awsClients
-	awsClients = func(_ context.Context, profile, region string) (secretsAPI, stsAPI, error) {
-		loads = append(loads, load{profile, region})
-		return local, fakeSTS{account: testAccount, arn: adaSignIn}, nil
+	awsClients = func(_ context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+		regions = append(regions, region)
+		return local, fakeSTS{account: testAccount, arn: adaSignIn}, nil, nil
 	}
 	t.Cleanup(func() { awsClients = restore })
 	useStdin(t, "v2")
-	for _, args := range [][]string{{"list", "--profile", "work"}, {"set", "HELD_KEY", "--profile", "work"}, {"show", "HELD_KEY"}} {
+	for _, args := range [][]string{{"list"}, {"set", "HELD_KEY"}, {"show", "HELD_KEY"}} {
 		if _, stderr, code := runSecret(args...); code != 0 {
 			t.Fatalf("%v: exit %d, stderr %q", args, code, stderr)
 		}
 	}
-	want := []load{{"work", "us-east-1"}, {"work", "us-east-1"}, {"", "us-east-1"}}
-	if len(loads) != len(want) || loads[0] != want[0] || loads[1] != want[1] || loads[2] != want[2] {
-		t.Fatalf("loads = %+v, want %+v", loads, want)
+	want := []string{"us-east-1", "us-east-1", "us-east-1"}
+	if len(regions) != len(want) || regions[0] != want[0] || regions[1] != want[1] || regions[2] != want[2] {
+		t.Fatalf("regions = %+v, want %+v", regions, want)
 	}
 }

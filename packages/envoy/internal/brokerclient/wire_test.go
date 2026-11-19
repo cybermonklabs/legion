@@ -58,10 +58,13 @@ type corpusExchange struct {
 	Subject corpusToken `json:"subject"`
 	// Actor is the machine a person signed in on; absent from every trade a machine makes for
 	// itself.
-	Actor   *corpusToken      `json:"actor"`
-	Session string            `json:"session"`
-	Form    map[string]string `json:"form"`
-	Proof   struct {
+	Actor   *corpusToken `json:"actor"`
+	Session string       `json:"session"`
+	// Projects is the list the client is configured with; absent from every trade that names
+	// none.
+	Projects []string          `json:"projects"`
+	Form     map[string]string `json:"form"`
+	Proof    struct {
 		Header map[string]any `json:"header"`
 		Claims map[string]any `json:"claims"`
 	} `json:"proof"`
@@ -109,11 +112,12 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 				return exchange.Answer.Status, exchange.Answer.Body
 			})
 			client, err := New(Config{
-				BrokerURL: broker.URL(),
+				BrokerURL: broker.Address(),
 				Key:       testKey(t),
 				Subject:   corpusSource(t, exchange.Subject),
 				Actor:     corpusActor(t, exchange.Actor),
 				Session:   exchange.Session,
+				Projects:  exchange.Projects,
 				// The entry's own form says whether this trade declines the launcher
 				// credential, so the one place the corpus states it is the form it asserts.
 				NoLauncherCredential: exchange.Form[oauthwire.FormLauncherCredential] == oauthwire.FormLauncherCredentialDeclined,
@@ -420,6 +424,8 @@ func resolvePlaceholder(exchange corpusExchange, value string) (string, bool) {
 		return exchange.Actor.Token, true
 	case "${session}":
 		return exchange.Session, true
+	case "${projects}":
+		return oauthwire.JoinProjects(exchange.Projects), true
 	}
 	return value, false
 }

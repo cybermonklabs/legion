@@ -2,12 +2,12 @@
 # The operator-launched controller's live proof on tmux (LEGION-208 Stage 4b, task 4b.5): the Go
 # daemon on a real Postgres with this checkout's two plugins in an isolated OMP profile, a real Envoy
 # listener and NATS, and `legion controller start` run in real tmux panes as an operator would. It
-# checks `legion start --check-config`, the boot gate's contract refusal, `legion state --config`
+# checks `legion config check`, the boot gate's contract refusal, `legion state --config`
 # running no key command, the operator token file's mode, the controller's registration, role and
-# environment, Ctrl-C reaching Oh My Pi, `legion status` from an operator shell, a second start
-# revoking the first, the controller liveness probe against the listener, and the command's exit
-# code. Each check prints `== <name>`, what it observed, and `ok <name>`; the first that fails ends
-# the run non-zero, naming it.
+# environment, Ctrl-C reaching Oh My Pi, `legion issue status` from an operator shell, a second
+# start revoking the first, the controller liveness probe against the listener, and the command's
+# exit code. Each check prints `== <name>`, what it observed, and `ok <name>`; the first that fails
+# ends the run non-zero, naming it.
 #
 # Run it as `bash scripts/e2e/controller-start-tmux.sh` from a checkout. Everything the run
 # creates is its own and goes on any exit: its scratch directory, which holds the isolated OMP
@@ -89,9 +89,10 @@ tm() { tmux -L accept "$@"; }
 state_json() { legion state --json --port "$daemon_port"; }
 envoy_role() { curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/roles/$1"; }
 log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" | jq -s length; }
-# The operator's shell, less the running session's own OMP and Envoy variables, with the run's own
-# HOME for Oh My Pi: operator_env runs a command in it, and the daemon starts in it (start_kept).
-operator_shell=(env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME="$omp_home" OMP_PROFILE="$profile")
+# The operator's shell, less the running session's own OMP and Envoy variables (omp_session_unsets,
+# lib/omp-home.sh), with the run's own HOME for Oh My Pi: operator_env runs a command in it, and the
+# daemon starts in it (start_kept).
+operator_shell=(env "${omp_session_unsets[@]}" HOME="$omp_home" OMP_PROFILE="$profile")
 operator_env() { "${operator_shell[@]}" "$@"; }
 # controller_omp STATE_DIR: the pid of the Oh My Pi `legion controller start` launched for STATE_DIR.
 controller_omp() {
@@ -134,7 +135,9 @@ pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
 dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/legion?sslmode=disable"
 
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&
@@ -168,6 +171,8 @@ providers:
         name: M1
 EOF
 printf 'modelRoles:\n  default: offline/m1\n  review: offline/m1\n  oracle: offline/m1\n  deep: offline/m1\n' >"$profile_agent/config.yml"
+# The controller is an interactive Oh My Pi in a pane, which a fresh profile's setup wizard would hold.
+omp_setup_wizard_off "$profile_agent/config.yml"
 
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/operator-token")
 cat >"$work/legion.yaml" <<EOF
@@ -184,9 +189,9 @@ envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
-# wake keys add no line to legion start --check-config, which prints the renames, the open
-# capability rows and, under Kubernetes alone, the pod lines (checkStartConfig in cmd/legion):
-# check-config-passes below compares everything after the OK line with a fixed string.
+# wake keys add no line to legion config check, which prints the renames, the open
+# capability rows and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
+# config-check-passes below compares everything after the OK line with a fixed string.
 worker_wakes_per_minute: 0
 EOF
 printf 'Always answer in one sentence.\n' >"$work/instructions.md"
@@ -202,9 +207,9 @@ omp_invocation: mise x $pin -- omp
 state_dir: ./controller-state
 EOF
 
-# ---- --check-config --------------------------------------------------------------------------------
-begin check-config-passes
-out=$(legion start --check-config --config "$work/legion.yaml")
+# ---- legion config check ---------------------------------------------------------------------------
+begin config-check-passes
+out=$(legion config check --config "$work/legion.yaml")
 # The OK line names the design-gate steps the file resolved to; this file sets no gates key, which
 # is the single step spec.
 [ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "got $out"
@@ -217,7 +222,7 @@ capability resource-limits is open: the tmux runtime sets no requests or limits 
 note "$out"
 pass
 
-begin check-config-names-each-broken-key
+begin config-check-names-each-broken-key
 marker=$work/private-key-command-ran
 workflow_tail="dispatch_url: https://dispatch.test
 projects:
@@ -227,7 +232,7 @@ github_apps:
   review: { app_id: \"2\", private_key_command: \"touch $marker; exit 1\" }"
 variant() { # variant NAME SAYS: the file is $work/variant-NAME.yaml
   local st=0 out
-  out=$(legion start --check-config --config "$work/variant-$1.yaml" 2>&1) || st=$?
+  out=$(legion config check --config "$work/variant-$1.yaml" 2>&1) || st=$?
   [ "$st" = 1 ] || fail "variant $1 exited $st: $out"
   grep -qF "$2" <<<"$out" || fail "variant $1 does not say \"$2\": $out"
   note "variant $1 → $out"
@@ -290,7 +295,7 @@ note "the daemon minted nothing; $ctl_state not created"
 pass
 
 begin controller-claims-the-role
-tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
+tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
 until_true 180 "controllerLocator in the state" sh -c "'$work/legion' state --json --port $daemon_port | jq -e '.controllerLocator.sessionId != null'"
 locator1=$(state_json | jq -c .controllerLocator)
 session1=$(jq -r .sessionId <<<"$locator1")
@@ -337,7 +342,7 @@ grep -qF "[legion] the daemon has no GitHub App to act as; the controller's gh a
   fail "ctl1.stderr does not say the controller's gh acts as nobody: $(cat "$evidence/checks/ctl1.stderr")"
 [ -d "$ctl_state/gh" ] || fail "$ctl_state/gh does not exist"
 [ "$(stat -c %a "$ctl_state/gh")" = 700 ] || fail "$ctl_state/gh is not mode 0700: $(stat -c %a "$ctl_state/gh")"
-[ -z "$(ls -A "$ctl_state/gh")" ] || fail "$ctl_state/gh holds $(ls -A "$ctl_state/gh" | tr '\n' ' ')with no GitHub App configured, want nothing"
+[ -z "$(ls -A "$ctl_state/gh")" ] || fail "$ctl_state/gh holds $(find "$ctl_state/gh" -mindepth 1 -maxdepth 1 -printf '%f ')with no GitHub App configured, want nothing"
 [ ! -e "$ctl_state/github-credential.log" ] || fail "$ctl_state/github-credential.log exists with no GitHub App configured"
 note "no GitHub App: ctl1.stderr says the controller's gh acts as nobody; $ctl_state/gh is an empty 0700 directory and no credential log"
 pass
@@ -355,7 +360,7 @@ pass
 
 begin status-from-an-operator-shell
 st=0
-out=$(legion status "$project-1" backlog --operator-token-file "$work/operator-token" --port "$daemon_port" 2>&1) || st=$?
+out=$(legion issue status "$project-1" backlog --operator-token-file "$work/operator-token" --port "$daemon_port" 2>&1) || st=$?
 # This rig has no Dispatch, so the route that took the minted grant answers 500 naming it: the
 # bearer minted a grant and the status request reached the Dispatch client. The status write
 # itself is the full-tree proof's (stage4b-sandbox-tree.sh, controller), against a real Dispatch.
@@ -363,15 +368,16 @@ grep -qF 'the daemon answered 500 Internal Server Error: Dispatch is unavailable
 note "operator bearer → controller grant → status route reached Dispatch (this rig has none): exit $st: $out"
 printf 'not-the-operator-token\n' >"$work/wrong-token" && chmod 600 "$work/wrong-token"
 st=0
-out=$(legion status "$project-1" backlog --operator-token-file "$work/wrong-token" --port "$daemon_port" 2>&1) || st=$?
+out=$(legion issue status "$project-1" backlog --operator-token-file "$work/wrong-token" --port "$daemon_port" 2>&1) || st=$?
 if [ "$st" != 1 ] || ! grep -qF 'the daemon answered 403 Forbidden: Invalid operator token' <<<"$out"; then fail "wrong token: exit $st: $out"; fi
 note "wrong bearer: exit $st: $out"
 pass
 
 begin second-start-revokes-the-first
 cap1=$(cat "$ctl_state/secrets/$role")
-grant_before=$(curl -fsS -X POST -H "Authorization: Bearer $(cat "$work/operator-token")" -H 'Content-Type: application/json' \
-  --data '{}' "http://127.0.0.1:$daemon_port/legion/v1/grants" | jq -r .grantId)
+grant_before=$(printf 'Authorization: Bearer %s' "$(cat "$work/operator-token")" |
+  curl -fsS -X POST -H @- -H 'Content-Type: application/json' \
+    --data '{}' "http://127.0.0.1:$daemon_port/legion/v1/grants" | jq -r .grantId)
 # The grant's positive control: before the second start it redeems, reaching the status route's
 # missing Dispatch, so the route takes issue X-1 past the grant check.
 redeem_status() {
@@ -383,7 +389,7 @@ if [ "$code" != 500 ] || ! grep -qF DISPATCH_UNAVAILABLE "$evidence/checks/grant
   fail "the grant answered $code $(cat "$evidence/checks/grant-before-second-start.json") before the second start, want 500 DISPATCH_UNAVAILABLE"
 fi
 note "the grant, before the second start → $code $(cat "$evidence/checks/grant-before-second-start.json")"
-tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
+tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
 until_true 180 "controllerLocator to name a second session" sh -c "'$work/legion' state --json --port $daemon_port | jq -e --arg s '$session1' '.controllerLocator.sessionId != null and .controllerLocator.sessionId != \$s'"
 locator2=$(state_json | jq -c .controllerLocator)
 session2=$(jq -r .sessionId <<<"$locator2")
@@ -413,14 +419,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/controller"
 )
 
 func main() {
 	token, _ := os.ReadFile(os.Args[2])
-	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], EnvoyToken: strings.TrimSpace(string(token)), Project: os.Args[3], BootTimeout: 120 * time.Second})
+	p := controller.NewProber(controller.ProberOptions{EnvoyURL: os.Args[1], EnvoyToken: strings.TrimSpace(string(token)), Project: os.Args[3]})
 	for _, session := range os.Args[4:] {
 		fmt.Printf("%s=%s\n", session, p.Probe(context.Background(), session))
 	}
@@ -429,9 +434,9 @@ GO
 printf '{"Replace":{"%s":"%s"}}' "$root/packages/daemon/cmd/liveprobe-accept/main.go" "$work/liveprobe.go" >"$work/overlay.json"
 verdicts=$(cd "$root/packages/daemon" && go run -overlay "$work/overlay.json" ./cmd/liveprobe-accept \
   "http://127.0.0.1:$envoy_port" "$work/envoy-token" "$ptoken" "$session2" "$session1" 2>"$evidence/checks/liveprobe.log" | tr '\n' ' ')
-[ "$verdicts" = "$session2=alive $session1=gone " ] || fail "verdicts: $verdicts; log $(cat "$evidence/checks/liveprobe.log")"
+[ "$verdicts" = "$session2=live $session1=gone " ] || fail "verdicts: $verdicts; log $(cat "$evidence/checks/liveprobe.log")"
 note "controller.Prober on the live listener: $verdicts"
-note "$(grep -o 'msg=.*' "$evidence/checks/liveprobe.log" | head -1)"
+note "$(grep -o 'controller liveness: .*' "$evidence/checks/liveprobe.log" | head -1)"
 pass
 
 begin exit-code-is-oh-my-pis

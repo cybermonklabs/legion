@@ -1,13 +1,17 @@
 // Package metrics provides minimal Prometheus-compatible metrics without
 // third-party dependencies. It supports counters (with labels), histograms
-// (with labels and configurable buckets), gauges, and gauge functions
-// evaluated at scrape time.
+// (with labels and configurable buckets), gauges, gauge functions evaluated at
+// scrape time, and labelled gauge sets whose series a function computes at
+// scrape time.
 package metrics
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -35,6 +39,7 @@ type Registry struct {
 	histograms []*Histogram
 	gauges     []*Gauge
 	gaugeFuncs []*GaugeFunc
+	gaugeSets  []*gaugeSet
 }
 
 // New creates an empty metrics registry.
@@ -217,6 +222,36 @@ func (r *Registry) NewOptionalGaugeFunc(name, help string, fn func() (int64, boo
 }
 
 // ---------------------------------------------------------------------------
+// Gauge set
+// ---------------------------------------------------------------------------
+
+// GaugeSample is one series of a gauge set: the labels that name it, as Counter.Inc takes them,
+// and the value it reads.
+type GaugeSample struct {
+	Labels [][2]string
+	Value  int64
+}
+
+// gaugeSet is a labelled gauge whose series fn computes on each scrape.
+type gaugeSet struct {
+	name string
+	help string
+	fn   func() []GaugeSample
+}
+
+// NewGaugeSetFunc registers a labelled gauge whose series are computed by fn on each scrape: one
+// sample for each GaugeSample fn answers, written in the order of their label text so two scrapes
+// of one set read alike, and none for a series fn no longer answers. So a series leaves the scrape
+// the moment what it counts is gone, with no call anywhere to remove it, and a set that is empty
+// writes the gauge's HELP and TYPE lines and no sample. fn answers each label set at most once,
+// since the text format holds one sample per series.
+func (r *Registry) NewGaugeSetFunc(name, help string, fn func() []GaugeSample) {
+	r.mu.Lock()
+	r.gaugeSets = append(r.gaugeSets, &gaugeSet{name: name, help: help, fn: fn})
+	r.mu.Unlock()
+}
+
+// ---------------------------------------------------------------------------
 // Timer
 // ---------------------------------------------------------------------------
 
@@ -237,65 +272,97 @@ func (t Timer) ObserveDuration(h *Histogram, labels ...[2]string) {
 
 // Handler returns an http.Handler that writes all registered metrics in
 // Prometheus text exposition format (text/plain; version=0.0.4).
+//
+// It renders the whole text first (render) and then writes it, holding no lock while it writes: a
+// scrape's write waits on its client when the client stops reading - until the server's write
+// timeout where the server sets one, and Dispatch's sets none - and a lock held across it would
+// hold every recording that takes the lock - Counter.Add and Histogram.Observe take their
+// metric's, registration the registry's - for as long. Dispatch, the listener and the broker
+// record as they answer requests and serve this handler, so a scrape client that stops reading
+// would otherwise stop them answering.
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-
-		for _, c := range r.counters {
-			writeType(w, c.name, c.help, "counter")
-			c.mu.Lock()
-			for _, key := range sortedKeys(c.series) {
-				e := c.series[key]
-				fmt.Fprintf(w, "%s%s %d\n", c.name, e.formatted, e.value.Load())
-			}
-			c.mu.Unlock()
-		}
-
-		for _, h := range r.histograms {
-			writeType(w, h.name, h.help, "histogram")
-			h.mu.Lock()
-			for _, key := range sortedKeys(h.series) {
-				e := h.series[key]
-				inner := stripBraces(e.formatted)
-				var cum int64
-				for i, bound := range h.bounds {
-					cum += e.buckets[i].Load()
-					writeBucket(w, h.name, inner, bound, cum)
-				}
-				total := e.count.Load()
-				sum := math.Float64frombits(e.sumBits.Load())
-				writeInfBucket(w, h.name, inner, total)
-				writeSumCount(w, h.name, inner, sum, total)
-			}
-			h.mu.Unlock()
-		}
-
-		for _, g := range r.gauges {
-			writeType(w, g.name, g.help, "gauge")
-			fmt.Fprintf(w, "%s %d\n", g.name, g.value.Load())
-		}
-
-		for _, gf := range r.gaugeFuncs {
-			writeType(w, gf.name, gf.help, "gauge")
-			if value, ok := gf.fn(); ok {
-				fmt.Fprintf(w, "%s %d\n", gf.name, value)
-			}
-		}
+		_, _ = w.Write(r.render())
 	})
+}
+
+// render is the registry's exposition text. It holds the registry's lock only to copy the list of
+// metrics, and each metric's only while it reads that metric's series into the text, and writes
+// to no client.
+func (r *Registry) render() []byte {
+	r.mu.RLock()
+	counters, histograms, gauges := slices.Clone(r.counters), slices.Clone(r.histograms), slices.Clone(r.gauges)
+	gaugeFuncs, gaugeSets := slices.Clone(r.gaugeFuncs), slices.Clone(r.gaugeSets)
+	r.mu.RUnlock()
+
+	var w bytes.Buffer
+	for _, c := range counters {
+		writeType(&w, c.name, c.help, "counter")
+		c.mu.Lock()
+		for _, key := range sortedKeys(c.series) {
+			e := c.series[key]
+			fmt.Fprintf(&w, "%s%s %d\n", c.name, e.formatted, e.value.Load())
+		}
+		c.mu.Unlock()
+	}
+
+	for _, h := range histograms {
+		writeType(&w, h.name, h.help, "histogram")
+		h.mu.Lock()
+		for _, key := range sortedKeys(h.series) {
+			e := h.series[key]
+			inner := stripBraces(e.formatted)
+			var cum int64
+			for i, bound := range h.bounds {
+				cum += e.buckets[i].Load()
+				writeBucket(&w, h.name, inner, bound, cum)
+			}
+			total := e.count.Load()
+			sum := math.Float64frombits(e.sumBits.Load())
+			writeInfBucket(&w, h.name, inner, total)
+			writeSumCount(&w, h.name, inner, sum, total)
+		}
+		h.mu.Unlock()
+	}
+
+	for _, g := range gauges {
+		writeType(&w, g.name, g.help, "gauge")
+		fmt.Fprintf(&w, "%s %d\n", g.name, g.value.Load())
+	}
+
+	for _, gf := range gaugeFuncs {
+		writeType(&w, gf.name, gf.help, "gauge")
+		if value, ok := gf.fn(); ok {
+			fmt.Fprintf(&w, "%s %d\n", gf.name, value)
+		}
+	}
+
+	for _, gs := range gaugeSets {
+		writeType(&w, gs.name, gs.help, "gauge")
+		samples := gs.fn()
+		lines := make([]string, len(samples))
+		for i, s := range samples {
+			lines[i] = fmt.Sprintf("%s%s %d\n", gs.name, labelFormat(s.Labels), s.Value)
+		}
+		sort.Strings(lines)
+		for _, line := range lines {
+			w.WriteString(line)
+		}
+	}
+	return w.Bytes()
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-func writeType(w http.ResponseWriter, name, help, typ string) {
+func writeType(w io.Writer, name, help, typ string) {
 	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
 	fmt.Fprintf(w, "# TYPE %s %s\n", name, typ)
 }
 
-func writeBucket(w http.ResponseWriter, name, inner string, le float64, cum int64) {
+func writeBucket(w io.Writer, name, inner string, le float64, cum int64) {
 	if inner != "" {
 		fmt.Fprintf(w, "%s_bucket{%s,le=\"%g\"} %d\n", name, inner, le, cum)
 	} else {
@@ -303,7 +370,7 @@ func writeBucket(w http.ResponseWriter, name, inner string, le float64, cum int6
 	}
 }
 
-func writeInfBucket(w http.ResponseWriter, name, inner string, total int64) {
+func writeInfBucket(w io.Writer, name, inner string, total int64) {
 	if inner != "" {
 		fmt.Fprintf(w, "%s_bucket{%s,le=\"+Inf\"} %d\n", name, inner, total)
 	} else {
@@ -311,7 +378,7 @@ func writeInfBucket(w http.ResponseWriter, name, inner string, total int64) {
 	}
 }
 
-func writeSumCount(w http.ResponseWriter, name, inner string, sum float64, count int64) {
+func writeSumCount(w io.Writer, name, inner string, sum float64, count int64) {
 	if inner != "" {
 		fmt.Fprintf(w, "%s_sum{%s} %g\n", name, inner, sum)
 		fmt.Fprintf(w, "%s_count{%s} %d\n", name, inner, count)
@@ -337,6 +404,13 @@ func labelKey(labels [][2]string) string {
 	return b.String()
 }
 
+// labelValueEscaper writes a label value as the Prometheus text format requires: a backslash, a
+// double quote and a line feed each as a backslash escape. A value a caller takes from text it
+// does not choose - a secret's store id, an owner tag - can hold any of the three, and unescaped
+// one would end the value, or the whole sample line, early. A value holding none of them is
+// written as it is, byte for byte.
+var labelValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+
 func labelFormat(labels [][2]string) string {
 	if len(labels) == 0 {
 		return ""
@@ -349,7 +423,7 @@ func labelFormat(labels [][2]string) string {
 		}
 		b.WriteString(kv[0])
 		b.WriteString(`="`)
-		b.WriteString(kv[1])
+		b.WriteString(labelValueEscaper.Replace(kv[1]))
 		b.WriteByte('"')
 	}
 	b.WriteByte('}')

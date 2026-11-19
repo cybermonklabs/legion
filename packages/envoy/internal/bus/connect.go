@@ -76,6 +76,10 @@ func detectSilentCuts(o *nats.Options) error {
 	return nil
 }
 
+// reconnectJitterImmediate is the jitter WithImmediateReconnect leaves between two clients'
+// retries, in place of the second every other connection waits.
+const reconnectJitterImmediate = 50 * time.Millisecond
+
 // allOf applies each option that is not nil, in order.
 func allOf(options ...nats.Option) nats.Option {
 	return func(o *nats.Options) error {
@@ -110,6 +114,9 @@ func connectInBackground(name string, urls []string, refusals *reconnectErrThrot
 		o.IgnoreAuthErrorAbort = true
 		connectedCB, reconnectedCB, report := o.ConnectedCB, o.ReconnectedCB, o.AsyncErrorCB
 		o.ConnectedCB = func(nc *nats.Conn) {
+			if gate := firstConnectGate.Load(); gate != nil {
+				<-*gate
+			}
 			refusals.reset()
 			slog.Info("envoy nats connected", slog.String("name", name), slog.String("url", natsURLWithoutUserinfo(nc.ConnectedUrl())))
 			if connectedCB != nil {
@@ -230,10 +237,11 @@ func serverList(urls []string) string {
 // options starts from nats.GetDefaultOptions: Connect fills in only some zero fields, and the
 // defaults are what turn on reconnecting, the client's pings and the drain and flusher timeouts. A
 // lost server is reconnected in place, forever, so JetStream handles taken from the connection
-// keep working; ReconnectedCB re-subscribes and runs the reconnect hooks. DisconnectedErrCB logs
-// the disconnect and then calls disconnectedCB: the reconnect loop keeps every subscription open
-// through an outage, so a KV watcher never ends on its own and only this callback says its cache
-// stopped following the bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
+// keep working; ReconnectedCB starts the re-subscribe and a run of the reconnect hooks off nats.go's
+// callback goroutine (onReconnect). DisconnectedErrCB logs the disconnect and then calls
+// disconnectedCB: the reconnect loop keeps every subscription open through an outage, so a KV
+// watcher never ends on its own and only this callback says its cache stopped following the
+// bucket. ClosedCB fires on Close or Drain, and also when nats.go gives up
 // on the connection itself: the same authorization error twice in a row, or a server -ERR it does
 // not classify. Those two are why onClosed still starts a recovery that dials a replacement. The
 // reconnect buffer is off, so nothing is held and sent after its caller saw an error: a publish
@@ -274,9 +282,10 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	// line, because a listener process test fails if a bus line stops being Go's text format
 	// (cmd/listener/startup_test.go:598-612 names the deployed metric filters). Each server is
 	// written without its userinfo (natsURLWithoutUserinfo), because nats.go authenticates with a
-	// URL's userinfo, a token or a user and password, when the URL carries one. The nkey credential
-	// never reaches a line: options never sees it, since nkeyCredential is applied to the options
-	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer only.
+	// URL's userinfo, a token or a user and password, when the URL carries one. The NATS credential
+	// never reaches a line: options never sees it, since credential is applied to the options
+	// value afterwards (connect.go, connectWithContext) and holds a public key and a signer, or a
+	// token reader, only.
 	reconnectAttemptFailed := func(err error) {
 		if !throttle.allow() {
 			return
@@ -361,7 +370,7 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 }
 
 // connectWithContext dials urls with envoy's options, then settings when it is not nil: the NATS
-// user nkeyCredential names, and what the client's options add (connectOpts.connectionSettings,
+// credential the environment names (credential), and what the client's options add (connectOpts.connectionSettings,
 // connectInBackground). When dialer is not nil it dials through the SOCKS5 proxy it names
 // (socks5Proxy): every connection then, the first and each one nats.go dials to reconnect, goes
 // through the proxy, handed the server's host name as the URL spells it.

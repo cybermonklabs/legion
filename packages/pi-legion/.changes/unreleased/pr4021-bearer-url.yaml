@@ -1,0 +1,12 @@
+kind: Fixed
+custom:
+  Issue: pr4021
+body: |-
+  A capability detail now masks the word after a `Bearer` or an API-key label up to the next
+  whitespace or quote, whatever its shape, except a trailing run of backslashes, closing brackets
+  and `,;:.!?`, which stays outside the word where only whitespace, a quote or the line's end
+  follows it; such a run that any other character follows is masked with the word: a URL there
+  reads `Bearer ***`, where before the text after its scheme could show (`Bearer http://u:SECRET`
+  read `Bearer ***://u:SECRET`). The masking covers the fixed list of shapes in the shared fixture
+  and nothing else: a secret that no named pattern marks, such as a positional argument
+  (`mysql -p hunter2`), is not masked.

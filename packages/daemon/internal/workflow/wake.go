@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -59,6 +61,16 @@ type Pods interface {
 	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
+	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
+	// told about its pod's volume filling, counted in the store rather than in this process:
+	// a daemon that restarts in the middle of a filling pod's episode must not start the count
+	// over and tell that architect three more times (volumeNearFull). The read answers the
+	// notices already written for this trimmer and episode and the newest notice of the pod
+	// whatever line it was on; the write counts one against that line and answers the count it
+	// now stands at. Both run inside the fact's transaction, the one that writes the notice's
+	// outbox row, so a notice held for an absent architect has still spent its count.
+	VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int) (store.VolumeNoticeCounts, error)
+	RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int, at time.Time) (int, error)
 	// OpenPodBackstop is whether issue's role has a backstop armed and not yet fired: a release
 	// that left the role with its phase open armed it, so the backstop brings the pod back. The
 	// cutover's repair reads it to pass over a merger something will still wake
@@ -73,15 +85,25 @@ type Pods interface {
 // still in flight (StartedBy, read by store.IssueReleaseStop), and already delivers the row's
 // task once the relaunched agent is ready. Naming no phase keeps the row out of every phase
 // fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
-// never the phase's work.
+// never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
+// of an issue in reviewing is told the entry of its round too (WakeTask says why).
 func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
 }
 
-// WakeTask is the one task a woken role is given, the sentence its first turn reads before
-// anything else: which wake brought its pod back and what that wake was about. R6 asks for
-// exactly one such task or message per wake, and the outbox row that carries it is written in the
-// wake's own transaction, so a wake that commits has its task and one that does not has neither.
+// WakeTask is the one task a woken role is given: which wake brought its pod back and what that
+// wake was about. A message Envoy kept for the role can reach the woken session as a card before
+// this task does, so the role message sentence says so. R6 asks for exactly one such task or
+// message per wake, and the outbox row that carries it is written in the wake's own transaction,
+// so a wake that commits has its task and one that does not has neither.
+//
+// The wake's task is never the phase's work, and for the reviewer it still ends with the daemon's
+// two sentences of the review round (reviewround.Sentences), which the queue appends to it as to
+// every task of the reviewer (queuedRow, namingTheReviewRound): in reviewing, while the row holds
+// the task of an entry, they name that entry. The reason is the reviewer's normal path: one
+// waiting for CI it cannot judge yet is released after the idle period and woken by the CI
+// settlement, so the wake is its newest task, and the review it then submits moves the commit it
+// read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string) string {
 	const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
@@ -91,10 +113,14 @@ func WakeTask(kind, detail string) string {
 			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
-			") while your pod was gone, which nothing kept: the sender's next attempt reaches you now."
+			") while your pod was gone. Envoy keeps a role message for one hour: a message kept for your role " +
+			"reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
+			"hour ended before you came back, and Envoy tells its sender when it drops one. " +
+			"A message sent with keep: false is not kept, and its sender sends it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
-			") while your pod was gone, which nothing kept: the sender's next attempt reaches you now."
+			") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. " +
+			"A direct Envoy message that Envoy refused reaches you when its sender sends it again."
 	case pods.WakeBackstop:
 		return preamble + "The wake is the release's backstop running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."
@@ -162,6 +188,14 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// The role is the settlement's to tell only when this call is what woke it: a wake another
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
+	//
+	// A list of commit statuses the decoder could not read names none, and the pull request keeps
+	// the statuses it holds for the head when the settlement is applied, since a context a
+	// settlement leaves out stays as it is kept (classify.ApplySettlement), so the task names the
+	// failed ones of those, as the CI message does.
+	if fact.StatusesUnread {
+		fact.Statuses = keptStatuses(*pr, fact.HeadSHA)
+	}
 	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
 	if err != nil || !woken {
 		return "", err
@@ -171,19 +205,43 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's
 // task carries: the checks the settlement names failed, then the ones it names cancelled, and
-// "every check passed" when it names neither.
+// `passed every check` when it names neither. After either of the first two it names each failed
+// commit status of fact.Statuses (record.CommitStatus.Failed), in context order: the
+// settlement's own, or, where the decoder could not read its list, the ones the pull request keeps
+// for the head (wakeOnSettlement). A settlement that names a failed status and neither a failed
+// nor a cancelled check run says the head passed every check run and then names the statuses,
+// since the head did not pass every check. With no failed status the text is the one it was before
+// the daemon read statuses.
 func settlementDetail(fact intake.PullRequestChecks) string {
 	head := fact.HeadSHA
 	if len(head) > 12 {
 		head = head[:12]
 	}
+	var failed []string
+	for _, status := range fact.Statuses {
+		if status.Failed() {
+			failed = append(failed, status.Context)
+		}
+	}
+	slices.Sort(failed)
+	var detail string
 	switch {
 	case len(fact.Failing) > 0:
-		return head + " failed " + strings.Join(fact.Failing, ", ")
+		detail = head + " failed " + strings.Join(fact.Failing, ", ")
 	case len(fact.Cancelled) > 0:
-		return head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+		detail = head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
+	case len(failed) > 0:
+		detail = head + " passed every check run"
 	default:
 		return head + " passed every check"
+	}
+	switch len(failed) {
+	case 0:
+		return detail
+	case 1:
+		return detail + "; failed commit status " + failed[0]
+	default:
+		return detail + "; failed commit statuses " + strings.Join(failed, ", ")
 	}
 }
 
@@ -258,12 +316,12 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
-// works, and the architect, whose phases (accepting, and every phase of a tree root the table
-// gives no worker) are the architect's own turn rather than a worker's. It is the one statement of
-// "the worker of the open phase" the release reads: which role a release arms a backstop for —
-// an architect gets none, because nothing of its own is due and a sub-architect woken for nothing
-// would hold a pod open for the backstop period — which role a CI settlement wakes, and which
-// live claim of a pod has a phase reminder armed in it.
+// works, and the architect, whose phases (admitted and accepting) are the architect's own turn
+// rather than a worker's. It is the one statement of "the worker of the open phase" the release
+// reads: which role a release arms a backstop for — an architect gets none, because nothing of
+// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
+// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
+// armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
 	if role := phase.RoleFor(p); role != claim.RoleArchitect {
 		return role

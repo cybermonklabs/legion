@@ -154,7 +154,7 @@ export function ArtifactDetails({ artifact }: { artifact: Artifact }): ReactNode
                 <a
                   className={`inline-flex min-h-11 items-center font-medium ${linkText}`}
                   download=""
-                  href={artifactVersionUrl(artifact.id, version.number)}
+                  href={artifactVersionUrl(artifact.id, version.number, { download: true })}
                 >
                   Download version {version.number}
                 </a>

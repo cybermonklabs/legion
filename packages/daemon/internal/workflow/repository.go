@@ -24,9 +24,10 @@ type Repositories interface {
 // Resolution is the repository an issue is recorded on: Repo and DefaultBranch when Legion serves
 // it, with GitHubRepo, GitHub's spelling of Repo that Envoy's event subjects carry, or Refusal, why
 // it does not. LeftOut is a mapped repository Legion leaves out, for a GitHub App not installed on
-// it or, with Unread, for now, because GitHub did not answer its installation read; Refusal names
-// which. An Unread issue is not refused but left: RefuseRecording says nothing on it, and the
-// daemon takes it from Dispatch's listing once GitHub answers for the repository (its recovery).
+// it or, with Unread, for now, because GitHub did not answer its installation read, or its
+// default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
+// but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
+// once GitHub answers for the repository (its recovery).
 type Resolution struct {
 	Repo          string
 	DefaultBranch string
@@ -90,9 +91,9 @@ const setRepositoryHint = "the issue header's Repository picker, or dispatch iss
 // RefuseRecording says on the Dispatch issue key why Legion did not record it: its repository,
 // resolved, resolves to none, or GitHub does not answer for it as one a role App reaches
 // (refused). It says it once per resolution (record.RepoNote), so a repeated event of the issue
-// says nothing again, and reports whether it said it now. A child's refusal is also told to its
-// tree's architect (refuseChild). An Unread resolution says nothing, to the issue or to an
-// architect: the daemon recovers the issue from Dispatch's listing once GitHub answers for its
+// says nothing again, and reports whether it said it now. A child's refusal is also told to the
+// architect that owns its parent (refuseChild). An Unread resolution says nothing, to the issue
+// or to an architect: the daemon recovers the issue from Dispatch's listing once GitHub answers for its
 // repository, with nothing for anyone to move, and it is noted for that recovery
 // (Config.NoteUnread), so an issue whose resolution moves off the repository meanwhile (its
 // parent's repository, or the project's default, changed) is still recovered.
@@ -152,17 +153,31 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 	return true, e.store.PutRepoNote(ctx, tx, record.RepoNote{Issue: key, ResolvedRepo: resolved, Note: note, PostedAt: e.now()})
 }
 
-// refuseChild says on a child, and to its tree's architect, why the child was not recorded under
-// the tree: its repository resolves to none, or GitHub does not answer for it as one a role App
-// reaches. The architect is told what the issue is told, since the repository is no longer the
-// project's mapping to choose from: any repository both role Apps are installed on records an
-// issue, so what is wrong is the name or the installation.
-func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, resolved string, refused Resolution) error {
+// refuseChild says on a child, and to the architect that owns its Dispatch parent, why the child
+// was not recorded under root's tree: its repository resolves to none, or GitHub does not answer
+// for it as one a role App reaches. The architect is told what the issue is told, since the
+// repository is no longer the project's mapping to choose from: any repository both role Apps are
+// installed on records an issue, so what is wrong is the name or the installation. The notice is
+// queued on that parent when the record holds it in root's tree, so the owner walk takes it to the
+// parent's own architect while that claim holds its role, the one that releases the parent's
+// children, and on up the tree once it does not; a parent the record does not hold in the tree has
+// no architect of it, and the notice goes on root, the tree's architect.
+func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, parent, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
 		return err
 	}
+	on := root.Key
+	if parent != "" {
+		recorded, err := e.store.Issue(ctx, tx, parent)
+		if err != nil {
+			return err
+		}
+		if recorded != nil && recorded.Tree == root.Key {
+			on = recorded.Key
+		}
+	}
 	e.logOnCommit(ctx, "workflow: child not recorded; GitHub does not answer for its repository as one Legion's Apps reach", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
-	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
+	return e.notice(ctx, tx, on, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
 }

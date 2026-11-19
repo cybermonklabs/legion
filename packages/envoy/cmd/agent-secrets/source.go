@@ -17,23 +17,22 @@
 //
 // A source as a session's forms print it (String) names no host, account, region or project:
 // those lines land in an agent's command output and from there in whatever it quotes, a public
-// pull request among them. Only the secret forms, which a person runs under their own cloud
-// sign-in to write to one account or project, name it (storeName), and their --json carries it.
+// pull request among them. Only the secret forms, which read and write one account's or project's
+// store themselves, name it (storeName), and their --json carries it.
 //
 // No source names a secret's version: the broker releases a grant's values as names and values
 // alone (POST /v1/grants/{id}/values), and a session holds no sign-in of its own to the store to
 // read one with. `agent-secrets secret show` names each version, from the store itself under the
-// person's own sign-in.
+// cloud credential its environment gives it.
 package main
 
 import (
 	"context"
 	"net/url"
-	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // sourceSettingsTimeout bounds the settings read describe makes. It is short because naming the
@@ -57,18 +56,18 @@ type source struct {
 }
 
 // brokerSource is the source naming the broker at base, with its store still unread.
-func brokerSource(base string) source {
+func brokerSource(base brokeraddr.Address) source {
 	return source{host: brokerHost(base)}
 }
 
-// brokerHost is base's host and port when redact.URL prints base, and redact.NotPrinted when it
-// does not (user info, a query, an escape, no http(s) scheme, anything its allow-list does not
-// prove clean), so a credential in the variable never prints.
-func brokerHost(base string) string {
-	base = redact.URL(strings.TrimSuffix(base, "/"))
-	parsed, err := url.Parse(base)
+// brokerHost is base's host and port when base prints as written (redact.URL), and
+// redact.NotPrinted when it does not (user info, a query, an escape, no http(s) scheme, anything
+// its allow-list does not prove clean), so a credential in the variable never prints.
+func brokerHost(base brokeraddr.Address) string {
+	shown := base.String()
+	parsed, err := url.Parse(shown)
 	if err != nil || parsed.Host == "" {
-		return base
+		return shown
 	}
 	return parsed.Host
 }
@@ -149,10 +148,10 @@ func (s source) asked() string {
 	return "; asked " + s.String()
 }
 
-// storeName is the store alone, for the secret forms: they read and write it directly under the
-// person's own cloud sign-in rather than through the broker, so naming the broker as the source
-// of those answers would be wrong. It falls back to naming the broker whose settings chose the
-// store when those settings describe none this release knows how to name.
+// storeName is the store alone, for the secret forms: they read and write it directly, under the
+// cloud credential their environment gives them, rather than through the broker, so naming the
+// broker as the source of those answers would be wrong. It falls back to naming the broker whose
+// settings chose the store when those settings describe none this release knows how to name.
 func (s source) storeName() string {
 	if s.store == "" {
 		return "the secret store " + s.brokerAt() + " names"

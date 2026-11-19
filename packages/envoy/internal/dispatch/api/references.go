@@ -17,26 +17,30 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// indexAskParts is refs.IndexAskPartsCounted for a write that holds the ask's parts alone: the
-// parts of the ask this write just wrote - its question, its options and its answer - indexed in
-// the same transaction through a reader of their own (refs.NewReader), written at `at`, with
-// what they moved merged into beside, the counted changes the same write already holds, so the
-// event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
-func (s *server) indexAskParts(
+// queueAskParts is docs.Ledger.QueueAskParts bound to this server's URL: the parts of the ask
+// this write just wrote - its question, its options and its answer - planned in the read phase
+// and queued in the transaction's write phase, written at `at`, with what they moved merged
+// into beside, the counted changes the same write already holds, so the event it appends names
+// them all. The parts are read with the whole grammar, through a reader of their own
+// (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
+// resolve against for an ask whose insert this transaction has queued
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads.
+func (s *server) queueAskParts(
 	ctx context.Context,
-	tx pgx.Tx,
+	ledger *docs.Ledger,
 	ask model.Ask,
+	document *refs.PendingDocument,
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -52,7 +56,9 @@ const referencesSinceWait = time.Second
 // structural edges. Cross-project by design: no project filter. A block reference names a
 // block node carrying its whole current text; one pinned to a version of its document, or a
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode).
+// recorded it (blockReferenceNode, itemBlockReferenceNode). A ?kind= this build does not emit - a
+// newer build's, during a release - has no edges here, and the answer lists it in unknown_kinds
+// rather than refusing the read.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -78,7 +84,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	query, ref, err := parseReferencesQuery(r, s.deps.ServerURL)
+	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -106,7 +112,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		if node.Pin != nil && node.Pin.State == "removed" {
 			// The graph lists no link to a block no current version holds.
 			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}}
+			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}, UnknownKinds: unknownKinds}
 			answer.Node.shape(reader)
 			reader.resolve()
 			WriteJSON(w, http.StatusOK, answer)
@@ -134,18 +140,23 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if query.Since != nil {
-		safe, err := s.sinceHorizon(r.Context())
+	// When this build knows none of the kinds the caller named, no edge is of them; refs.Edges
+	// with no Kinds would read every kind.
+	edges := []model.GraphEdge{}
+	if len(query.Kinds) > 0 || len(unknownKinds) == 0 {
+		if query.Since != nil {
+			safe, err := s.sinceHorizon(r.Context())
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			query.Through = &safe
+		}
+		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, query)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		query.Through = &safe
-	}
-	edges, err := refs.Edges(r.Context(), s.deps.Store.Pool, query)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
 	}
 	if query.Direction == "in" {
 		if err := s.documentMentionExcerpts(r.Context(), query, edges); err != nil {
@@ -154,7 +165,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges}
+	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
@@ -462,43 +473,54 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
+// parseRequestRef reads one reference a request names - a ?to= or ?from=, or one ?ref= of the
+// batched read - by text.ParseRef, so a node is read whatever the length of its name: the target
+// bound decides only what text indexes, and a node no index holds an edge to simply has fewer
+// edges. Anything else is 400 INVALID_REFERENCE naming the value, with its own sentence for a
+// pinned block of a message, which the grammar reads as no reference at all.
+func parseRequestRef(raw, serverURL string) (text.Ref, error) {
+	ref, ok := text.ParseRef(raw, serverURL)
+	if ok {
+		return ref, nil
+	}
+	if pinsAMessageBlock(raw, serverURL) {
+		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+	}
+	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+}
+
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
 // way graph_edges stores the node (refs.TargetOf): text.TargetID for the to side (ref_key for
 // artifacts; an ask's part and a comment's or message's block under its storage kind), the
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
-// is read by text.ParseRef, so a node is read whatever the length of its name: the target bound
-// decides only what text indexes, and a node no index holds an edge to simply has fewer edges.
-func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, error) {
+// itself is read by parseRequestRef, as the batched read reads each of its own. It returns apart
+// the ?kind= values that are no edge kind of this build.
+func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
 	if (to == "") == (from == "") {
-		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
+		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "exactly one of to or from is required")
 	}
 	raw, direction := to, "in"
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, ok := text.ParseRef(raw, serverURL)
-	if !ok {
-		if pinsAMessageBlock(raw, serverURL) {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
-		}
-		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	ref, err := parseRequestRef(raw, serverURL)
+	if err != nil {
+		return refs.Query{}, text.Ref{}, nil, err
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind.
 	target, _ := refs.TargetOf(ref)
 	query := refs.Query{Direction: direction, Kind: target.Kind, ID: target.ID}
+	var unknownKinds []string
 	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()
 		for _, kind := range strings.Split(kinds, ",") {
 			kind = strings.TrimSpace(kind)
 			if !slices.Contains(model.GraphEdgeKinds, kind) && !slices.Contains(linkKinds, kind) {
-				declared := "none"
-				if len(linkKinds) > 0 {
-					declared = strings.Join(linkKinds, ", ")
-				}
-				return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_KIND", "kind %q is not one of %s, nor a block[] attribute the block schema declares (%s)", kind, strings.Join(model.GraphEdgeKinds, ", "), declared)
+				unknownKinds = append(unknownKinds, kind)
+				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
 		}
@@ -521,11 +543,11 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if since := strings.TrimSpace(values.Get("since")); since != "" {
 		value, err := strconv.ParseInt(since, 10, 64)
 		if err != nil || value < 0 {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
+			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_SINCE", "since must be an event id")
 		}
 		query.Since = &value
 	}
-	return query, ref, nil
+	return query, ref, unknownKinds, nil
 }
 
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the

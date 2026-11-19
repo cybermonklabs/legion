@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	neturl "net/url"
 	"slices"
@@ -13,9 +14,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 var censusBase = fstest.MapFS{
@@ -198,6 +201,297 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 	}
 	if got := refusals(report); len(got) != 0 {
 		t.Errorf("refusals = %v, want none: the census read '\\\\' as one backslash", got)
+	}
+}
+
+// The census also runs with backslash_quote safe_encoding and client_encoding UTF8 whatever the
+// connection sets, the other two settings under which Postgres reads a text as pgmigrate.Load
+// reads it. With backslash_quote off, Postgres refuses the \' inside the census's E'…' literal
+// (SQLSTATE 22P06), which Load reads as an escaped quote. In SJIS, the second byte of Á (C3 81 in
+// UTF-8) and the backslash after it are one character, so the backslash escapes nothing, the two
+// quotes after it are one quote inside the literal, and the literal never ends. Read as Load reads
+// them, each census answers 0.
+func TestCensusReadsItsTextWithBackslashQuoteSafeEncodingAndClientEncodingUTF8(t *testing.T) {
+	for name, tc := range map[string]struct{ urlSuffix, census string }{
+		"backslash_quote off":  {"&backslash_quote=off", `select length(E'a\'') - 2`},
+		"client_encoding SJIS": {"&client_encoding=SJIS", `select length(E'Á\'') - 2`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, url := migratedToOne(t)
+			report, err := census(context.Background(), url+tc.urlSuffix, withCheck(tc.census), pgmigrate.CensusOptions{})
+			if err != nil {
+				t.Fatalf("census: %v", err)
+			}
+			if got := refusals(report); len(got) != 0 {
+				t.Errorf("refusals = %v, want none: the census was read otherwise than pgmigrate.Load read it", got)
+			}
+		})
+	}
+}
+
+// The census reads every pending migration with standard_conforming_strings on, and the runner
+// applies each one on a connection of its pool, which keeps a session setting from the migration
+// before (inMigrationLockTx gives the connection back with its settings as they are). After a
+// pending set standard_conforming_strings = off, a backslash escapes the quote after it in a later
+// migration's plain literal, so a text the census reads as one alter table with a constant default
+// the server reads as that alter table and an update of every row. Two rules keep the census from
+// exempting a migration that the runner then applies as a statement the census never read, and the
+// test holds both. The census refuses 0003 on size, because a session SET of any setting but
+// lock_timeout and statement_timeout turns off the catalog reads of every later migration, and
+// without them 0003's added column is judged on size. And the runner applies 0003 as the census
+// read it and updates no row, because it sets standard_conforming_strings on for each migration
+// (textSettings). Each half fails on its own when its rule is undone. The control shows that the
+// census exempts 0003 when no pending migration sets the strings off, so the refusal of the pair is
+// the setting's doing. The runner's pool holds one connection, so 0003 runs on the connection 0002
+// set.
+func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
+	ctx := context.Background()
+	store, url := migratedToOne(t)
+	if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good'), (2, 'good'), (3, 'good')"); err != nil {
+		t.Fatal(err)
+	}
+	note := &fstest.MapFile{Data: []byte(`alter table things add column note text default 'a\'';update things set id = -id;--'`)}
+	noteOf := func(set fstest.MapFS) pgmigrate.MigrationCensus {
+		t.Helper()
+		report, err := census(ctx, url, set, pgmigrate.CensusOptions{TableLimit: 1})
+		if err != nil {
+			t.Fatalf("census: %v", err)
+		}
+		for _, entry := range report.Pending {
+			if entry.Migration.Name == "0003_things_note.up.sql" {
+				return entry
+			}
+		}
+		t.Fatalf("the census has no entry for 0003_things_note.up.sql:\n%s", reportText(report))
+		return pgmigrate.MigrationCensus{}
+	}
+	control := fstest.MapFS{"migrations/0003_things_note.up.sql": note}
+	for name, file := range censusBase {
+		control[name] = file
+	}
+	if entry := noteOf(control); entry.TableSizeExemption == "" || len(entry.Refusals) > 0 {
+		t.Fatalf("control: 0003 alone is not exempt (exemption %q, refusals %v), so the pair proves nothing", entry.TableSizeExemption, entry.Refusals)
+	}
+	set := fstest.MapFS{"migrations/0002_strings_off.up.sql": {Data: []byte("set standard_conforming_strings = off")}}
+	for name, file := range control {
+		set[name] = file
+	}
+	entry := noteOf(set)
+	if entry.TableSizeExemption != "" || !slices.ContainsFunc(entry.Refusals, func(refusal string) bool {
+		return strings.Contains(refusal, "things is ") && strings.Contains(refusal, "above the 1 bytes a table a migration touches may be")
+	}) {
+		t.Errorf("after 0002 set standard_conforming_strings off for the session, the census answered 0003 with exemption %q and refusals %v; want no exemption and a refusal on the size of things", entry.TableSizeExemption, entry.Refusals)
+	}
+	config, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	runner := &Store{Pool: NewPool(pool)}
+	if err := runner.migrate(ctx, set); err != nil {
+		t.Fatalf("migrate the set the census exempted: %v", err)
+	}
+	var updated int
+	if err := store.Pool.QueryRow(ctx, "select count(*) from things where id < 0").Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated != 0 {
+		t.Errorf("the runner updated %d rows of things: it read 0003 with standard_conforming_strings off, as an update the census never read", updated)
+	}
+}
+
+// storedCodeFixture is what TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession
+// adds to a database at version 1 of censusBase: the enum mood in public, the schema sp_1792 with
+// a domain of the same name, mood, which has a check, and four tables whose stored code calls
+// set_config to put sp_1792 first in the session's search_path. That code is the column default
+// of sp_default, the check constraint of sp_check, the check of the domain sp_domain that
+// sp_domained's column has, and the default of the domain sp_domdef that sp_domdefed's column
+// has. sp_default holds a row whose value is given, so that its default does not run, for the row
+// that sets that value to its default.
+const storedCodeFixture = `
+create type mood as enum ('calm', 'busy');
+create schema sp_1792;
+create domain sp_1792.mood as text check (value <> 'x');
+create table sp_default (id int, sp text default set_config('search_path', 'sp_1792, public', false));
+insert into sp_default (id, sp) values (0, 'given');
+create table sp_check (id int, constraint sp_check_sets check (set_config('search_path', 'sp_1792, public', false) is not null));
+create domain sp_domain as int check (set_config('search_path', 'sp_1792, public', false) is not null);
+create table sp_domained (v sp_domain);
+create domain sp_domdef as text default set_config('search_path', 'sp_1792, public', false);
+create table sp_domdefed (id int, sp sp_domdef);
+`
+
+// Stored code that a migration runs can change the session that the runner applies the next
+// migration on: a column default, a check constraint, or a domain's check or default that calls
+// set_config(…, false). The census does not read that code, and the runner applies each migration
+// on a connection of its pool. Each row is a pending 0002 that runs such code and a pending 0003
+// that adds to things a column of type mood with a constant default. The census judges 0003 by the
+// enum public.mood and exempts it as alter table. In five rows the code puts sp_1792 first in the
+// search_path, and sp_1792 holds a domain mood with a check. In the sixth, a column default sets
+// session_authorization to a role whose name is the name of a schema that holds such a domain, so
+// "$user" in the search_path names that schema. Two resets of the runner each keep 0003 resolving
+// mood as the census did, so that the column has the type public.mood and Postgres does not
+// rewrite things: the reset of the connection's session after each migration
+// (pgmigrate.ResetSession), and the values that RESET gives session_authorization, role and
+// search_path at the start of each migration (resetSettings in internal/pgmigrate). This row
+// passes while either reset holds, and fails only without both: then mood names the domain, and
+// Postgres rewrites things under ACCESS EXCLUSIVE for a migration that the census exempted.
+// TestExecResolvesNamesUnderTheValuesResetGives (internal/pgmigrate) checks the start-of-migration
+// reset alone, and TestMigrateResetsSessionSettingsAMigrationLeftOnThePooledConnection checks the
+// session reset alone. The runner's pool holds one connection, so 0003 runs on the connection that
+// 0002 changed. The control applies 0002 alone to a second database of the same fixture, on a pool
+// of one connection too. Its 0002 captures the setting the code changes into a table of its own,
+// inside the migration's transaction after the write: so each row shows that the code changes the
+// session. The capture reads the table, not the session through the pool, because the runner's
+// reset clears the session before the connection goes back to the pool.
+func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *testing.T) {
+	ctx := context.Background()
+	// sessionUser is the role that the sixth row's default gives session_authorization. It is a
+	// superuser, so that without the reset the runner goes on as that role and the column shows
+	// the failure, not a refused privilege. Its name is random, since a role spans the cluster that
+	// every test shares.
+	sessionUser := "sa_" + randomDatabaseSuffix(t)
+	const searchPathRead, searchPathChanged = "current_setting('search_path')", "sp_1792, public"
+	for _, row := range []struct {
+		name string
+		// role, where it is not "", is a role the row creates before its databases and drops after.
+		role string
+		// fixture is SQL of the row's own that each database takes after storedCodeFixture.
+		fixture string
+		// write is 0002, which runs the stored code.
+		write string
+		// read is the scalar expression that reads the setting the stored code changes, and changed
+		// is its value after 0002. The control captures read inside its own 0002, after the write.
+		read, changed string
+	}{
+		{name: "an insert that runs a column default", write: "insert into sp_default (id) values (1)", read: searchPathRead, changed: searchPathChanged},
+		{name: "an update that sets a column to its default", write: "update sp_default set sp = default", read: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a check constraint", write: "insert into sp_check values (1)", read: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a domain check", write: "insert into sp_domained values (1)", read: searchPathRead, changed: searchPathChanged},
+		{name: "an insert that runs a domain default", write: "insert into sp_domdefed (id) values (1)", read: searchPathRead, changed: searchPathChanged},
+		{
+			name: "an insert that runs a column default that sets session_authorization",
+			role: sessionUser,
+			fixture: "create schema " + sessionUser + "; create domain " + sessionUser + ".mood as text check (value <> 'x'); " +
+				"create table sp_session (id int, sp text default set_config('session_authorization', '" + sessionUser + "', false));",
+			write: "insert into sp_session (id) values (1)", read: "session_user::text", changed: sessionUser,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			database := func() (*Store, string) {
+				t.Helper()
+				store, url := migratedToOne(t)
+				if _, err := store.Pool.Exec(ctx, "insert into things (id, kind) values (1, 'good'), (2, 'good'), (3, 'good');"+storedCodeFixture+row.fixture); err != nil {
+					t.Fatalf("load the fixture: %v", err)
+				}
+				return store, url
+			}
+			// runner is a store on a pool of one connection to url.
+			runner := func(url string) *Store {
+				t.Helper()
+				config, err := pgxpool.ParseConfig(url)
+				if err != nil {
+					t.Fatal(err)
+				}
+				config.MaxConns = 1
+				pool, err := pgxpool.NewWithConfig(ctx, config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(pool.Close)
+				return &Store{Pool: NewPool(pool)}
+			}
+			store, url := database()
+			if row.role != "" {
+				if _, err := store.Pool.Exec(ctx, "create role "+row.role+" nologin superuser"); err != nil {
+					t.Fatal(err)
+				}
+				// Registered before any runner connects, so every runner's pool closes first.
+				t.Cleanup(func() {
+					if _, err := store.Pool.Exec(context.Background(), "drop role "+row.role); err != nil {
+						t.Errorf("drop role %s: %v", row.role, err)
+					}
+				})
+			}
+			base := censusBase["migrations/0001_things.up.sql"]
+			write := &fstest.MapFile{Data: []byte(row.write)}
+			set := fstest.MapFS{
+				"migrations/0001_things.up.sql":      base,
+				"migrations/0002_stored_code.up.sql": write,
+				"migrations/0003_things_mood.up.sql": {Data: []byte("alter table things add column c mood default 'calm'")},
+			}
+			report, err := census(ctx, url, set, pgmigrate.CensusOptions{TableLimit: 1})
+			if err != nil {
+				t.Fatalf("census: %v", err)
+			}
+			i := slices.IndexFunc(report.Pending, func(entry pgmigrate.MigrationCensus) bool {
+				return entry.Migration.Name == "0003_things_mood.up.sql"
+			})
+			if i < 0 {
+				t.Fatalf("the census has no entry for 0003_things_mood.up.sql:\n%s", reportText(report))
+			}
+			if entry := report.Pending[i]; entry.TableSizeExemption != "alter table" || len(entry.Refusals) > 0 || !slices.ContainsFunc(entry.Tables, func(table pgmigrate.TableCensus) bool {
+				return table.Name == "things" && table.Bytes > 1
+			}) {
+				t.Fatalf("the census answered 0003 with exemption %q, refusals %v and tables %+v; want it exempt as alter table, with no refusal, on things above the 1-byte limit", entry.TableSizeExemption, entry.Refusals, entry.Tables)
+			}
+			relfilenode := func() uint32 {
+				t.Helper()
+				var node uint32
+				if err := store.Pool.QueryRow(ctx, "select relfilenode from pg_class where oid = 'public.things'::regclass").Scan(&node); err != nil {
+					t.Fatalf("read the relfilenode of things: %v", err)
+				}
+				return node
+			}
+			before := relfilenode()
+
+			if err := runner(url).migrate(ctx, set); err != nil {
+				t.Fatalf("migrate the set the census exempted: %v", err)
+			}
+			if version := schemaVersion(t, store); version != 3 {
+				t.Fatalf("schema version %d after the runner, want 3", version)
+			}
+			var columnType string
+			if err := store.Pool.QueryRow(ctx, `select format('%I.%I', n.nspname, t.typname) from pg_attribute a
+				join pg_type t on t.oid = a.atttypid join pg_namespace n on n.oid = t.typnamespace
+				where a.attrelid = 'public.things'::regclass and a.attname = 'c'`).Scan(&columnType); err != nil {
+				t.Fatalf("read the type of things.c: %v", err)
+			}
+			if columnType != "public.mood" {
+				t.Errorf("things.c has the type %s, want public.mood, the type the census read", columnType)
+			}
+			if after := relfilenode(); after != before {
+				t.Errorf("the relfilenode of things went from %d to %d: Postgres rewrote the table for a migration the census exempted", before, after)
+			}
+
+			// The control applies 0002 alone to a second database of the same fixture, on a pool of
+			// one connection too. It cannot read the setting through the pool after migrate: the reset
+			// the runner adds clears the connection's session before it goes back to the pool. So the
+			// control's own 0002 captures the setting after the write, inside the transaction where
+			// the stored code has already run, into a table of an explicit schema, and the control
+			// reads that table after migrate. It still fails when the stored code changes nothing: the
+			// capture would then read the pinned reset value, not changed.
+			_, controlURL := database()
+			control := runner(controlURL)
+			controlWrite := &fstest.MapFile{Data: []byte(
+				"create table public.sp_capture (value text); " + row.write +
+					"; insert into public.sp_capture (value) select " + row.read)}
+			if err := control.migrate(ctx, fstest.MapFS{"migrations/0001_things.up.sql": base, "migrations/0002_stored_code.up.sql": controlWrite}); err != nil {
+				t.Fatalf("control: migrate 0002 alone: %v", err)
+			}
+			var value string
+			if err := control.Pool.QueryRow(ctx, "select value from public.sp_capture").Scan(&value); err != nil {
+				t.Fatalf("control: read the captured setting: %v", err)
+			}
+			if value != row.changed {
+				t.Errorf("control: 0002 captured %q, want %q: the stored code did not change the session, so the row proves nothing", value, row.changed)
+			}
+		})
 	}
 }
 
@@ -430,7 +724,9 @@ func TestCensusNeverPrintsARowValueAnInputFunctionQuotes(t *testing.T) {
 // (no pg_read_all_stats) refuses: the census cannot rule out the long transaction it exists to
 // catch, and it lists the holder with the long transactions, which it cannot rule it out of either.
 // Granting that role pg_read_all_stats lets it read the age, and a young holder passes and is not
-// listed.
+// listed. Only a login that holds pg_read_all_stats with ADMIN, as a superuser does, can make that
+// grant: the server is asked by making it in a transaction that is rolled back, and a login that
+// cannot skips the test, except on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	ctx := context.Background()
 	store, base := migratedToOne(t)
@@ -440,17 +736,36 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 		if _, err := store.Pool.Exec(ctx, "create role "+role+" login password 'census-test'"); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			// The grants in this database first, then the role itself, which spans the cluster.
-			for _, statement := range []string{"drop owned by " + role, "drop role " + role} {
-				if _, err := store.Pool.Exec(context.Background(), statement); err != nil {
-					t.Errorf("%s: %v", statement, err)
-				}
-			}
-		})
+		// The role spans the cluster: its cleanup drops the test database first, which takes
+		// the role's grants there with it, and then the role (dropRoleAfterTestDatabase).
+		t.Cleanup(func() { dropRoleAfterTestDatabase(t, store, role) })
+		// `drop owned by` needs the privileges of the role, which a login that is no superuser
+		// does not have of a role it creates (Postgres 16 and later give such a creator ADMIN
+		// alone): it grants the role to itself with INHERIT, so the cleanup can drop the role's
+		// grants before the role when the test database's drop fails and leaves them standing.
+		if _, err := store.Pool.Exec(ctx, "grant "+role+" to current_user with inherit true"); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.Pool.Exec(ctx, "grant select on all tables in schema public to "+role); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The grant the second census needs, made now in a transaction that is rolled back, so a
+	// login that cannot make it is told so before anything is read.
+	probe, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = probe.Exec(ctx, "grant pg_read_all_stats to "+censusRole)
+	if rollbackErr := probe.Rollback(ctx); rollbackErr != nil {
+		t.Fatalf("roll back the grant of pg_read_all_stats the server was asked about: %v", rollbackErr)
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.As(err, &pgErr) && pgErr.Code == "42501":
+		testdb.SkipOutsideCI(t, "the test server's login cannot grant pg_read_all_stats, which the census's role needs to read the age of another role's transaction (the login must be a superuser or hold pg_read_all_stats with ADMIN): %v", err)
+	case err != nil:
+		t.Fatalf("grant pg_read_all_stats to the census's role, in a transaction rolled back: %v", err)
 	}
 	holderConfig := store.Pool.Config().ConnConfig.Copy()
 	holderConfig.User, holderConfig.Password = otherRole, "census-test"
@@ -593,7 +908,54 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 		t.Errorf("pending = %+v, want 0122 alone, exempt as a function and a trigger", report.Pending)
 	}
 	if out := reportText(report); !strings.Contains(out, "touches artifact_versions: ") ||
-		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only create function and create trigger, which change the catalog or the transaction's own settings and read no row, so its rows were not counted;") {
+		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only create function and create trigger, which change only the catalog or the transaction's own settings, or take a lock, and read no existing row, so its rows were not counted;") {
+		t.Errorf("report:\n%s", out)
+	}
+}
+
+// The shipped 20261103085452 adds four nullable columns with no default to artifact_versions, of
+// types bigint, text, text and integer. PostgreSQL records each of them in the catalog alone and
+// reads no stored row, so the migration is catalog-only. Until the census read an added column's
+// type from the catalog, it admitted an added column only when its type was text, so it judged
+// this migration on the size of artifact_versions, 26 GB in production, and refused it: production
+// could not apply the migration. Here the census reads the shipped file over a database at
+// 20261103085451 with the limit at one byte, where artifact_versions is above the limit. It
+// exempts the migration as alter table, refuses nothing, and prints artifact_versions above the
+// limit with why the migration is exempt.
+func TestCensusAdmitsTheShippedRenderStampMigrationAboveTheLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261103085451)
+	report, err := census(ctx, store.Pool.Config().ConnString(), migrationsThrough(t, 20261103085452), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	const name = "20261103085452_artifact_versions_render_stamp.up.sql"
+	if len(report.Pending) != 1 || report.Pending[0].Migration.Name != name {
+		t.Fatalf("pending = %+v, want %s alone; report:\n%s", report.Pending, name, reportText(report))
+	}
+	entry := report.Pending[0]
+	if entry.TableSizeExemption != "alter table" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
+	}
+	if report.Refused() {
+		t.Errorf("%s refused: %v", name, refusals(report))
+	}
+	found := false
+	for _, table := range entry.Tables {
+		if table.Name != "artifact_versions" {
+			continue
+		}
+		found = true
+		if !table.Exists || table.Bytes <= 1 {
+			t.Errorf("artifact_versions = %+v, want it in the database and above the 1 byte limit", table)
+		}
+	}
+	if !found {
+		t.Errorf("tables = %+v, want artifact_versions among them", entry.Tables)
+	}
+	if out := reportText(report); !strings.Contains(out, "touches artifact_versions: ") ||
+		!strings.Contains(out, ", above the 1 bytes limit, from which the migration is exempt because its statements are only alter table, which change only the catalog or the transaction's own settings, or take a lock, and read no existing row, so its rows were not counted;") {
 		t.Errorf("report:\n%s", out)
 	}
 }
@@ -715,10 +1077,8 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 		}
 		// The verdict of the whole set is not this test's subject and must not be asserted: the
 		// set holds every pending migration, and under a TableLimit of one byte any of them may
-		// refuse for a table of its own - 20261110004829_drop_default_branch_commits does, where
-		// default_branch_commits already exists (measured in CI at d656b570, which is why this
-		// assertion is gone). What this test is about is the two entries below, each read on its
-		// own.
+		// still refuse for a table of its own. What this test is about is the two entries below,
+		// each read on its own.
 		found := map[int]bool{20261109120000: false, 20261110155257: false}
 		for _, entry := range report.Pending {
 			if _, wanted := found[entry.Migration.Version]; wanted {
@@ -744,6 +1104,84 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 				t.Fatalf("migration %d was not exercised by the census", version)
 			}
 		}
+	}
+}
+
+// queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
+// connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
+// and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
+// version before them, with the limit at one byte: every table they touch is over it, so a
+// migration of the three the census does not refuse on a table's size is one the limit never
+// applies to, at any size. Only each entry is read, never the verdict of the whole set, for the
+// reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers
+// version's entry, and fails the test when that migration is not pending, refuses, or touches a
+// table the limit would not have refused anyway.
+func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
+	t.Helper()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261111212235)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	for i := range report.Pending {
+		entry := &report.Pending[i]
+		if entry.Migration.Version != version {
+			continue
+		}
+		if len(entry.Refusals) != 0 {
+			t.Fatalf("%s refused: %v", entry.Migration.Name, entry.Refusals)
+		}
+		if len(entry.Tables) == 0 {
+			t.Fatalf("%s touches no table; report:\n%s", entry.Migration.Name, reportText(report))
+		}
+		for _, table := range entry.Tables {
+			if !table.Exists || table.Bytes <= 1 {
+				t.Fatalf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+			}
+		}
+		return entry
+	}
+	t.Fatalf("%d is not pending; report:\n%s", version, reportText(report))
+	return nil
+}
+
+// 20261114081434 drops both delivery state checks without cascade, adds each back with queued as
+// a check not valid, and adds message_deliveries.connected_only as a nullable text column with no
+// default and its own check not valid: every statement a catalog-only alter table, so the census
+// exempts it from the table limit on both tables.
+func TestCensusExemptsTheQueuedStateMigrationAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081434)
+	if entry.TableSizeExemption != "alter table" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
+	}
+	touched := map[string]bool{}
+	for _, table := range entry.Tables {
+		touched[table.Name] = true
+	}
+	if !touched["comment_deliveries"] || !touched["message_deliveries"] {
+		t.Errorf("tables = %+v, want comment_deliveries and message_deliveries", entry.Tables)
+	}
+}
+
+// 20261114081435 is one marked, non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS, which the
+// census admits over message_deliveries at any size: its scans hold off no ordinary write.
+func TestCensusAdmitsTheTakenDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081435)
+	if !entry.ConcurrentIndex {
+		t.Errorf("ConcurrentIndex = false, want the marked concurrent build admitted: %+v", entry)
+	}
+}
+
+// 20261114081436 is a plain drop index, RESTRICT by default, which the census exempts from the
+// table limit on message_deliveries, the table behind the index it drops.
+func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T) {
+	entry := queuedStateCensus(t, 20261114081436)
+	if entry.TableSizeExemption != "drop index" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "drop index")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "message_deliveries" {
+		t.Errorf("tables = %+v, want message_deliveries alone", entry.Tables)
 	}
 }
 
@@ -814,20 +1252,22 @@ func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) 
 }
 
 // A migration holding any statement outside the catalog-only kinds still refuses a table above
-// the limit: an index, a column with a default, a default set on a column, and a trigger beside an
-// index. A trigger only a comment or a string literal names exempts nothing.
+// the limit: an index, a volatile column default, a validated check, an altered column type, a
+// constraint validation, and a trigger beside an index. A trigger only a comment or a string
+// literal names exempts nothing. A column with a default, a not-null column with a default and a
+// default set on a column were refused here too, but none of them reads or rewrites a row, and
+// the census now admits them: internal/pgmigrate's TestCensusAdmitsEveryCatalogOnlyForm tests
+// them as `text default 'x'::text`, `bigint not null default 0` and
+// `set default gen_random_uuid()`.
 func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testing.T) {
 	for name, migration := range map[string]string{
-		"an index":                         "create index things_kind on things (kind)",
-		"a column with a default":          "alter table things add column note text default 'x'",
-		"a not-null column with a default": "alter table things add column note text not null default 'x'",
-		"a volatile column default":        "alter table things add column token uuid default gen_random_uuid()",
-		"a validated check":                "alter table things add constraint c check (kind <> '')",
-		"an altered column type":           "alter table things alter column kind type varchar",
-		"constraint validation":            "alter table things validate constraint things_kind_check",
-		"a default set on a column":        "alter table things alter column kind set default 'x'",
-		"a trigger beside an index":        "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
-		"a trigger only in a comment":      "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
+		"an index":                    "create index things_kind on things (kind)",
+		"a volatile column default":   "alter table things add column token uuid default gen_random_uuid()",
+		"a validated check":           "alter table things add constraint c check (kind <> '')",
+		"an altered column type":      "alter table things alter column kind type varchar",
+		"constraint validation":       "alter table things validate constraint things_kind_check",
+		"a trigger beside an index":   "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
+		"a trigger only in a comment": "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, url := migratedToOne(t)

@@ -716,10 +716,11 @@ describe("second-owner: the role's credential, resolved once, reaching another o
   });
 
   describe("nothing of the agent's cmdline or environment reaches evidence", () => {
-    // A pod agent's real cmdline carries --append-system-prompt <the whole composed prompt,
-    // deployment instructions included>. The evidence holds only the pid, argv[0], the argument
-    // count, and a sha256 of the whole /proc/<pid>/cmdline file, from one parse that reads the
-    // file once and cannot restart mid-argv.
+    // A pod agent's cmdline carries --append-system-prompt <its prompt file>, and one launched by
+    // an older daemon carried the whole composed prompt there, deployment instructions included,
+    // which this case stands in for. The evidence holds only the pid, argv[0], the argument count,
+    // and a sha256 of the whole /proc/<pid>/cmdline file, from one parse that reads the file once
+    // and cannot restart mid-argv.
     test("the agent's cmdline never reaches evidence as values, only pid/argv0/argc/sha256: PASS", async () => {
       const marker = "DEPLOYMENT-INSTRUCTIONS-MARKER-do-not-leak-this-host.internal.example";
       const prompt = `# Role prompt\n\nAddressing fragment.\n\n${marker}\n`;
@@ -735,10 +736,10 @@ describe("second-owner: the role's credential, resolved once, reaching another o
       );
     });
 
-    // A prompt just under the runtime's 131,072-byte argument bound
-    // (packages/daemon/internal/runtime/sandbox/manifest.go) would make a line-batching redactor
-    // (xargs) lose its "previous argument was --append-system-prompt" state across invocations.
-    // The parser reads the whole file once; a near-limit prompt proves it never restarts.
+    // A prompt just under the 131,072 bytes Linux allows one argument (MAX_ARG_STRLEN), as an
+    // older daemon's agent could carry, would make a line-batching redactor (xargs) lose its
+    // "previous argument was --append-system-prompt" state across invocations. The parser reads
+    // the whole file once; a near-limit prompt proves it never restarts.
     test("a ~130 KB prompt, near the runtime's own argument bound, is never in evidence: PASS", async () => {
       const marker = "DEPLOYMENT-INSTRUCTIONS-MARKER-must-not-leak";
       const prompt = marker + "-".repeat(130400 - marker.length);

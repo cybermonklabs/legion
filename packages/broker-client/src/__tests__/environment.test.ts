@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   BROKER_URL_VAR,
@@ -12,10 +13,17 @@ import {
   IDENTITY_VAR,
   MACHINE_AUDIENCE_VAR,
   MACHINE_TOKEN_FILE_VAR,
+  MAX_PROJECTS,
   machineIdentity,
+  PROJECTS_VAR,
+  tradeProjects,
   tradeSession,
 } from "../environment";
-import { FORM_LAUNCHER_CREDENTIAL, FORM_LAUNCHER_CREDENTIAL_DECLINED } from "../wire";
+import {
+  FORM_LAUNCHER_CREDENTIAL,
+  FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
+} from "../wire";
 
 const makeDirectory = temporaryDirectories("broker-environment");
 
@@ -38,7 +46,7 @@ test("each identity is read from its own variables", () => {
     [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
   });
   expect(pod?.describe()).toBe(
-    "the projected service-account token /var/run/secrets/exchange/token"
+    "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
   );
   const machine = machineIdentity({
     [IDENTITY_VAR]: "metadata",
@@ -54,32 +62,71 @@ test("an identity named with its variables missing is refused naming them", () =
   expect(() => machineIdentity({ [IDENTITY_VAR]: "metadata" })).toThrow(
     `${MACHINE_AUDIENCE_VAR} is required by ${IDENTITY_VAR}=metadata`
   );
-  expect(() => machineIdentity({ [IDENTITY_VAR]: "pool" })).toThrow("agent-secrets");
-  expect(() => machineIdentity({ [IDENTITY_VAR]: "ec2" })).toThrow(
-    'AGENT_SECRETS_MACHINE_IDENTITY="ec2" names no identity this machine can prove'
+  // A pool federates the projected token file, so it is the first variable it asks for; each of
+  // its four is held to its own refusal in pool-identity.test.ts.
+  expect(() => machineIdentity({ [IDENTITY_VAR]: "pool" })).toThrow(
+    `${MACHINE_TOKEN_FILE_VAR} is required by ${IDENTITY_VAR}=pool`
   );
+  // Its value is not quoted, which a secret pasted into the wrong variable would be.
+  const pasted = "canary-pasted-identity-secret";
+  let refused = "";
+  try {
+    machineIdentity({ [IDENTITY_VAR]: pasted });
+  } catch (error) {
+    refused = error instanceof Error ? error.message : String(error);
+  }
+  expect(refused).toBe(
+    "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine can prove; it takes kubernetes, metadata or pool"
+  );
+  expect(refused).not.toContain(pasted);
+});
+
+// AGENT_SECRETS_URL is where every trade goes, and every trade's error names it; a value that is
+// no http or https URL is refused naming the variable, since it may be a token pasted there.
+const CANARY_PW = "canary-pw-7c1e";
+test.each([
+  "canary-pasted-into-the-broker-url",
+  "nats://broker.example:4222",
+  `https://u:${CANARY_PW}@broker.example:99999`,
+])("an AGENT_SECRETS_URL of %p is refused naming the variable alone", async (pasted) => {
+  const refusal = await brokerTokenClient({
+    [BROKER_URL_VAR]: pasted,
+    [IDENTITY_VAR]: "kubernetes",
+    [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
+    AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
+  }).then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  if (!(refusal instanceof Error)) throw new Error("the factory made a client");
+  expect(refusal.message).toBe(`${BROKER_URL_VAR} is not an http or https URL`);
+  expect(Bun.inspect(refusal)).not.toContain(pasted);
 });
 
 test("a client is built for the broker, the identity and the session the variables name", async () => {
-  const client = await brokerTokenClient({
+  const made = await brokerTokenClient({
     [BROKER_URL_VAR]: "http://broker.test/",
     [IDENTITY_VAR]: "kubernetes",
     [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
     AGENT_SECRETS_SESSION: "example-worker-session",
+    // Nobody has signed in here, so the client trades the machine (person-route.test.ts holds
+    // the client a sign-in makes).
+    AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
   });
+  const client = made?.client;
   expect(client?.describe()).toBe(
-    "the projected service-account token /var/run/secrets/exchange/token"
+    "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
   );
   // The key is this process's own, made once with the client, and only its public half exists
   // outside the signer.
   expect(Object.hasOwn(client?.key.publicJwk ?? {}, "d")).toBe(false);
 });
 
-test("a client this factory builds asks the broker for no launcher credential", async () => {
-  // Every TypeScript caller wants a Dispatch access token and nothing else, and a key is one
-  // process's and one session's: a trade that asked would leave a launcher_credentials row and
-  // an audit row behind for each `dispatch` call, hook run and session, on the operator's
-  // machine-logins list and removed by nothing.
+test("a machine's client this factory builds asks the broker for no launcher credential", async () => {
+  // Every TypeScript caller wants a Dispatch access token and nothing else, and a machine's key
+  // is one process's and one session's: a trade that asked would leave a launcher_credentials
+  // row and an audit row behind for each `dispatch` call, hook run and session, on the
+  // operator's machine-logins list and removed by nothing.
   const forms: URLSearchParams[] = [];
   const broker = Bun.serve({
     port: 0,
@@ -87,7 +134,7 @@ test("a client this factory builds asks the broker for no launcher credential", 
     fetch: async (request) => {
       forms.push(new URLSearchParams(await request.text()));
       return Response.json({
-        access_token: "broker-access-token",
+        access_token: fixtureSecret("broker"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -96,19 +143,44 @@ test("a client this factory builds asks the broker for no launcher credential", 
   });
   try {
     const file = join(makeDirectory(), "token");
-    await writeFile(file, "projected.service.account.token\n");
-    const client = await brokerTokenClient({
+    await writeFile(file, `${fixtureSecret("proj")}\n`);
+    const made = await brokerTokenClient({
       [BROKER_URL_VAR]: `http://127.0.0.1:${broker.port}`,
       [IDENTITY_VAR]: "kubernetes",
       [MACHINE_TOKEN_FILE_VAR]: file,
       AGENT_SECRETS_SESSION: "example-worker-session",
+      AGENT_SECRETS_SIGNIN_DIR: join(makeDirectory(), "signins"),
+      // A machine trading for itself names no project, whatever the variable says: its entry
+      // decides its project, and the broker refuses one it is told.
+      [PROJECTS_VAR]: "PRIV",
     });
-    const token = await client?.token();
+    const token = await made?.client.token();
     expect(token?.credentialId).toBe("");
     expect(forms).toHaveLength(1);
     expect(forms[0]?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
+    expect(forms[0]?.has(FORM_PROJECTS)).toBe(false);
   } finally {
     broker.stop(true);
+  }
+});
+
+test("the projects a person's trade names are AGENT_SECRETS_PROJECTS, read by the broker's grammar", () => {
+  expect(tradeProjects({})).toEqual([]);
+  expect(tradeProjects({ [PROJECTS_VAR]: "  " })).toEqual([]);
+  expect(tradeProjects({ [PROJECTS_VAR]: "PUB  PRIV" })).toEqual(["PRIV", "PUB"]);
+  const seventeen = Array.from(
+    { length: MAX_PROJECTS + 1 },
+    (_, at) => `P${String(at).padStart(2, "0")}`
+  );
+  for (const [bad, says] of [
+    ["priv", '"priv" is not a project key'],
+    ["PRIV,PUB", '"PRIV,PUB" is not a project key'],
+    ["P", '"P" is not a project key'],
+    ["PRIV PUB PRIV", "PRIV is named twice"],
+    [seventeen.join(" "), "at most 16"],
+  ] as const) {
+    expect(() => tradeProjects({ [PROJECTS_VAR]: bad })).toThrow(says);
+    expect(() => tradeProjects({ [PROJECTS_VAR]: bad })).toThrow(PROJECTS_VAR);
   }
 });
 

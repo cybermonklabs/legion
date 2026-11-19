@@ -44,6 +44,13 @@ written the id. While that file is there, and for up to 160 seconds, a call wait
 `AGENT_SECRETS_ENROLL_WAIT` (20 seconds by default) for the enrollment. Without it, a call made
 before enrollment fails at once.
 
+`enroll` waits up to 30 seconds for the helper's answer, and the helper ends its call to the
+broker after 20 seconds. If `enroll` fails with `ENROLL_OUTCOME_UNKNOWN`, or says
+`the helper gave no answer`, it did not get the broker's answer: the broker may have made the
+enrollment, and `enroll` wrote no id. Run the same command again. If the broker made the
+enrollment, it answers with that enrollment, and `enroll` prints and writes its id as above
+([troubleshooting](/legion/broker/guides/troubleshooting/#an-enroll-or-unenroll-with-an-unknown-outcome)).
+
 ## 3. Keep its lease alive, inside the box
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` (the
@@ -82,18 +89,26 @@ A box nobody unenrolls ends anyway once `agent-secrets renew` stops. Its lease l
 
 ```console
 $ agent-secrets self
-agent-secrets self: proof invalid: not live (PROOF_INVALID); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets self: proof invalid: not live (PROOF_INVALID) (answer <answer id>); asked the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 ```
 
-On its next run, within `BROKER_SWEEP_SECONDS`, the broker's sweep ends the
-enrollment: its grants are revoked, its pending requests are cancelled and leave the approver's
-Inbox (approving one now answers `request is already decided`), and the broker logs:
+The answer id names the broker's log line for that refusal
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). On its next
+run, within `BROKER_SWEEP_SECONDS`, the broker's sweep ends the enrollment: its grants are
+revoked, its pending requests are cancelled and leave the approver's Inbox (approving one now
+answers `request is already decided`), and the broker logs one JSON line, here with its time left
+out:
 
-```text
-INFO broker sweeper: ended an enrollment whose lease lapsed enrollment_id=edd9a18c-41ff-46f9-8a15-bddb30f0abc3 kind=session runtime_id=example-box-1 slot="" lease_expired_at=2026-10-03T03:39:03.386Z grants_revoked=1 requests_cancelled=1
+```json
+{"time":"<time>","severity":"INFO","message":"broker sweeper: ended an enrollment whose lease lapsed","enrollment_id":"edd9a18c-41ff-46f9-8a15-bddb30f0abc3","kind":"session","runtime_id":"example-box-1","slot":"","lease_expired_at":"2026-10-03T03:39:03.386Z","grants_revoked":1,"requests_cancelled":1,"left_dormant":false,"handed_to":""}
 ```
 
 A lapsed lease cannot be renewed: to use the box again, start over from step 1 with a new key.
+
+An enrollment whose id the launcher never learnt ends the same way. If `enroll` ended with an
+unknown outcome and the launcher did not run it again, the launcher has no id to unenroll, and
+nothing renews that enrollment. If the broker made it, its lease lapses `BROKER_LEASE_SECONDS`
+after the broker made it, and the sweep ends it.
 
 An outage of the broker itself is different. If the box's lease runs out while no broker is
 serving (every broker process down, or the database out of reach), the lease stays live and the

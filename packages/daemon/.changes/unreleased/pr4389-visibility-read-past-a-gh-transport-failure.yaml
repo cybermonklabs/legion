@@ -1,0 +1,30 @@
+kind: Fixed
+body: |-
+    A push is no longer refused as a leak-check setup error when gh cannot reach GitHub but curl
+    and git can. In a busy one-CPU pod, every gh call failed with `net/http: TLS handshake timeout`
+    for over two hours, while curl finished its handshake with the same host in under a second, and
+    the leak guard, which reads a push target's visibility through gh, refused every push. Now, when
+    the guard's gh REST read fails on its connection and GitHub sent no answer (gh's one line for
+    the request ends in a TLS handshake timeout, an I/O timeout, a connection reset or refused, or
+    the HTTP client's own timeout), the guard makes the same REST read with curl, whose TLS is
+    OpenSSL's. The guard also stops gh's REST read itself after at most 8 s, and 5 s before the
+    caller's own deadline, so that curl still has time when gh hangs past a caller's bound; where
+    the caller has 5 s or less left, gh runs under the caller's bound alone, as before. A gh the
+    guard stops before GitHub sent a status line counts as a connection failure too, while a gh the
+    caller's own deadline stops still refuses the push. curl sends the token gh would have sent: the
+    caller's `GH_TOKEN` or `GITHUB_TOKEN`, else the password `gh auth git-credential get` answers,
+    which `legion gh` reads from the bundle's `hosts.yml` without a request to GitHub. The token
+    reaches curl on its standard input, never in its arguments or its environment, and a token that
+    holds a line break is never sent. curl does not keep the caller's `SSLKEYLOGFILE`. curl's
+    public, private or internal is the answer, and a public one is kept as gh's is. Where curl is not
+    on PATH, no token can be read, or curl cannot connect either, the guard runs the unauthenticated
+    `git ls-remote`, which answers public only; where too little of the caller's time is left for
+    curl, the push is refused. No GraphQL read is made on this path, because it goes through gh too,
+    unless curl meets a spent core rate limit: then the guard's rate-limit reads follow, whose first
+    is GraphQL's through gh. Any other gh failure refuses the push as before. The `legion gh` call
+    log records an answer read through curl as `visibility="rest-curl"`, and a token request through
+    `gh auth git-credential get` as an `auth git-credential` line, as it records every credential
+    request.
+time: 2026-11-18T06:33:23Z
+custom:
+    Issue: pr4389

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,34 +27,66 @@ import (
 // migration, which ships the block with the migration itself, and a fenced block of
 // docs/kubernetes.md, which is where an operator reads it at a rollback. The header is the
 // source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
-// an operator runs — and the guide's copy is held to it by
-// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide.
+// an operator runs — and the guide's copy is held to it in two halves. The way back of contract
+// 146, which an operator runs before it, stands in the headers of its four migrations and in a
+// fenced block of the guide of its own, and
+// TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide holds those copies to
+// one text in the same two halves.
+//
+// This half does not read the guide. It reads upgrade_way_back_extract.txt and
+// upgrade_architect_entry_way_back_extract.txt, this package's own copies of the guide's two
+// blocks, which the two tests below hold to the headers and internal/textcheck's
+// TestTheWayBackExtractIsTheGuidesWayBackBlock and
+// TestTheArchitectEntryWayBackExtractIsTheGuidesWayBackBlock hold equal to the blocks the guide
+// carries. The split is what takes docs/kubernetes.md out of this job's filter: a declared read
+// applies to every compiled source file of a run, so a test that reads the guide starts the
+// whole daemon Go lane on a documentation-only edit however the run selects it, and only a test
+// that does not read it at all stops doing that.
+//
+// Finding a block in the guide — the fenced block holding the one line only that rollback's
+// block holds, wherever the edits above it move it — is those other tests' job, on the guide
+// itself. None of it is parsed here: this file reads a `#` header and the bytes under it, which
+// is all an extract is.
 const (
-	// wayBackMigrationFile and wayBackGuideFile are the two paths the failures below print, so a
-	// failing run names the file to open rather than the text alone.
-	wayBackMigrationFile = "internal/store/migrations/20261111225552_phase_entry.up.sql"
-	wayBackGuideFile     = "docs/kubernetes.md"
-	// wayBackHeredoc opens the block in both files and wayBackTerminator closes it. What stands
+	// phaseEntryMigrationFile, architectStalledNoticesMigrationFile,
+	// architectUpgradeMigrationFile, claimHandshakeMigrationFile and entryVerbatimMigrationFile
+	// are the paths the failures below print for the headers, so a failing run names the file to
+	// open rather than the text alone.
+	phaseEntryMigrationFile              = "internal/store/migrations/20261111225552_phase_entry.up.sql"
+	architectStalledNoticesMigrationFile = "internal/store/migrations/20261113181500_architect_stalled_notices.up.sql"
+	architectUpgradeMigrationFile        = "internal/store/migrations/20261113182000_architect_entry_upgrade.up.sql"
+	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
+	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
+	reviewedHeadMigrationFile            = "internal/store/migrations/20261116234034_phase_reviewed_head.up.sql"
+	// wayBackExtract, the copy of the phase entry's block, and architectEntryWayBackExtract, the
+	// copy of contract 146's, are read from this package's own directory, where each file sits
+	// beside the code it is about and needs no declared read of its own.
+	wayBackExtract               = "upgrade_way_back_extract.txt"
+	architectEntryWayBackExtract = "upgrade_architect_entry_way_back_extract.txt"
+	// wayBackGuideFile is the guide the extracts copy. The failures below name it, so a failing
+	// run says whose words the copy is; nothing here reads it.
+	wayBackGuideFile = "docs/kubernetes.md"
+	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
 	// between them is what psql reads on its standard input, which is the transaction
 	// upgradeRecoveryReadsAnswer sends in one exec.
 	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
-	// wayBackRecoveryStatements is how many statements stand between the block's begin and its
-	// commit. The header, the guide and this test all call them the eleven, so a block holding
-	// another number is one that at least one of the three no longer describes.
+	// wayBackRecoveryStatements is how many statements stand between the phase entry's block's
+	// begin and its commit. The header, the guide and this test all call them the eleven, so a
+	// block holding another number is one that at least one of the three no longer describes.
 	wayBackRecoveryStatements = 11
 )
 
-// wayBackBlockOfTheHeader is the recovery block of the migration's header as an operator copies
-// it out of the file: the psql line, the lines of the heredoc and its terminator, with the
-// comment marker and the header's own indent taken off each. It is read from the embedded
-// migration, which is that file's bytes as the binary ships them (migrations.All, over the embed
-// internal/store/migrations/embed.go declares).
+// wayBackBlockOfTheHeader is the recovery block of the header of file, a migration under
+// internal/store/migrations, as an operator copies it out of the file: the psql line, the lines
+// of the heredoc and its terminator, with the comment marker and the header's own indent taken
+// off each. It is read from the embedded migration, which is that file's bytes as the binary
+// ships them (migrations.All, over the embed internal/store/migrations/embed.go declares).
 //
 // Every failure here stops the test by name, because a check that cannot find what it means to
 // read is a check that passes while reading nothing: a header carrying no such block, a block
 // opened and never closed, and a line indented outside the opener's indent each name the file.
-func wayBackBlockOfTheHeader(t *testing.T) string {
+func wayBackBlockOfTheHeader(t *testing.T, file string) string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -63,14 +94,14 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 	}
 	header := ""
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration {
+		if migration.Name == filepath.Base(file) {
 			header = migration.SQL
 			break
 		}
 	}
 	if header == "" {
-		t.Fatalf("the embedded migrations hold no migration %d: %s is the source of the way back, and this test runs the block that file carries",
-			phaseEntryMigration, wayBackMigrationFile)
+		t.Fatalf("the embedded migrations hold no %s: that file is the source of its way back, and this test reads the block it carries",
+			file)
 	}
 	var block []string
 	indent := ""
@@ -93,8 +124,8 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 		if strings.TrimSpace(comment) != "" {
 			held, indented := strings.CutPrefix(comment, indent)
 			if !indented {
-				t.Fatalf("%s indents %q inside the way back's block below the indent its %q line carries: the block is read by that indent, so such a line would be dropped from the transaction this test runs",
-					wayBackMigrationFile, line, wayBackHeredoc)
+				t.Fatalf("%s indents %q inside the way back's block below the indent its %q line carries: the block is read by that indent, so such a line would be dropped from the transaction an operator runs",
+					file, line, wayBackHeredoc)
 			}
 			text = held
 		}
@@ -104,18 +135,18 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 		}
 	}
 	if len(block) == 0 {
-		t.Fatalf("%s carries no %q line in its header: that line opens the way back's block, which this test runs as the one transaction an operator runs",
-			wayBackMigrationFile, wayBackHeredoc)
+		t.Fatalf("%s carries no %q line in its header: that line opens the way back's block, which an operator runs as one transaction",
+			file, wayBackHeredoc)
 	}
 	t.Fatalf("%s opens the way back's block and closes it with no %q line; what it carries is:\n%s",
-		wayBackMigrationFile, wayBackTerminator, strings.Join(block, "\n"))
+		file, wayBackTerminator, strings.Join(block, "\n"))
 	return ""
 }
 
-// wayBackRecovery is the transaction of that block: the lines between the heredoc's opener and
-// its terminator, which psql reads on its standard input. The psql line itself runs nothing here
-// — ON_ERROR_STOP is psql's own and a pool runs no shell — and what it bounds is exactly what
-// one exec sends.
+// wayBackRecovery is the transaction of the phase entry's block: the lines between the heredoc's
+// opener and its terminator, which psql reads on its standard input. The psql line itself runs
+// nothing here — ON_ERROR_STOP is psql's own and a pool runs no shell — and what it bounds is
+// exactly what one exec sends.
 //
 // The statements are counted rather than read, so a block that lost one, or that grew one while
 // the header and the guide still call them the eleven, stops the test rather than running a
@@ -126,7 +157,7 @@ func wayBackRecovery(t *testing.T, block string) string {
 	lines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
 	if len(lines) < 2 || lines[0] != wayBackHeredoc || lines[len(lines)-1] != wayBackTerminator {
 		t.Fatalf("the way back's block of %s is no heredoc between %q and %q; what it holds is:\n%s",
-			wayBackMigrationFile, wayBackHeredoc, wayBackTerminator, block)
+			phaseEntryMigrationFile, wayBackHeredoc, wayBackTerminator, block)
 	}
 	recovery := strings.Join(lines[1:len(lines)-1], "\n") + "\n"
 	var statements []string
@@ -137,53 +168,59 @@ func wayBackRecovery(t *testing.T, block string) string {
 	}
 	if len(statements) == 0 {
 		t.Fatalf("the way back's block of %s holds no statement between %q and %q: an empty block runs nothing and would prove nothing",
-			wayBackMigrationFile, wayBackHeredoc, wayBackTerminator)
+			phaseEntryMigrationFile, wayBackHeredoc, wayBackTerminator)
 	}
 	if first, last := statements[0], statements[len(statements)-1]; first != "begin" || last != "commit" {
 		t.Fatalf("the way back's block of %s opens with %q and ends with %q, want begin and commit: the eleven are one act, and either half of them left standing is a broken store",
-			wayBackMigrationFile, first, last)
+			phaseEntryMigrationFile, first, last)
 	}
 	if held := len(statements) - 2; held != wayBackRecoveryStatements {
 		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file, %s and this test each call the eleven; the block is:\n%s",
-			wayBackMigrationFile, held, wayBackRecoveryStatements, wayBackGuideFile, recovery)
+			phaseEntryMigrationFile, held, wayBackRecoveryStatements, wayBackGuideFile, recovery)
 	}
 	return recovery
 }
 
-// wayBackBlockOfTheGuide is the same block as docs/kubernetes.md carries it: the content of the
-// fenced block that deletes this migration's version row. The guide carries a psql heredoc for
-// several contracts' rollbacks, so the fence is found by the one line only this rollback's block
-// holds rather than by its place in the document, which every edit above it moves.
-func wayBackBlockOfTheGuide(t *testing.T) string {
+// wayBackBlockOfTheExtract is a way back's block as extract, a file of this package's own
+// directory, copies it out of docs/kubernetes.md: every byte under the blank line that ends the
+// file's `#` header. file is the migration whose header the copy is held to, which a failure
+// names. The parse is a cut and shares no code with the fence reading that holds the file to the
+// guide: two readers that agree with each other while both drift are what a copy of a document
+// is most at risk of.
+//
+// Every failure here stops the test by name, because a check that cannot find what it means to
+// read is a check that passes while reading nothing: a file that cannot be read, a header with
+// no blank line under it and a copy with nothing under its header each name the file.
+func wayBackBlockOfTheExtract(t *testing.T, extract, file string) string {
 	t.Helper()
-	// The guide is at the repository root, four directories above this package. A read that
-	// fails stops the test rather than skipping it: an absence here would read exactly like a
-	// pass, and what this check guards is the copy an operator runs at a rollback.
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", wayBackGuideFile))
+	text, err := os.ReadFile(extract)
 	if err != nil {
-		t.Fatalf("read %s: %v", wayBackGuideFile, err)
+		t.Fatalf("read %s: %v", extract, err)
 	}
-	mark := fmt.Sprintf("delete from schema_version where version = %d;", phaseEntryMigration)
-	var block []string
-	inside := false
-	for _, line := range strings.Split(string(doc), "\n") {
-		switch {
-		case !strings.HasPrefix(line, "```"):
-			if inside {
-				block = append(block, line)
-			}
-		case !inside:
-			inside, block = true, nil
-		default:
-			if slices.Contains(block, mark) {
-				return strings.Join(block, "\n") + "\n"
-			}
-			inside = false
-		}
+	body := string(text)
+	for strings.HasPrefix(body, "#") {
+		_, body, _ = strings.Cut(body, "\n")
 	}
-	t.Fatalf("%s carries no fenced block holding %q: that block is the way back an operator runs, and it is held to the block %s carries in its header",
-		wayBackGuideFile, mark, wayBackMigrationFile)
-	return ""
+	body, ended := strings.CutPrefix(body, "\n")
+	if !ended {
+		t.Fatalf("%s carries no blank line under its `#` header: that line is what ends the header, and every byte under it is the copy of %s's block",
+			extract, wayBackGuideFile)
+	}
+	if strings.TrimSpace(body) == "" {
+		t.Fatalf("%s carries nothing under its header: its copy of %s's way back is gone, and the block %s carries in its header is being held to nothing",
+			extract, wayBackGuideFile, file)
+	}
+	return body
+}
+
+// assertOneWayBackText holds header, the way back's block the header of file carries, to the
+// copy of the guide's block that extract holds, and names each line the two disagree on.
+func assertOneWayBackText(t *testing.T, file, header, extract string) {
+	t.Helper()
+	if copied := wayBackBlockOfTheExtract(t, extract, file); header != copied {
+		t.Fatalf("the way back's block differs between %s and %s, the copy of %s's block committed beside this package:\n%s",
+			file, extract, wayBackGuideFile, wayBackBlockDifference(header, copied))
+	}
 }
 
 // TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide holds the way back's two copies to
@@ -192,39 +229,57 @@ func wayBackBlockOfTheGuide(t *testing.T) string {
 // and a copy that drifted is a wrong procedure found at a rollback, with the daemon stopped and
 // the store half-migrated. The header is the source, and upgradeRecoveryReadsAnswer runs it as
 // the one transaction an operator runs; what this adds is that the guide says the same thing as
-// the block that run proves.
+// the block that run proves. It says so through the guide's copy, upgrade_way_back_extract.txt:
+// this test holds the copy to the header byte for byte, and internal/textcheck's
+// TestTheWayBackExtractIsTheGuidesWayBackBlock holds it to the guide. Neither half alone is the
+// guarantee: together they are the one this test gave while it read the guide itself.
 func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
-	header := wayBackBlockOfTheHeader(t)
+	header := wayBackBlockOfTheHeader(t, phaseEntryMigrationFile)
 	// The shape of the block is read here as well as where it runs, so a header broken in a tree
 	// with no database still fails this check by name rather than passing it unread.
 	wayBackRecovery(t, header)
-	guide := wayBackBlockOfTheGuide(t)
-	if header == guide {
-		return
+	assertOneWayBackText(t, phaseEntryMigrationFile, header, wayBackExtract)
+}
+
+// The way back of contract 146 is one text standing in five files: the headers of its four
+// migrations, 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
+// 20261114020537_claim_entry_handshake and 20261114061900_phase_entry_verbatim, and the fenced
+// block of docs/kubernetes.md that an operator runs before the phase entry's. A copy that drifted
+// is the same wrong procedure at a rollback as the phase entry's would be. internal/admit's
+// TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward runs the header's block as the
+// one transaction an operator runs; what this adds is that each header and the guide carry the
+// same text, so an edit of one statement in any of the five fails. It says so through the guide's
+// copy, upgrade_architect_entry_way_back_extract.txt: this test holds each header to the copy
+// byte for byte, and internal/textcheck's
+// TestTheArchitectEntryWayBackExtractIsTheGuidesWayBackBlock holds the copy to the guide. Neither
+// half alone is the guarantee: together they are the one this test gave while it read the guide
+// itself.
+func TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide(t *testing.T) {
+	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile, claimHandshakeMigrationFile,
+		entryVerbatimMigrationFile} {
+		assertOneWayBackText(t, file, wayBackBlockOfTheHeader(t, file), architectEntryWayBackExtract)
 	}
-	t.Fatalf("the way back's block differs between %s and %s:\n%s",
-		wayBackMigrationFile, wayBackGuideFile, wayBackBlockDifference(header, guide))
 }
 
 // wayBackBlockDifference renders the lines the two copies disagree on, each with its number
 // inside the block, so a failing run names the edit to make rather than two blocks to compare by
 // eye.
-func wayBackBlockDifference(header, guide string) string {
+func wayBackBlockDifference(header, extract string) string {
 	headerLines := strings.Split(strings.TrimSuffix(header, "\n"), "\n")
-	guideLines := strings.Split(strings.TrimSuffix(guide, "\n"), "\n")
+	extractLines := strings.Split(strings.TrimSuffix(extract, "\n"), "\n")
 	var difference strings.Builder
-	for i := range max(len(headerLines), len(guideLines)) {
+	for i := range max(len(headerLines), len(extractLines)) {
 		held, copied := "", ""
 		if i < len(headerLines) {
 			held = headerLines[i]
 		}
-		if i < len(guideLines) {
-			copied = guideLines[i]
+		if i < len(extractLines) {
+			copied = extractLines[i]
 		}
 		if held == copied {
 			continue
 		}
-		fmt.Fprintf(&difference, "line %d:\n\theader: %q\n\tguide:  %q\n", i+1, held, copied)
+		fmt.Fprintf(&difference, "line %d:\n\theader:  %q\n\textract: %q\n", i+1, held, copied)
 	}
 	return difference.String()
 }
@@ -240,11 +295,12 @@ func wayBackBlockDifference(header, guide string) string {
 // protocol refuses, so the exec names the simple protocol a psql run uses
 // (pgx.QueryExecModeSimpleProtocol). Running the operator's own artifact is the point of reading
 // it rather than copying it: the eleven have one source, so a header edited without this test,
-// or a guide edited away from the header
-// (TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide), is a failing check rather than a
-// wrong procedure found at a rollback, with the daemon stopped and the store half-migrated. What
-// stands outside the transaction is the psql line alone: ON_ERROR_STOP is psql's own, and a pool
-// runs no shell.
+// or a guide edited away from the header (TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide
+// over the guide's committed copy, and internal/textcheck's
+// TestTheWayBackExtractIsTheGuidesWayBackBlock over the guide itself), is a failing check rather
+// than a wrong procedure found at a rollback, with the daemon stopped and the store half-migrated.
+// What stands outside the transaction is the psql line alone: ON_ERROR_STOP is psql's own, and a
+// pool runs no shell.
 //
 // The three reads copied below are commit fbe970ee's, the release that declared contract 85:
 // its claim read (internal/store/claims.go, claimSelect), which joins the pending delivery and
@@ -305,10 +361,18 @@ func wayBackBlockDifference(header, guide string) string {
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t))
+	// A rollback past the phase entry runs, before the phase entry's own block, the way back of
+	// the reviewed commit's migration (docs/kubernetes.md, the migrations recorded above this
+	// one): it deletes the key this release writes on a reviewer's start row (`roundNamed`),
+	// which the release before decodes strictly and would refuse.
+	newer := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, reviewedHeadMigrationFile), "\n"), "\n")
+	if _, err := pool.Exec(ctx, strings.Join(newer[1:len(newer)-1], "\n"), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v", reviewedHeadMigrationFile, err)
+	}
+	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t, phaseEntryMigrationFile))
 	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v\nthe block is:\n%s",
-			wayBackMigrationFile, err, recovery)
+			phaseEntryMigrationFile, err, recovery)
 	}
 
 	const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
@@ -443,9 +507,10 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	if err := pool.QueryRow(ctx, "select count(*) from schema_version").Scan(&recorded); err != nil {
 		t.Fatalf("count the versions recorded after the recovery: %v", err)
 	}
-	if recorded != len(all)-1 {
-		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the delete names one version, and store.apply decides each migration on its own row",
-			recorded, len(all)-1)
+	// The two deletes are the phase entry block's and the reviewed commit's way back, run before it.
+	if recorded != len(all)-2 {
+		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the two ways back each delete one version, and store.apply decides each migration on its own row",
+			recorded, len(all)-2)
 	}
 }
 
@@ -529,8 +594,8 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	if err != nil {
 		t.Fatalf("roll forward onto the record the older daemon left: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration run a second time: the way back deletes its version row, and store.apply decides each migration on its own row",
+	if applied != 2 {
+		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the reviewed commit's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
 			applied)
 	}
 	var entry int64

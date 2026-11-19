@@ -187,11 +187,11 @@
 //     only against two rules (rule-check.md): an ask whose own recommendation is to change
 //     nothing, and an ask for the person's hands where the agent did not try the access it has.
 //     A new ask (`@legion/envoy-client/askgate-new-asks`) is a `dispatch ask`, each `:::ask{`
-//     opener a `dispatch doc-edit` insert, a `dispatch issue` spec or a markdown `dispatch
-//     artifact` upload writes, and each block a doc-edit retypes into an ask. For a retype the
-//     gate reads the block's own text from Dispatch, and for an upload the ids the version it
-//     replaces already holds, so a re-upload judges only the asks it adds; each read goes
-//     through the Dispatch the call's own directory configures (`Deps.dispatchClient`, the
+//     opener a `dispatch doc-edit` insert or replace, a `dispatch issue` spec or a markdown
+//     `dispatch artifact` upload writes, and each block a doc-edit retypes into an ask. For a
+//     retype the gate reads the block's own text from Dispatch, and for an upload the ids the
+//     version it replaces already holds, so a re-upload judges only the asks it adds; each read
+//     goes through the Dispatch the call's own directory configures (`Deps.dispatchClient`, the
 //     directory `readArgs` names lazily). When the answer names an ask that matches `no_change`
 //     or `untried_access`, AskGate refuses the call in every mode, naming each matching ask and
 //     putting the charter's revise reason after the rules reason; no marker is minted for it. A
@@ -650,7 +650,11 @@ interface Deps {
    * reads a retyped block's text and an upload's current ask ids through it, and the decision
    * record writes through it.
    */
-  dispatchClient: (directory: string, signal: AbortSignal) => DispatchSession | undefined;
+  dispatchClient: (
+    directory: string,
+    signal: AbortSignal,
+    deadlineMs?: number
+  ) => DispatchSession | undefined;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,
@@ -3029,7 +3033,9 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
         return pass("skipped", { reason: `primary on ${ctx.model?.provider ?? "no model"}` });
       // Raced from handler entry, so each render of this call counts against the runner's ceiling too.
       const deadlineMs = callDeadlineMs();
-      stop.arm(Math.max(0, deadlineMs - (deps.now() - started)));
+      const armedMs = Math.max(0, deadlineMs - (deps.now() - started));
+      stop.arm(armedMs);
+      const deadlineAt = deps.now() + armedMs;
       // A model that answers with an error hands the request to the next one in the role's chain, inside
       // the same deadline. Only models on the primary's own account are asked: the transcript stays there.
       const chain = [
@@ -3086,6 +3092,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           system: ruleSystem,
           context: agentContext,
           signal: stop.signal,
+          deadlineAt,
         }
       );
       const [charterWalk, ruled] = await Promise.all([charterRun, rulesRun]);

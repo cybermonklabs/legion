@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,9 +16,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func createReferenceAPIProject(t *testing.T, handler http.Handler, key string) {
@@ -344,6 +347,25 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	if filtered := graphEdges(t, handler, url.Values{"to": {askRef}, "kind": {"replies_to,followed_by"}}); len(filtered.Edges) != 0 {
 		t.Fatalf("kind filter kept %#v; want no edges", filtered.Edges)
 	}
+	// A newer build may name an edge kind this build does not emit. Its edges are none here, and
+	// the answer names the kinds it did not know, rather than refusing the read.
+	type knownEdges struct {
+		Edges        []model.GraphEdge `json:"edges"`
+		UnknownKinds []string          `json:"unknown_kinds"`
+	}
+	for kinds, wantEdges := range map[string]int{"future": 0, "mentions,future": 1} {
+		query := url.Values{"to": {askRef}, "kind": {kinds}}
+		response := graphRequest(t, handler, query)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/references?%s: status=%d body=%s; want 200", query.Encode(), response.Code, response.Body.String())
+		}
+		if got := decodeBody[knownEdges](t, response); len(got.Edges) != wantEdges || !reflect.DeepEqual(got.UnknownKinds, []string{"future"}) {
+			t.Fatalf("kind=%s answered %#v; want %d edges and unknown_kinds [future]", kinds, got, wantEdges)
+		}
+	}
+	if response := graphRequest(t, handler, url.Values{"to": {askRef}}); strings.Contains(response.Body.String(), "unknown_kinds") {
+		t.Fatalf("a read naming no kind answered %s; want no unknown_kinds", response.Body.String())
+	}
 	if since := graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID, 10)}}); len(since.Edges) != 0 {
 		t.Fatalf("since the introducing event kept %#v; want no edges", since.Edges)
 	}
@@ -352,7 +374,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
 	// again only a read held past that wait, which an open transaction elsewhere on the shared
 	// test cluster can cause.
-	since := awaitSinceRead(t, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
+	since := awaitSinceRead(t, database, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
 		func() model.GraphReferences {
 			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
 		},
@@ -369,7 +391,6 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		"neither to nor from": {url.Values{}, http.StatusBadRequest, "INVALID_REFERENCE"},
 		"both to and from":    {url.Values{"to": {askRef}, "from": {askRef}}, http.StatusBadRequest, "INVALID_REFERENCE"},
 		"not a reference":     {url.Values{"to": {"LEGION-1 spec"}}, http.StatusBadRequest, "INVALID_REFERENCE"},
-		"unknown kind":        {url.Values{"to": {askRef}, "kind": {"mentions,linked"}}, http.StatusBadRequest, "INVALID_KIND"},
 		"since not an id":     {url.Values{"to": {askRef}, "since": {"yesterday"}}, http.StatusBadRequest, "INVALID_SINCE"},
 		"missing node":        {url.Values{"to": {"dispatch://" + legion.Key + "/ask/00000000-0000-0000-0000-000000000000"}}, http.StatusNotFound, "NOT_FOUND"},
 		"missing document":    {url.Values{"from": {"dispatch://LEGION/artifact/ghost"}}, http.StatusNotFound, "NOT_FOUND"},
@@ -382,23 +403,38 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 }
 
 // awaitSinceRead reads again until holds accepts the answer, because a since read answers only
-// the edges at or below the event log's safe horizon, and any transaction holding a transaction
-// id on the Postgres instance holds that horizon back: in this package, storetest's own
-// "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase). Such a read waits out referencesSinceWait and
-// then answers at the horizon it was left with, which may be short of what committed before it,
-// so it is read again, bounded by eventFeedWait. A read that answered within referencesSinceWait
-// was not held back: what it listed is what it owed, so holds failing on it, a missing edge as
-// much as a duplicate or a wrongly stamped one, is a product failure and fails the test at once.
-// The what argument names the read in either failure. It returns the answer holds accepted.
+// the edges at or below the event log's safe horizon (awaitHorizonRead). The what argument names
+// the read in a failure, and database is the one the server reads. It returns the answer holds
+// accepted.
 func awaitSinceRead(
 	t *testing.T,
+	database *store.Store,
 	what string,
 	read func() model.GraphReferences,
 	holds func(model.GraphReferences) bool,
 ) model.GraphReferences {
 	t.Helper()
-	deadline := time.Now().Add(eventFeedWait)
+	return awaitHorizonRead(t, database, what, read, holds, func(answer model.GraphReferences) string {
+		return fmt.Sprintf("%#v", answer.Edges)
+	})
+}
+
+// awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
+// stands at or below the event log's safe horizon (sinceHorizon): any transaction holding a
+// transaction id on the Postgres instance holds that horizon back - in this package, storetest's
+// own "create database … template …" and "drop database … with (force)" transactions
+// (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
+// Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
+// which may be short of what committed before it, so it is read again for as long as the horizon
+// says it is held back (horizontest.Watch), however long that is; database is the one the server
+// reads. A read that answered within referencesSinceWait was not held back: what it answered is
+// what it owed, so holds failing on it is a product failure and fails the test at once. what names
+// the read and show its answer in either failure.
+func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
+	t.Helper()
+	warnings, stop := horizontest.Listen(t)
+	defer stop()
+	watch := horizontest.NewWatch(t, warnings, database.Pool.Config().ConnConfig.Database, database.Pool)
 	for {
 		started := time.Now()
 		answer := read()
@@ -407,12 +443,11 @@ func awaitSinceRead(
 			return answer
 		}
 		if took < referencesSinceWait {
-			t.Fatalf("%s answered %#v in %s, inside %s: the horizon held nothing back, so that is every edge it owes",
-				what, answer.Edges, took, referencesSinceWait)
+			t.Fatalf("%s answered %s in %s, inside %s: the horizon held nothing back, so that is all it owes",
+				what, show(answer), took, referencesSinceWait)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s = %#v after %s, the last read taking %s and every read held past %s",
-				what, answer.Edges, eventFeedWait, took, referencesSinceWait)
+		if failure := watch.Failure("the whole answer of " + what); failure != "" {
+			t.Fatalf("%s; the last read, taking %s, answered %s", failure, took, show(answer))
 		}
 	}
 }
@@ -423,7 +458,7 @@ func awaitSinceRead(
 // proven so far would answer nothing here, the first after boot, and each later read would stop
 // at the previous read's observation, however old. awaitSinceRead settles which answer is final.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
 	citingResponse := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": "Rotate the database credentials"}, "alice")
@@ -435,7 +470,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 	comment := createReferenceAPIComment(t, handler, citing.Key, "Blocked on "+targetRef)
 
 	query := url.Values{"to": {targetRef}, "since": {"0"}}
-	awaitSinceRead(t, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
+	awaitSinceRead(t, database, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
 		func() model.GraphReferences { return graphEdges(t, handler, query) },
 		func(read model.GraphReferences) bool {
 			return len(read.Edges) == 1 && read.Edges[0].Kind == "mentions" &&
@@ -450,7 +485,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // transaction holds below a, so it answers neither mention while a is open: each read waits out
 // referencesSinceWait for the horizon, then answers the mentions at or below it, which are none.
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
-// (refs.ReplaceCounted, then refs.Stamp with the edit's event).
+// (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	broker := deps.Events
@@ -473,7 +508,15 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	ctx := t.Context()
 	mention := func(tx pgx.Tx, issueKey, commentID string) int64 {
 		t.Helper()
-		if _, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "comment", commentID, ""), "Now see "+targetRef); err != nil {
+		found := text.Refs(refs.NewReader(ctx, tx, "comment", commentID, "").Mentions("Now see " + targetRef))
+		replacement, _, err := planFoundReferences(ctx, tx, "comment", commentID, found, nil)
+		if err != nil {
+			t.Fatalf("plan comment %s's references: %v", commentID, err)
+		}
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			replacement.Queue(b)
+			return nil
+		}); err != nil {
 			t.Fatalf("index comment %s: %v", commentID, err)
 		}
 		event, err := broker.Append(ctx, tx, model.Event{
@@ -519,7 +562,7 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the lower event: %v", err)
 	}
-	read := awaitSinceRead(t, "since "+strconv.FormatInt(low-1, 10)+" ?to= "+targetRef+", wanting both mentions once the lower event has committed",
+	read := awaitSinceRead(t, database, "since "+strconv.FormatInt(low-1, 10)+" ?to= "+targetRef+", wanting both mentions once the lower event has committed",
 		func() model.GraphReferences { return graphEdges(t, handler, query) },
 		func(read model.GraphReferences) bool { return len(read.Edges) == 2 })
 	var seqs []int64

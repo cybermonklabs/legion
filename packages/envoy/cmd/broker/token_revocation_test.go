@@ -174,13 +174,19 @@ func TestTheBinaryRevokesAMachineLoginsAccessTokenAndLeavesItsLogin(t *testing.T
 // access token and the refresh token the broker issued.
 func (l *liveBroker) machineLogin(t *testing.T, key *ecdsa.PrivateKey, bearer string) (access, refresh string) {
 	t.Helper()
+	return l.machineLoginAs(t, key, bearer, person, revocationHost)
+}
+
+// machineLoginAs is machineLogin for the machine host of the person who, the one who approves it.
+func (l *liveBroker) machineLoginAs(t *testing.T, key *ecdsa.PrivateKey, bearer, who, host string) (access, refresh string) {
+	t.Helper()
 	thumbprint, err := proof.Thumbprint(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request, err := record.Sign(key, l.base, []record.AuthorizationDetail{
-		{Type: record.KindLauncherCredential, Identifier: revocationHost},
-	}, "", person, nil, time.Now())
+		{Type: record.KindLauncherCredential, Identifier: host},
+	}, "", who, nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,9 +205,9 @@ func (l *liveBroker) machineLogin(t *testing.T, key *ecdsa.PrivateKey, bearer st
 		t.Fatalf("looking the machine login up by its code = %d %v, want 200 with a record id", status, body)
 	}
 	status, body = l.postJSON(t, "/v1/credential-requests/"+recordID+"/approve",
-		map[string]any{"approver": person, "code": userCode}, bearer)
+		map[string]any{"approver": who, "code": userCode}, bearer)
 	if status != http.StatusOK {
-		t.Fatalf("%s approves her own machine login = %d %v, want 200", person, status, body)
+		t.Fatalf("%s approves their own machine login = %d %v, want 200", who, status, body)
 	}
 	status, body = l.post(t, l.dpop, "/v1/oauth/token", url.Values{
 		"grant_type": {deviceCodeGrantType}, "device_code": {deviceCode}, "client_id": {oauthwire.ClientID},

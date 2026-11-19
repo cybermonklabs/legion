@@ -8,91 +8,14 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-type Envelope struct {
-	EventID           string            `json:"event_id"`
-	Source            string            `json:"source"`
-	SourceEventID     string            `json:"source_event_id"`
-	SourceSession     string            `json:"source_session,omitempty"`
-	Topic             string            `json:"topic"`
-	DedupeKey         string            `json:"dedupe_key"`
-	IssuedAt          int64             `json:"issued_at"`
-	ExpiresAt         *int64            `json:"expires_at,omitempty"`
-	KeptAt            *int64            `json:"kept_at,omitempty"`
-	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
-	PayloadSummary    string            `json:"payload_summary"`
-	PayloadRef        string            `json:"payload_ref,omitempty"`
-	Payload           string            `json:"payload,omitempty"`
-	TraceID           string            `json:"trace_id"`
-	Sender            *EnvelopeSender   `json:"sender,omitempty"`
-	InReplyTo         string            `json:"in_reply_to,omitempty"`
-	Supersedes        string            `json:"supersedes,omitempty"`
-	Urgency           string            `json:"urgency,omitempty"`
-	ExpectsReply      ExpectsReply      `json:"expects_reply,omitempty"`
-}
-
-type EnvelopeSender struct {
-	SessionID string   `json:"session_id"`
-	Machine   string   `json:"machine,omitempty"`
-	Cwd       string   `json:"cwd,omitempty"`
-	Title     string   `json:"title,omitempty"`
-	Roles     []string `json:"roles,omitempty"`
-}
-
-func (e Envelope) Validate() error {
-	if strings.TrimSpace(e.EventID) == "" {
-		return fmt.Errorf("event_id is required")
-	}
-	if strings.TrimSpace(e.Source) == "" {
-		return fmt.Errorf("source is required")
-	}
-	if strings.TrimSpace(e.SourceEventID) == "" {
-		return fmt.Errorf("source_event_id is required")
-	}
-	if strings.TrimSpace(e.Topic) == "" {
-		return fmt.Errorf("topic is required")
-	}
-	if strings.TrimSpace(e.DedupeKey) == "" {
-		return fmt.Errorf("dedupe_key is required")
-	}
-	if e.IssuedAt == 0 {
-		return fmt.Errorf("issued_at must be set")
-	}
-	if strings.TrimSpace(e.PayloadSummary) == "" {
-		return fmt.Errorf("payload_summary is required")
-	}
-	if strings.TrimSpace(e.TraceID) == "" {
-		return fmt.Errorf("trace_id is required")
-	}
-	if e.InReplyTo != "" && strings.TrimSpace(e.InReplyTo) == "" {
-		return fmt.Errorf("in_reply_to must not be empty")
-	}
-	if e.Supersedes != "" && strings.TrimSpace(e.Supersedes) == "" {
-		return fmt.Errorf("supersedes must not be empty")
-	}
-	switch e.Source {
-	case "agent", "human", "envoy", "github", "slack", "whatsapp", "ghostwispr", "dispatch":
-	default:
-		return fmt.Errorf("source must be one of: agent, human, envoy, github, slack, whatsapp, ghostwispr, dispatch")
-	}
-	if e.Urgency != "" {
-		switch e.Urgency {
-		case "low", "med", "high", "blocking":
-		default:
-			return fmt.Errorf("urgency must be one of: low, med, high, blocking")
-		}
-	}
-	if err := e.ExpectsReply.Validate(); err != nil {
-		return err
-	}
-	if e.Sender != nil {
-		if strings.TrimSpace(e.Sender.SessionID) == "" {
-			return fmt.Errorf("sender.session_id is required")
-		}
-	}
-	return nil
-}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+type Envelope = listenerwire.Envelope
+type EnvelopeSender = listenerwire.EnvelopeSender
 
 func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
@@ -132,6 +55,15 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
+
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = "notifications.dispatch.issue."
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = "_"
 
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
@@ -191,6 +123,11 @@ const ReceiptTimeoutCause = "The listener didn't answer within the send window; 
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = 100
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = 256
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
@@ -357,6 +294,33 @@ const HandoffPhaseRule = "a lowercase letter, then up to 31 lowercase letters, d
 // same phases.
 const HandoffPhasePattern = "^[a-z][a-z0-9-]{0,31}$"
 
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = "step"
+	StepKindRetro      = "retro"
+	StepKindMerge      = "merge"
+	StepResultPassed   = "passed"
+	StepResultFailed   = "failed"
+	StepResultStopped  = "stopped"
+	StepInputCode      = "STEP_INPUT"
+	StepWriterCode     = "STEP_WRITER"
+	StepOtherIssueCode = "STEP_OTHER_ISSUE"
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = "^[!-~]{1,128}$"
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
+
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
 // Settings name field and the dispatch command cannot drift apart.
@@ -369,12 +333,30 @@ const ProjectNameMax = 80
 const DocumentSchemaCloseCode = 4409
 const DocumentSchemaCloseReason = "DOC_SCHEMA"
 
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = 4425
+const DocumentNewerContentCloseReason = "DOC_NEWER_CONTENT"
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
+const DocumentAdmissionRevokedCloseCode = 4412
+const DocumentAdmissionRevokedCloseReason = "DOC_ADMISSION_REVOKED"
+
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = 4001
 const LiveSocketMinAge = 1800000 * time.Millisecond
 const LiveSocketMaxAge = 3600000 * time.Millisecond
@@ -458,12 +440,47 @@ const IDAmbiguous = "ID_AMBIGUOUS"
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return "notifications.dispatch.issue." + project + "." + issueKey + "." + typ
+}
+
+func AgentSubject(project, session string) string {
+	return "notifications.agent." + project + "." + session
+}
+
+func LegacyAgentSubject(session string) string {
+	return "notifications.agent." + session
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return "notifications.dispatch.issue." + issueKey + "." + typ
+}
+
+func RoleSubject(project, role string) string {
+	return "notifications.role." + project + "." + role
+}
+
+func LegionWakeSubject(token string) string {
+	return "notifications.legion." + token + ".wake"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

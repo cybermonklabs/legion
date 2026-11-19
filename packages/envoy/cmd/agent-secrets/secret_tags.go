@@ -12,33 +12,42 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 )
 
-// checkOwnerTier refuses an --owner that is neither me nor shared and a --tier that is neither
-// agent nor human; "" passes either, for a form where it is optional.
-func checkOwnerTier(owner, tier string) error {
+// ownerMe is the --owner value that names the person the sign-in names (secretSession.ownerTag).
+const ownerMe = "me"
+
+// checkOwnerTier answers the owner --owner names - me, shared, or a person's email, lowercased,
+// which must be one the broker accepts as a person owner (policy.ValidPersonOwner) - and refuses
+// any other --owner and a --tier that is neither agent nor human; "" passes either, for a form
+// where it is optional.
+func checkOwnerTier(owner, tier string) (string, error) {
 	var errs []error
-	if owner != "" && owner != "me" && owner != policy.OwnerShared {
-		errs = append(errs, fmt.Errorf("--owner is me or %s, not %q", policy.OwnerShared, owner))
+	switch lower := strings.ToLower(owner); {
+	case owner == "", owner == ownerMe, owner == policy.OwnerShared:
+	case policy.ValidPersonOwner(lower):
+		owner = lower
+	default:
+		errs = append(errs, fmt.Errorf("--owner is %s, %s or a person's email, not %q", ownerMe, policy.OwnerShared, owner))
 	}
 	if tier != "" && tier != policy.TierAgent && tier != policy.TierHuman {
 		errs = append(errs, fmt.Errorf("--tier is %s or %s, not %q", policy.TierAgent, policy.TierHuman, tier))
 	}
 	if len(errs) > 0 {
-		return usageErr{errors.Join(errs...)}
+		return "", usageErr{errors.Join(errs...)}
 	}
-	return nil
+	return owner, nil
 }
 
-// tagNone is the value of --kind, --github-owners, --requesters, --scopes, --admin, --shape,
+// tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin,
 // --max-grant and --default-grant that removes the tag, the one the broker refuses as a
 // github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
-// checkKind is --kind's rule: a kind the broker mints (policy.ValidKind), or none.
-func checkKind(kind string) error {
-	if kind == "" || kind == tagNone || policy.ValidKind(kind) {
+// checkType is --type's rule: a type the broker mints (policy.ValidType), or none.
+func checkType(secretType string) error {
+	if secretType == "" || secretType == tagNone || policy.ValidType(secretType) {
 		return nil
 	}
-	return usageErr{fmt.Errorf("--kind is %s or %s, not %q", strings.Join(policy.Kinds, ", "), tagNone, kind)}
+	return usageErr{fmt.Errorf("--type is %s or %s, not %q", strings.Join(policy.Types, ", "), tagNone, secretType)}
 }
 
 // checkMaxGrant is --max-grant's rule, the broker's own (policy.ParseMaxGrant), or none where
@@ -81,25 +90,25 @@ func checkGitHubOwners(owners string, orNone bool) (string, error) {
 }
 
 // checkGitHubOwnersFor applies the broker's github-owners rule (policy.GitHubOwnersFor) to the
-// kind and owners a secret will hold once a write lands, so create and retag refuse, before any
+// type and owners a secret will hold once a write lands, so create and retag refuse, before any
 // write, a github-app secret the broker would then refuse as github-owners-missing or
 // github-owners-malformed, each named as the broker names it. named says the command itself named
-// --github-owners: owners named for a kind that does not read them are refused too, since the
-// broker would ignore them, while owners the secret already holds are left alone whatever its kind
+// --github-owners: owners named for a type that does not read them are refused too, since the
+// broker would ignore them, while owners the secret already holds are left alone whatever its type
 // becomes.
-func checkGitHubOwnersFor(kind, owners string, named bool) error {
-	if !policy.KindNeedsGitHubOwners(kind) {
+func checkGitHubOwnersFor(secretType, owners string, named bool) error {
+	if !policy.TypeNeedsGitHubOwners(secretType) {
 		if named {
-			return usageErr{fmt.Errorf("--github-owners is read only on a %s secret, and this one's kind is %q", policy.KindGitHubApp, kind)}
+			return usageErr{fmt.Errorf("--github-owners is read only on a %s secret, and this one's type is %q", policy.TypeGitHubApp, secretType)}
 		}
 		return nil
 	}
-	_, err := policy.GitHubOwnersFor(kind, owners)
+	_, err := policy.GitHubOwnersFor(secretType, owners)
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, policy.ErrGitHubOwnersMissing):
-		return usageErr{fmt.Errorf("a %s secret needs --github-owners naming at least one GitHub account, or the broker refuses it as %s", kind, policy.ReasonGitHubOwnersMissing)}
+		return usageErr{fmt.Errorf("%s secret needs --github-owners naming at least one GitHub account, or the broker refuses it as %s", withArticle(secretType), policy.ReasonGitHubOwnersMissing)}
 	default:
 		return usageErr{fmt.Errorf("the secret's github-owners tag %q is malformed (%w), and the broker refuses it as %s: name the accounts with --github-owners", owners, err, policy.ReasonGitHubOwnersMalformed)}
 	}
@@ -188,25 +197,8 @@ func checkAdmin(admin string, orNone bool) error {
 	return usageErr{fmt.Errorf("--admin is %s, not %q, or the broker refuses the secret as %s; leave --admin off for a secret whose grant is no administrator's", adminTrue, admin, policy.ReasonAdminMalformed)}
 }
 
-// checkShape is --shape's rule: one of policy.Shapes, the words the broker reads
-// (policy.ValidShape, as checkKind reads policy.ValidKind for --kind), or none where orNone
-// allows it (retag) to remove the tag. Any other value is refused here, before anything is read
-// or written, as the broker refuses it on the reread, policy.ReasonShapeMalformed, named as the
-// broker names it: the tag says what the stored value is, so a word the broker does not know
-// leaves it unable to say what a release of the secret would hand over, and a secret carrying
-// one is served to nobody.
-func checkShape(shape string, orNone bool) error {
-	if shape == "" || policy.ValidShape(shape) || (orNone && shape == tagNone) {
-		return nil
-	}
-	if orNone {
-		return usageErr{fmt.Errorf("--shape is %s, %s or %s, not %q, or the broker refuses the secret as %s", policy.ShapeToken, policy.ShapeDocument, tagNone, shape, policy.ReasonShapeMalformed)}
-	}
-	return usageErr{fmt.Errorf("--shape is %s or %s, not %q, or the broker refuses the secret as %s; leave --shape off to let the broker read the value's own trailing line ending", policy.ShapeToken, policy.ShapeDocument, shape, policy.ReasonShapeMalformed)}
-}
-
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
-// hold once a write lands — its kind, owner, tier, requesters, scopes, shape, admin mark and
+// hold once a write lands — its type, owner, tier, requesters, scopes, admin mark and
 // max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
 // a secret the broker would then refuse to load. It builds the one policy.TagSet those rules
 // weigh and hands it, beside the reason they answered and the map it was built from, to
@@ -215,8 +207,8 @@ func checkShape(shape string, orNone bool) error {
 // It reads those tags out of the map the write leaves behind — optionalTags with the owner and
 // tier create will send, the after map retag computes — rather than out of the flags, because
 // optionalTags has already dropped a flag left unset and a flag set to none, so the check reads
-// the tags the broker will read: `--kind none` leaves a stored secret, which carries no kind at
-// all and is not a secret of a kind called none. Reading the map also leaves the check and the
+// the tags the broker will read: `--type none` leaves a stored secret, which carries no type at
+// all and is not a secret of a type called none. Reading the map also leaves the check and the
 // write one value, so no tag can be weighed in one form and written in another.
 //
 // The tier is one of the tags read because two of those rules turn on it: an admin secret is
@@ -228,10 +220,7 @@ func checkShape(shape string, orNone bool) error {
 // max-grant-malformed before it weighs policy.TagRules at all. The admin mark is the tag being
 // adminTrue; a stored admin tag holding anything else is no rule of TagRules but
 // policy.ReasonAdminMalformed, which the broker answers to the reread that follows the write,
-// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The shape
-// is carried as the store holds it, unparsed, because a word that is neither token nor document
-// is a rule of TagRules itself, and the first one TagRules weighs, so a stored shape tag written
-// by hand as another word is refused here rather than left to that reread. The one
+// exactly as it answers for a stored requesters or scopes tag this CLI cannot repair. The one
 // field of the set left empty is BoundAccount, the deployment's BROKER_SERVICE_ACCOUNT_SECRETS
 // binding, which `agent-secrets` never sees, just as it never sees BROKER_SERVICES and so calls
 // ParseRequesterShapes rather than ParseRequesters: the rule it feeds, the one refusing a
@@ -239,12 +228,11 @@ func checkShape(shape string, orNone bool) error {
 func checkTagsFor(tags map[string]string) error {
 	duration, _ := policy.ParseMaxGrant(tags[policy.TagMaxGrant])
 	set := policy.TagSet{
-		Kind:         tags[policy.TagKind],
+		Type:         policy.TypeFromTags(tags),
 		Owner:        tags[policy.TagOwner],
 		Tier:         tags[policy.TagTier],
 		Requesters:   tags[policy.TagRequesters],
 		Scopes:       tags[policy.TagScopes],
-		Shape:        tags[policy.TagShape],
 		BoundAccount: "",
 		Admin:        tags[policy.TagAdmin] == adminTrue,
 		MaxGrant:     duration,
@@ -255,8 +243,8 @@ func checkTagsFor(tags map[string]string) error {
 // tagRefusal says one cross-tag refusal as the flag that fixes it: reason is what
 // policy.TagRules answered for set, and tags is the map set was built from. It answers nil for
 // "", the answer for a secret the rules allow, and a usage error for every other reason, so it
-// is this CLI's whole mirror of TagRules: an arm for policy.ReasonShapeMalformed,
-// policy.ReasonScopesKind, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
+// is this CLI's whole mirror of TagRules: an arm for
+// policy.ReasonScopesType, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
 // policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner, and one fallback refusal
 // after the switch, which quotes the reason TagRules gave. That reason is this binary's own
 // TagRules answer, so a reason, or a requesters fault, with no arm here is a gap in this build
@@ -272,20 +260,18 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 	switch reason {
 	case "":
 		return nil
-	case policy.ReasonShapeMalformed:
-		return usageErr{fmt.Errorf("the shape tag says what a secret's stored value is, so it is %s or %s, not %q: write --shape %s or --shape %s, or remove the tag with --shape none, in a retag of its own, or the broker refuses the secret as %s", policy.ShapeToken, policy.ShapeDocument, set.Shape, policy.ShapeToken, policy.ShapeDocument, policy.ReasonShapeMalformed)}
-	case policy.ReasonScopesKind:
+	case policy.ReasonScopesType:
 		holder := "a stored secret"
-		if set.Kind != "" {
-			holder = fmt.Sprintf("a %s secret", set.Kind)
+		if set.Type != "" {
+			holder = withArticle(set.Type) + " secret"
 		}
-		return usageErr{fmt.Errorf("--scopes narrows the token a %s secret mints, and no other kind's minter reads it, so %s holds none: remove the scopes tag with --scopes none, in a retag of its own, or write --kind %s, or the broker refuses it as %s", policy.KindGoogleServiceAccount, holder, policy.KindGoogleServiceAccount, policy.ReasonScopesKind)}
+		return usageErr{fmt.Errorf("--scopes narrows the token a %s secret mints, and no other type's minter reads it, so %s holds none: remove the scopes tag with --scopes none, in a retag of its own, or write --type %s, or the broker refuses it as %s", policy.TypeGoogleServiceAccount, holder, policy.TypeGoogleServiceAccount, policy.ReasonScopesType)}
 	case policy.ReasonAdminTier:
 		return usageErr{fmt.Errorf("an admin secret releases an administrator's credential, which a person approves each release of, so it is human tier, not %q: write --tier %s, or the broker refuses it as %s", set.Tier, policy.TierHuman, policy.ReasonAdminTier)}
 	case policy.ReasonAdminRequesters:
 		return usageErr{fmt.Errorf("an admin secret names who may ask for an administrator's credential, never leaving it to owner and tier alone: write --requesters, or the broker refuses it as %s", policy.ReasonAdminRequesters)}
 	case policy.ReasonMaxGrantRequired:
-		demands := fmt.Sprintf("a %s secret", policy.KindGoogleServiceAccount)
+		demands := fmt.Sprintf("a %s secret", policy.TypeGoogleServiceAccount)
 		if set.Admin {
 			demands = "an admin secret"
 		}
@@ -305,15 +291,15 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		// not for the person it leaves out.
 		switch policy.RequesterRule(set) {
 		case policy.RequesterFaultOwnerNotPerson:
-			return usageErr{fmt.Errorf("a %s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", set.Kind, set.Owner, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", withArticle(set.Type), set.Owner, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultServiceBelowHumanTier:
 			_, services := policy.SplitRequesters(set.Requesters)
-			return usageErr{fmt.Errorf("a %s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", set.Kind, services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", withArticle(set.Type), services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultNotTheOwnerOnce:
 			// One message for every way a list fails to name the owner exactly once — no list
 			// at all, a list of services alone, a list naming another person — because one
 			// write fixes them all: the owner, beside the registered services the list already
-			// names, which a human-tier secret of this kind may keep. A list the secret holds
+			// names, which a human-tier secret of this type may keep. A list the secret holds
 			// is quoted too, so the reader sees what the suggestion replaces.
 			_, services := policy.SplitRequesters(set.Requesters)
 			wanted := strings.Join(append([]string{set.Owner}, services...), " ")
@@ -321,7 +307,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 			if set.Requesters != "" {
 				held = fmt.Sprintf(", not %q", set.Requesters)
 			}
-			return usageErr{fmt.Errorf("a %s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", set.Kind, policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
+			return usageErr{fmt.Errorf("%s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Type), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 		}
 	}
 	// Two things reach here: a reason no case above names, and a policy.RequesterFault no case of
@@ -337,26 +323,28 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
-	Kind         string
+	Type         string
 	GitHubOwners string
 	Requesters   string
 	Scopes       string
 	Admin        string
-	Shape        string
 	MaxGrant     string
 	DefaultGrant string
 }
 
-// optionalTags is the kind, github-owners, requesters, scopes, admin, shape, max-grant and
+// optionalTags is the type, github-owners, requesters, scopes, admin, max-grant and
 // default-grant tags the flags set: each flag's value when it names one, and nothing for one
-// left unset or set to none. A kind brings the rollback guard with it (policy.TagRollbackGuard),
-// so a broker from before kinds refuses the secret rather than serve its stored key or refresh
-// token.
+// left unset or set to none. A type brings the rollback guard with it (policy.TagRollbackGuard),
+// which only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read, and
+// refuse: every broker from v16.0.0 to the release before the type tag ignores it and serves a
+// secret that carries type alone as a stored secret. What keeps a type secret's key from such a
+// broker is requireTypeTag, before this CLI writes, and a rollback floor at the release that reads
+// the type tag, which the deployment keeps.
 func optionalTags(f tagFlags) map[string]string {
 	named := func(value string) bool { return value != "" && value != tagNone }
 	tags := map[string]string{}
-	if named(f.Kind) {
-		tags[policy.TagKind] = f.Kind
+	if named(f.Type) {
+		tags[policy.TagType] = f.Type
 		tags[policy.TagRollbackGuard] = policy.RollbackGuardValue
 	}
 	if named(f.GitHubOwners) {
@@ -371,9 +359,6 @@ func optionalTags(f tagFlags) map[string]string {
 	if named(f.Admin) {
 		tags[policy.TagAdmin] = f.Admin
 	}
-	if named(f.Shape) {
-		tags[policy.TagShape] = f.Shape
-	}
 	if named(f.MaxGrant) {
 		tags[policy.TagMaxGrant] = f.MaxGrant
 	}
@@ -381,17 +366,6 @@ func optionalTags(f tagFlags) map[string]string {
 		tags[policy.TagDefaultGrant] = f.DefaultGrant
 	}
 	return tags
-}
-
-// ownerTag is the owner tag --owner names: the signed-in person's email for me, shared for shared.
-func ownerTag(owner, email string) (string, error) {
-	if owner == "me" {
-		if !policy.ValidPersonOwner(email) {
-			return "", usageErr{fmt.Errorf("your sign-in's email %q is not an email the broker accepts as an owner", email)}
-		}
-		return email, nil
-	}
-	return owner, nil
 }
 
 // checkDefaultGrant is --default-grant's rule: "session", or none where orNone allows it.

@@ -129,6 +129,91 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 	}
 }
 
+// A held task of a root a hand-over carried in keeps its take-the-phase-up instruction when a
+// decision it named leaves it. The root stands in the phase that came with it (implementing), its
+// architect's held task is the start task of that shape, naming two decisions, and only one of
+// them is still held by the delivery: a newer decision on the other's reference replaced it, so
+// the task names it no longer and is narrowed at the send (the daemon's rootTask).
+//
+// The narrowing reads whether the root was carried from the hand-over row of its generation, as
+// the sweep does (workflow.ArchitectCarried). The mark on the issue (record.Issue.HandedOverFrom)
+// is gone by then, since the promotion that opened the root's own tree cleared it, and a
+// narrowing that read the mark would take every carried root for one past admitted under its
+// own power, whose rewrite is the decisions' text alone.
+//
+// Whether the held task carried the instruction is the entry its delivery is of, and not its
+// text (workflow.NarrowRootTask). The held task here ends in words a later release could have
+// written in place of the derivation's closing sentence, and the instruction is kept all the same.
+// The control is the same delivery of no entry, which a release before the architect held an
+// entry queued, and whose narrowing is the decisions' own text alone.
+func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	const key = "LEGION-312"
+	steps := config.DesignGateRootIssues.Steps()
+	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Project: heldTaskProject, Tree: key, Title: "Carried", Phase: phase.Implementing,
+		Generation: 2, Status: "in_progress", Rank: "A", LastDispatchSeq: 1})
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: key, Generation: 2})
+	}); err != nil {
+		t.Fatalf("record %s as a root a hand-over created at generation 2: %v", key, err)
+	}
+	root := readIssue(t, pool, key)
+	if root == nil || root.HandedOverFrom != "" {
+		t.Fatalf("the carried root = %+v, want it recorded with the hand-over mark cleared, as its promotion leaves it", root)
+	}
+
+	token := mustClaimToken(t, key, claim.RoleArchitect)
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	kept := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0001", Decision: record.DecisionAskAnswered,
+		Actor: "user:alice", At: at}
+	replaced := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0002", Decision: record.DecisionAskAnswered,
+		Actor: "user:alice", At: at.Add(time.Minute)}
+	named := record.KeptDecisions{Decisions: []record.DecisionMark{kept, replaced}}
+	if _, err := pool.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
+		values ($1, $2, $3, $4, $5, $6, 'outbox:7'), ($1, $7, $3, $4, $8, null, null)`,
+		key, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(token), replaced.Ref, at.Add(time.Hour)); err != nil {
+		t.Fatalf("keep the decisions of %s, the first held by the architect's task: %v", key, err)
+	}
+	derived := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
+		Decided: workflow.KeptDecisionsTask(key, named)})
+	if !strings.Contains(derived, workflow.ArchitectCarriedPhaseLabel) {
+		t.Fatalf("the derived task = %q, want the carried shape: the case's premise", derived)
+	}
+	const reworded = " A later release's own closing words."
+	held := derived + reworded
+	encoded, err := json.Marshal(named)
+	if err != nil {
+		t.Fatalf("encode what the held task names: %v", err)
+	}
+
+	w := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
+	narrow := func(entry int64) string {
+		t.Helper()
+		task, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
+			supervise.Delivery{ID: "outbox:7", Task: held, Kept: encoded, Entry: entry})
+		if err != nil {
+			t.Fatalf("narrow the held task of %s at entry %d: %v", key, entry, err)
+		}
+		return task
+	}
+	stays := workflow.KeptDecisionsTask(key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})
+	task := narrow(1)
+	want := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
+		Decided: stays})
+	if task != want {
+		t.Fatalf("the narrowed task of the carried root = %q, want %q: the take-the-phase-up instruction, naming the one decision the task still holds", task, want)
+	}
+	if strings.Contains(task, replaced.Ref) || strings.Contains(task, reworded) {
+		t.Fatalf("the narrowed task %q still names %s, which a newer decision replaced, or keeps the held text's own words", task, replaced.Ref)
+	}
+	if task := narrow(0); task != stays {
+		t.Fatalf("the narrowed task of a held task of no entry = %q, want the decisions' own text %q", task, stays)
+	}
+}
+
 // heldTaskRig is one root whose architect is up, with a child of its tree, over the real parts the
 // daemon wires: the record store on a database of its own, the workflow engine, admission, the
 // outbox runner, and a claim supervisor whose Deps.RootHears and Deps.RootTask are the production
@@ -152,7 +237,12 @@ type heldTaskRig struct {
 	decided   int
 }
 
-func newHeldTaskRig(t *testing.T) *heldTaskRig {
+// heldTaskOption sets a part of a heldTaskRig up before newHeldTaskRig launches its architect,
+// which is the last moment it can: each claim's machine copies the supervisor's deps when it is
+// made (supervise.NewMachine), so a dep changed after the launch reaches no machine of the rig.
+type heldTaskOption func(*heldTaskRig)
+
+func newHeldTaskRig(t *testing.T, options ...heldTaskOption) *heldTaskRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -191,6 +281,9 @@ func newHeldTaskRig(t *testing.T) *heldTaskRig {
 	}
 	rig.put(rig.root)
 	rig.put(rig.child)
+	for _, option := range options {
+		option(rig)
+	}
 	rig.launchArchitect()
 	return rig
 }
@@ -212,6 +305,17 @@ func (r *heldTaskRig) launchArchitect() {
 	if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
 		r.t.Fatalf("spawn the architect: %v", err)
 	}
+	r.bootArchitect(machine, "the architect")
+	if got := machine.Claim().State; !supervise.SaidReady(got) {
+		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
+	}
+}
+
+// bootArchitect brings the agent of the architect's current launch up: the shim's hello, the
+// agent's registration and its ready, as the architect's pod does. who names the architect in a
+// failure.
+func (r *heldTaskRig) bootArchitect(machine *supervise.Machine, who string) {
+	r.t.Helper()
 	launch := machine.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: r.token, Generation: launch},
@@ -219,13 +323,10 @@ func (r *heldTaskRig) launchArchitect() {
 		supervise.RequestReady{Claim: r.token, Generation: launch, Session: "ses-architect"},
 	} {
 		if err := machine.Handle(r.ctx, ev); err != nil {
-			r.t.Fatalf("handle %T for the architect: %v", ev, err)
+			r.t.Fatalf("handle %T for %s: %v", ev, who, err)
 		}
 	}
 	machine.Wait()
-	if got := machine.Claim().State; !supervise.SaidReady(got) {
-		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
-	}
 }
 
 // decide is a person deciding on an ask of issue while nobody in the root's tree hears it, kept

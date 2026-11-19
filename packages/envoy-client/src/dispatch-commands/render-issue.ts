@@ -18,6 +18,7 @@ import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
 import { approvalLine, documentListLines } from "./document-targets";
+import { linkFor } from "./links";
 
 /** The Components line of an issue read: the effective set with where it came from. */
 function componentsLine(components: IssueComponents): string {
@@ -293,7 +294,7 @@ export function issueSummary(
   events: readonly DispatchEvent[],
   references: IssueReferences | string,
   graph: readonly string[],
-  linkBase: string,
+  linkBase: string | undefined,
   coverage: IssueCoverage | string,
   agents?: LiveAgents
 ): string {
@@ -302,7 +303,8 @@ export function issueSummary(
   const links = issue.external_links ?? [];
   const members = typeof references === "string" ? [] : (references.members ?? []);
   const spec = issue.artifacts?.find((artifact) => artifact.primary);
-  const specApproval = spec === undefined ? undefined : approvalLine(spec);
+  const specApproval =
+    spec === undefined ? undefined : approvalLine(spec, typeof issue.closed_at === "string");
   if (issue.priority === undefined) throw new Error("Dispatch issue is missing priority");
   if (issue.assignee === undefined) throw new Error("Dispatch issue is missing assignee");
   if (issue.components === undefined) throw new Error("Dispatch issue is missing components");
@@ -314,8 +316,9 @@ export function issueSummary(
     `Title: ${issue.title}`,
     `Key: ${issue.key}`,
     // The issue's page, on the dashboard people open (DISPATCH_PUBLIC_URL when set), so an agent
-    // asked about the issue repeats a link rather than building one.
-    `Link: ${new URL(`/issues/${encodeURIComponent(issue.key)}`, linkBase).toString()}`,
+    // asked about the issue repeats a link rather than building one; its reference where no base
+    // prints (`linkFor`).
+    `Link: ${linkFor(`/issues/${encodeURIComponent(issue.key)}`, linkBase)}`,
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
     `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,
@@ -406,6 +409,16 @@ function eventHead(event: DispatchEvent): string | undefined {
       return textHead(
         `${event.payload.name} v${event.payload.version.number}${event.payload.version.summary ? `: ${event.payload.version.summary}` : ""}`
       );
+    case "artifact.approved":
+    case "artifact.changes_requested": {
+      const { name, version, kind, reason } = event.payload;
+      const verb = event.type === "artifact.approved" ? "approved" : "changes requested";
+      // A Dispatch older than review kinds writes none, and a newer one may write a kind this
+      // build does not know: neither names who reviewed.
+      const reviewer =
+        kind === "plan_review" ? " by plan review" : kind === "person" ? " by a person" : "";
+      return textHead(`${name} v${version} ${verb}${reviewer}${reason ? `: ${reason}` : ""}`);
+    }
     case "artifact.human_edited":
       return textHead(humanEditHead(event.payload));
     case "issue.created": {

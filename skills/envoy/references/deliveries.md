@@ -110,13 +110,36 @@ It depends on where a session takes its deliveries, not on whether the topic is 
   the listener finds the live holder and forwards the message to it, and drops the message when that holder is the message's source session.
   The stream keeps the forward on the holder's inbox, so the holder's session gets it once, also after a restart or while it was not running.
   No session answers a receipt for one: a publish returns once the stream stored the forward.
-  A role message no live holder can take is kept for the session that claims the role next, which is handed it once, within one hour of the keep.
+  A role message no live holder can take is kept for one hour, until the `kept_until` the publish answers with, and the next session to hold the role live in that hour is handed it once.
+  If no session takes it, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
 
 - Every other `notifications.` topic, one no source uses and the stream does not keep, is refused by name
   — at `envoy_publish` and at `envoy_subscribe` alike — because no session would ever receive it.
   Use a team topic instead.
   Your session is never left unregistered by one:
   a registration that carries such a topic from an older subscription of yours keeps its other topics and names that one in a warning.
+
+## What a publish and a send answer
+
+- A publish to any topic but a role answers how many sessions get the message, counted when it was published: `published <id> to N other sessions (M running now)`.
+  `N` is every session other than you whose topics match the topic, a stopped session Envoy knows from the last 30 days included, and `M` is how many of those are live now.
+  A stopped session among them reads the message from its own consumer if it runs again within 72 hours.
+
+- `published <id>; no other session subscribes to <topic>, so no other session gets it` is that count at zero: nobody follows the topic, so the message reached nobody.
+  Reach whoever you meant another way, because a session that subscribes later does not get it.
+
+- A role topic's answer names its live `holder` instead of a count.
+  A listener that cannot read its records of known sessions counts nothing and answers `published <id>.` alone.
+
+- A send answers what its target was when Envoy stored the message: `sent <id> to <recipient> (live)` for a live session, the same line with `unresponsive` and the time it went silent for an unresponsive one, and `queued <id> for <recipient>: the session is stopped (last seen <time>); if it runs again within 72 hours, it gets the message` for one that is not running.
+  The listener tells a running session from a stopped one with one request on the session's relay subject, the subject the session's own plugin receives its messages on:
+  anything that answers it or stays silent for a second reads as running, a predecessor process of the same session id included, and nothing there at all reads as stopped.
+  None of the three lines says that the session read the message.
+
+- A queued message waits for a session Envoy knows and that is not running.
+  Never send a queued message again: a second send stores a second copy for that session to read.
+
+- A send fails with `no live session <id>` only when Envoy knows no session under that id, running now or in the last 30 days, or when the session is stopped and the listener cannot read its records of known sessions.
 
 ## Listener API errors
 

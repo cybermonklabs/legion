@@ -23,26 +23,38 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // keptPublishAnswer is the publish route's 202 for a role message it kept: the envelope as it was
 // stored, with the kept fields the answer carries only then.
 type keptPublishAnswer struct {
 	contracts.Envelope
-	Holder     string `json:"holder"`
-	Kept       bool   `json:"kept"`
-	KeptReason string `json:"kept_reason"`
+	Holder      string `json:"holder"`
+	HolderState string `json:"holder_state"`
+	LastSeen    *int64 `json:"last_seen"`
+	Kept        bool   `json:"kept"`
+	KeptReason  string `json:"kept_reason"`
+	KeptUntil   int64  `json:"kept_until"`
 }
 
 // readKeptRoleMessage reads the copy the stream holds on role's kept subject, and reports false
 // when it holds none.
 func readKeptRoleMessage(t *testing.T, client *bus.Client, role string) (contracts.Envelope, bool) {
 	t.Helper()
+	item, _, ok := readKeptRoleCopy(t, client, role)
+	return item, ok
+}
+
+// readKeptRoleCopy reads the newest copy the stream holds on role's kept subject with the time
+// the stream stored it, and reports false when it holds none.
+func readKeptRoleCopy(t *testing.T, client *bus.Client, role string) (contracts.Envelope, time.Time, bool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	stored, err := client.LastStoredMessage(ctx, bus.KeptRoleSubject(role))
 	if errors.Is(err, natsgo.ErrMsgNotFound) {
-		return contracts.Envelope{}, false
+		return contracts.Envelope{}, time.Time{}, false
 	}
 	if err != nil {
 		t.Fatalf("read role %s's kept lane: %v", role, err)
@@ -51,7 +63,7 @@ func readKeptRoleMessage(t *testing.T, client *bus.Client, role string) (contrac
 	if err := json.Unmarshal(stored.Data, &item); err != nil {
 		t.Fatalf("decode the kept copy of role %s: %v", role, err)
 	}
-	return item, true
+	return item, stored.Time, true
 }
 
 // waitForKeptRoleMessage waits until the stream holds the copy of eventID on role's kept subject,
@@ -125,7 +137,7 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
 	}
-	if !answer.Kept || answer.KeptReason != "unclaimed" || answer.Holder != "" {
+	if !answer.Kept || answer.KeptReason != "unclaimed" || answer.Holder != "" || answer.HolderState != "" || answer.LastSeen != nil {
 		t.Fatalf("the answer is %+v, want kept with reason unclaimed and no holder", answer)
 	}
 
@@ -139,36 +151,148 @@ func TestAPublishToAnUnheldRoleIsKeptAndAnsweredWithItsReason(t *testing.T) {
 	if kept.KeptAt != nil {
 		t.Fatalf("the stored copy carries kept_at %d: the time is stamped on the forward, from the stream's own store time", *kept.KeptAt)
 	}
+	if _, stored, _ := readKeptRoleCopy(t, client, role); answer.KeptUntil != stored.Add(roleKeepWindow).UnixMilli() {
+		t.Fatalf("the answer's kept_until is %d, want %d: the copy's store time %s plus the keep window %s",
+			answer.KeptUntil, stored.Add(roleKeepWindow).UnixMilli(), stored, roleKeepWindow)
+	}
 }
 
-// A claim whose holder is no longer registered has lapsed, and this build keeps that claim: the
-// holder writes no new one, so a copy kept for it would wait for a claim that never comes
-// (roleKeepable, dispatch://INFRA-392). The publish is refused as it was before the kept lane,
-// naming the holder and its retained claim, and the role's kept lane stays empty.
-func TestAPublishToALapsedClaimKeepsNothingAndTheClaimStands(t *testing.T) {
+// A claim whose holder is not live is kept for as a role nobody claims is (roleKeepable): the
+// publish is answered 202 kept with reason holder_lapsed, naming the holder, the state its record
+// puts it in and, where the listener can date it, when it last registered, as the 404
+// holder_lapsed names them; kept_until is the end of the copy's hour, the time the stream stored
+// it plus roleKeepWindow. The copy waits on the role's kept lane for the next session that holds
+// the role live, and the claim still stands: nothing but the role reaper releases one
+// (dispatch://INFRA-392).
+func TestAPublishToALapsedClaimIsKeptAndTheClaimStands(t *testing.T) {
+	const role = "kept-lapsed"
+	for _, tc := range []struct {
+		name   string
+		holder string
+		// register leaves the holder's record as the row needs it, and returns when the holder
+		// last registered, 0 when nothing can date it.
+		register func(t *testing.T, d *listenerDeps, client *bus.Client, holder string) int64
+		state    session.State
+	}{
+		{
+			name:     "a holder that never registered",
+			holder:   "ses_kept_lapsed_unregistered",
+			register: func(*testing.T, *listenerDeps, *bus.Client, string) int64 { return 0 },
+			state:    session.Gone,
+		},
+		{
+			name:   "a holder whose registration is gone",
+			holder: "ses_kept_lapsed_departed",
+			register: func(t *testing.T, d *listenerDeps, _ *bus.Client, holder string) int64 {
+				t.Helper()
+				if err := d.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+					t.Fatalf("register %s: %v", holder, err)
+				}
+				entry, err := d.sessions.Get(holder)
+				if err != nil {
+					t.Fatalf("read %s's registration: %v", holder, err)
+				}
+				if err := d.sessions.Delete(context.Background(), holder); err != nil {
+					t.Fatalf("deregister %s: %v", holder, err)
+				}
+				return entry.UpdatedAt
+			},
+			state: session.Gone,
+		},
+		{
+			name:   "a holder past the live window",
+			holder: "ses_kept_lapsed_unresponsive",
+			register: func(t *testing.T, _ *listenerDeps, client *bus.Client, holder string) int64 {
+				t.Helper()
+				heartbeat := time.Now().Add(-(session.LiveWindow + time.Minute))
+				storeSessionHeartbeat(t, client, holder, heartbeat)
+				return heartbeat.UnixMilli()
+			},
+			state: session.Unresponsive,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, client := keptRoleDeps(t)
+			lastSeen := tc.register(t, d, client, tc.holder)
+			if _, err := d.registry.SetRole(tc.holder, "test-machine", role, false); err != nil {
+				t.Fatalf("claim %s for %s: %v", role, tc.holder, err)
+			}
+
+			recorder, answer := publishToRole(t, d, role,
+				`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"is the holder still there?"}`)
+			if recorder.Code != http.StatusAccepted {
+				t.Fatalf("publish to a lapsed claim: status %d, body %s; want 202 with the message kept", recorder.Code, recorder.Body.String())
+			}
+			if !answer.Kept || answer.KeptReason != string(roles.Lapsed) || answer.Holder != tc.holder || answer.HolderState != string(tc.state) {
+				t.Fatalf("the answer is %s, want kept with reason holder_lapsed naming %s as %s", recorder.Body.String(), tc.holder, tc.state)
+			}
+			if lastSeen == 0 && answer.LastSeen != nil {
+				t.Fatalf("the answer names last_seen %d for a holder nothing can date, want none: %s", *answer.LastSeen, recorder.Body.String())
+			}
+			if lastSeen != 0 && (answer.LastSeen == nil || *answer.LastSeen != lastSeen) {
+				t.Fatalf("the answer is %s, want last_seen %d, when %s last registered", recorder.Body.String(), lastSeen, tc.holder)
+			}
+
+			kept := waitForKeptRoleMessage(t, client, role, answer.EventID)
+			if kept.Topic != contracts.RoleTopicPrefix+role || kept.DedupeKey != answer.DedupeKey {
+				t.Fatalf("the kept copy is %+v, want the envelope the answer named on the role topic", kept)
+			}
+			if _, stored, _ := readKeptRoleCopy(t, client, role); answer.KeptUntil != stored.Add(roleKeepWindow).UnixMilli() {
+				t.Fatalf("the answer's kept_until is %d, want %d: the copy's store time %s plus the keep window %s",
+					answer.KeptUntil, stored.Add(roleKeepWindow).UnixMilli(), stored, roleKeepWindow)
+			}
+			if held, err := d.registry.RoleHolder(role); err != nil || held != tc.holder {
+				t.Fatalf("the lapsed claim after the publish = %q, %v; want %s's, left for the role reaper", held, err, tc.holder)
+			}
+		})
+	}
+}
+
+// A sender that holds a queue of its own asks for keep: false, and to a claim whose holder is not
+// live it gets the 404 holder_lapsed naming the holder, with the claim retained, the refusal's
+// exception on the role topic's exception lane, and nothing stored for a later holder.
+func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	const (
-		role   = "kept-lapsed"
-		holder = "ses_kept_lapsed_holder"
+		role   = "kept-lapsed-opted-out"
+		holder = "ses_kept_lapsed_opted_out"
 	)
 	if _, err := d.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim %s for a session the store does not hold: %v", role, err)
 	}
-
-	recorder, _ := publishToRole(t, d, role,
-		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"is the holder still there?"}`)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("publish to a lapsed claim: status %d, body %s; want 404 with nothing kept", recorder.Code, recorder.Body.String())
+	probe, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + role)
+	if err != nil {
+		t.Fatalf("subscribe to the role topic's exception lane: %v", err)
 	}
-	var refusal roleHolderError
+	t.Cleanup(func() { _ = probe.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the probe: %v", err)
+	}
+
+	recorder, _ := publishThrough(d,
+		`{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"the sender queues this itself","keep":false}`)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("publish with keep: false to a lapsed claim: status %d, body %s; want 404 with nothing kept", recorder.Code, recorder.Body.String())
+	}
+	var refusal listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
-	if refusal.Reason != roles.Lapsed || refusal.Holder != holder {
-		t.Fatalf("the refusal is %+v, want reason holder_lapsed naming %s", refusal, holder)
+	if refusal.Reason != roles.Lapsed || refusal.Holder != holder || refusal.ClaimReleased == nil || *refusal.ClaimReleased {
+		t.Fatalf("the refusal is %s, want reason holder_lapsed naming %s with its claim retained", recorder.Body.String(), holder)
+	}
+	message, err := probe.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("the refusal raised no exception: %v", err)
+	}
+	var exception contracts.Envelope
+	if err := json.Unmarshal(message.Data, &exception); err != nil {
+		t.Fatalf("decode the exception envelope: %v", err)
+	}
+	if payload := exceptionPayloadOf(t, exception); payload.Reason != string(roles.Lapsed) || payload.RecipientSession != holder {
+		t.Fatalf("the exception payload = %+v, want reason holder_lapsed naming %s", payload, holder)
 	}
 	assertNothingKept(t, client, role)
-
 	if held, err := d.registry.RoleHolder(role); err != nil || held != holder {
 		t.Fatalf("the lapsed claim after the publish = %q, %v; want %s's, left for the role reaper", held, err, holder)
 	}
@@ -192,6 +316,69 @@ func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.
 	assertNothingKept(t, client, role)
 }
 
+// A clustered stream refuses a publish whose message id another publish still has in process
+// (bus.ErrDuplicateInProcess, nats-server's 10158), with no sequence to read a copy at. The keep
+// publishes again under the same id roleKeepInProcessPause later, until an answer names the copy,
+// all inside its one window (storeKeptRoleCopy): a stream that refuses twice and then stores the
+// copy is a keep that kept it, under KeptMsgID each time, with its hour counted from the copy's
+// store time. A stream that refuses until the window has run out is a keep that failed, and the
+// lane holds nothing. No cluster gives the refusal on demand, so the keep is passed a publish that
+// answers it, which the keep takes in the stream's place.
+func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
+	const role = "kept-in-process"
+	inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
+		&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})
+
+	t.Run("refused twice, then stored", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-in-process-stored")
+		var ids []string
+		publish := func(ctx context.Context, subject string, envelope contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			ids = append(ids, msgID)
+			if len(ids) <= 2 {
+				return bus.StoredAck{}, inProcess
+			}
+			return harness.client.PublishStoredAck(ctx, subject, envelope, msgID)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
+		defer cancel()
+		started := time.Now()
+		kept, err := storeKeptRoleCopy(ctx, harness.config, role, item, publish)
+		elapsed := time.Since(started)
+		if err != nil {
+			t.Fatalf("a keep whose first two publishes were refused as in process: %v; want it kept by the third", err)
+		}
+		msgID := bus.KeptMsgID(item.DedupeKey, role)
+		if !slices.Equal(ids, []string{msgID, msgID, msgID}) {
+			t.Fatalf("the keep published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, msgID)
+		}
+		if elapsed < 2*roleKeepInProcessPause {
+			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, roleKeepInProcessPause)
+		}
+		stored, at, ok := readKeptRoleCopy(t, harness.client, role)
+		if !ok || stored.EventID != item.EventID || kept.item.EventID != item.EventID {
+			t.Fatalf("the lane holds %+v (held: %t) and the keep answered %+v, want both to be event %s", stored, ok, kept.item, item.EventID)
+		}
+		if want := at.Add(roleKeepWindow).UnixMilli(); kept.until != want {
+			t.Fatalf("the keep's kept_until is %d, want %d: the copy's store time %s plus the keep window", kept.until, want, at)
+		}
+	})
+
+	t.Run("refused until the window ends", func(t *testing.T) {
+		harness := newListenerDeliveryHarness(t)
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-in-process-refused")
+		publish := func(context.Context, string, contracts.Envelope, string) (bus.StoredAck, error) {
+			return bus.StoredAck{}, inProcess
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 4*roleKeepInProcessPause)
+		defer cancel()
+		if _, err := storeKeptRoleCopy(ctx, harness.config, role, item, publish); !errors.Is(err, bus.ErrDuplicateInProcess) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("a keep refused as in process until its window ended = %v, want a failed keep naming the refusal and the window", err)
+		}
+		assertNothingKept(t, harness.client, role)
+	})
+}
+
 // startRawKeptStandIn is a session process that keeps every frame it is sent as the bytes it was
 // sent, so a test can judge a forwarded copy by the keys it carries rather than by the fields this
 // build decodes. It answers nothing: a forward is stored for the holder's consumer, and no sender
@@ -201,7 +388,7 @@ func startRawKeptStandIn(t *testing.T, uri, sessionID string) <-chan []byte {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	frames := make(chan []byte, 16)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(message *natsgo.Msg) {
 		frames <- slices.Clone(message.Data)
 	})
 	if err != nil {
@@ -344,7 +531,9 @@ func TestAClaimForwardsEachKeptRoleMessageToItsNewHolderExactlyOnce(t *testing.T
 // A kept copy the stream has held longer than roleKeepWindow is not handed to a later holder: a
 // role token names a tree role rather than one run, so a holder generations later is not the
 // addressee its sender had. It is dropped, counted and logged once, and the cursor moves past it,
-// so the role's next claim does not see it again.
+// so the role's next claim does not see it again. Its publish named no sender session, so no dead
+// letter is sent for it: the count and the line say the listener kept it, and that it was not
+// stale, its hour having ended a minute before the drop.
 //
 // The age is measured against the stream's own store time, which no caller may choose, so the test
 // moves the drain's clock rather than holding a copy for an hour.
@@ -354,14 +543,19 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 		role   = "kept-expired"
 		holder = "ses_kept_expired_claimant"
 	)
-	var forwards atomic.Int32
+	var forwards, deadLetters atomic.Int32
 	cfg := harness.config
 	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		forwards.Add(1)
 		return nil
 	})
+	cfg.publishDeadLetter = func(context.Context, string, contracts.Envelope, string) error {
+		deadLetters.Add(1)
+		return nil
+	}
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-expired-1")
-	if !keepRoleMessage(harness.client, cfg.logger, role, item) {
+	kept, ok := keepRoleMessage(cfg, role, item)
+	if !ok {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -378,14 +572,26 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 	if forwards.Load() != 0 {
 		t.Fatalf("a kept copy older than %s was forwarded %d times, want none", roleKeepWindow, forwards.Load())
 	}
+	if deadLetters.Load() != 0 {
+		t.Fatalf("a kept copy whose publish named no sender session was sent %d dead letters, want none", deadLetters.Load())
+	}
 	const dropLine = "listener dropped a kept role message older than the keep window"
 	if dropped := strings.Count(harness.logs.String(), dropLine); dropped != 1 {
 		t.Fatalf("the drop is logged %d times, want once:\n%s", dropped, harness.logs.String())
 	}
+	lines := logRecordsNamed(harness.logs.String(), dropLine, role)
+	if len(lines) != 1 || lines[0]["event_id"] != item.EventID || lines[0]["source_session"] != "" ||
+		lines[0]["kept_by"] != "listener" || lines[0]["stale"] != false || lines[0]["sequence"] != float64(kept.sequence) {
+		t.Fatalf("the drop lines are %v, want one naming event %s, no source_session, kept_by listener, stale false and sequence %d:\n%s",
+			lines, item.EventID, kept.sequence, harness.logs.String())
+	}
 	scrape := httptest.NewRecorder()
 	harness.metrics.Handler().ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if want := "test_role_kept_expired 1"; !strings.Contains(scrape.Body.String(), want) {
+	if want := `test_role_kept_expired{kept_by="listener",stale="false"} 1`; !strings.Contains(scrape.Body.String(), want) {
 		t.Fatalf("metrics do not hold %s:\n%s", want, scrape.Body.String())
+	}
+	if strings.Contains(scrape.Body.String(), "test_role_dead_letters{") {
+		t.Fatalf("metrics count a dead letter for a copy that names no sender session:\n%s", scrape.Body.String())
 	}
 
 	// The copy is still on the lane and is now well inside the window; a cursor that had not
@@ -399,21 +605,22 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 	}
 }
 
-// The role lane's one keepable give-up - a role nobody claims - keeps the message instead of
-// reporting it lost: no delivery exception goes out. A lapsed holder keeps its claim in this
-// build, so nothing is kept for it and its branch stays the delivery_failed exception
-// (TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating). The kept copy lies on a subject no
-// consumer filter carries (bus.StreamSubjects), so the durable never delivers it back and it is
-// never counted received a second time.
-func TestTheRoleLaneKeepsAnUnclaimedRolesMessageWithNoException(t *testing.T) {
+// The role lane's keepable give-ups - a role nobody claims, and a claim whose holder is not live -
+// keep the message instead of reporting it lost: no delivery exception goes out, and the lane's
+// kept line names the reason, and for a lapsed holder that holder, whose claim stands. The kept
+// copy lies on a subject no consumer filter carries (bus.StreamSubjects), so the durable never
+// delivers it back and it is never counted received a second time.
+func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) {
 	cases := []struct {
 		name string
 		role string
 		// holder is the session the role's claim names, registered nowhere; empty leaves the
 		// role unclaimed.
 		holder string
+		reason roleKeepReason
 	}{
-		{name: "unclaimed role", role: "lane-kept-unclaimed"},
+		{name: "unclaimed role", role: "lane-kept-unclaimed", reason: roleKeptUnclaimed},
+		{name: "lapsed holder", role: "lane-kept-lapsed", holder: "ses_lane_kept_lapsed", reason: roleKeptLapsed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -453,6 +660,16 @@ func TestTheRoleLaneKeepsAnUnclaimedRolesMessageWithNoException(t *testing.T) {
 				t.Fatalf("the kept copy's topic is %q, want the role topic %s", kept.Topic, topic)
 			}
 			noException(t, probe)
+			lines := logRecordsNamed(harness.logs.String(), "listener kept role message for the role's next holder", tc.role)
+			if len(lines) != 1 || lines[0]["reason"] != string(tc.reason) || lines[0]["session_id"] != tc.holder || lines[0]["event_id"] != item.EventID {
+				t.Fatalf("the lane's kept lines are %v, want one naming reason %s, session_id %q and event %s:\n%s",
+					lines, tc.reason, tc.holder, item.EventID, harness.logs.String())
+			}
+			if tc.holder != "" {
+				if held, err := harness.registry.RoleHolder(tc.role); err != nil || held != tc.holder {
+					t.Fatalf("the lapsed claim after the delivery = %q, %v; want %s still holding it", held, err, tc.holder)
+				}
+			}
 			select {
 			case back := <-delivered:
 				t.Fatalf("the durable delivered event %s on %s: a kept copy is on no consumer's filter", back.EventID, back.Topic)
@@ -536,7 +753,7 @@ func TestADrainSpendsItsBudgetOnForwardsRatherThanOnExpiredCopies(t *testing.T) 
 	var fresh []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-budget-%02d", i))
-		if !keepRoleMessage(harness.client, cfg.logger, role, item) {
+		if _, kept := keepRoleMessage(cfg, role, item); !kept {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		if !expired(i + 1) {
@@ -577,7 +794,7 @@ func TestTwoDrainsOfOneRoleHandEachKeptCopyToExactlyOneHolder(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-two-drains-%02d", i))
-		if !keepRoleMessage(harness.client, harness.config.logger, role, item) {
+		if _, kept := keepRoleMessage(harness.config, role, item); !kept {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
@@ -690,7 +907,7 @@ func TestTheDrainJudgesAKeptCopyByTheRulesEveryForwardPathApplies(t *testing.T) 
 			})
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+tc.role, tc.role+"-1")
 			tc.prepare(&item, holder)
-			if !keepRoleMessage(harness.client, cfg.logger, tc.role, item) {
+			if _, kept := keepRoleMessage(cfg, tc.role, item); !kept {
 				t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 			}
 			claimRoleWith(t, harness, holder, tc.role, tc.entry)
@@ -814,7 +1031,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 	}
 
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-under-claim-1")
-	if !keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed) {
+	if !keepRoleLaneMessage(cfg, role, item, roleKeptUnclaimed, "") {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	select {
@@ -836,7 +1053,7 @@ func TestAKeptCopyReachesTheHolderThatClaimedTheRoleUnderTheKeep(t *testing.T) {
 // redelivers from it - the Legion daemon's notice queue, and a phase worker's stall reminder -
 // publishes through the route and opts out on its request instead
 // (TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing). So an ordinary raw role
-// publish, Dispatch's role-routed events among them, is kept and raises no exception.
+// publish is kept and raises no exception.
 func TestTheRoleLaneKeepsARawRolePublishForTheRolesNextHolder(t *testing.T) {
 	const role = "lane-keep-raw"
 	harness := newListenerDeliveryHarness(t)
@@ -857,11 +1074,12 @@ func TestTheRoleLaneKeepsARawRolePublishForTheRolesNextHolder(t *testing.T) {
 	noException(t, probe)
 }
 
-// A claim the restart grace retained is not a role without a holder: that holder re-registers
-// inside the session TTL and keeps its claim, so it writes no POST /v1/roles/set and no drain
-// follows, and a copy kept for it would wait for a claim that never comes. The lane keeps nothing
-// and raises the delivery_failed it raised before the kept lane.
-func TestTheRoleLaneKeepsNothingForAClaimTheRestartGraceRetained(t *testing.T) {
+// A claim the restart grace retained names a holder that is not live: its session registration is
+// gone, though the claim stands for one session TTL (store.ExpiredRoleClaimRetained). The lane keeps
+// the message for the role's next live holder, as it keeps one for any lapsed claim: the holder
+// that registers again inside that grace, or a successor that claims the role, is handed it. No
+// delivery exception goes out, the kept line names the holder, and the claim is left as it is.
+func TestTheRoleLaneKeepsAMessageForAClaimTheRestartGraceRetained(t *testing.T) {
 	const (
 		role   = "kept-retained-claim"
 		holder = "ses_kept_retained_holder"
@@ -870,7 +1088,7 @@ func TestTheRoleLaneKeepsNothingForAClaimTheRestartGraceRetained(t *testing.T) {
 	// The claim is written before the listener's own registry opens, which is what a restart
 	// leaves behind: that registry restores the claim and gives it one session TTL of grace
 	// (store.ExpiredRoleClaimRetained) even while its holder's session registration is gone.
-	writer, err := store.Open(client.Conn, store.WithReplicas(1))
+	writer, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry that writes the claim: %v", err)
 	}
@@ -892,8 +1110,12 @@ func TestTheRoleLaneKeepsNothingForAClaimTheRestartGraceRetained(t *testing.T) {
 	item := listenerTestEnvelope(topic, "lane-retained-claim")
 	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
-	assertDeliveryException(t, probe, item, "delivery_failed")
-	assertNothingKept(t, client, role)
+	waitForKeptRoleMessage(t, client, role, item.EventID)
+	noException(t, probe)
+	lines := logRecordsNamed(harness.logs.String(), "listener kept role message for the role's next holder", role)
+	if len(lines) != 1 || lines[0]["reason"] != string(roleKeptLapsed) || lines[0]["session_id"] != holder {
+		t.Fatalf("the lane's kept lines are %v, want one naming reason %s and session_id %s:\n%s", lines, roleKeptLapsed, holder, harness.logs.String())
+	}
 	if held, err := harness.registry.RoleHolder(role); err != nil || held != holder {
 		t.Fatalf("the retained claim after the delivery = %q, %v; want %s still holding it", held, err, holder)
 	}

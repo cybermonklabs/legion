@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -132,6 +133,12 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.UnownedIssue{}):              "DeliveryUnownedIssue",
 	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
+
+	// The Legion daemon setting's shape, whose Go package carries the word `Legion` in its import
+	// path and not in its type name: `Settings` is what legion calls it, and `LegionSetting` is
+	// what a client imports. The board's own types (legionBoardResponse and its members) already
+	// carry the word and take their Go names.
+	reflect.TypeOf(legion.Settings{}): "LegionSetting",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
@@ -193,6 +200,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"type": "boolean",
 		"description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): " +
 			"an artifact is made the issue's spec at issue creation and never by an upload",
+	}},
+	// createBroadcast refuses `idempotency_key` whenever the body carries one (broadcasts.go):
+	// the key is the Idempotency-Key header. The field is described so a client reading the
+	// document knows what the bytes would have to be, never because one may send them.
+	{reflect.TypeOf(createBroadcastInput{}), "idempotency_key"}: rawField{Fragment: map[string]any{
+		"type": "string",
+		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
+			"key is the Idempotency-Key header and never a body member",
 	}},
 }
 

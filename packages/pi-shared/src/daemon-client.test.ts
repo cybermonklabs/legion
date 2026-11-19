@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   createLegionDaemonClient,
   daemonUnreachable,
@@ -48,8 +49,13 @@ function daemon(respond: (url: URL) => Response): {
   return { fetch: stub, requests };
 }
 
+/** A claim's secret, as the claim wire's requests below carry it. */
+const CLAIM_SECRET = fixtureSecret("claim");
+/** The boot token the pane hands a registering session. */
+const BOOT_TOKEN = fixtureSecret("boot");
+
 const registration = {
-  bootToken: "boot-token-from-the-pane",
+  bootToken: BOOT_TOKEN,
   sessionId: "ses_architect_208",
   ompSessionFile: "/state/home/.omp/agent/sessions/ses_architect_208.jsonl",
   agentId: "ses_architect_208",
@@ -113,13 +119,41 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
   expect((refused as LegionDaemonApiError).detail).toContain("not the daemon's refusal");
 });
 
+// The coordinator's ruling on the review of 81d860a8f7: a body that is not the daemon's refusal
+// was written by something in its place, which can echo the request back, so it is named in one
+// line, any `Authorization` or `Bearer` value redacted, never whole; nor does a parser's message
+// quote a piece of it.
+test("a proxy's page in the daemon's place is named in one redacted line, never whole", async () => {
+  const secret = fixtureSecret("proxy");
+  const page =
+    "<html><head><title>502 Bad Gateway</title></head>\n<body><h1>502 Bad Gateway</h1>\n" +
+    `<pre>Authorization: Bearer ${secret}</pre>\n${"<p>filler</p>\n".repeat(1500)}</body></html>`;
+  const client = createLegionDaemonClient(
+    "http://daemon.test",
+    daemon(() => new Response(page, { status: 502, headers: { "Content-Type": "text/html" } }))
+      .fetch
+  );
+
+  const refused = await client.register(registration).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(LegionDaemonApiError);
+  expect(refused).toMatchObject({ status: 502, code: undefined });
+  const { detail, message } = refused as LegionDaemonApiError;
+  expect(detail).toStartWith(
+    `a body that is not the daemon's refusal shape ("502 Bad Gateway 502 Bad Gateway Authorization: Bearer [redacted] filler filler`
+  );
+  expect(detail).toEndWith(`…")`);
+  expect(message).not.toContain(secret);
+  expect(message).not.toContain("\n");
+  expect(message.length).toBeLessThan(400);
+});
+
 test("ready and exit post the claim wire's requests and accept only the empty 204", async () => {
   const { fetch, requests } = daemon(() => new Response(null, { status: 204 }));
   const client = createLegionDaemonClient("http://daemon.test", fetch);
   const ready = {
     claimToken: "legion-legion-legion-208-architect",
     sessionId: "ses_architect_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     generation: 3,
   };
 
@@ -147,7 +181,7 @@ test("activity posts the claim wire's report and accepts only the empty 204", as
   const report = {
     claimToken: "legion-legion-legion-208-implementer",
     sessionId: "ses_implementer_208",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     activity: {
       at: "2026-11-01T12:00:00.000Z",
       backgroundWork: { running: true, kinds: ["async-job"] },
@@ -210,7 +244,7 @@ test("the release records are read by a POST carrying the claim's token and secr
   // authenticate the read, and the secret rides in the body rather than a query string.
   const window = {
     claimToken: "legion-legion-legion-208-implementer",
-    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    secret: CLAIM_SECRET,
     since: "2026-11-01T12:00:00Z",
   };
 
@@ -347,7 +381,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     [
       "grant",
       "/legion/v1/grants",
-      { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue: "LEGION-209" },
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-209" },
       "grant.json",
     ],
     // An implementing round's completion names the Dispatch handoff record and the pushed tip,
@@ -485,7 +519,8 @@ test("a controller registers on the claim route with its capability and reads th
   const issued = daemonFixture("register-controller.json");
   const { fetch, requests } = daemon(() => Response.json(issued));
   const client = createLegionDaemonClient("http://daemon.test", fetch);
-  const capability = { ...registration, bootToken: "controller-capability" };
+  const controllerCapability = fixtureSecret("ctl");
+  const capability = { ...registration, bootToken: controllerCapability };
 
   await expect(client.registerController(capability)).resolves.toEqual(issued as never);
   expect(requests).toEqual([
@@ -507,15 +542,16 @@ test("a controller registers on the claim route with its capability and reads th
 test("the registered controller mints its grant with the session form that names no tree", async () => {
   const { fetch, requests } = daemon(() => Response.json(daemonFixture("grant.json")));
   const client = createLegionDaemonClient("http://daemon.test", fetch);
+  const registrationSecret = fixtureSecret("reg");
 
   await expect(
-    client.controllerGrant({ sessionId: "ses_controller", secret: "registration-secret" })
+    client.controllerGrant({ sessionId: "ses_controller", secret: registrationSecret })
   ).resolves.toEqual(daemonFixture("grant.json") as never);
   expect(requests).toEqual([
     {
       method: "POST",
       url: "http://daemon.test/legion/v1/grants",
-      body: { sessionId: "ses_controller", secret: "registration-secret" },
+      body: { sessionId: "ses_controller", secret: registrationSecret },
     },
   ]);
 });
@@ -540,7 +576,7 @@ test("the registration, the grant and the handoff completion are read whole when
 
   const grant = await client.grant({
     sessionId: "ses_208",
-    secret: "claim-secret",
+    secret: CLAIM_SECRET,
     tree: "LEGION-208",
     issue: "LEGION-209",
   });

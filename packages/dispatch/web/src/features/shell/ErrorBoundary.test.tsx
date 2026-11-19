@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 function Throwing(): never {
@@ -11,9 +12,7 @@ function Throwing(): never {
 }
 
 test("a render error names the region and its cause instead of blanking the tree", () => {
-  const logged: unknown[] = [];
-  const consoleError = console.error;
-  console.error = (...args: unknown[]) => void logged.push(args);
+  const logged = quietConsoleError();
   const view = render(
     <div>
       <p>sidebar</p>
@@ -28,9 +27,9 @@ test("a render error names the region and its cause instead of blanking the tree
     expect(alert).toHaveTextContent("payload.deliveries is not iterable");
     // Everything outside the boundary keeps rendering: a failed region is not a blank page.
     expect(screen.getByText("sidebar")).toBeTruthy();
-    expect(logged.length).toBeGreaterThan(0);
+    expect(logged).toHaveBeenCalled();
   } finally {
-    console.error = consoleError;
+    logged.mockRestore();
     view.unmount();
   }
 });
@@ -52,8 +51,7 @@ function NavigationHarness(): ReactNode {
 
 test("the sidebar Inbox navigation clears a failed page boundary for the next route", async () => {
   const user = userEvent.setup();
-  const consoleError = console.error;
-  console.error = () => {};
+  const logged = quietConsoleError();
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <NavigationHarness />
@@ -67,7 +65,7 @@ test("the sidebar Inbox navigation clears a failed page boundary for the next ro
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByText("Inbox page")).toBeTruthy();
   } finally {
-    console.error = consoleError;
+    logged.mockRestore();
     view.unmount();
   }
 });

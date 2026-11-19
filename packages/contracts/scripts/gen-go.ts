@@ -7,7 +7,12 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
+  DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
+  DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
   ID_AMBIGUOUS,
@@ -34,6 +39,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
+  REFERENCE_TARGETS_MAX,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
@@ -51,6 +57,13 @@ import {
   SEARCH_KIND_DEPTH,
   SEARCH_QUERY_HINT,
   SEARCH_QUERY_MAX,
+  STEP_AGENT_TEXT_PATTERN,
+  STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_INPUT_CODE,
+  STEP_KINDS,
+  STEP_OTHER_ISSUE_CODE,
+  STEP_RESULTS,
+  STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
@@ -84,7 +97,15 @@ import {
 } from "../src/going";
 import { controllerToken } from "../src/legion-roles";
 import {
+  agentSubject,
+  DISPATCH_ISSUE_TOPIC_PREFIX,
+  dispatchIssueSubject,
+  legacyAgentSubject,
+  legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionWakeSubject,
+  NO_PROJECT,
+  roleSubject,
   SUBJECT_MAX_BYTES,
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
@@ -182,6 +203,50 @@ const uncapturedTopicRefusalText = goConcat(
   ["topic", "sessionID"]
 );
 
+// Each builder of a project's message names is read at sentinels for its values, so the Go twin
+// writes the very text the builder writes: a project token, an issue key and a type, a session
+// and a role each stand in for one value. Any text that appears nowhere else in the name will do.
+const issueSentinel = "zzissuezz";
+const typeSentinel = "zztypezz";
+const roleSentinel = "zzrolezz";
+const dispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    dispatchIssueSubject(projectSentinel, issueSentinel, typeSentinel),
+    projectSentinel,
+    issueSentinel,
+    typeSentinel
+  ),
+  ["project", "issueKey", "typ"]
+);
+const agentSubjectText = goConcat(
+  splitAtSentinels(
+    agentSubject(projectSentinel, sessionSentinel),
+    projectSentinel,
+    sessionSentinel
+  ),
+  ["project", "session"]
+);
+const legacyAgentSubjectText = goConcat(
+  splitAtSentinels(legacyAgentSubject(sessionSentinel), sessionSentinel),
+  ["session"]
+);
+const legacyDispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    legacyDispatchIssueSubject(issueSentinel, typeSentinel),
+    issueSentinel,
+    typeSentinel
+  ),
+  ["issueKey", "typ"]
+);
+const roleSubjectText = goConcat(
+  splitAtSentinels(roleSubject(projectSentinel, roleSentinel), projectSentinel, roleSentinel),
+  ["project", "role"]
+);
+const legionWakeSubjectText = goConcat(
+  splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+
 const keep = `func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -220,6 +285,15 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
+
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = ${JSON.stringify(DISPATCH_ISSUE_TOPIC_PREFIX)}
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = ${JSON.stringify(NO_PROJECT)}
 
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
@@ -279,6 +353,11 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
@@ -445,6 +524,33 @@ const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
 // same phases.
 const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
 
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = ${JSON.stringify(STEP_KINDS[0])}
+	StepKindRetro      = ${JSON.stringify(STEP_KINDS[1])}
+	StepKindMerge      = ${JSON.stringify(STEP_KINDS[2])}
+	StepResultPassed   = ${JSON.stringify(STEP_RESULTS[0])}
+	StepResultFailed   = ${JSON.stringify(STEP_RESULTS[1])}
+	StepResultStopped  = ${JSON.stringify(STEP_RESULTS[2])}
+	StepInputCode      = ${JSON.stringify(STEP_INPUT_CODE)}
+	StepWriterCode     = ${JSON.stringify(STEP_WRITER_CODE)}
+	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
+
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
 // Settings name field and the dispatch command cannot drift apart.
@@ -457,12 +563,30 @@ const ProjectNameMax = ${PROJECT_NAME_MAX}
 const DocumentSchemaCloseCode = ${DOCUMENT_SCHEMA_CLOSE_CODE}
 const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)}
 
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = ${DOCUMENT_NEWER_CONTENT_CLOSE_CODE}
+const DocumentNewerContentCloseReason = ${JSON.stringify(DOCUMENT_NEWER_CONTENT_CLOSE_REASON)}
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
+const DocumentAdmissionRevokedCloseCode = ${DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE}
+const DocumentAdmissionRevokedCloseReason = ${JSON.stringify(DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON)}
+
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = ${LIVE_SOCKET_MAX_AGE_CLOSE}
 const LiveSocketMinAge = ${LIVE_SOCKET_MIN_AGE_MS} * time.Millisecond
 const LiveSocketMaxAge = ${LIVE_SOCKET_MAX_AGE_MS} * time.Millisecond
@@ -546,12 +670,47 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return ${dispatchIssueSubjectText}
+}
+
+func AgentSubject(project, session string) string {
+	return ${agentSubjectText}
+}
+
+func LegacyAgentSubject(session string) string {
+	return ${legacyAgentSubjectText}
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return ${legacyDispatchIssueSubjectText}
+}
+
+func RoleSubject(project, role string) string {
+	return ${roleSubjectText}
+}
+
+func LegionWakeSubject(token string) string {
+	return ${legionWakeSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
@@ -809,11 +968,7 @@ function renderEnvelope(schema: Schema) {
     .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
-  // A map property is the Go map envelopeKind names it, so it has neither a struct of its own nor
-  // required keys to check.
-  const objects = keys.filter(
-    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
-  );
+  const objects = envelopeObjects(schema);
   const nestedChecks = objects
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
@@ -835,7 +990,37 @@ ${validate}
 }`;
 }
 
+// The envelope's object properties that are structs of their own (renderEnvelopeObject). A map
+// property is the Go map envelopeKind names it, so it has neither a struct of its own nor
+// required keys to check.
+function envelopeObjects(schema: Schema) {
+  return Object.keys(schema.properties).filter(
+    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
+  );
+}
+
+// The envelope's Go mirror is the Envoy listener's wire package's, packages/envoy/listenerwire,
+// which the listener and its clients import and which imports the standard library alone.
+function renderListenerwireEnvelope(envelope: Schema) {
+  return `// Code generated by scripts/gen-go.ts from schemas/envelope.schema.json. DO NOT EDIT.
+
+package listenerwire
+
+import (
+	"fmt"
+	"strings"
+)
+
+${renderEnvelope(envelope)}
+`;
+}
+
+// internal/contracts names each envelope type listenerwire declares, so the code of the envoy
+// module reads the one type as contracts.Envelope.
 function renderContracts(envelope: Schema) {
+  const aliases = ["Envelope", ...envelopeObjects(envelope).map((key) => `Envelope${name(key)}`)]
+    .map((type) => `type ${type} = listenerwire.${type}`)
+    .join("\n");
   return `package contracts
 
 import (
@@ -846,18 +1031,23 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-${renderEnvelope(envelope)}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+${aliases}
 
 ${keep}
 `;
 }
 
 // The slice of JSON Schema that schemas/block-schema.schema.json uses, which the block schema
-// renderers below read. `x-ordered` marks an object whose keys carry their declaration order,
-// `x-go-type` names the Go type holding such an object, and `x-go-constants` names the Go
-// constant of each value of a string enum.
+// renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
+// `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
+// map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
+// string enum.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
@@ -923,10 +1113,11 @@ function blockGoType(prop: BlockProp): string {
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;
     case "object": {
+      const values = prop.additionalProperties;
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      if (!prop["x-ordered"]) return `map[string]${blockGoType(values)}`;
       const goType = prop["x-go-type"];
-      if (!prop["x-ordered"] || !goType) {
-        throw new Error("a block schema object property needs x-ordered and x-go-type");
-      }
+      if (!goType) throw new Error("an ordered block schema object property needs x-go-type");
       return goType;
     }
     default:
@@ -949,11 +1140,9 @@ function blockTypeScriptType(prop: BlockProp): string {
       return `readonly ${blockTypeScriptType(prop.items)}[]`;
     case "object": {
       const values = prop.additionalProperties;
-      if (!prop["x-ordered"] || !values) {
-        throw new Error("a block schema object property needs x-ordered and additionalProperties");
-      }
-      // A JavaScript object keeps the insertion order of its string keys, so the object the
-      // server sends carries the declaration order the Go decoder keeps.
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      // A JavaScript object keeps the insertion order of its string keys, so an ordered object
+      // the server sends carries the declaration order the Go decoder keeps.
       return `Readonly<Record<string, ${blockTypeScriptType(values)}>>`;
     }
     default:
@@ -1080,6 +1269,11 @@ const outputs = [
   {
     path: resolve(import.meta.dir, "../../envoy/internal/contracts/generated.go"),
     rendered: renderContracts(envelope),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/listenerwire/envelope_generated.go"),
+    rendered: renderListenerwireEnvelope(envelope),
     language: "go",
   },
   {

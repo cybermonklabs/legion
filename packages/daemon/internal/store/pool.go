@@ -48,10 +48,10 @@ import (
 //
 // This guard is the envoy pool's, ported, and two of its forms were left behind: a mark a caller
 // sets around a connection it holds itself (envoy's HoldsConnection, for a connection taken with
-// envoy's Acquire, which this pool does not hand out) and a per-read mark for reads of one caller
-// that run side by side (envoy's ForConcurrentRead). No call site of this daemon does either, so
-// neither form is here; a daemon that grows one ports back the form it needs rather than keeping
-// an untested copy of both.
+// envoy's Acquire, which this pool hands out only through acquire, and acquire sets that mark
+// itself) and a per-read mark for reads of one caller that run side by side (envoy's
+// ForConcurrentRead). No call site of this daemon does either, so neither form is here; a daemon
+// that grows one ports back the form it needs rather than keeping an untested copy of both.
 var ErrNestedAcquire = errors.New(
 	"this caller already holds a connection of the pool: a second one would deadlock it",
 )
@@ -263,6 +263,30 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 		return pgconn.CommandTag{}, err
 	}
 	return p.pool.Exec(ctx, sql, args...)
+}
+
+// acquire hands out one of the pool's connections to a caller that must run its own work on the
+// connection after its transaction ends and before the connection returns to the pool. Store.apply
+// is the one such caller: it resets the session of the connection that a migration ran on
+// (releaseMigrationConn). A transaction from Begin cannot serve it, because pgx returns that
+// transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
+// every other way this pool hands out a connection does. Then it marks the caller as holding a
+// connection, as begin does. The caller runs release only once the connection is back in the pool
+// or closed, so the guard sees the connection for as long as the caller holds it. release is never
+// nil: for a context the pool cannot see, it does nothing.
+func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(), err error) {
+	if err = p.guard(ctx); err != nil {
+		return nil, nil, err
+	}
+	conn, err = p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	release = hold(ctx)
+	if release == nil {
+		release = func() {}
+	}
+	return conn, release, nil
 }
 
 // Begin opens a transaction and marks the caller as holding a connection. It is what

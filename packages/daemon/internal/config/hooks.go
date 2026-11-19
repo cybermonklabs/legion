@@ -97,7 +97,7 @@ func readHook(entry *yaml.Node, field string) (Hook, error) {
 	if entry.Kind != yaml.MappingNode {
 		return Hook{}, fmt.Errorf("%s must be a mapping", field)
 	}
-	fields, err := members(entry, field, "name", "on", "moves", "every", "roles", "prompt", "prompt_file")
+	fields, err := describedMembers(entry, field, hooksKey+"[]")
 	if err != nil {
 		return Hook{}, err
 	}

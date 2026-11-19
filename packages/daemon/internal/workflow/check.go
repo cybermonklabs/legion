@@ -127,10 +127,15 @@ const checkTaskLead = "Production check of "
 // checkTask is what the check's role is told at a look of the closed issue's production check. The
 // session it reaches may be fresh — a woken pod after a lost volume — so the text stands on its
 // own: the issue, the repository, the pull request, the merge commit, the look and what woke it
-// (wokenBy), whether it is the last, and the rules of the check in prose: the three verdicts and
-// what each asks of the pull request, no commit, the wake a pending names for its own next look
-// and the suspension that follows it, and nothing to wait for in the session, since the look ends
-// with the report.
+// (wokenBy), whether it is the last, and the rules of the check in prose: each requirement only
+// the deploy can show observed as it names it, the three verdicts and what each asks of the pull
+// request, no commit, the wake a pending names for its own next look and the suspension that
+// follows it, and nothing to wait for in the session, since the look ends with the report. A merge
+// production carries with such a requirement still unobserved is a pending while a look follows
+// and a fail on the last look, whose pending is left to production not carrying the merge. The
+// fail clause, the same on every look, says so once, in terms of the look that follows, and only
+// where production carries the merge, as the pending's clause is limited: a merge production never
+// carried leaves every such requirement unobserved, and its last look's verdict is that pending.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -142,13 +147,15 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}
-	text.WriteString("\nDo what the deployment instructions say to reach production, read whether production carries the merge, " +
-		"then report with the legion tool's handoff_complete and a verdict, committing nothing: " +
-		"pass once you drove the changed path in production and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming what woke this look, and put the line that command prints in the pull request body; " +
-		"pending when production does not carry the merge yet, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit; " +
-		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md): a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic. Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.")
+	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
+		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
+		"Then report with the legion tool's handoff_complete and a verdict, committing nothing: " +
+		"pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; " +
+		"pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit; " +
+		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved where production carries the merge and no look follows this one, is a defect: a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic. Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary.")
 	if last {
-		text.WriteString(" This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request that the check did not run because production did not carry the merge within the bound.")
+		text.WriteString(" This last look's pending carries no wake_at and closes the check as not run, so it is for production not carrying the merge alone: " +
+			"before reporting it, write on the pull request that the check did not run because production did not carry the merge within the bound.")
 	} else {
 		text.WriteString(" A pending report also carries wake_at, an RFC 3339 time: when you want your next look. " +
 			"Nothing else starts one. A time less than a minute ahead is moved out to a minute, and a time at or after the check's own bound starts no look of its own, since the look at the bound already stands. " +
@@ -159,11 +166,11 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 }
 
 // wokenBy is the check task's wording of a look's wake, from the cause and its detail: the merge
-// that opened the check (wakeMerge, the merge commit as its detail), its bound (wakeBound, what
-// the bound's look is told went unseen), or a check_wake row (wakeNamed), whose reason is either
-// the summary the pending report gave (checkReported) or the retry of a look nobody reported
-// (endLook). The last two read as one sentence after the dash, so the lead names who named the
-// wake rather than what it says.
+// that opened the check (wakeMerge, the merge commit as its detail), its bound (wakeBound, the
+// check's own bound and the issue's close it is counted from, and nothing of why the looks before
+// it were pending), or a check_wake row (wakeNamed), whose reason is either the summary the pending
+// report gave (checkReported) or the retry of a look nobody reported (endLook). The last two read
+// as one sentence after the dash, so the lead names who named the wake rather than what it says.
 func wokenBy(cause, detail string) string {
 	switch cause {
 	case wakeMerge:
@@ -266,14 +273,15 @@ func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.Productio
 	return e.endLookPending(ctx, tx, check, "the retry of a look nobody reported: "+cause)
 }
 
-// endLookPending is what follows a look that saw the merge nowhere in production. The last look
-// closes the check as not run. Every other look names when the check is next looked at (nameWake:
-// the clamped wake the record already carries, with reason as what wakes it), which is the one
-// thing that starts the look after this one — nothing else reads production any more. An issue
-// back in the workflow — a root reopened inside its linger, whose implementer now works the new
-// run — writes that row and suspends nobody: the check waits, its wake row defers itself while
-// the run holds the issue (checkWakeDue), and the check closes with the run's next merge
-// (openCheck) or at its bound (checkBound).
+// endLookPending is what follows a look that ended pending: reported so — production not carrying
+// the merge yet, or a merge it carries with a requirement only the deploy can show still unobserved
+// — or ended with no report (endLook). The last look closes the check as not run. Every other look
+// names when the check is next looked at (nameWake: the clamped wake the record already carries,
+// with reason as what wakes it), which is the one thing that starts the look after this one —
+// nothing else reads production any more. An issue back in the workflow — a root reopened inside
+// its linger, whose implementer now works the new run — writes that row and suspends nobody: the
+// check waits, its wake row defers itself while the run holds the issue (checkWakeDue), and the
+// check closes with the run's next merge (openCheck) or at its bound (checkBound).
 // The claim of the check's role is then suspended, its session kept, and the issue's Sandbox is
 // deleted with the pod it ran in (record.IssueSuspend): both rows follow the look's start row, so
 // the suspension's fences find no later start and wait for the suspend (store.IssueSuspension),
@@ -344,7 +352,7 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 }
 
 // closeCheck closes the check with outcome (markCheckClosed) and ends the checking role's part in it:
-// its claim is closed (issue_close: retired, its session dropped), and the issue's Sandbox is
+// its claim is closed (issue_close: retired, its session kept), and the issue's Sandbox is
 // suspended and deleted with the pod it ran in, whether the issue is a child whose tree runs on or
 // a root, or a child, of a lingering tree whose close would delete it anyway. A tree lingering past
 // its deadline waited for this check (lingerExpired): once no check of the tree is open its close
@@ -499,7 +507,12 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 // look bound: the look's own bound ends the look first. An issue back in the workflow — a root
 // reopened inside its linger — closes the check as not run, since no look can run while its
 // implementer works the new run, and the run's own merge opens its own. Otherwise the last look
-// starts, told that it is the last and that production did not carry the merge within the bound.
+// starts, told that it is the last and the check's own bound (BoundAt less OpenedAt, which a later
+// change of the project's bound leaves alone) counted from the issue's close, which opened the
+// check (openCheck) and comes after the merge for a merge that waited on the issues beneath it
+// (closeMerged), and nothing of why the looks before it were pending, which the daemon does not
+// know: production not carrying the merge yet, or a merge it carries with a requirement only the
+// deploy can show still unobserved.
 func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBound) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil || check == nil || !check.Open() || check.Last {
@@ -523,5 +536,5 @@ func (e *Engine) checkBound(ctx context.Context, tx pgx.Tx, fact intake.CheckBou
 		return intake.Result{}, e.closeCheck(ctx, tx, check, record.CheckNotRun)
 	}
 	return intake.Result{}, e.startLook(ctx, tx, issue, check, wakeBound,
-		fmt.Sprintf("production did not carry the merge within %s", boundText(e.cfg.ProductionCheckBound)), true)
+		fmt.Sprintf("%s since the issue closed", boundText(check.BoundAt.Sub(check.OpenedAt))), true)
 }

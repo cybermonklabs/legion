@@ -141,14 +141,14 @@ session, and why (sjawhar/legion#2366). The run has three steps. Every step only
    wrote in the window, one row for each session or role that the comment was owed or sent to (a
    pair). `trace.sql` writes Dispatch's whole record of one comment. Both are in
    `packages/envoy/internal/dispatch/deliveryaudit/`. Its `README.md` gives their columns.
-2. `tq receipts` (in theorem-labs/agent-infra `transcript-store/`) reads
+2. `tq receipts` (in example-org/deployment `transcript-store/`) reads
    `comments.csv` and the transcript store. It writes `receipts.tsv`, one status for each pair,
    and `receipts-counts.txt`, its counts. It owns the transcript rules: which transcript row is a
    receipt of a comment, which sessions count as the pair's session, and each pair's status.
 3. `report.ts` reads the three files and writes one markdown document and one TSV file of the
    document's pairs.
 
-theorem-labs/agent-infra's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
+example-org/deployment's `transcript-store/comment-delivery/run.sh` does steps 1 and 2 on a dev box, which
 reaches both Dispatch's database and the transcript store.
 
 ### The run
@@ -173,7 +173,7 @@ psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -v comment=03207432-749f-4211-9607-e378dc636807 \
   -f packages/envoy/internal/dispatch/deliveryaudit/trace.sql > trace-03207432.csv
 
-# 2. The transcript store (theorem-labs/agent-infra transcript-store/): receipts.tsv on stdout, the counts on stderr.
+# 2. The transcript store (example-org/deployment transcript-store/): receipts.tsv on stdout, the counts on stderr.
 tq receipts --comments comments.csv --from "$FROM" > receipts.tsv 2> receipts-counts.txt
 
 # 3. The document, and the TSV file of its pairs.
@@ -249,16 +249,19 @@ A pair is judged from its status in `receipts.tsv`:
 - `not_received`: not delivered, with the first cause that applies, in this order:
   1. `never-published`: Dispatch's outbox never published the comment's event.
   2. `not-addressed:<rule>`: the pair was owed the comment, the outbox did not send it to the
-     pair (`addressed` is `false`), and no delivery of a mention to the pair was sent or failed.
-     The rule says why the pair was owed it: `claimant`, `route`, `follower`, `asker` or
+     pair (`addressed` is `false`), and no delivery of a mention to the pair was sent, queued or
+     failed. The rule says why the pair was owed it: `claimant`, `route`, `follower`, `asker` or
      `mention`, joined with `+`.
   3. `mention-failed:<error>`: the newest attempt of a mention to the pair failed. The error is
      `session-not-live`, `receipt-timeout` or `other`.
-  4. `not-running`: the comment's `published_at` is not between the session's
+  4. `mention-queued`: the newest attempt of a mention to the pair is `queued`. The Envoy
+     listener took the mention and stored it for the session, which it knows and which was not
+     running; the session reads it when it runs again, within the 72 hours the stream keeps it.
+  5. `not-running`: the comment's `published_at` is not between the session's
      `target_started_at` and `target_ended_at`. These are the transcript store's recorded start
      and end of the session's transcript file, not the times that the session's process was up.
      An empty `target_ended_at` means that the store records no end for the file.
-  5. `running-no-row`: any other `not_received` pair. Dispatch sent the comment to the session
+  6. `running-no-row`: any other `not_received` pair. Dispatch sent the comment to the session
      within the store's recorded start and end of the session's file, and the transcript does
      not have it. The process can still have been down inside that span; the loss is in the last
      hop or in the plugin.
@@ -281,9 +284,10 @@ first that applies:
 An unknown pair is one that the report cannot judge. The transcript store cannot show whether the
 pair got the comment. The reason is one of these:
 
-- `session_not_in_store`: the store does not hold the session. The store holds only the Oh My Pi
-  sessions of the two dev boxes. It does not hold Claude Code sessions or the sessions of Legion
-  pods.
+- `session_not_in_store`: the store does not hold the session. The store holds the Oh My Pi
+  sessions of the dev boxes and of the Legion pods, and no Claude Code session of either. It loads
+  each machine on its own schedule, so a session newer than its machine's last load is not in it
+  yet.
 - `role`: the pair is a role, and no mention of the role resolved to a session. No session's
   transcript can show the receipt.
 - `btw`: Dispatch delivered a mention as a BTW, and has no reply from the side turn. A BTW side

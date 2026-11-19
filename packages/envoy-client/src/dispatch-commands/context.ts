@@ -7,13 +7,16 @@ import type {
   IssueComponentsMode,
   IssueDetails,
   IssuePriority,
+  Sleep,
 } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
 import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
+import { linkBaseOf } from "./links";
 
 /**
  * Tool arguments as the model supplied them. The tool's Zod schema validates
@@ -63,6 +66,9 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** The wait before each new attempt of a request Dispatch answered with no route
+   *  (`DispatchClient`); a test passes one that returns at once. */
+  readonly sleep?: Sleep;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -224,14 +230,16 @@ export interface SessionContext {
   readonly ownerArguments: OwnerResolution;
   /** The pictures the call's `images` argument names, read from disk by the check. */
   readonly pictures: LocalPicture[];
-  /** The API's own address, which an unreachable server is named by. */
+  /** The API's own address, which an unreachable server is named by: the configured URL where it
+   *  is a plain http(s) URL, and otherwise its fixed phrase (`urlForText`). */
   readonly configUrl: string;
   /**
-   * Every link a command prints is to Dispatch's dashboard as people open it: the public URL when
-   * the session has one (a pod reaches Dispatch at an in-cluster address nobody else can open),
-   * and the API's URL otherwise.
+   * The base of every link a command prints, to Dispatch's dashboard as people open it: the public
+   * URL when the session has one (a pod reaches Dispatch at an in-cluster address nobody else can
+   * open), and the API's URL otherwise; undefined where that URL is not a plain http(s) URL, and
+   * then every link prints as its `dispatch://` reference (`linkBaseOf`, `linkFor`).
    */
-  readonly linkBase: string;
+  readonly linkBase: string | undefined;
   /** This host's own session id, trimmed; a command that needs one refuses an empty one itself. */
   readonly hostSession: string | undefined;
   /**
@@ -280,40 +288,32 @@ export interface CommandContext extends SessionContext {
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /**
- * The context every command starts from, built from the checked call. The fetch it hands the
- * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else.
+ * The context every command starts from, built from the checked call. The client names the
+ * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
+ * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
+ * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's
+ * requests go to the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
   checked: CheckedCall
 ): SessionContext {
-  const { url: configUrl, credential } = input.config;
-  const baseFetch = input.fetchImpl ?? fetch;
-  const fetchImpl = Object.assign(
-    async (...args: Parameters<typeof fetch>): Promise<Response> => {
-      try {
-        return await baseFetch(...args);
-      } catch (error) {
-        if (error instanceof TypeError) {
-          throw new Error(
-            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
-          );
-        }
-        throw error;
-      }
-    },
-    { preconnect: baseFetch.preconnect }
-  );
+  const { url, credential } = input.config;
+  const configUrl = urlForText(url, "the configured Dispatch URL");
+  const fetchImpl = input.fetchImpl ?? fetch;
   return {
     input,
     args: checked.args,
     ownerArguments: checked.owner,
     pictures: checked.pictures,
     configUrl,
-    linkBase: input.config.publicUrl ?? configUrl,
+    linkBase: linkBaseOf(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
     newClient: () =>
-      new DispatchClient(configUrl, credential, fetchImpl, input.signal, input.writeRetry),
+      new DispatchClient(url, credential, fetchImpl, {
+        signal: input.signal,
+        writeRetry: input.writeRetry,
+        sleep: input.sleep,
+      }),
   };
 }

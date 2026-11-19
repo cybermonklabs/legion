@@ -19,11 +19,12 @@ func lineEntry(part record.LinePart, kind record.LineKind, place int, holds bool
 }
 
 // Every member of the waiting line is given the reason for its place in words
-// (api.WaitingLineView.Reason), and the five sentences below are what the five kind-and-part
-// pairs read, word for word: the three kinds of the returned part and the two of the starting
-// one.
+// (api.WaitingLineView.Reason), and the seven sentences below are what the kind-and-part pairs
+// read, word for word: the four kinds of the returned part, the waiting-on-issue kind once with
+// its wait still open and once with it ended (its entry's Waits empty), and the two kinds of the
+// starting one.
 //
-// The five pairs do not reach five of the rules the sentence keeps, so each has a case of its
+// Those pairs do not reach every rule the sentence keeps, so each other rule has a case of its
 // own: a member holding a slot, which waits for no free slot and is told so whatever its kind;
 // the ordinals 11th and 12th, which take `th` where the digit before them would say `st` and
 // `nd`; a part holding one issue, whose count reads `1 issue` with its verb in the singular; and
@@ -82,6 +83,31 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			otherPart:  7,
 			want: "It has not started. It is 5th of 18 issues that have not started, " +
 				"by the Dispatch rank of its tree root LEGION-10, and 7 issues whose work came back stand ahead of all of them.",
+		},
+		// A member that gave its slot back to wait on another issue is passed over while it
+		// waits, so it is told when it takes a slot again rather than that it takes them first.
+		{
+			name: "a started issue waiting on another issue in the returned part",
+			entry: func() record.LineEntry {
+				entry := since(lineEntry(record.PartReturned, record.LineWaitingOnIssue, 2, false, "LEGION-10"), cameBack)
+				entry.Waits = []string{"LEGION-7", "LEGION-8"}
+				return entry
+			}(),
+			partLength: 3,
+			otherPart:  18,
+			want: "It gave its admission slot back to wait on LEGION-7, LEGION-8 at 2026-11-10T15:11:32Z. " +
+				"It is 2nd of 3 issues whose work came back. The promotion passes over it while that wait lasts, " +
+				"and after the wait it takes a free slot again by itself.",
+		},
+		// The same kind with no wait left: its blockers closed while the cap was full, so it is
+		// told the wait has ended and that it takes the free slots first.
+		{
+			name:       "a started issue whose wait on another issue has ended",
+			entry:      since(lineEntry(record.PartReturned, record.LineWaitingOnIssue, 1, false, "LEGION-10"), cameBack),
+			partLength: 1,
+			otherPart:  18,
+			want: "It gave its admission slot back to wait on another issue at 2026-11-10T15:11:32Z, and that wait has ended. " +
+				"It is 1st of 1 issue whose work came back, and it takes the free slots first.",
 		},
 		// A holder takes no free slot and waits for none, so the clause about the free slots is
 		// replaced by that truth — read from the entry's Holds and never from the kind, since

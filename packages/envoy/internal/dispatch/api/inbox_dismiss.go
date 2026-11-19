@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -279,9 +278,11 @@ type inboxDismissRequest struct {
 // unread (unread_reply_ids), which may be empty - the two inboxDismissCheckAgentRoots holds the
 // thread to.
 //
-// A row's entry is read in its own kind's shape and no other, so a field of the other kind is an
-// unknown one and refused there. Each field is a pointer, so an entry that leaves one out and
-// one that carries it zero are different requests (readInboxDismissSeen).
+// A row's entry is read in its own kind's shape and no other, and a member that shape does not
+// declare is ignored there (readInboxDismissSeenEntry), so an entry of the other kind is refused
+// for carrying none of this kind's fields rather than for the fields it does carry. Each field
+// is a pointer, so an entry that leaves one out and one that carries it zero are different
+// requests (readInboxDismissSeen).
 type inboxDismissSeenReply struct {
 	Version *int64 `json:"version"`
 }
@@ -529,9 +530,15 @@ func inboxDismissSeenByRow(
 	return drawn, nil
 }
 
-// readInboxDismissSeenEntry reads one row's entry into the shape its kind takes, which is what
-// refuses an entry carrying the other kind's fields: they are unknown ones there. takes is what
-// that kind carries, and the words a row left out or an entry of another shape is refused in.
+// readInboxDismissSeenEntry reads one row's entry into the shape its kind takes. A member that
+// shape does not declare is ignored, as decodeJSON ignores one in the body around it: a page of
+// a newer build may carry a member of its own in what it drew, and a release rolls with that
+// page's requests reaching this build (packages/envoy/cmd/dispatch/README.md, "Two builds at
+// once"). What still refuses an entry of the other kind is the caller's own read of what the
+// shape took: a Reply row's entry is refused where it carries no version, and an Agent row's
+// where it carries no newest_reply or no unread_replies (readInboxDismissSeen), and an entry of
+// the other kind carries none of them, whatever else it holds. takes is what this kind carries,
+// and the words a row left out or an entry of another shape is refused in.
 func readInboxDismissSeenEntry(
 	drawn map[string]json.RawMessage, row, takes string, entry any,
 ) error {
@@ -541,9 +548,7 @@ func readInboxDismissSeenEntry(
 			"seen_replies leaves %s out: a dismissal carries what the page drew in every row"+
 				" threads names", row)
 	}
-	decoder := json.NewDecoder(bytes.NewReader(value))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(entry); err != nil {
+	if err := json.Unmarshal(value, entry); err != nil {
 		return inboxDismissSeenRefused(row, takes)
 	}
 	return nil
@@ -645,9 +650,11 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // markInboxReadThreads (api/inbox_read.go) - steps 2 and 4 of that list, the roots of the Agent
 // threads it writes marks for and the caller's own user_agent_thread_dismissed rows, are this
 // route's alone, since the mark-all writes no dismissal. Taking that same order is what keeps a
-// dismiss, a mark-all and a one-thread mark from crossing: all three take the owner `for share`,
-// all three move rows of user_threads under one login, and two of them that took the row and the
-// project in opposite orders would deadlock on the project row every time they met.
+// dismiss and a mark-all from crossing: both take their owners' locks in shared mode
+// (store.LockOwnersShared), both move rows of user_threads under one login, and two of them that
+// took the row and the project in opposite orders would deadlock on the project every time they
+// met. A one-thread mark takes that row's owner exclusively instead, which is what orders it
+// against both of them, project lock and all (markInboxReadThreads).
 //
 // Every write this route makes falls inside that order: the Reply write is one update over rows
 // step 3 has already locked, as the mark-all's is and through the mark-all's own statement
@@ -656,8 +663,8 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 // counting as unread.
 //
 // Every statement runs under the mark-all's statement_timeout, because this transaction holds the
-// same owner rows `for share`: every comment, answer and issue message on those owners waits behind
-// a statement that hangs, so one that cannot finish is better killed.
+// same owners' locks in shared mode: every comment, answer and issue message on those owners waits
+// behind a statement that hangs, so one that cannot finish is better killed.
 func (s *server) dismissInboxThreads(
 	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {

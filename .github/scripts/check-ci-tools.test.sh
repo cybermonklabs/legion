@@ -11,8 +11,12 @@
 #
 # NO CASE REACHES THE NETWORK. The check under test reads the tree alone and has no mode that
 # reads the package, because .github/scripts/mirror-ci-tools.sh reads the package on every run of
-# the ci-images job and is the only judge of a copy's state. The last case runs the check over
-# this repository's own tree, which is the same tree read.
+# the ci-images job and is the only judge of a copy's state.
+#
+# No case runs the gate over this repository's own tree: ci.yaml's lint job does
+# (.github/workflows/ci-job-lint.yaml, "Check every tool asset of .github/ci-tools.yaml agrees
+# with its pin"), on every change, so a case here would only reach that same verdict a second
+# time in the same CI run.
 #
 # Run from anywhere: .github/scripts/check-ci-tools.test.sh
 # CI runs it in ci.yaml's test job.
@@ -25,7 +29,6 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 check_script="$script_dir/check-ci-tools.sh"
 repo_paths_script="$script_dir/repo-paths.sh"
-repository=$(cd "$script_dir/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -394,6 +397,76 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
   "$(contains "$out" "the jj row's version is 5.5.5 and packages/daemon/docker/worker.Dockerfile pins ARG JJ_TOOL=github:example/jj@6.6.6, whose version is 6.6.6")"
+
+# arm64_row <root> <name> <version>: appends the arm64 build of a tool at that version, in the
+# shape the manifest's -aarch64 rows take, with URLs that hold the version so rule 1 reads nothing
+# else in them.
+arm64_row() {
+  cat >> "$1/.github/ci-tools.yaml" <<YAML
+
+  - name: $2
+    version: $3
+    digest: $SOLO
+    digest_of: the release tarball, whole
+    primary_source: github-release
+    primary: https://github.com/example/tool/releases/download/v$3/tool_$3_linux_arm64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/tool/releases/download/v$3/tool_$3_linux_arm64.tar.gz
+    mirror_member: ""
+YAML
+}
+
+echo "case: rule 2 — an -aarch64 row at its base row's version"
+root=$(fixture pin-arm64-agrees)
+arm64_row "$root" tool-aarch64 1.0.0
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and counts the arm64 row with the rest" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 7 row(s), each agreeing with the pin that installs it')"
+
+echo "case: rule 2 — an -aarch64 row at another version than its base row"
+root=$(fixture pin-arm64-version)
+arm64_row "$root" tool-aarch64 2.0.0
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both rows and both versions" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the tool-aarch64 row's version is 2.0.0 and the tool row's is 1.0.0.")"
+check "and says the two move together" "$(contains "$out" 'move the two rows together')"
+
+echo "case: rule 2 — an -aarch64 row whose base row the manifest does not hold"
+root=$(fixture pin-arm64-orphan)
+arm64_row "$root" orphan-aarch64 1.0.0
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row and the base row it lacks" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the orphan-aarch64 row is the arm64 build of a orphan row this file does not hold")"
+
+echo "case: rule 2 — the bun aarch64 row answers to .bun-version, not to a base row"
+# bun-linux-aarch64 has no bun-linux row beside it, by the naming Bun's own assets use, and the
+# clause above leaves it to the .bun-version one: a bun row at the pinned version is no orphan.
+root=$(fixture pin-arm64-bun)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: bun-linux-aarch64
+    version: 9.9.9
+    digest: $SOLO
+    digest_of: the installed bun binary
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: npm
+    max_time: 60
+    npm_package: "@oven/bun-linux-aarch64"
+    npm_member: package/bin/bun
+YAML
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
 
 echo "case: rule 2 — the uv row and ARG UV_VERSION disagree"
 # The uv row answers to the same file the mise row does, and for the same reason: the image's
@@ -1720,21 +1793,5 @@ run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 check "names the file neither rule read" \
   "$(contains "$out" '; 1 file(s) under .github are not valid UTF-8, so neither rule read them: .github/actions/install-tool/binary.dat$')"
-
-echo "case: this repository's own tree"
-# The one case that reads the tree this gate runs over in CI. What it proves is the gate's
-# behaviour on that tree: every rule passes, every row agrees with the pin that installs it,
-# and every tool URL the files under .github fetch is one a row or an entry names.
-# Every count in the assertions is read as digits and not as today's number. A row added to
-# this repository, and a no_second_source entry written for the next install with one
-# publisher — which the manifest and AGENTS.md both say that key is kept for — are the tree
-# moving, not this gate changing, and a case that pinned the tally would redden on the day
-# either happened and say nothing about the gate.
-run_gate "$repository"
-check "exits 0" "$(is "$status" 0)"
-check "reads every row of the tree and each agrees with its pin" \
-  "$(contains "$out" '^.github/ci-tools.yaml holds [0-9]* row(s), each agreeing with the pin that installs it, and [0-9]* no_second_source entr')"
-check "and every tool URL a file under .github fetches is one the manifest names" \
-  "$(contains "$out" '; [0-9]* tool URL(s) fetched by the [0-9]* file(s) under .github that rule 3 reads, this manifest not among them, name one of those;')"
 
 summary "check-ci-tools.sh"

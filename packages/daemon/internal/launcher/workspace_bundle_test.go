@@ -4,22 +4,19 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -47,7 +44,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	}
 
 	t.Run("a whole sequence is held", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		for index, frame := range frames {
 			got := r.receive(frame)
 			if !got.OK || got.ID != frames[0].ID || got.Index != index {
@@ -68,7 +65,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a repeated slice is answered as a repeated start id is", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		first := r.receive(frames[0])
 		again := r.receive(frames[0])
 		if again != first {
@@ -85,7 +82,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a wrong digest is refused before anything is written", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		corrupt := append([]shimwire.LauncherBundle{}, frames...)
 		payload := append([]byte{}, corrupt[1].Payload...)
 		payload[0] ^= 0xff
@@ -106,7 +103,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("a slice that disagrees with its sequence is refused", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		if got := r.receive(frames[0]); !got.OK {
 			t.Fatalf("the first slice answered %#v", got)
 		}
@@ -125,7 +122,7 @@ func TestTheLauncherReassemblesABundleAndRefusesOneThatDidNotArriveAsItWasSent(t
 	})
 
 	t.Run("the report names the release whose work it restored", func(t *testing.T) {
-		r := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+		r := newBundleRestore(procgroup.NoReaper)
 		for _, frame := range frames {
 			if got := r.receive(frame); !got.OK {
 				t.Fatalf("slice %d answered %#v", frame.Index, got)
@@ -212,92 +209,94 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 // hold (reapOrphans), and a put-back's jj and git are the launcher's own children. Each starts
 // through the guard the reaper skips (pidGuard.starter, which newManagers gives the pod's
 // restore): a command whose exit the reaper took first fails its own wait with `waitid: no child
-// processes`, at times `waitid: no such process`, and the roles start without the saved work.
-// Here the reaper starts a new pass as soon as it ends one, so it meets the exit of every command,
-// and every put-back must still answer with the whole of what was saved. The test is not
-// parallel: the reaper takes every exited child of the test process, so the test's own jj and git
-// run only while the reaper is stopped, the fixture before it starts and the reads after it stops.
+// processes`, or under gVisor at times `wait: no child processes` or `waitid: no such process`,
+// and the roles start without the saved work. The race needs a pod's shape, as
+// TestTheLeakCheckInstallSurvivesPID1sReaper says, so the put-backs run in the test binary as PID 1
+// of a PID namespace of its own (TestPutBacksPIDOneHelper).
 func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
+	t.Logf("%s", runAsPIDOne(t, "TestPutBacksPIDOneHelper"))
+}
+
+// putBacksUnderReaper is how many put-backs TestPutBacksPIDOneHelper makes through the guard, and
+// controlPutBacks how many its control may try with no guard before one loses an exit.
+const (
+	putBacksUnderReaper = 20
+	controlPutBacks     = 5
+)
+
+// TestPutBacksPIDOneHelper is TestPutBacksUnderThePodsReaperKeepTheirExitStatus's body, run as PID
+// 1 under relentlessReaper, which starts a new pass as soon as it ends one. Every put-back through
+// the guard must answer with the whole of what was saved. The control comes after them, with the
+// reaper still running: the same put-back started with procgroup.NoReaper, as a put-back outside a
+// launcher runs it, must lose a command's exit to the reaper within controlPutBacks tries, or the
+// reaper never met an exit and the put-backs before it prove nothing. The fixture's own jj and git
+// run only while the reaper is stopped, before it starts and after it stops.
+func TestPutBacksPIDOneHelper(t *testing.T) {
+	if os.Getenv(pidOneHelperEnv) != "1" {
+		return
+	}
+	if os.Getpid() != 1 {
+		t.Fatal("the put-back helper is not PID 1")
+	}
 	testbin.RequireJJFilters(t)
 	f := newBundleFixture(t)
 	f.workOne()
 	saved := f.bundleWorkspaceOne()
-	workspaces := make([]string, 20)
+	workspaces := make([]string, putBacksUnderReaper+controlPutBacks)
 	for index := range workspaces {
 		workspaces[index] = f.secondPod(fmt.Sprintf("reaped-%d", index))
 	}
+	guarded, control := workspaces[:putBacksUnderReaper], workspaces[putBacksUnderReaper:]
 	// An issue pod's managers, whose restore is the one newManagers wires to the guard. A failed
 	// pass of a namespaced manager's reaper is logged rather than thrown, and the log is read
 	// below: a reaper whose passes failed raced nothing.
-	rolesDir := shortTempDir(t)
-	tokenDir := filepath.Join(rolesDir, "tester", RoleLauncherDir)
-	if err := os.MkdirAll(tokenDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(tokenDir, LauncherTokenFile), []byte("launcher-token\n"), 0o400); err != nil {
-		t.Fatal(err)
-	}
 	reaperLog := &lockedBuffer{}
 	guard := &pidGuard{}
-	managers, err := newManagers(Config{RolesDir: rolesDir, Roles: []string{"tester"}, Stdout: reaperLog, Stderr: reaperLog}, guard)
+	managers, err := newManagers(Config{RolesDir: testerRolesDir(t), Roles: []string{"tester"}, Stdout: reaperLog, Stderr: reaperLog}, guard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A child the reaper must take, so the test proves the reaper ran while the put-backs did.
-	orphan := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := orphan.Start(); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 1)
-	var reaping sync.WaitGroup
-	reaping.Add(2)
-	go func() {
-		defer reaping.Done()
-		reapOrphans(ctx, signals, managers, guard)
-	}()
-	// A SIGCHLD is always waiting, so the reaper never pauses between passes.
-	go func() {
-		defer reaping.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case signals <- syscall.SIGCHLD:
-			}
-		}
-	}()
+	stop := relentlessReaper(t, managers, guard)
 	type answer struct {
 		restored bool
 		notice   string
 	}
-	answers := make([]answer, len(workspaces))
-	for index, dir := range workspaces {
+	answers := make([]answer, len(guarded))
+	for index, dir := range guarded {
 		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.env, bundleRelease, saved)
 	}
-	cancel()
-	reaping.Wait()
+	controlTries, controlNotice := 0, ""
+	for _, dir := range control {
+		controlTries++
+		restored, notice := restoreWorkspace(context.Background(), procgroup.NoReaper, dir, f.env, bundleRelease, saved)
+		if !restored && (strings.Contains(notice, "no child processes") || strings.Contains(notice, "no such process")) {
+			controlNotice = notice
+			break
+		}
+	}
+	stop()
 
+	if controlNotice == "" {
+		t.Fatalf("none of %d put-backs with no guard lost an exit to the reaper: it never met one, so the put-backs through the guard prove nothing", controlTries)
+	}
+	t.Logf("control: put-back %d with no guard lost an exit: %s", controlTries, controlNotice)
 	for index, got := range answers {
 		if !got.restored || !strings.Contains(got.notice, "is restored") || strings.Contains(got.notice, "would not take") ||
-			strings.Contains(got.notice, "no child processes") {
+			strings.Contains(got.notice, "no child processes") || strings.Contains(got.notice, "no such process") {
 			t.Errorf("the put-back into %s answered %v, %q; want all of the saved work restored, each command's exit read by its own wait",
-				workspaces[index], got.restored, got.notice)
+				guarded[index], got.restored, got.notice)
 		}
 	}
 	if failed := reaperLog.String(); failed != "" {
 		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
 	}
-	if !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
-		t.Errorf("the reaper left the orphan %d unreaped, so it never ran while the put-backs did", orphan.Process.Pid)
-	}
 	if t.Failed() {
 		t.FailNow()
 	}
-	for _, dir := range workspaces {
+	for _, dir := range guarded {
 		f.requireRestored(dir, saved)
 	}
+	t.Logf("%d of %d put-backs through the guard restored the whole of the saved work", len(guarded), len(guarded))
 }
 
 // A base the restore needs can be gone — a branch force-pushed away since the release — and the
@@ -428,14 +427,6 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 	// a home of this test's own, which holds none of the host's jj and git configuration — its
 	// user, its trailers, its filters — and the identity below is the fixture's own
 	// (docs/testing.md).
-	//
-	// The seed pushes run under whatever git is first on PATH, and in an issue pod that is
-	// Legion's wrapper (/opt/legion/bin/git), which points a push at a hook running the leak
-	// guard. The guard refuses a push it can resolve no shared public leak check for (leakguard's
-	// Resolve), and Isolated drops PUBLIC_LEAK_CHECK with the rest of what reaches past the test,
-	// so the fixture carries a stand-in of its own that clears every write — as every other
-	// fixture that pushes does — and the pushes below behave here as they do on a runner whose
-	// git is the real one.
 	home := filepath.Join(root, "home")
 	f := &bundleFixture{
 		t: t, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
@@ -443,8 +434,7 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 		env: append(fixtureenv.Isolated(home),
 			"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
 			"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
-			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
-			"PUBLIC_LEAK_CHECK="+leakguardtest.Write(t, root, leakguardtest.Passes)),
+			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test"),
 	}
 	seed := filepath.Join(root, "seed")
 	for _, dir := range []string{f.remote, seed, home} {

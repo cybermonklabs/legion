@@ -16,18 +16,19 @@ import (
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
 // title and never written in. It answers 204 and no body.
 //
-// It needs the person scope (routeScopes) and takes two locks: the owner's row, as the title
-// correction does (renameArtifact), so a correction and a removal of one owner cannot each miss
-// the other, and then the document's room (docs.LockDocumentRoom), which is the lock a durable
-// write of the document takes. In that order, which is the one docs/persistence.go states: the
-// owner row first, then the room, as a settlement takes them, and a room's own writers take no
-// owner row, so this joins no lock cycle.
+// It needs the person scope (routeScopes) and takes two locks: the owner's lock (store.LockOwner,
+// which beginArtifactWrite takes), as the title correction does (renameArtifact), so a correction
+// and a removal of one owner cannot each miss the other, and then the document's room
+// (docs.LockDocumentRoom), which is the lock a durable write of the document takes. In that
+// order, which is the one docs/persistence.go states: the owner's lock first, then the room, as a
+// settlement takes them, and a room's own writers take no owner lock, so this joins no lock cycle.
 //
 // Four refusals read the artifact row alone: the kind, the role, the issue's spec and a
 // project's document (artifactRowIsUntouched). The removal answers them from the row
 // beginArtifactWrite re-read, before the room's lock. A DELETE of the spec, of a role document
 // or of a picture then waits for no room lock that a room's batch, a compaction or a snapshot
-// holds, and it frees the issue's row at once for every comment, ask and upload of that issue.
+// holds, and it frees the issue's owner lock at once for every comment, ask and upload of that
+// issue.
 //
 // What the document holds needs the room's lock and is read under it (artifactIsUntouched),
 // inside this transaction and from the row this transaction re-read: a version written, an edit
@@ -49,7 +50,10 @@ import (
 // no longer resolves. The removing process closes its own room after the commit, and only then
 // (docs.Service.Evict): a settlement that commits against a row that has gone would fail, and a
 // client that reconnects between the two reads the document as gone rather than loading a room
-// for a row that is no longer there.
+// for a row that is no longer there. A settlement of the document already under way at the
+// commit - queued behind this transaction for the owner's lock, or started before the eviction
+// ended what the room had armed - reads the row gone and ends without a word
+// (docs.Service.settleRoomWithin).
 func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -67,7 +71,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
-	// The document's room, taken after the owner's row and before anything of the document is
+	// The document's room, taken after the owner's lock and before anything of the document is
 	// read: an append that commits between the read of its stored updates and their delete
 	// would be deleted with the document, and one still in flight at the artifact's own delete
 	// would meet the foreign key of doc_updates rather than this handler's refusal.
@@ -155,9 +159,9 @@ func artifactRowIsUntouched(artifact model.Artifact) error {
 //
 // Each test is read inside tx, the removal's own transaction, and under the document's room
 // lock, which removeArtifact takes before it calls this. The versions and the unsettled edits
-// are what need that lock: a room's own writer takes no owner row, so the issue's row this
+// are what need that lock: a room's own writer takes no owner lock, so the issue's owner lock this
 // transaction holds does not order it. The writers of a comment, an ask, a review, an approval
-// request and a check result do take the issue's row, so one that arrives meanwhile waits
+// request and a check result do take the issue's owner lock, so one that arrives meanwhile waits
 // behind this transaction, reads the document again and is refused.
 func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact) error {
 	// The versions, read in one row: how many there are, whether the version the document was
@@ -300,14 +304,17 @@ type artifactClear struct {
 // 20261028195714_doc_compaction_owed.up.sql), and artifact_versions was 27.5 GB in production
 // against a census limit of one GiB. The keys that do cascade are left to the artifact row's own
 // delete, and the reference rows, which carry no key either, to package refs
-// (refs.ForgetDocument).
+// (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
+// artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
+// the document, and the boot's fill reads that row every time, so deleting it when the cursor
+// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
 // here clears them, because no row of them can be there. The untouched test refuses the removal
 // while any of them names the document (artifactIsUntouched), and every writer of those tables
-// takes the issue's row first (lockCommentOwner, the requireOpenOwnerStatus of asks.go and of
-// reviews.go), so one that arrives meanwhile waits behind this transaction, reads the document
+// takes the issue's owner lock first (lockCommentOwner, the requireOpenOwnerStatus of asks.go and
+// of reviews.go), so one that arrives meanwhile waits behind this transaction, reads the document
 // again and is refused. An issue document's events are the issue's and carry no artifact id at
 // all (events_one_owner, ownerForArtifact), and a project's document, whose events are its own,
 // is refused outright. A delete written for them would take a person's comment, ask or review
@@ -322,7 +329,6 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
-		{what: "search backfill rows", statement: `delete from document_search_backfill where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},

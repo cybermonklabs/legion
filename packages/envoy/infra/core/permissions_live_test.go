@@ -135,7 +135,11 @@ func TestHostPermissionsOnRealServers(t *testing.T) {
 					require.Equal(t, []string{"Publish", removed}, v[1:], "the server refused something else too: %s", v[0])
 				}
 				t.Logf("server violation (%d alike): %s", len(logged), logged[0][0])
-				require.Contains(t, process.Output.String(), "subscribe failed, retrying")
+				// No retry gets past the grant, so the start ends at the refusal with the line the
+				// durable-refused alarm pages on, naming the subject, rather than polling the bind.
+				require.Contains(t, process.Output.String(), "subscribe refused, shutting down")
+				require.Contains(t, process.Output.String(), `bus: NATS denied the publish to \"`+removed)
+				require.NotContains(t, process.Output.String(), "subscribe failed, retrying")
 			})
 		})
 	}
@@ -173,7 +177,7 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 
 			postListener(t, process, port, "/v1/messages/send", `{"target_session":"`+liveSession+`","message":"example message"}`)
 			sent := nextRelayed(t, process, relayed)
-			require.Equal(t, contracts.AgentSubject(liveSession), sent.Topic)
+			require.Equal(t, contracts.LegacyAgentSubject(liveSession), sent.Topic)
 			require.Equal(t, "example message", sent.PayloadSummary)
 
 			// A role message reaches its holder as the copy the stream stores on the holder's
@@ -204,11 +208,11 @@ func TestListenerAndCredentialFreeSessionsOnRealServers(t *testing.T) {
 			require.NoError(t, err)
 			require.NoError(t, conn.Flush())
 			missed := nextRelayed(t, process, missedRelay)
-			require.Equal(t, contracts.AgentSubject(offline), missed.Topic)
+			require.Equal(t, contracts.LegacyAgentSubject(offline), missed.Topic)
 			require.Equal(t, "example missed message", missed.PayloadSummary)
 
 			// A session may not publish to another session's inbox directly; only the listener does.
-			other := contracts.AgentSubject("s2")
+			other := contracts.LegacyAgentSubject("s2")
 			require.NoError(t, conn.Publish(other, nil))
 			requireViolation(t, conn, errs, `Publish to "`+other+`"`)
 			for _, v := range violationsOnceLogged(t, server, other) {
@@ -253,12 +257,12 @@ func TestListenerHostPermissionsOnRealServers(t *testing.T) {
 			sent, frame := nextEnvelope(t, process, relayed)
 			require.NotEmpty(t, frame.Reply, "the relay frame carries no subject for its receipt")
 			require.NoError(t, frame.Respond(nil))
-			require.Equal(t, contracts.AgentSubject(liveSession), sent.Topic)
+			require.Equal(t, contracts.LegacyAgentSubject(liveSession), sent.Topic)
 			require.Equal(t, "example message", sent.PayloadSummary)
 
 			// Every allowed operation came first, so a violation for one would be the first error.
 			// A session may not publish to another session's inbox directly.
-			other := contracts.AgentSubject("s2")
+			other := contracts.LegacyAgentSubject("s2")
 			require.NoError(t, conn.Publish(other, nil))
 			requireViolation(t, conn, errs, `Publish to "`+other+`"`)
 			for _, v := range violationsOnceLogged(t, server, other) {
@@ -303,7 +307,7 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 				Source:         "agent",
 				SourceEventID:  "evt-session-grant",
 				SourceSession:  liveSession,
-				Topic:          contracts.AgentSubject(liveSession),
+				Topic:          contracts.LegacyAgentSubject(liveSession),
 				DedupeKey:      "permissions-live-test.evt-session-grant",
 				IssuedAt:       contracts.NowMillis(),
 				PayloadSummary: "example relayed message",
@@ -341,7 +345,7 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			for _, subject := range []string{
 				bus.NotificationTopicPrefix + ">",
 				contracts.AgentTopicPrefix + "*",
-				contracts.AgentSubject(liveSession),
+				contracts.LegacyAgentSubject(liveSession),
 			} {
 				_, err := conn.SubscribeSync(subject)
 				require.NoError(t, err)
@@ -360,7 +364,7 @@ func TestSessionPermissionsOnRealServers(t *testing.T) {
 			refused := [][]string{
 				{"Subscription", bus.NotificationTopicPrefix + ">"},
 				{"Subscription", contracts.AgentTopicPrefix + "*"},
-				{"Subscription", contracts.AgentSubject(liveSession)},
+				{"Subscription", contracts.LegacyAgentSubject(liveSession)},
 				{"Subscription", "_INBOX.>"},
 				{"Publish", streamRead},
 			}
@@ -553,14 +557,27 @@ func getListener(t *testing.T, port int, path string) (int, string) {
 	return resp.StatusCode, string(answer)
 }
 
-// nextEnvelope returns the next message sub receives within 10 s, with the envelope it carries.
+// nextEnvelope returns the next message sub receives within 10 s that is not the listener's
+// connection probe, with the envelope it carries. A send to a session whose entry records
+// consumer delivery probes the session's relay subject (bus.ConnectionProbeHeader) before it
+// stores the message, so the probe can arrive ahead of the frame: it is answered done, as a plugin
+// answers it, and the wait goes on for the frame within the same 10 s.
 func nextEnvelope(t *testing.T, process *cmdtest.Process, sub *natsgo.Subscription) (contracts.Envelope, *natsgo.Msg) {
 	t.Helper()
-	msg, err := sub.NextMsg(10 * time.Second)
-	require.NoError(t, err, "no message reached %s:\n%s", sub.Subject, process.Output.String())
-	var envelope contracts.Envelope
-	require.NoError(t, json.Unmarshal(msg.Data, &envelope))
-	return envelope, msg
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		msg, err := sub.NextMsg(time.Until(deadline))
+		require.NoError(t, err, "no message reached %s:\n%s", sub.Subject, process.Output.String())
+		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			if msg.Reply != "" {
+				require.NoError(t, msg.Respond([]byte("done")))
+			}
+			continue
+		}
+		var envelope contracts.Envelope
+		require.NoError(t, json.Unmarshal(msg.Data, &envelope))
+		return envelope, msg
+	}
 }
 
 // serverLog returns everything the server has logged so far.
@@ -643,13 +660,13 @@ func TestListenerPermissionsManageSessionConsumersOnRealServers(t *testing.T) {
 			owner, err := bus.ConnectOwningStream([]string{uri}, environment)
 			require.NoError(t, err)
 			t.Cleanup(owner.Close)
-			consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, environment)
+			consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, nil, environment)
 			require.NoError(t, err)
 			t.Cleanup(consumers.Close)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			agent := contracts.AgentSubject(liveSession)
+			agent := contracts.LegacyAgentSubject(liveSession)
 			filters := []string{agent, "notifications.github.example.repo.>"}
 			start, err := consumers.Ensure(ctx, liveSession, filters, 0)
 			require.NoError(t, err)

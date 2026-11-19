@@ -23,7 +23,12 @@ the architect; GitHub's live default branch and the one your record carries are 
 guessing which is right is not yours to do. When they agree, use `$default` as-is, never re-typed:
 
 ```sh
-jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@" -T 'author.email() ++ " | " ++ committer.email() ++ " " ++ description.first_line() ++ "\n"'
+jj -R "$LEGION_WORKSPACE" log --no-graph -r "${default}@origin..@" -T '
+  commit_id.short() ++ " "
+  ++ if(!author.email(), "(no author) ") ++ if(!committer.email(), "(no committer) ")
+  ++ description.first_line() ++ "\n"
+  ++ trailers.filter(|t| t.key() == "Omp-Session" || t.key() == "Legion-Role")
+    .map(|t| "  " ++ t.key() ++ ": " ++ t.value() ++ "\n").join("")'
 ```
 
 Because `$default` already carries its own quote characters, jj's revset parser reads
@@ -33,21 +38,32 @@ syntax or shell code. Bash's own `"${default}@origin..@"` substitutes `$default`
 literally; it never re-evaluates the substituted text, so a `$(…)` sequence inside the branch name
 never runs.
 
-The output must show your role's App in both columns **on every commit you made** — not on the
-whole list: earlier phases' commits are legitimately authored by their own role's App.
+For each commit, the command prints its short commit id, `(no author)` or `(no committer)` where
+that email is empty, and its first line. Under that line it prints the commit's `Omp-Session` and
+`Legion-Role` trailers, one indented `key: value` line each.
 
-## Which App, and what a wrong one means
+Every commit you made must show `Omp-Session` with your session and `Legion-Role` with your
+`LEGION_ROLE`. Check your own commits, not the whole list: earlier phases' commits are in the list
+too, and each carries the lines of its own role.
 
-- Your role's App is the **implement** App for the implementer and the merger, and the **review**
-  App for the planner, tester, reviewer and architect; your pane's `JJ_USER` and `JJ_EMAIL` name
-  its bot account. A planner's commits authored by the review App are right.
-- Never set `user.name` or `user.email` in any jj or Git scope (`jj config set`, `--config`,
-  `git config`): `--config` outranks the pane's identity and puts the wrong App on your commits,
-  and the repository-scoped jj config is one file shared by every issue workspace of the clone.
-- A wrong identity on your own commit (the other App, or none) is a pane-environment problem:
-  report it to the architect, never pin it (cybermonklabs/legion
-  `docs/solutions/legion/shared-main-repo-hazards-for-concurrent-issue-workspaces.md`, Hazard 1).
-- Another role's commit with you as committer, which you did not rewrite under the guard in
-  *Rewriting pushed commits* (`skill://legion-worker/references/conflicts-and-rewrites.md`), means
-  something rewrote commits it should not have: stop and send the architect this log. A forward
-  merge rewrites nothing, so it changes no committer.
+## What the lines must show, and what to do when they do not
+
+- Your session is `DISPATCH_SESSION_ID` under Oh My Pi and `CLAUDE_CODE_SESSION_ID` under Claude
+  Code. A jj commit's `Omp-Session` line names the session your pane registered: the id in the
+  name of the `omp-attribution-<id>.toml` file at the end of `JJ_CONFIG`
+  (`printf '%s\n' "${JJ_CONFIG##*:}"` prints that file's path). That id differs from
+  `DISPATCH_SESSION_ID` only after a session switch or a fork.
+- A commit of yours that shows a line short is cured as `skill://legion-worker` says, in "Every
+  role pushes its own commits".
+- A commit of yours that shows another session or another role: send the architect this log.
+- The git author and committer name no role, so do not compare them. The troubleshooting section
+  on which role made a commit says why (cybermonklabs/legion
+  `docs/site/src/content/docs/legion/troubleshooting.md`).
+- A commit that shows `(no author)` or `(no committer)` is one that `jj git push` refuses: send
+  the architect this log.
+- Never set `user.name`, `user.email`, `templates.commit_trailers`,
+  `templates.revert_description`, `templates.duplicate_description` or any `trailer.*` key in any
+  jj or Git scope (`jj config set`, `--config`, `git config`). The repository-scoped jj config is
+  one file that every workspace of the clone shares, and a `templates.commit_trailers` there
+  replaces the overlay's trailers. A `trailer.*` key in Git's config changes how git writes the
+  git wrapper's lines.

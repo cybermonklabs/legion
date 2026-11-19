@@ -559,8 +559,9 @@ func TestALaterChangesRequestARootNeverResumedForIsNotRecordedAsTold(t *testing.
 }
 
 // A child its blockers held does not start while its root waits on a person, though the tree's
-// design gate is open (a person's approval answered the wait): the root holds no slot, and its
-// children start with its resume (advanceAdmittedTree), once it has its slot again.
+// design gate is open (a person's approval answered the wait): the root keeps its slot through
+// that wait (record.KeepsSlot; blockers.waitsOf leaves a root in awaiting_person out), and its
+// children start with its resume (advanceAdmittedTree), not with the gate's opening.
 func TestAHeldChildDoesNotStartWhileItsRootWaitsOnAPerson(t *testing.T) {
 	pool := migratedPool(t)
 	root := awaitingRoot(3)

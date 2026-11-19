@@ -68,7 +68,8 @@ inductive Decision where
 
 /-! ## String helpers (on `List Char`, so they are total and plain to reason about) -/
 
-/-- ASCII-only lower-casing (`Char.toLower` touches only `A`–`Z`). -/
+/-- ASCII-only lower-casing (`Char.toLower` touches only `A`–`Z`). Its Go function is
+`fold.ASCII` (`packages/envoy/internal/fold`), which `airlock.go` and the proxy port share. -/
 def lowerAscii (s : String) : String := s.map Char.toLower
 
 /-- `pat` occurs in `s` as a contiguous run. -/
@@ -233,12 +234,49 @@ def judgeOK : Option Nat → Bool
 /-- The three kinds an entry may name. -/
 def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure"
 
+/-- A character a host label may hold: a letter, a digit or a hyphen. -/
+def hostCharOK (c : Char) : Bool :=
+  ('a' ≤ c && c ≤ 'z') || ('A' ≤ c && c ≤ 'Z') || ('0' ≤ c && c ≤ '9') || c == '-'
+
+/-- A label of a host: never empty, never starting or ending with a hyphen, and every
+character one `hostCharOK` takes. -/
+def labelOK : List Char → Bool
+  | [] => false
+  | c :: cs => c != '-' && (c :: cs).getLast? != some '-' && (c :: cs).all hostCharOK
+
+/-- The labels of a host, splitting on `'.'`: an empty host has one empty label, and a
+leading, doubled or trailing dot leaves an empty label, which `labelOK` refuses. -/
+def splitDots : List Char → List (List Char)
+  | [] => [[]]
+  | '.' :: rest => [] :: splitDots rest
+  | c :: rest =>
+    match splitDots rest with
+    | [] => [[c]]
+    | l :: ls => (c :: l) :: ls
+
+/-- A host the airlock can bind a request to: a host name `hostBound` holds exactly, or
+`"*."` and one, a suffix it looks up. Every label passes `labelOK`, and the last is not all
+digits. A host written with a scheme, a path, a port, or `"*"` without the `"*."` that
+`hostBound` looks up, matches no request ever and binds the secret nowhere. An IPv4 address
+matches the CONNECT host of a request to it, but `check` refuses every such request
+`"sni mismatch"`, because a TLS client names no address in its SNI (RFC 6066 section 3). A
+host name is told from a dotted-decimal address by its last label, which in a host name is
+never all digits (RFC 1123 section 2.1), and that is the test here. The characters are read
+as a list, as `hostBound` reads them, so the two cannot drift. -/
+def hostShapeOK (h : String) : Bool :=
+  let cs := h.toList
+  let name := if cs.take 2 == ['*', '.'] then cs.drop 2 else cs
+  let labels := splitDots name
+  !name.isEmpty && labels.all labelOK && !(labels.getLast?.getD []).all Char.isDigit
+
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
-the names are distinct, **every** entry binds at least one host (not only a judged one),
-a judge lifetime is at most 900 s, and a kind is `""`, `"aws"` or `"azure"`. -/
+the names are distinct, a judge lifetime is at most 900 s, a kind is `""`, `"aws"` or `"azure"`,
+and every host is one the airlock can bind. An entry may bind no host: it then says who decides
+a request for its key and binds the value nowhere, and `check` refuses every request for it
+("secret not behind airlock"). -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
-  rules.secrets.all fun s => !s.hosts.isEmpty && judgeOK s.judge && kindOK s.kind
+  rules.secrets.all fun s => judgeOK s.judge && kindOK s.kind && s.hosts.all hostShapeOK
 
 /-! ## Decision and rewrite -/
 

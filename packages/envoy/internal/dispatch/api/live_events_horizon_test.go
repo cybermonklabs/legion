@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -107,14 +108,15 @@ func expectNoEventAbove(t *testing.T, client *socketClient, sub string, floor in
 
 // expectEventsInOrder reads sub's events until every id in want has arrived, in want's order, and
 // fails on an id at or below one already sent (a repeat, or ids out of order), on an id above the
-// next wanted one before it (the wanted one skipped), and on a subscription that ends or falls
-// silent for eventFeedWait first. Ids want does not name are let through: a document settling
-// beside the test's own writes appends events of its own.
+// next wanted one before it (the wanted one skipped), and on a subscription that ends first or
+// whose next event does not come while nothing holds the horizon back (eventFeedFrame). Ids want
+// does not name are let through: a document settling beside the test's own writes appends events
+// of its own.
 func expectEventsInOrder(t *testing.T, client *socketClient, sub string, want ...int64) {
 	t.Helper()
 	var last int64
 	for next := 0; next < len(want); {
-		id := mustEventFrameID(t, client.event(t, eventFeedWait, sub))
+		id := mustEventFrameID(t, eventFeedEvent(t, client, sub))
 		switch {
 		case id <= last:
 			t.Fatalf("%s was sent event %d after %d: a repeat, or ids out of order", sub, id, last)
@@ -179,7 +181,7 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 	release()
 
 	for name, client := range map[string]*socketClient{"the first": first, "the one made while it waited": second} {
-		start := eventsStart(t, client, eventFeedWait, "events")
+		start := eventsStart(t, client, "events")
 		if start.Since != strconv.FormatInt(since, 10) || !start.ReplayComplete {
 			t.Errorf("%s subscription's events_start = %+v, want a complete replay from %d", name, start, since)
 			continue
@@ -230,6 +232,13 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	old := eventHead(t, rig.database)
 	expectEventsInOrder(t, first, "events", old)
 
+	// A notification the relay has not answered yet wakes one more read, a coalescing window
+	// later. That read has to run while the old log still stands: one landing between the
+	// truncate below and the event that refills the log would find the log empty, take a cursor
+	// of 0 with nothing left to prove, and so reset before the subscription this test is about
+	// ever finds the relay on the replaced log.
+	time.Sleep(eventRelayCoalesce + 500*time.Millisecond)
+
 	// The reset's first event wakes the relay's reset check, which then waits on the held horizon.
 	release := holdClusterTransactionID(t, 30*time.Second)
 	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {
@@ -278,7 +287,7 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 	}); response.Code != http.StatusCreated {
 		t.Fatalf("create the mentioning message: status=%d body=%s", response.Code, response.Body.String())
 	}
-	awaitSinceRead(t, "since 0 ?to= dispatch://"+issue.Key+" for mentions, wanting the message's mention",
+	awaitSinceRead(t, rig.database, "since 0 ?to= dispatch://"+issue.Key+" for mentions, wanting the message's mention",
 		func() model.GraphReferences {
 			return graphEdges(t, rig.handler, url.Values{"to": {"dispatch://" + issue.Key}, "since": {"0"}, "kind": {"mentions"}})
 		},
@@ -476,7 +485,7 @@ func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T
 	commitLow()
 
 	eventsStartID(t, client, "events")
-	if id := mustEventFrameID(t, client.event(t, eventFeedWait, "events")); id != low {
+	if id := mustEventFrameID(t, eventFeedEvent(t, client, "events")); id != low {
 		t.Fatalf("the first cold subscription was sent event %d first, want %d, which committed after it subscribed", id, low)
 	}
 }
@@ -597,32 +606,18 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	if _, err := database.Pool.Exec(t.Context(), `analyze events`); err != nil {
 		t.Fatalf("analyze events: %v", err)
 	}
-	// The process before proves and persists a horizon past the fill, as its relay or hub does.
+	// The process before proves and persists a horizon past the fill, as its relay or hub does. The
+	// proof is instance-wide, so the wait for it keys on the horizon's own account of itself.
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
-	newest := eventHead(t, database)
-	for deadline := time.Now().Add(eventFeedWait); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := before.Safe(t.Context()); err != nil {
-			t.Fatalf("observe the horizon: %v", err)
-		}
-		persisted, err := before.Persisted(t.Context())
-		if err != nil {
-			t.Fatalf("read the persisted horizon: %v", err)
-		}
-		if persisted >= newest {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the persisted horizon = %d after %s, want at least %d", persisted, eventFeedWait, newest)
-		}
-	}
+	horizontest.AwaitPersisted(t, before, eventHead(t, database), database)
 
 	// An event insert that opened before the next process boots, and outlives its first start.
 	open, release := holdEventInsert(t, database)
 	read := eventsTuplesRead(t, database)
 	server := httptest.NewServer(secondProcessHandler(t, database))
 	t.Cleanup(server.Close)
-	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", withBearer("agent-token")).read()
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	sendEventsSubscribe(t, client, "events", nil)
 	time.Sleep(300 * time.Millisecond)
 	renameIssue(t, first, issue.Key, "Renamed while the insert is open")

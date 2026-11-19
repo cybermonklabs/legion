@@ -96,8 +96,9 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 			mintedToken(w, "installation-token", exchangeBody(t, r))
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
 			// A mint reads what the installation is granted before it asks for a token and cuts
-			// its request down to it (appauth's exchangeGranted), so the stand-in's installation
-			// is granted every permission a role's set names.
+			// its request down to it (appauth's exchangeGranted). The stand-in's installation is
+			// granted no issues, security_events or attestations, which these tests read nothing
+			// of, so the cut leaves those out of each request.
 			fmt.Fprint(w, `{"id":77,"permissions":{"actions":"write","checks":"write","contents":"write","metadata":"read","pull_requests":"write","statuses":"write","workflows":"write"}}`)
 		case r.URL.Path == "/app":
 			fmt.Fprintf(w, `{"slug":"legion-test-%s"}`, jwtIssuer(t, r))
@@ -125,13 +126,19 @@ func installed(w http.ResponseWriter) {
 }
 
 // bootsOrExits runs the daemon until it answers /healthz or run returns, and says which.
-func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration) error {
+func bootsOrExits(t *testing.T, cfg config.Config, tokens appauth.Source, within time.Duration) error {
 	t.Helper()
 	return bootsOrExitsLogging(t, cfg, tokens, within, quietLogger())
 }
 
 // bootsOrExitsLogging is bootsOrExits with the daemon logging to log.
-func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens, within time.Duration, log *slog.Logger) error {
+func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Source, within time.Duration, log *slog.Logger) error {
+	t.Helper()
+	return bootsOrExitsOn(t, cfg, tokens, repositoriesGitHub(t), within, log)
+}
+
+// bootsOrExitsOn is bootsOrExitsLogging with the daemon reading GitHub's REST API at githubAPI.
+func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, githubAPI string, within time.Duration, log *slog.Logger) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -141,7 +148,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
 			workflowTokens: tokens,
-			githubAPI:      repositoriesGitHub(t),
+			githubAPI:      githubAPI,
 		})
 	}()
 	stopped := false
@@ -343,19 +350,33 @@ func mappedWorkflowConfig(t *testing.T, natsURL string, mapped ...string) config
 // repositories belong to two accounts, one of them spelled in the mapping as the account is not,
 // and each App is minted twice, on the two accounts lowercased and in their sorted order, so one
 // boot's log reads like the next's.
+//
+// Both Apps are installed on a third account, initech, that no mapped repository belongs to, and
+// neither is minted on it: R1 asks only that an installed owner the mapping does not reach is not
+// PROVED at boot, and a bundle reads its App's installation when it is built, so nothing of that
+// owner is wanted before then. It is not that this project needs no work there: under R3 and R4
+// an issue of this project may name an initech repository, and the daemon records and runs it.
+// Without initech the row would pass as well on a boot that minted every owner the Apps'
+// installations name, because those would be the mapped owners exactly.
 func TestABootMintsEachAppOnceForEachOwnerOfTheMapping(t *testing.T) {
 	quickAppMints(t)
 	manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) {
-		fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}},{"id":88,"account":{"login":"globex"}}]`)
+		fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}},{"id":88,"account":{"login":"globex"}},{"id":99,"account":{"login":"initech"}}]`)
 	})
 	mints := &bootMints{Manager: manager}
 	cfg := mappedWorkflowConfig(t, workflowNATS(t), "acme/widgets", "Acme/Gadgets", "globex/tools")
 	if err := bootsOrExitsLogging(t, cfg, mints, 60*time.Second, mintGateLog(mints)); err != nil {
 		t.Fatalf("boot = %v, want the daemon serving three repositories of two owner accounts", err)
 	}
+	minted := mints.Minted()
+	for _, mint := range minted {
+		if strings.HasSuffix(mint, " initech") {
+			t.Errorf("the boot's App gate asked for %q, want no mint on initech: both Apps are installed there, and no repository the mapping serves belongs to it", mint)
+		}
+	}
 	want := []string{"implement acme", "review acme", "implement globex", "review globex"}
-	if got := mints.Minted(); !slices.Equal(got, want) {
-		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one of each App on each owner account, and none for a second repository of an account", got, want)
+	if !slices.Equal(minted, want) {
+		t.Errorf("the mints the boot's App gate asked for = %v, want %v: one of each App on each owner account of the mapping, and none for a second repository of an account", minted, want)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1, "2": 1}) {
 		t.Errorf("installation discoveries by App = %v, want one each: one discovery names every installation an App has", got)

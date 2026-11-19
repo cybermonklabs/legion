@@ -67,6 +67,19 @@ func storedHead(t *testing.T, database *store.Store, artifactID string) int64 {
 	return head
 }
 
+// savedVersion is the number of the document's latest saved version, the one a rebuild from it
+// goes back to.
+func savedVersion(t *testing.T, database *store.Store, artifactID string) int {
+	t.Helper()
+	var number int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(number), 0) from artifact_versions where artifact_id = $1
+	`, artifactID).Scan(&number); err != nil {
+		t.Fatalf("read the document's latest saved version: %v", err)
+	}
+	return number
+}
+
 // storedMarkdown is the stored document's rendering, the one every reload of it reads.
 func storedMarkdown(t *testing.T, database *store.Store, artifactID string) string {
 	t.Helper()
@@ -181,6 +194,60 @@ func TestASettlementFromARoomBehindTheHeadCatchesItUpAndTheNextSettlesBoth(t *te
 	}
 	if authors := latestVersionAuthors(t, pair.taskA, pair.artifactID); !slices.Contains(authors, bob) || !slices.Contains(authors, alice) {
 		t.Fatalf("the settled version lists %+v, want %s and %s", authors, alice.ID, bob.ID)
+	}
+	if err := pair.taskA.roomFailure(pair.artifactID); err != nil {
+		t.Fatalf("task A's room failed: %v", err)
+	}
+}
+
+// A settlement whose room a close retires while the settlement holds the document's lock to catch
+// that room up to the head, a close that moves no room generation - ygo's idle sweep, the close of
+// the room at its issue's reopen, a repeated close of a record that already reads closed; the test
+// closes the room through ygo (CloseRoom), which moves none - finds the room gone (catchUpGone),
+// and no load of the document follows to arm its settlement again: the timer that ran it was its
+// only arming. It stops short (errRoomReplaced), its rollback lets the close finish, and its retry
+// loads the room at the head and settles both processes' text.
+func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
+	pair := newProcessPair(t)
+	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
+	pair.leaveTaskABehind(t, 2, bob, "Bob's paragraph.\n")
+	versions := latestVersionNumber(t, pair.taskA, pair.artifactID)
+	room := pair.taskA.srv.GetDoc(pair.artifactID)
+	wait := roomWait(t)
+	var closed atomic.Bool
+	pair.taskA.afterSettleLock = func(artifactID string) {
+		if artifactID != pair.artifactID || !closed.CompareAndSwap(false, true) {
+			return
+		}
+		// The close runs on its own, as a close for the issue or the idle sweep does, and the
+		// hook waits for the room to leave the server: what the close does once it has, it may do
+		// under the document's lock this settlement holds.
+		go func() { _ = pair.taskA.srv.CloseRoom(artifactID, true) }()
+		deadline := time.Now().Add(wait)
+		for pair.taskA.srv.GetDoc(artifactID) == room {
+			if time.Now().After(deadline) {
+				t.Error("task A's room was never closed")
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
+	// reads it. The delay is written once, before the settlement it arms.
+	pair.taskA.settle = 20 * time.Millisecond
+	pair.taskA.scheduleSettle(pair.artifactID)
+	waitFor(t, wait, "the document whose room closed under its settlement's catch-up to settle", func() bool {
+		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
+		return err == nil && !owed
+	})
+	if !closed.Load() {
+		t.Fatal("no settlement reached its catch-up holding the document's lock")
+	}
+	if now := latestVersionNumber(t, pair.taskA, pair.artifactID); now != versions+1 {
+		t.Fatalf("latest version = %d after the retried settlement, want %d", now, versions+1)
+	}
+	if markdown, _ := latestVersionOf(t, pair.database, pair.artifactID); !strings.Contains(markdown, "Bob's paragraph.") {
+		t.Fatalf("the settled version = %q, want it to hold task B's paragraph", markdown)
 	}
 	if err := pair.taskA.roomFailure(pair.artifactID); err != nil {
 		t.Fatalf("task A's room failed: %v", err)

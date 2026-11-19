@@ -98,7 +98,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 	eventKey := fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(author, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	authorSubject := contracts.AgentSubject(author)
+	authorSubject := contracts.LegacyAgentSubject(author)
 	if !slices.Contains(reached, authorSubject) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the thread root's author, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, authorSubject, model.DeliveryClaimLapse)
@@ -119,7 +119,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 
 	// The other arm of the same read: the copies bound for the sessions the owner's own work
 	// names wait for that attempt, so nothing but this author copy went out this pass.
-	claimantSubject := contracts.AgentSubject(claimant)
+	claimantSubject := contracts.LegacyAgentSubject(claimant)
 	if slices.Contains(reached, claimantSubject) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
@@ -206,7 +206,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 	eventKey := fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(follower, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	followerSubject := contracts.AgentSubject(follower)
+	followerSubject := contracts.LegacyAgentSubject(follower)
 	if !slices.Contains(reached, followerSubject) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the ask's follower, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, followerSubject, model.DeliveryClaimLapse)
@@ -227,7 +227,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 
 	// The other arm of the same read: the copy bound for the session the owner's own work names
 	// waits for that attempt, so nothing but this follower copy went out this pass.
-	claimantSubject := contracts.AgentSubject(claimant)
+	claimantSubject := contracts.LegacyAgentSubject(claimant)
 	if slices.Contains(reached, claimantSubject) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
@@ -305,7 +305,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 	eventKey := fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(writer, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
 	_, _, reached := eventState(t, rig.database, comment.ID)
-	writerSubject := contracts.AgentSubject(writer)
+	writerSubject := contracts.LegacyAgentSubject(writer)
 	if !slices.Contains(reached, writerSubject) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of it names the session the issue's primary document credits, so its copy goes in the pass that reads the event; held back for the unnamed mention it would wait out that attempt's lease (model.DeliveryClaimLapse = %v), which is what every unrelated session paid before this head",
 			reached, writerSubject, model.DeliveryClaimLapse)

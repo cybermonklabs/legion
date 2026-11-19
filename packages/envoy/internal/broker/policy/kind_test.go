@@ -14,17 +14,26 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-const kindOwner = "ada@example.com"
+const typeOwner = "ada@example.com"
 
-func kindSecret(name, kind, value string) secrets.LocalSecret {
-	return policytest.KindSecret(name, kindOwner, policy.TierAgent, kind, value)
+func typeSecret(name, secretType, value string) secrets.LocalSecret {
+	return policytest.TypeSecret(name, typeOwner, policy.TierAgent, secretType, value)
 }
 
-func TestKindSecretsAreServed(t *testing.T) {
-	githubApp := kindSecret("GITHUB_APP_KEY", policy.KindGitHubApp, "github-app-value")
-	googleLogin := kindSecret("GOOGLE_LOGIN_KEY", policy.KindGoogleLogin, "google-login-value")
+// refusedAs fails t unless set refuses the secret a session asks for as name for reason, with the
+// owner tag typeSecret gives it.
+func refusedAs(t *testing.T, set *policy.Set, name, reason string) {
+	t.Helper()
+	if got, want := set.Refused[policytest.ID(name)], (policy.Refusal{Reason: reason, Owner: typeOwner}); got != want {
+		t.Fatalf("%s refused as %+v, want %+v (all refused: %+v)", name, got, want, set.Refused)
+	}
+}
+
+func TestTypeSecretsAreServed(t *testing.T) {
+	githubApp := typeSecret("GITHUB_APP_KEY", policy.TypeGitHubApp, "github-app-value")
+	googleLogin := typeSecret("GOOGLE_LOGIN_KEY", policy.TypeGoogleLogin, "google-login-value")
 	googleLogin.Tags[policy.TagMaxGrant] = "1h"
-	azureLogin := kindSecret("AZURE_LOGIN_KEY", "azure-login", `{"tenant_id":"tenant","client_id":"client"}`)
+	azureLogin := typeSecret("AZURE_LOGIN_KEY", "azure-login", `{"tenant_id":"tenant","client_id":"client"}`)
 	store := secrets.NewLocal(githubApp, googleLogin, azureLogin)
 
 	set, err := policytest.Loader(store).Load(context.Background())
@@ -32,9 +41,9 @@ func TestKindSecretsAreServed(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	for name, kind := range map[string]string{
-		"GITHUB_APP_KEY":   policy.KindGitHubApp,
-		"GOOGLE_LOGIN_KEY": policy.KindGoogleLogin,
+	for name, secretType := range map[string]string{
+		"GITHUB_APP_KEY":   policy.TypeGitHubApp,
+		"GOOGLE_LOGIN_KEY": policy.TypeGoogleLogin,
 		"AZURE_LOGIN_KEY":  "azure-login",
 	} {
 		secret, ok := set.Secrets[name]
@@ -43,11 +52,11 @@ func TestKindSecretsAreServed(t *testing.T) {
 			continue
 		}
 		store := secrets.LocalARN(policytest.ID(name))
-		if want := policy.KindSource(kind, store); secret.Source != want {
+		if want := policy.TypeSource(secretType, store); secret.Source != want {
 			t.Errorf("%s Source = %q, want %q", name, secret.Source, want)
 		}
-		if gotKind, gotStore, minted, err := policy.ParseKindSource(secret.Source); err != nil || !minted || gotKind != kind || gotStore != store {
-			t.Errorf("ParseKindSource(%q) = %q, %q, %t, %v; want %q, %q, true", secret.Source, gotKind, gotStore, minted, err, kind, store)
+		if gotType, gotStore, minted, err := policy.ParseTypeSource(secret.Source); err != nil || !minted || gotType != secretType || gotStore != store {
+			t.Errorf("ParseTypeSource(%q) = %q, %q, %t, %v; want %q, %q, true", secret.Source, gotType, gotStore, minted, err, secretType, store)
 		}
 	}
 	if got := set.Secrets["GOOGLE_LOGIN_KEY"].MaxGrant; got != time.Hour {
@@ -58,14 +67,14 @@ func TestKindSecretsAreServed(t *testing.T) {
 	}
 }
 
-func TestParseKindSourceRefusesAMalformedMintedSource(t *testing.T) {
+func TestParseTypeSourceRefusesAMalformedMintedSource(t *testing.T) {
 	for _, source := range []string{"mint:", "mint:github-app", "mint:github-app:", "mint::arn:aws:x"} {
-		if _, _, minted, err := policy.ParseKindSource(source); !minted || !errors.Is(err, policy.ErrKindSourceMalformed) {
-			t.Errorf("ParseKindSource(%q) = minted %t, %v; want minted and ErrKindSourceMalformed", source, minted, err)
+		if _, _, minted, err := policy.ParseTypeSource(source); !minted || !errors.Is(err, policy.ErrTypeSourceMalformed) {
+			t.Errorf("ParseTypeSource(%q) = minted %t, %v; want minted and ErrTypeSourceMalformed", source, minted, err)
 		}
 	}
-	if kind, store, minted, err := policy.ParseKindSource("arn:aws:secretsmanager:x"); minted || err != nil || kind != "" || store != "arn:aws:secretsmanager:x" {
-		t.Errorf("ParseKindSource(stored) = %q, %q, %t, %v; want the source whole and not minted", kind, store, minted, err)
+	if secretType, store, minted, err := policy.ParseTypeSource("arn:aws:secretsmanager:x"); minted || err != nil || secretType != "" || store != "arn:aws:secretsmanager:x" {
+		t.Errorf("ParseTypeSource(stored) = %q, %q, %t, %v; want the source whole and not minted", secretType, store, minted, err)
 	}
 }
 
@@ -114,41 +123,58 @@ func TestParseScopes(t *testing.T) {
 	}
 }
 
-func TestUnknownKindIsRefused(t *testing.T) {
-	logged := policytest.CaptureLog(t)
-	store := secrets.NewLocal(kindSecret("UNKNOWN_KIND_KEY", "other", "value"))
+func TestUnknownTypeIsRefused(t *testing.T) {
+	store := secrets.NewLocal(typeSecret("UNKNOWN_TYPE_KEY", "other", "value"))
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := set.Secrets["UNKNOWN_KIND_KEY"]; ok {
-		t.Fatal("Load served a secret with an unknown kind")
+	if _, ok := set.Secrets["UNKNOWN_TYPE_KEY"]; ok {
+		t.Fatal("Load served a secret with an unknown type")
 	}
-	if !strings.Contains(logged.String(), policy.ReasonKindUnknown) {
-		t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonKindUnknown)
+	refusedAs(t, set, "UNKNOWN_TYPE_KEY", policy.ReasonTypeUnknown)
+}
+
+// TestEveryTypeDecodesAValueThroughParseValue: secrets.ParseValue names the types again, since
+// secrets cannot import this package, so every type Types lists must decode a value of its own
+// through it, and a type Types does not list must be refused: a type added to one list and not
+// the other fails here rather than leaving a type the broker serves that no decoder reads. The
+// values are policytest.TypeValue's, which panics for a type it holds no value of: add one there,
+// and its decoder to secrets.ParseValue.
+func TestEveryTypeDecodesAValueThroughParseValue(t *testing.T) {
+	for _, secretType := range policy.Types {
+		if _, err := secrets.ParseValue(secretType, policytest.TypeValue(secretType)); err != nil {
+			t.Errorf("secrets.ParseValue(%s) of a value its minter mints from = %v; want it decoded", secretType, err)
+		}
+	}
+	for _, secretType := range []string{"other", ""} {
+		if policy.ValidType(secretType) {
+			t.Fatalf("policy.ValidType(%q) = true; this test needs a type Types does not list", secretType)
+		}
+		for _, valued := range policy.Types {
+			if _, err := secrets.ParseValue(secretType, policytest.TypeValue(valued)); !errors.Is(err, secrets.ErrMintStoredValue) {
+				t.Fatalf("secrets.ParseValue(%q) = %v; want a type Types does not list refused", secretType, err)
+			}
+		}
 	}
 }
 
-func TestKindSecretWithoutValueIsRefused(t *testing.T) {
-	logged := policytest.CaptureLog(t)
-	store := secrets.NewLocal(kindSecret("EMPTY_KIND_KEY", policy.KindGitHubApp, ""))
+func TestTypeSecretWithoutValueIsRefused(t *testing.T) {
+	store := secrets.NewLocal(typeSecret("EMPTY_TYPE_KEY", policy.TypeGitHubApp, ""))
 
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := set.Secrets["EMPTY_KIND_KEY"]; ok {
-		t.Fatal("Load served a kind secret without a current value")
+	if _, ok := set.Secrets["EMPTY_TYPE_KEY"]; ok {
+		t.Fatal("Load served a type secret without a current value")
 	}
-	if !strings.Contains(logged.String(), policy.ReasonNoCurrentValue) {
-		t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonNoCurrentValue)
-	}
+	refusedAs(t, set, "EMPTY_TYPE_KEY", policy.ReasonNoCurrentValue)
 }
 
 func TestMalformedMaxGrantIsRefused(t *testing.T) {
-	logged := policytest.CaptureLog(t)
-	secret := kindSecret("BAD_MAX_GRANT", policy.KindGoogleLogin, "value")
+	secret := typeSecret("BAD_MAX_GRANT", policy.TypeGoogleLogin, "value")
 	secret.Tags[policy.TagMaxGrant] = "soon"
 	store := secrets.NewLocal(secret)
 
@@ -159,13 +185,11 @@ func TestMalformedMaxGrantIsRefused(t *testing.T) {
 	if _, ok := set.Secrets["BAD_MAX_GRANT"]; ok {
 		t.Fatal("Load served a secret with a malformed max-grant")
 	}
-	if !strings.Contains(logged.String(), policy.ReasonMaxGrantMalformed) {
-		t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonMaxGrantMalformed)
-	}
+	refusedAs(t, set, "BAD_MAX_GRANT", policy.ReasonMaxGrantMalformed)
 }
 
-func TestKindRetagChangesVersionAndSource(t *testing.T) {
-	first := kindSecret("MUTABLE_KIND_KEY", policy.KindGitHubApp, "value")
+func TestTypeRetagChangesVersionAndSource(t *testing.T) {
+	first := typeSecret("MUTABLE_TYPE_KEY", policy.TypeGitHubApp, "value")
 	store := secrets.NewLocal(first)
 	loader := policytest.Loader(store)
 
@@ -178,7 +202,7 @@ func TestKindRetagChangesVersionAndSource(t *testing.T) {
 	for key, value := range first.Tags {
 		second.Tags[key] = value
 	}
-	second.Tags[policy.TagKind] = policy.KindGoogleLogin
+	second.Tags[policy.TagType] = policy.TypeGoogleLogin
 	store.Put(second)
 	after, err := loader.Load(context.Background())
 	if err != nil {
@@ -186,28 +210,27 @@ func TestKindRetagChangesVersionAndSource(t *testing.T) {
 	}
 
 	if before.Version == after.Version {
-		t.Fatal("retagging a kind left Version unchanged")
+		t.Fatal("retagging a type left Version unchanged")
 	}
-	if before.Secrets["MUTABLE_KIND_KEY"].Source == after.Secrets["MUTABLE_KIND_KEY"].Source {
-		t.Fatal("retagging a kind left Source unchanged")
+	if before.Secrets["MUTABLE_TYPE_KEY"].Source == after.Secrets["MUTABLE_TYPE_KEY"].Source {
+		t.Fatal("retagging a type left Source unchanged")
 	}
 }
 
 func TestPlainSecretDigestIsUnchanged(t *testing.T) {
-	store := secrets.NewLocal(policytest.Secret("PLAIN_KEY", kindOwner, policy.TierAgent, "value"))
+	store := secrets.NewLocal(policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "value"))
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	const want = "522fe0fdc2ad3192cb04f81de72d295cf8846ed212ae744918dd9a5e078fe7fa"
 	if set.Version != want {
-		t.Fatalf("plain Version = %s, want pre-kind digest %s", set.Version, want)
+		t.Fatalf("plain Version = %s, want pre-type digest %s", set.Version, want)
 	}
 }
 
 func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
-	logged := policytest.CaptureLog(t)
-	secret := policytest.Secret("LEGACY_MINT_KEY", kindOwner, policy.TierAgent, "")
+	secret := policytest.Secret("LEGACY_MINT_KEY", typeOwner, policy.TierAgent, "")
 	secret.Tags["mint-service-account"] = "ignored"
 	store := secrets.NewLocal(secret)
 
@@ -218,19 +241,17 @@ func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
 	if _, ok := set.Secrets["LEGACY_MINT_KEY"]; ok {
 		t.Fatal("Load served an empty legacy minted secret")
 	}
-	if !strings.Contains(logged.String(), policy.ReasonNoCurrentValue) {
-		t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonNoCurrentValue)
-	}
+	refusedAs(t, set, "LEGACY_MINT_KEY", policy.ReasonNoCurrentValue)
 }
 
-func TestEmptyKindIsAPlainSecret(t *testing.T) {
-	secret := kindSecret("EMPTY_KIND", "", "value")
+func TestEmptyTypeIsAPlainSecret(t *testing.T) {
+	secret := typeSecret("EMPTY_TYPE", "", "value")
 	set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := set.Secrets["EMPTY_KIND"]; got.Source != secrets.LocalARN(policytest.ID("EMPTY_KIND")) {
-		t.Fatalf("EMPTY_KIND = %+v, want plain stored source", got)
+	if got := set.Secrets["EMPTY_TYPE"]; got.Source != secrets.LocalARN(policytest.ID("EMPTY_TYPE")) {
+		t.Fatalf("EMPTY_TYPE = %+v, want plain stored source", got)
 	}
 }
 
@@ -240,8 +261,7 @@ func TestEmptyKindIsAPlainSecret(t *testing.T) {
 func TestAGitHubAppSecretWithoutOwnersIsRefused(t *testing.T) {
 	for name, owners := range map[string]*string{"missing": nil, "empty": new("  \t ")} {
 		t.Run(name, func(t *testing.T) {
-			logged := policytest.CaptureLog(t)
-			secret := kindSecret("APP_KEY", policy.KindGitHubApp, "value")
+			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
 			delete(secret.Tags, policy.TagGitHubOwners)
 			if owners != nil {
 				secret.Tags[policy.TagGitHubOwners] = *owners
@@ -253,9 +273,7 @@ func TestAGitHubAppSecretWithoutOwnersIsRefused(t *testing.T) {
 			if _, ok := set.Secrets["APP_KEY"]; ok {
 				t.Fatal("Load served a github-app secret naming no github-owners")
 			}
-			if !strings.Contains(logged.String(), policy.ReasonGitHubOwnersMissing) {
-				t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonGitHubOwnersMissing)
-			}
+			refusedAs(t, set, "APP_KEY", policy.ReasonGitHubOwnersMissing)
 		})
 	}
 }
@@ -265,9 +283,9 @@ func TestAGitHubAppSecretWithoutOwnersIsRefused(t *testing.T) {
 func TestGitHubOwnersAreReadWithoutRegardToCase(t *testing.T) {
 	load := func(owners string) *policy.Set {
 		t.Helper()
-		secret := kindSecret("APP_KEY", policy.KindGitHubApp, "value")
+		secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
 		secret.Tags[policy.TagGitHubOwners] = owners
-		login := kindSecret("LOGIN_KEY", policy.KindGoogleLogin, "value")
+		login := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, "value")
 		login.Tags[policy.TagGitHubOwners] = "ignored"
 		set, err := policytest.Loader(secrets.NewLocal(secret, login)).Load(context.Background())
 		if err != nil {
@@ -299,8 +317,7 @@ func TestGitHubOwnersAreReadWithoutRegardToCase(t *testing.T) {
 func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
 	for _, owners := range []string{"acme-org,ada", "acme-org, ada", "ada,"} {
 		t.Run(owners, func(t *testing.T) {
-			logged := policytest.CaptureLog(t)
-			secret := kindSecret("APP_KEY", policy.KindGitHubApp, "value")
+			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
 			secret.Tags[policy.TagGitHubOwners] = owners
 			set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
 			if err != nil {
@@ -309,9 +326,7 @@ func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
 			if _, ok := set.Secrets["APP_KEY"]; ok {
 				t.Fatalf("Load served a github-app secret whose github-owners is %q", owners)
 			}
-			if !strings.Contains(logged.String(), policy.ReasonGitHubOwnersMalformed) {
-				t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonGitHubOwnersMalformed)
-			}
+			refusedAs(t, set, "APP_KEY", policy.ReasonGitHubOwnersMalformed)
 			if _, err := policy.ParseGitHubOwners(owners); !errors.Is(err, policy.ErrGitHubOwnersComma) || !strings.Contains(err.Error(), "spaces") {
 				t.Fatalf("ParseGitHubOwners(%q) = %v; want ErrGitHubOwnersComma naming the space-separated form", owners, err)
 			}
@@ -320,24 +335,29 @@ func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
 }
 
 // TestAGitHubOwnerThatIsNoGitHubLoginIsRefused: each github-owners entry must be something a
-// GitHub login can be, up to 39 ASCII letters, digits and hyphens starting with a letter or digit,
-// judged as written, or the secret is refused github-owners-malformed. The word none, in any case,
-// is agent-secrets' removal and never a login. A non-ASCII letter that Unicode lowercases onto an
-// ASCII one (U+212A KELVIN SIGN, U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE) is refused rather
-// than read as that ASCII letter. Legacy logins with a trailing or doubled hyphen, which GitHub
-// still serves (`x-` is an organization from 2011), and the longest login are read; a tag that
-// names no entry at all is github-owners-missing.
+// GitHub login can be, up to 39 ASCII letters, digits, hyphens and underscores starting with a
+// letter or digit, judged as written, or the secret is refused github-owners-malformed. The word
+// none, in any case, is agent-secrets' removal and never a login. A non-ASCII letter that Unicode
+// lowercases onto an ASCII one (U+212A KELVIN SIGN, U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE)
+// is refused rather than read as that ASCII letter. Legacy logins with a trailing or doubled
+// hyphen, which GitHub still serves (`x-` is an organization from 2011), a managed user's login,
+// which ends in `_<shortcode>` (`mona-cat_octo`), and the longest login are read; a tag that names
+// no entry at all is github-owners-missing.
 func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 	longest := strings.Repeat("a", 39)
 	for _, owners := range []string{
-		"-ada", "-x", "-", "ada_lovelace", "ada.org", "@ada", "ada/b", strings.Repeat("a", 40),
+		"-ada", "-x", "-", // a login starts with a letter or digit, never a hyphen
+		"_ada",                  // nor an underscore: a managed user's _<shortcode> follows a name
+		"ada.org",               // a dot is a repository name's, never a login's
+		"@ada",                  // an @ is a mention's, never a login's
+		"ada/b",                 // a slash is a path's, never a login's
+		strings.Repeat("a", 40), // GitHub's logins are at most 39 characters
 		"none", "None", "NONE",
 		"\u212Aelvin-org", "acme-\u212A",
 		"\u0130stanbul", "b\u0130t",
 	} {
 		t.Run(owners, func(t *testing.T) {
-			logged := policytest.CaptureLog(t)
-			secret := kindSecret("APP_KEY", policy.KindGitHubApp, "value")
+			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
 			secret.Tags[policy.TagGitHubOwners] = "acme-org " + owners
 			set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
 			if err != nil {
@@ -346,9 +366,7 @@ func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 			if _, ok := set.Secrets["APP_KEY"]; ok {
 				t.Fatalf("Load served a github-app secret whose github-owners names %q", owners)
 			}
-			if !strings.Contains(logged.String(), policy.ReasonGitHubOwnersMalformed) {
-				t.Fatalf("log %q does not name %q", logged.String(), policy.ReasonGitHubOwnersMalformed)
-			}
+			refusedAs(t, set, "APP_KEY", policy.ReasonGitHubOwnersMalformed)
 			if _, err := policy.ParseGitHubOwners(owners); !errors.Is(err, policy.ErrGitHubOwnersLogin) {
 				t.Fatalf("ParseGitHubOwners(%q) = %v; want ErrGitHubOwnersLogin", owners, err)
 			}
@@ -365,31 +383,43 @@ func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 	if got, err := policy.ParseGitHubOwners("A-b-C9 X- Y- z- a--b " + longest); err != nil || got != want {
 		t.Fatalf("ParseGitHubOwners of valid and legacy logins = %q, %v; want %q", got, err, want)
 	}
-	secret := kindSecret("LEGACY_APP_KEY", policy.KindGitHubApp, "value")
+	secret := typeSecret("LEGACY_APP_KEY", policy.TypeGitHubApp, "value")
 	secret.Tags[policy.TagGitHubOwners] = "x- acme-org"
-	set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
+	// A managed user's login ends in _<shortcode>. ada_lovelace was refused here while the broker
+	// held a login to letters, digits and hyphens, which left such an account one no github-app
+	// secret could name and so one the broker minted no token for.
+	managed := typeSecret("MANAGED_APP_KEY", policy.TypeGitHubApp, "value")
+	managed.Tags[policy.TagGitHubOwners] = "mona-cat_octo acme-org Ada_Lovelace"
+	set, err := policytest.Loader(secrets.NewLocal(secret, managed)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if got := set.Secrets["LEGACY_APP_KEY"].GitHubOwners; got != "acme-org x-" {
 		t.Fatalf("LEGACY_APP_KEY GitHubOwners = %q, want %q: a trailing-hyphen login is served", got, "acme-org x-")
 	}
+	if got := set.Secrets["MANAGED_APP_KEY"].GitHubOwnerLogins(); !slices.Equal(got, []string{"acme-org", "ada_lovelace", "mona-cat_octo"}) {
+		t.Fatalf("MANAGED_APP_KEY GitHubOwnerLogins = %v, want [acme-org ada_lovelace mona-cat_octo]: a managed user's login is served (refused: %+v)", got, set.Refused)
+	}
 }
 
-// legacyMintTargetPattern is the mint-service-account rule of the brokers before kinds, copied
+// legacyMintTargetPattern is the mint-service-account rule of the brokers before types, copied
 // from legion-envoy-v13.19.0 through 313fdc221's policy/load.go: a broker of that range refuses a
 // secret whose tag does not match it as mint-target-malformed, before anything else it decides.
 var legacyMintTargetPattern = regexp.MustCompile(`^[a-z0-9-]{6,30}@[a-z0-9-]+\.iam\.gserviceaccount\.com$`)
 
 // TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere: the value agent-secrets writes
-// beside a kind fails the earlier brokers' rule, so they refuse a kind secret rather than serve its
-// stored key, while this broker serves the secret as the kind it is and never reads the tag.
+// beside a type fails the mint-service-account rule of the brokers from legion-envoy-v13.19.0 to
+// the release before v16.0.0, so they refuse a type secret rather than serve its stored key, while
+// this broker serves the secret as the type it is and never reads the tag. The brokers from
+// v16.0.0 to the release before the type tag read neither the tag nor type, and serve a type
+// secret as a stored one (policy.TagRollbackGuard), so the first release that reads type is the
+// rollback floor.
 func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 	if legacyMintTargetPattern.MatchString(policy.RollbackGuardValue) {
 		t.Fatalf("RollbackGuardValue %q matches the earlier brokers' mint-service-account rule, so they would mint for it", policy.RollbackGuardValue)
 	}
-	for _, kind := range policy.Kinds {
-		secret := kindSecret("GUARDED_KEY", kind, "value")
+	for _, secretType := range policy.Types {
+		secret := typeSecret("GUARDED_KEY", secretType, "value")
 		secret.Tags[policy.TagRollbackGuard] = policy.RollbackGuardValue
 		guarded, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
 		if err != nil {
@@ -401,7 +431,7 @@ func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 			t.Fatalf("Load: %v", err)
 		}
 		if guarded.Secrets["GUARDED_KEY"] != bare.Secrets["GUARDED_KEY"] || guarded.Version != bare.Version {
-			t.Fatalf("%s: the rollback guard changed what this broker serves: %+v against %+v", kind, guarded.Secrets["GUARDED_KEY"], bare.Secrets["GUARDED_KEY"])
+			t.Fatalf("%s: the rollback guard changed what this broker serves: %+v against %+v", secretType, guarded.Secrets["GUARDED_KEY"], bare.Secrets["GUARDED_KEY"])
 		}
 	}
 }
@@ -409,10 +439,9 @@ func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 // TestDefaultGrantTag: default-grant=session is served as SessionDefault; any other value is
 // refused default-grant-malformed.
 func TestDefaultGrantTag(t *testing.T) {
-	logged := policytest.CaptureLog(t)
-	good := kindSecret("GOOD_KEY", policy.KindGoogleLogin, "v")
+	good := typeSecret("GOOD_KEY", policy.TypeGoogleLogin, "v")
 	good.Tags[policy.TagDefaultGrant] = policy.DefaultGrantSession
-	bad := kindSecret("BAD_KEY", policy.KindGoogleLogin, "v")
+	bad := typeSecret("BAD_KEY", policy.TypeGoogleLogin, "v")
 	bad.Tags[policy.TagDefaultGrant] = "forever"
 	set, err := policytest.Loader(secrets.NewLocal(good, bad)).Load(context.Background())
 	if err != nil {
@@ -421,7 +450,8 @@ func TestDefaultGrantTag(t *testing.T) {
 	if !set.Secrets["GOOD_KEY"].SessionDefault {
 		t.Fatal("GOOD_KEY not SessionDefault")
 	}
-	if _, ok := set.Secrets["BAD_KEY"]; ok || !strings.Contains(logged.String(), policy.ReasonDefaultGrantMalformed) {
-		t.Fatalf("BAD_KEY served or not logged: %s", logged.String())
+	if _, ok := set.Secrets["BAD_KEY"]; ok {
+		t.Fatal("BAD_KEY served")
 	}
+	refusedAs(t, set, "BAD_KEY", policy.ReasonDefaultGrantMalformed)
 }

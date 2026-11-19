@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // capturedRequest snapshots what the client actually put on the wire, so a subtest can assert
@@ -58,7 +59,9 @@ func tokenFile(t *testing.T, token string) string {
 	return path
 }
 
-func TestPendingSendsBearerAndApproverQuery(t *testing.T) {
+// Pending asks for both states on every call, the pending rows and the expired ones nobody has
+// dismissed, whatever the browser asked Dispatch for: Dispatch's own list URL stays ?approver=me.
+func TestPendingSendsBearerApproverAndBothStates(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
 	defer server.Close()
 
@@ -66,8 +69,8 @@ func TestPendingSendsBearerAndApproverQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
-	if captured.Method != http.MethodGet || captured.Path != "/v1/pending?approver=sjawhar" {
-		t.Fatalf("request = %s %s, want GET /v1/pending?approver=sjawhar", captured.Method, captured.Path)
+	if want := "/v1/pending?approver=sjawhar&state=pending&state=expired"; captured.Method != http.MethodGet || captured.Path != want {
+		t.Fatalf("request = %s %s, want GET %s", captured.Method, captured.Path, want)
 	}
 	if captured.Auth != "Bearer account-token" {
 		t.Fatalf("Authorization = %q, want Bearer account-token", captured.Auth)
@@ -164,6 +167,30 @@ func TestRevokeByApproverSendsBearerPathAndTheApprover(t *testing.T) {
 	}
 }
 
+// Dismiss sends the approver Dispatch names and nothing else, as a revoke does, to the record's
+// own dismiss route.
+func TestDismissSendsBearerPathAndTheApprover(t *testing.T) {
+	server, captured := serveCapturing(t, http.StatusOK, `{"record_id":"rec-1"}`)
+	defer server.Close()
+
+	body, err := New(server.URL, tokenFile(t, "account-token")).Dismiss(context.Background(), "rec-1", "sjawhar")
+	if err != nil {
+		t.Fatalf("Dismiss: %v", err)
+	}
+	if captured.Method != http.MethodPost || captured.Path != "/v1/credential-requests/rec-1/dismiss" {
+		t.Fatalf("request = %s %s, want POST /v1/credential-requests/rec-1/dismiss", captured.Method, captured.Path)
+	}
+	if captured.Auth != "Bearer account-token" {
+		t.Fatalf("Authorization = %q, want Bearer account-token", captured.Auth)
+	}
+	if string(captured.Body) != `{"approver":"sjawhar"}` {
+		t.Fatalf("body = %s, want {\"approver\":\"sjawhar\"}", captured.Body)
+	}
+	if string(body) != `{"record_id":"rec-1"}` {
+		t.Fatalf("answer = %s, want the broker's response relayed verbatim", body)
+	}
+}
+
 // A broker refusal must come back typed, with its status, code and full body preserved, so
 // Task 2's proxy handlers can forward the broker's exact verdict to the browser rather than
 // flattening it into a generic error string.
@@ -211,16 +238,14 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 	}
 }
 
-// A transport failure (here: nothing listening) must never surface as *Error — Task 2 treats
-// anything that is not *agentsecrets.Error as 503 AGENT_SECRETS_UNAVAILABLE, and a transport
-// failure wrongly typed as *Error would forward a fabricated status/code to the browser.
+// A transport failure (here: nothing listening, at a port the test holds) must never surface as
+// *Error — Task 2 treats anything that is not *agentsecrets.Error as 503 AGENT_SECRETS_UNAVAILABLE,
+// and a transport failure wrongly typed as *Error would forward a fabricated status/code to the
+// browser.
 func TestTransportFailureIsNotATypedError(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-
-	_, err := New(closed.URL, tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	_, err := New("http://"+testport.Refused(t), tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
 	if err == nil {
-		t.Fatal("Pending against a closed listener: got nil error")
+		t.Fatal("Pending against a port nothing listens on: got nil error")
 	}
 	var brokerErr *Error
 	if errors.As(err, &brokerErr) {
@@ -386,11 +411,7 @@ func TestServesDeviceGrantReadsTheMetadataOnceAndKeepsWhatItRead(t *testing.T) {
 	})
 
 	t.Run("a broker never read at all keeps the page", func(t *testing.T) {
-		dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-		url := dead.URL
-		dead.Close()
-
-		if !New(url, tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
+		if !New("http://"+testport.Refused(t), tokenFile(t, "account-token")).ServesDeviceGrant(context.Background()) {
 			t.Fatalf("an unreadable broker answered false; a page that vanishes on one failed read is worse than one that lingers")
 		}
 	})

@@ -242,19 +242,22 @@ func TestRevokingASignInThatIsNotThePersonsIsAnUnknownId(t *testing.T) {
 
 // TestPersonSignInsRefusesAValueOutsideItsVocabulary: the migration's own checks close every
 // word this table holds, so a login in capitals, a thumbprint that is not an RFC 7638 one, and a
-// blank machine account are refused by Postgres and never reach a person's own list. A login the
-// caller spells in capitals is lowercased by the writer rather than refused, since that is the
-// one canonical form every login the broker compares is in.
+// blank machine account are refused by Postgres and never reach a person's own list. A machine
+// account the caller spells in capitals is lowercased by the writer, Google writing a service
+// account's address in lower case. A login is not: every caller passes the one folded form
+// (fold.ASCII, through oidc.WorkspaceLogin or record.CanonicalLogin), and Postgres's lower() would
+// fold more than that form does (TestAKelvinLoginIsRefusedNotFoldedOntoAnother).
 func TestPersonSignInsRefusesAValueOutsideItsVocabulary(t *testing.T) {
 	st := storetest.Open(t)
-	if err := record(t, st, "Ada@Example.com", signInBoxOne, "Example-Fleet@example-project.iam.gserviceaccount.com"); err != nil {
-		t.Fatalf("a login and an account in capitals: %v, want them written in lowercase", err)
+	if err := record(t, st, signInPerson, signInBoxOne, "Example-Fleet@example-project.iam.gserviceaccount.com"); err != nil {
+		t.Fatalf("an account in capitals: %v, want it written in lowercase", err)
 	}
 	in := onlySignIn(t, st, signInPerson)
 	if in.Person != signInPerson || in.MachineAccount != signInMachine {
-		t.Fatalf("the recorded sign-in = %+v, want the lowercase login and account", in)
+		t.Fatalf("the recorded sign-in = %+v, want the login as written and the lowercase account", in)
 	}
 	for _, c := range []struct{ name, person, thumbprint, machine string }{
+		{name: "a login in capitals", person: "Grace@Example.com", thumbprint: signInBoxTwo, machine: signInMachine},
 		{name: "a blank person", person: "", thumbprint: signInBoxTwo, machine: signInMachine},
 		{name: "a thumbprint that is too short", person: signInOther, thumbprint: "AAAA", machine: signInMachine},
 		{name: "a thumbprint carrying a character base64url has not", person: signInOther, thumbprint: signInBoxTwo[:42] + "=", machine: signInMachine},

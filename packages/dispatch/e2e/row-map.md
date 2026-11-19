@@ -227,16 +227,19 @@ such a row loses is feedback on the pull request itself.
 | `e2e/create-document.e2e.ts` | makes a document and then reads its own write - the versions it holds, the list it is listed in and the line typed into its live editor after a reload; the double press is answered by the server's idempotency key |
 | `e2e/create-issue-decision-claim.e2e.ts` | the server's search answers the typed title, and the answered ask it lists is its ranking |
 | `e2e/create-issue-related.e2e.ts` | the server's similar-issue search answers the typed title |
+| `e2e/credential-expired.e2e.ts` | a Dismiss is a write the server relays to the broker, and the reload after it reads the list the broker kept; an expired machine login's record is the one the broker answers for its typed code |
 | `e2e/decision-records.e2e.ts` | Keep and Change are writes, and "out of date" is the server's judgement |
 | `e2e/deep-links.e2e.ts` | document landings need the live room and server-settled anchored marks |
 | `e2e/delivery-groups.e2e.ts` | grouping and the window's counts are the server's aggregation |
 | `e2e/delivery-live.e2e.ts` | `sql` writes delivered as live frames |
+| `e2e/delivery-queued.e2e.ts` | a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish |
 | `e2e/delivery.e2e.ts` | facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows |
 | `e2e/doc-reload-line.e2e.ts` | the read-only admission is decided at socket open |
 | `e2e/doc.e2e.ts` | every row lives in the live document room, its connections and versions |
 | `e2e/document-and-comment-read-alike.e2e.ts` | each row asserts inside the live spec editor |
 | `e2e/document-way-back.e2e.ts` | a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true |
 | `e2e/document.e2e.ts` | collaboration, uploads, marks, and the live connection dot |
+| `e2e/download-names.e2e.ts` | the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written |
 | `e2e/editor-paste.e2e.ts` | pastes into the live editor, read back after a reload |
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
@@ -267,6 +270,8 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
+| `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
+| `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
 | `e2e/issues-table.e2e.ts` | every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload |
 | `e2e/judged-grant.e2e.ts` | the two grants it reads are written into the fake broker and the page is asserted against what the server lists back |
@@ -283,6 +288,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/keyed-writes.e2e.ts` | idempotency keys, 409 KEY_IN_FLIGHT, reload resumption, sign-out races |
 | `e2e/labels-escape-focus.e2e.ts` | the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again |
 | `e2e/labels.e2e.ts` | label writes and a server-filtered list; writes labels, then reloads and measures |
+| `e2e/legion.e2e.ts` | the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |
 | `e2e/machine-login.e2e.ts` | device grants decided on the real broker |
@@ -306,6 +312,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/phone.e2e.ts` | the trap is asserted while a send is out; asserts the project document's live editor content |
 | `e2e/picture-link-click.e2e.ts` | the link is clicked inside the live document editor |
 | `e2e/pictures.e2e.ts` | pastes and uploads, with the live editor and stored markdown read back |
+| `e2e/pinned-review-events.e2e.ts` | the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state |
 | `e2e/pipeline.e2e.ts` | `sql`-seeded pipeline state the server aggregates |
 | `e2e/plain-http-origin.e2e.ts` | types into the live document over the plain-HTTP origin |
 | `e2e/plain-http-proxy.e2e.ts` | counts the live socket upstream of a real proxy |
@@ -330,6 +337,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/signins.e2e.ts` | the broker's machine list and a Revoke decided there |
 | `e2e/smoke.e2e.ts` | the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami |
 | `e2e/spec-suggestion-decoration.e2e.ts` | reads the decoration's DOM inside the live editor |
+| `e2e/steps.e2e.ts` | the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first |
 | `e2e/stored-text-reading.e2e.ts` | each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes |
 | `e2e/task-items.e2e.ts` | asserts inside the live document editor |
 | `e2e/text-typed-blocks.e2e.ts` | the live document editor, including typing a new option |

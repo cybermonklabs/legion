@@ -224,8 +224,11 @@ func lockMigrations(ctx context.Context, conn *pgx.Conn) error {
 // inMigrationLockTx runs fn under migrationLockKey, inside a transaction of its own on the
 // connection that holds the key, and owns the whole sequence around it in one fixed order:
 // acquire a pooled connection, mark the context as holding it, take the key by polling
-// (lockMigrations), begin, run fn, end the transaction, release the key and give the connection
-// back - or, where the connection's lock state is unknown, close it out of the pool.
+// (lockMigrations), begin, run fn, end the transaction, release the key, reset the connection's
+// session so a migration's leftover setting does not reach the pool's next caller
+// (unlockMigrations, pgmigrate.ResetSession, run after the unlock has answered true and before the
+// release), and give the connection back - or, where the connection's lock state is unknown, close
+// it out of the pool.
 //
 // fn follows pgx.BeginFunc's rule: nil commits, an error rolls back.
 func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
@@ -255,16 +258,23 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return fn(ctx, tx) })
 }
 
-// unlockMigrations gives migrationLockKey and conn back through duty.FreeSessionLock, which
-// returns conn to the pool only once Postgres answers true, so a connection that may still hold
-// the key never serves another caller and holds every later boot's migrations behind it.
+// unlockMigrations gives migrationLockKey and conn back through duty.FreeSessionLockThenReset,
+// which returns conn to the pool only once Postgres answers true, so a connection that may still
+// hold the key never serves another caller and holds every later boot's migrations behind it.
+//
+// It passes pgmigrate.ResetSession, which runs between the unlock and the release: a migration's
+// own text can run a SET without LOCAL, and its stored code can call set_config(…, false), either
+// of which would otherwise stay on this pooled connection for the pool's next caller. The reset
+// runs DISCARD ALL, which also releases the session's advisory locks, so it must run after the
+// unlock has answered true, not before, or pg_advisory_unlock would have nothing to free.
 //
 // duty.ErrSessionClosed is logged at INFO: a boot cancelled inside the transaction has already
 // closed the connection, over its in-flight statement's failure or over BeginFunc's rollback on
 // the cancelled context, and the session's end releases the key. Every other error is an ERROR,
-// because the key may still be held by a session the unlock could not reach.
+// because the key may still be held by a session the unlock could not reach, or the reset left the
+// session's state unknown.
 func unlockMigrations(conn *pgxpool.Conn) {
-	err := duty.FreeSessionLock(conn, "select pg_advisory_unlock($1)", migrationLockKey)
+	err := duty.FreeSessionLockThenReset(conn, pgmigrate.ResetSession, "select pg_advisory_unlock($1)", migrationLockKey)
 	switch {
 	case err == nil:
 	case errors.Is(err, duty.ErrSessionClosed):
@@ -305,8 +315,17 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // must not change result type"). A release whose set first holds a timestamped migration is rolled
 // out over processes of this one, which read the version cast. The type is read before the ALTER
 // TABLE, which on a column already bigint rewrites nothing but still takes ACCESS EXCLUSIVE.
+//
+// The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
+// statement the runner sends on its version table runs under one set of values:
+// session_authorization, role and search_path at the values that RESET gives them, under which
+// schema_migrations and information_schema.columns resolve as the version check and the census
+// resolve them, and lock_timeout at LockTimeout, which bounds the widen's ACCESS EXCLUSIVE lock.
 func (s *Store) createVersionTable(ctx context.Context, widen bool) error {
 	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := pgmigrate.Pin(ctx, tx); err != nil {
+			return fmt.Errorf("pin the runner's settings: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			create table if not exists schema_migrations (
 				version bigint primary key,
@@ -353,6 +372,15 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 	// version record still commit together, and it is released before RetryLockTimeouts pauses
 	// between attempts.
 	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// The check below and the insert of the version name schema_migrations without its
+		// schema. Pin gives the transaction the values that RESET gives session_authorization,
+		// role and search_path, under which the census reads, whatever session the pooled
+		// connection brings, so the check reads the version table that the census read, and bounds
+		// it by LockTimeout. Exec pins the transaction again after the migration's statements, so
+		// the insert runs under the same values whatever the migration's own stored code set.
+		if err := pgmigrate.Pin(ctx, tx); err != nil {
+			return fmt.Errorf("pin the runner's settings: %w", err)
+		}
 		var applied bool
 		// The parameter is cast, here and in the insert below, because pgx encodes it for the
 		// column it finds: a database whose column this boot is about to widen, or one widened by
@@ -379,6 +407,12 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 // same key conflict, so this excludes older runners and schema-version readers too. Closing the
 // connection releases the lock only after the statement and its separate version record finish.
 //
+// This connection never goes back to the pool, so it needs no session reset: a migration's own SET
+// or its stored code's set_config(…, false) dies with the connection that closeBounded closes, and
+// reaches no later caller. A change that gave this connection back to the pool would have to reset
+// its session first, as inMigrationLockTx does through unlockMigrations (pgmigrate.ResetSession),
+// or that leftover would reach the pool's next caller.
+//
 // The key is taken by polling here too (lockMigrations), and this is the site whose build the
 // polling exists for: it holds the key while CREATE INDEX CONCURRENTLY runs.
 func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pgmigrate.Migration) error {
@@ -391,17 +425,23 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pg
 	if err := lockMigrations(ctx, conn); err != nil {
 		return err
 	}
+	// The check below and the version insert name schema_migrations without its schema.
+	// PinSession gives the session the values that RESET gives session_authorization, role and
+	// search_path, under which the census reads, whatever session the pooled connection this one
+	// was hijacked from brings, and bounds the check and the insert by LockTimeout, as Pin bounds
+	// the transactional runner's. No restore follows: closeBounded closes the connection once the
+	// migration is recorded, so no later caller meets the pinned session. ExecNonTransactional
+	// gives the session back the values it found on return, which are these, so the insert after
+	// it runs under them too, whatever the build's own code set.
+	if err := pgmigrate.PinSession(ctx, conn); err != nil {
+		return fmt.Errorf("pin the runner's settings: %w", err)
+	}
 	var applied bool
 	if err := conn.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
 		return fmt.Errorf("check migration: %w", err)
 	}
 	if applied {
 		return nil
-	}
-	// Keep the version insert bounded too, just as the transactional runner's SET LOCAL
-	// remains in force until commit. ExecNonTransactional restores this same session bound.
-	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false)", pgmigrate.LockTimeout.String()); err != nil {
-		return fmt.Errorf("bound migration version lock waits: %w", err)
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err

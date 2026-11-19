@@ -123,7 +123,7 @@ func (f *fakeDialer) failWith(err error) {
 }
 
 // build is the Config.NewDialer a test passes: the proxy gets this very fake.
-func (f *fakeDialer) build(context.Context) (Dialer, error) { return f, nil }
+func (f *fakeDialer) build(context.Context, string) (Dialer, error) { return f, nil }
 
 // socketPath is this package's socket path: a socket named session.sock in a directory of the
 // test's own, placed by TMPDIR and falling back to /tmp for the socket path's length alone, so
@@ -318,7 +318,7 @@ func (s *stallingDialer) closeCount() int {
 	return s.closed
 }
 
-func (s *stallingDialer) build(context.Context) (Dialer, error) { return s, nil }
+func (s *stallingDialer) build(context.Context, string) (Dialer, error) { return s, nil }
 
 // A proof dial the instance never answers ends at ProofTimeout, however long the start's own
 // context lives: Start refuses with the instance and the bound named, the dial's deadline still
@@ -378,6 +378,36 @@ func TestStartRefusesAnUnboundedProofDial(t *testing.T) {
 	}
 	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a Start with no proof bound left something at the socket path: %v", err)
+	}
+}
+
+// An account that is no service account's email is refused, naming it, before Start binds
+// anything or builds a dialer. The login form, the account's email without .gserviceaccount.com, is
+// the likeliest slip, because the session database's user is that login.
+func TestStartRefusesAnAccountThatIsNoServiceAccountEmail(t *testing.T) {
+	const login = "legion-sessions@example-project.iam"
+	socket := socketPath(t)
+	built := 0
+
+	_, err := Start(context.Background(), Config{
+		Socket:                    socket,
+		Instance:                  testInstance,
+		ImpersonateServiceAccount: login,
+		ProofTimeout:              testProofTimeout,
+		NewDialer: func(context.Context, string) (Dialer, error) {
+			built++
+			return nil, errors.New("the dialer factory was called")
+		},
+	})
+	want := fmt.Sprintf("sessionproxy: ImpersonateServiceAccount %q is not a Google service account's email", login)
+	if err == nil || err.Error() != want {
+		t.Fatalf("Start = %v, want %q", err, want)
+	}
+	if built != 0 {
+		t.Fatalf("a Start with no service account's email called its dialer factory %d times", built)
+	}
+	if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a Start with no service account's email left something at the socket path: %v", err)
 	}
 }
 

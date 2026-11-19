@@ -127,9 +127,10 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 	want := []corev1.KeyToPath{
 		{Key: GitHubHostsKey("acme"), Path: "acme/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("acme"), Path: "acme/" + ghconfig.ConfigFile},
 		{Key: GitHubHostsKey("sjawhar"), Path: "sjawhar/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("sjawhar"), Path: "sjawhar/" + ghconfig.ConfigFile},
+		{Key: GitHubPairsKey, Path: ghconfig.PairsFile},
 	}
 	if gh == nil || gh.SecretName != roleSecretName(s.Name, claim.RoleController) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
-		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, read-only",
+		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, the bundle's pairs file in the root, read-only",
 			gh, roleSecretName(s.Name, claim.RoleController))
 	}
 	if mount := mountHolding(launcher, GHConfigDir); mount == nil || mount.Name != roleVolume(ghVolume, claim.RoleController) || mount.MountPath != GHConfigDir || !mount.ReadOnly {
@@ -243,8 +244,8 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 	if secret := g.secret(secretName(name)); secret != nil {
 		t.Errorf("the controller's launch wrote the provisioning Secret %s: %v", secretName(name), secret.Data)
 	}
-	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 2+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default and the review App's gh files of each owner, and nothing else", secret)
+	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 3+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner, and nothing else", secret)
 	}
 	for _, role := range claim.Roles {
 		if g.secret(roleSecretName(name, role)) != nil {
@@ -296,8 +297,8 @@ func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 	loc := g.spawn(spec)
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 2 || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token and the empty default alone", secret)
+	if secret == nil || len(secret.Data) != 3 || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the empty default and the empty renames alone", secret)
 	}
 	if def, ok := secret.Data[GitHubDefaultKey]; !ok || len(def) != 0 {
 		t.Fatalf("the controller's Secret records default %q (present: %t), want an empty one", def, ok)
@@ -451,7 +452,7 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 	token := string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile])
 	accept := g.r.LauncherResolver()
 	valid := shimwire.LauncherHello{Token: token, Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1"}
-	if handler, reason := accept(valid); handler == nil {
+	if handler, _, reason := accept(valid); handler == nil {
 		t.Fatalf("the controller's own launcher was refused: %s", reason)
 	}
 	for label, edit := range map[string]func(*shimwire.LauncherHello){
@@ -465,8 +466,35 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 		t.Run(label, func(t *testing.T) {
 			hello := valid
 			edit(&hello)
-			if handler, reason := accept(hello); handler != nil || reason == "" {
+			if handler, _, reason := accept(hello); handler != nil || reason == "" {
 				t.Fatalf("accepted %+v (reason %q)", hello, reason)
+			}
+		})
+	}
+}
+
+// The controller's pod takes no cache trimmer, however the deployment configured one: its
+// launcher's single-role form returns before the background block that would run one, and the
+// volume it works on is its own Sandbox's, no issue's cache (Options.VolumeTrim).
+func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(controllerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, ack, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the controller's own launcher was refused: %s", reason)
+			}
+			if ack.VolumeTrim != nil {
+				t.Fatalf("the controller's launcher was handed %+v, want none", *ack.VolumeTrim)
 			}
 		})
 	}

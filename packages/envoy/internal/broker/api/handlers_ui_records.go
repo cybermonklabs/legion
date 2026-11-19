@@ -1,15 +1,16 @@
 // handlers_ui_records.go: POST /v1/credential-requests/{record}/approve and .../deny, the two
-// routes that decide a machine login, and the record shape POST /v1/machine-logins/lookup
-// answers. A machine login is decided on the caller's word by a listed service calling with its
-// own Kubernetes ServiceAccount token: the token proves which service is calling, and the
-// service names the deciding person in the body's approver field, who must be one the record's
-// rule admits (record.MayDecide) and must type the login's code.
-// Each such decision is logged with the caller that relayed it and the approver it named. A
-// secret request is never decided here, by any caller: it is decided only on the broker's own
-// approval page (internal/broker/approval), by a person signed in to the broker, and the two
-// decide routes refuse it naming that page before they look at the caller at all. A service's
-// machine login, which only a broker before token logins opened, may only be denied: approving
-// it is 400 SERVICE_LOGS_IN_WITH_TOKEN.
+// routes that decide a machine login; .../dismiss, which takes an expired record of either kind
+// off every list; and the record shape POST /v1/machine-logins/lookup answers. A machine login
+// is decided on the caller's word by a listed service calling with its own Kubernetes
+// ServiceAccount token: the token proves which service is calling, and the service names the
+// deciding person in the body's approver field, who must be one the record's rule admits
+// (record.MayDecide) and must type the login's code.
+// Each such decision, and each dismissal, is logged with the caller that relayed it and the
+// approver it named. A secret request is never decided here, by any caller: it is decided only
+// on the broker's own approval page (internal/broker/approval), by a person signed in to the
+// broker, and the two decide routes refuse it naming that page before they look at the caller
+// at all. A service's machine login, which only a broker before token logins opened, may only be
+// denied: approving it is 400 SERVICE_LOGS_IN_WITH_TOKEN.
 package api
 
 import (
@@ -19,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -89,8 +91,11 @@ func (s *server) denyRecord(w http.ResponseWriter, r *http.Request, needs power)
 // than in authenticate. It then reads the record's kind, before anything else about the caller:
 // a secret request answers 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, whether or
 // not the caller holds a ServiceAccount token, since no token makes one decidable here and a
-// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do. Nothing
-// is written and no body is read for that refusal. Every other record is then authenticated
+// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do — except
+// one the model judge holds now (requests.Machine.JudgeHolds), which no person decides until the
+// judge gives it up: it answers 403 JUDGE_DECIDES and links no page. On a broker with
+// BROKER_SIGNIN=off, which serves no page, the refusal names the setting and no page. Nothing is
+// written and no body is read for any of these refusals. Every other record is then authenticated
 // exactly as the other account routes are (accountCaller: the ServiceAccount token and
 // BROKER_API_ACCOUNTS), and the caller's name must carry needs, the power its row declares, as
 // authenticate requires of every other route a listed caller's token authenticates
@@ -110,7 +115,23 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	}
 	kind, kindErr := s.deps.Machine.RecordKind(r.Context(), recordID)
 	if kindErr == nil && kind != record.KindLauncherCredential {
+		// Only the hold is read, not the record: a record signed for another BROKER_PUBLIC_URL
+		// verifies for no broker but its own, and is refused DECIDE_ON_BROKER_PAGE as before. A
+		// read of the hold that failed is refused the same way, since no secret request is
+		// decided here either way.
+		if held, err := s.deps.Machine.JudgeHolds(r.Context(), recordID); err == nil && held {
+			writeError(w, http.StatusForbidden, "JUDGE_DECIDES",
+				"the model judge is deciding this secret request; no person approves or denies it unless the judge cannot decide it")
+			return
+		}
+		// A broker with BROKER_SIGNIN=off serves no page, so approveURL names none, since every
+		// /approve path is a 404 there, and the refusal says why nobody can decide it.
 		page := s.approveURL(recordID)
+		if page == "" {
+			writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
+				"a secret request is decided only on the secrets broker's own page, and this broker serves none: it signs nobody in (BROKER_SIGNIN=off), so this request cannot be decided here", "")
+			return
+		}
 		writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
 			"a secret request is decided only on the secrets broker's own page, by a person signed in to the broker: "+page, page)
 		return
@@ -119,9 +140,14 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !ok {
 		return
 	}
+	// The route's adapter (accountAuthAfterRecordKind) noted this route's caller unauthenticated,
+	// since it is this handler that reads the credential, and a caller without the route's power
+	// is refused as unauthenticated, as authenticate's refusal of every other account route
+	// records it; from here on the refusals are the listed caller's.
 	if refuseWithoutPower(w, who.account, needs, r.Pattern) {
 		return
 	}
+	answer.FromContext(r.Context()).NoteCaller(answer.CallerAccount, who.account.Name)
 	switch {
 	case errors.Is(kindErr, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such credential request")
@@ -137,7 +163,9 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("decision relayed", "caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("decision relayed", answer.ClipFields([]any{"caller", who.account.Name, "approver", body.Approver, "record", recordID, "approve", approve})...)
 	s.decideMachineLogin(w, r, recordID, approve, body)
 }
 
@@ -175,4 +203,63 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 		return
 	}
 	writeJSON(w, http.StatusOK, decisionResponse{CredentialID: strPtr(credentialID), State: "approved"})
+}
+
+// dismissBody is dismiss's request body, {"approver"}: the dismissing person's login, which
+// Dispatch's server sets from its own session.
+type dismissBody struct {
+	// The login of the person dismissing the record: its approver, or anyone signed in for a
+	// record whose approver is anyone, which is whose list holds it.
+	Approver string `json:"approver"`
+}
+
+// dismissResponse is what a dismissal answers: wire.DismissResponse itself, named here for the
+// same reason recordResponse is.
+type dismissResponse = wire.DismissResponse
+
+// dismissRecord takes an expired credential-request record off every approver's list for good,
+// as the person the caller names (requests.Machine.Dismiss): a secret request or a machine login
+// whose deadline passed before anybody decided it, which every decision refuses. It is an
+// accountAuth row, so authenticate has spent the source address's bucket and checked the caller's
+// token and its power before it runs, and unlike the decide routes it reads no record's kind
+// first: a dismissal decides nothing and releases nothing, so a secret request's is relayed from
+// Dispatch as a revoke is, with the person taken on the caller's word. That person must be one
+// whose list holds the record, its approver or, for a record whose approver is anyone, anybody
+// signed in. A second dismissal answers the first one's values and writes nothing, so a person who
+// clicks twice, or two people who dismiss one shared request, read one answer. It is logged with
+// the caller that relayed it and the approver it named, as a machine login's decision is.
+func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerName string) {
+	recordID, ok := pathRecordID(w, r, "record", "RECORD_ID_INPUT")
+	if !ok {
+		return
+	}
+	var body dismissBody
+	if !readJSON(w, r, &body, "INVALID_DISMISSAL") {
+		return
+	}
+	if !requireApprover(w, body.Approver) {
+		return
+	}
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("dismissal relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "record", recordID})...)
+	dismissal, err := s.deps.Machine.Dismiss(r.Context(), recordID, body.Approver)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such credential request")
+		return
+	case errors.Is(err, record.ErrNotApprover):
+		writeError(w, http.StatusForbidden, "NOT_APPROVER", "only the record's approver, or anyone signed in for a request whose approver is anyone, may dismiss it")
+		return
+	case errors.Is(err, requests.ErrNotExpired):
+		writeError(w, http.StatusConflict, "RECORD_PENDING", err.Error())
+		return
+	case errors.Is(err, requests.ErrTerminal):
+		writeError(w, http.StatusConflict, "RECORD_TERMINAL", "the credential request was decided, or cancelled before its deadline, so it did not expire and there is nothing to dismiss")
+		return
+	case err != nil:
+		writeInternal(w, "dismiss credential request", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dismissResponse{RecordID: dismissal.RecordID, DismissedBy: dismissal.DismissedBy, DismissedAt: dismissal.DismissedAt})
 }

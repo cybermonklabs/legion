@@ -18,8 +18,8 @@ export function daemonLaunchedController(env: NodeJS.ProcessEnv): boolean {
  * comma-separated, which the daemon always sets from the project's `slack_channels` (empty for
  * none) and the operator's pod may not. It is required, and an entry that is not a channel id is
  * refused, naming it, rather than subscribed to as a topic no mention reaches. Read only for that
- * controller: any other session, whatever it inherited, hears no Slack channel, since only the
- * daemon's controller is granted the Slack bot token.
+ * controller: any other session, whatever it inherited, hears no Slack channel, since an inherited
+ * list is no project's word for that session.
  */
 export function daemonControllerSlackChannels(env: NodeJS.ProcessEnv): readonly string[] {
   const { LEGION_SLACK_CHANNELS: named } = env;

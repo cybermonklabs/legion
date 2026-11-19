@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // parseIssueParent decodes the tri-state `parent` field of an issue PATCH. Absent →
@@ -68,10 +70,19 @@ const legionLabel = "legion"
 // runs - but a write's advice does (computeWriteAdvice, write_advice.go), and there it means the
 // issue is treated as one Legion does not run: the "still in triage" line prints. A chain that
 // deep needs a reparent that refuseParentTooDeep would have refused.
-var legionManagedStatusSQL = `
+var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
+
+// legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
+// than read - $1 its parent_key, $2 its labels - for a write that reads its advice before it
+// writes that row (writeAdviceBefore). The walk above it, and the depth cap, are the same.
+var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, 0 as depth`)
+
+// legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
+// parent_key, its labels and depth 0.
+func legionWalkSQL(start string) string {
+	return `
 	with recursive chain as (
-		select i.parent_key, i.labels, 0 as depth
-		from issues i where i.key = $1
+		` + start + `
 		union
 		select p.parent_key, p.labels, c.depth + 1
 		from issues p join chain c on p.key = c.parent_key
@@ -80,6 +91,7 @@ var legionManagedStatusSQL = `
 	select exists (
 		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
 	)`
+}
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
@@ -95,6 +107,16 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 	return managed, nil
 }
 
+// legionManagedStatusOfRow is legionManagedStatus for key's row as a write leaves it, parent and
+// labels, which the write has not written yet (legionManagedStatusOfRowSQL).
+func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
+	var managed bool
+	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels).Scan(&managed); err != nil {
+		return false, fmt.Errorf("resolve whether Legion manages the status of %s: %w", key, err)
+	}
+	return managed, nil
+}
+
 func normalizeIssueBlockers(targets []string) ([]string, error) {
 	if len(targets) > contracts.MaxIssueBlockers {
 		return nil, countExceededError("BLOCKED_BY_INPUT", "blocked_by", len(targets), contracts.MaxIssueBlockers)
@@ -103,8 +125,11 @@ func normalizeIssueBlockers(targets []string) ([]string, error) {
 	return slices.Compact(targets), nil
 }
 
-// lockProjectIssueDependencies serializes blocker and parent changes before any row or rank
+// lockProjectIssueDependencies serializes blocker and parent changes before any owner, row or rank
 // lock. The two-key namespace is separate from Dispatch's one-key rank, document and event locks.
+// It is the one statement of a project's dependency lock: lockIssueDependencyWrite takes each
+// project's lock through it, and its id is hashtext of the project key, so a caller holding
+// several takes them in docs.ProjectsInLockOrder's order.
 func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `
 		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies'), hashtext($1))
@@ -114,33 +139,153 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 	return nil
 }
 
-// lockIssueRows locks key and the rows in others `for no key update` in one key order, the order
-// LockOwners takes event owners, and answers key's parent as that lock read it. A PATCH locks
-// every row it names through one call, so two writes naming the same rows queue one behind the
-// other instead of each holding one row while waiting for the other. A key with no row is
-// skipped; the caller's own read of that key refuses it.
-func lockIssueRows(ctx context.Context, q queryer, key string, others ...string) (*string, error) {
-	keys := append(make([]string, 0, len(others)+1), key)
-	keys = append(keys, others...)
-	slices.Sort(keys)
-	var keyParent *string
-	for index, row := range keys {
-		if index > 0 && row == keys[index-1] {
-			continue
-		}
-		var parent *string
-		err := q.QueryRow(ctx, `select parent_key from issues where key = $1 for no key update`, row).Scan(&parent)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if row == key {
-			keyParent = parent
+// lockDeploymentIssueDependencies is the one dependency lock that is not a project's, and the
+// last dependency lock every dependency write takes. Every writer of this build takes it
+// exclusively, so no two dependency walks of this build ever run at once and no ring can be
+// closed by two writes of this build that each walk a graph the other is changing — whatever
+// projects their components touch, and with nothing read before a lock deciding it. What it
+// costs is that dependency writes — a blocked_by write and a reparent — serialize across the
+// deployment rather than per project; every other write takes neither this lock nor a project's.
+//
+// It serializes every dependency write only while one build serves: a server of the build
+// before this one takes only its own project's dependency lock and never this one. The
+// deployment this repository describes holds that, because gcp:Dispatch rolls the app
+// Deployment with the Recreate strategy at one replica (infra/gcp/dispatch.go,
+// dispatchStrategyFor, minDispatchReplicas), so the old pod stops before the new one starts. A
+// deployment that serves two builds at once — a rolling update above one replica — must not
+// serve a build before this one beside it, since such a writer shares no lock with a writer of
+// this build across three projects.
+//
+// The project locks are kept for two reasons. Beside the exclusive deployment lock they decide
+// nothing among writers of this build; what they still do is fence a writer of an earlier
+// build, which holds only its project's lock, on every project this write names (its own and
+// each target's), so even with two builds serving only a ring through a project this write does
+// not name could close. And the test gates use them: a caller that holds a project's dependency
+// lock fences that project's dependency writes
+// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependencies_test.go).
+//
+// The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
+// second key, so a project whose key happens to hash to that literal cannot collide with it; the
+// two-key shape with a literal is the one refuseRepoRenameChain already uses for a
+// deployment-wide lock.
+func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `
+		select pg_advisory_xact_lock(hashtext('dispatch-issue-dependencies-deployment'), 0)
+	`); err != nil {
+		return fmt.Errorf("lock deployment issue dependencies: %w", err)
+	}
+	return nil
+}
+
+// lockIssueDependencyWrite takes the dependency locks a blocker or parent write needs, in the one
+// order every such write takes them: the project lock of the issue's own project and of each
+// project a target of this write belongs to, each through lockProjectIssueDependencies in
+// docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
+// dependency lock (lockDeploymentIssueDependencies). Every other lock of the write follows: its
+// owner locks and its rank-allocation lock, and its row locks in its write phase. Its reads are
+// plain and its locks are advisory transaction locks, so none of it assigns the transaction an id
+// (INFRA-636): it is the first step of the write's read phase. project is the issue's own project,
+// targets are its blocked_by targets, and caller is the one project the request's credential may
+// write, empty for a credential that names none.
+//
+// The project locks are taken in lock id order, not key order, because the lock id is what
+// Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
+// same two ids in opposite orders. Two keys that collide take the same id twice in a row, which
+// is harmless because an advisory lock is re-entrant within one session. That order never
+// inverts, because every dependency write takes its project locks first, in id order, and the
+// deployment lock last, so no two writes can hold what the other waits for.
+//
+// The one read it makes runs with no lock held, and nothing that read says decides which locks
+// are taken: the projects it names are locked on top of the issue's own, and the deployment lock
+// is taken exclusively whatever it said. Reading a target's project unlocked is sound because no
+// route moves an issue between projects (project_scope.go's file doc), and a key created between
+// that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
+//
+// A caller whose credential names one project is refused a target outside it here, before any
+// lock is taken: the pre-handler check reads the project of the object the path names and no key
+// of the body (project_scope.go), so this is the first point at which a target's project is
+// known, and a caller that may not write at all would otherwise take the deployment-wide lock
+// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
+// both word it through refuseBlockedByOutsideCallerProject.
+func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
+	foreign, err := foreignTargets(ctx, tx, project, targets)
+	if err != nil {
+		return err
+	}
+	if caller != "" && len(foreign) > 0 {
+		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	}
+	projects := make([]string, 0, len(foreign)+1)
+	projects = append(projects, project)
+	for _, target := range foreign {
+		projects = append(projects, target.project)
+	}
+	ordered, err := docs.ProjectsInLockOrder(ctx, tx, projects)
+	if err != nil {
+		return err
+	}
+	for _, p := range ordered {
+		if err := lockProjectIssueDependencies(ctx, tx, p); err != nil {
+			return err
 		}
 	}
-	return keyParent, nil
+	return lockDeploymentIssueDependencies(ctx, tx)
+}
+
+// foreignTarget is a blocked_by target of a project other than the issue's own, and the project
+// it belongs to.
+type foreignTarget struct{ key, project string }
+
+// foreignTargets is every target belonging to a project other than project, in key order, which
+// is the order writeBlockedBy reads its targets in, so a scoped caller is refused the same target
+// by both. A target with no row is left out: writeBlockedBy's own read refuses it inside the
+// transaction, which is where an unknown key is answered.
+func foreignTargets(ctx context.Context, q queryer, project string, targets []string) ([]foreignTarget, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `
+		select key, project_key from issues where key = any($1) and project_key <> $2 order by key
+	`, targets, project)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignTarget, error) {
+		var target foreignTarget
+		return target, row.Scan(&target.key, &target.project)
+	})
+}
+
+// refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
+// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
+// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
+// once and the two cannot drift.
+func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+		caller, target, targetProject)
+}
+
+// lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
+// lock-key order LockOwners takes event owners in (store.LockOwners), and then answers key's parent
+// as it stands under them. A PATCH locks every issue it names through one call, so two writes
+// naming the same issues queue one behind the other instead of each holding one while waiting for
+// the other. A key with no row costs a lock nobody else takes; the caller's own read of that key
+// refuses it. The parent is read in the statement after the locks, never in the same one, so it
+// is the parent the lock's previous holder committed (store.LockOwnersAndRead): every writer of
+// parent_key holds the issue's lock.
+func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...string) (*string, error) {
+	owners := make([]store.Owner, 0, len(others)+1)
+	owners = append(owners, store.IssueOwner(key))
+	for _, other := range others {
+		owners = append(owners, store.IssueOwner(other))
+	}
+	var parent *string
+	err := store.LockOwnersAndRead(ctx, tx, owners, `select parent_key from issues where key = $1`, []any{key}, &parent)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	return parent, nil
 }
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
@@ -149,29 +294,30 @@ func lockIssueRows(ctx context.Context, q queryer, key string, others ...string)
 // the two spellings change together: no mechanism shares a value between the two Go modules.
 const parentContended = "PARENT_CONTENDED"
 
-// parentLockAttempts bounds how many times lockPatchRowsAndParent reads the issue's parent and
+// parentLockAttempts bounds how many times lockPatchOwnersAndParent reads the issue's parent and
 // locks it: the first, and one redo for a parent a concurrent reparent changed in between.
 const parentLockAttempts = 2
 
-// lockPatchRows locks the issue and the rows in named (a proposed parent, rank neighbours) in one
-// key order, for a PATCH that appends no event to the issue's current parent.
-func lockPatchRows(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
-	_, err := lockIssueRows(ctx, tx, key, named...)
+// lockPatchOwners takes the owner locks of the issue and of the issues in named (a proposed parent,
+// rank neighbours) in one lock order, for a PATCH that appends no event to the issue's current
+// parent.
+func lockPatchOwners(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
+	_, err := lockIssueOwners(ctx, tx, key, named...)
 	return err
 }
 
-// lockPatchRowsAndParent is lockPatchRows for a PATCH that appends an event to the issue's
-// current parent (a status change, a reparent), which it locks in the same key order. The parent
+// lockPatchOwnersAndParent is lockPatchOwners for a PATCH that appends an event to the issue's
+// current parent (a status change, a reparent), which it locks in the same lock order. The parent
 // can only be read before the lock, and a concurrent reparent of the issue, which holds the
-// issue's row, can change it in between, so the lock reads it again. A parent that moved releases
-// every lock the attempt took (a savepoint) and the attempt starts over with the parent that
-// stands, so no row is ever locked out of key order. A parent that moves at every attempt is
-// 409 PARENT_CONTENDED, with nothing applied.
+// issue's lock, can change it in between, so the lock reads it again. A parent that moved releases
+// every lock the attempt took (a savepoint, whose rollback gives back the advisory locks taken
+// under it) and the attempt starts over with the parent that stands, so no lock is ever taken out
+// of order. A parent that moves at every attempt is 409 PARENT_CONTENDED, with nothing applied.
 //
 // It does not use resolveThenLock, whose resolve half runs with nothing held and whose write half
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
-func lockPatchRowsAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
+func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named ...string) error {
 	rows := make([]string, 0, len(named)+1)
 	for range parentLockAttempts {
 		var parent *string
@@ -186,7 +332,7 @@ func lockPatchRowsAndParent(ctx context.Context, tx pgx.Tx, key string, named ..
 		if err != nil {
 			return err
 		}
-		locked, err := lockIssueRows(ctx, attempt, key, rows...)
+		locked, err := lockIssueOwners(ctx, attempt, key, rows...)
 		if err != nil {
 			_ = attempt.Rollback(ctx)
 			return err
@@ -297,8 +443,15 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 	return assertNoWaitPath(ctx, tx, []waitNode{{key: parent}}, waitNode{key: child})
 }
 
-// writeBlockedBy validates and replaces the normalized same-project target list.
-func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project string, targets []string) error {
+// writeBlockedBy validates and replaces the normalized target list. A target may be an issue of
+// another project: an issue that waits on work tracked elsewhere has to be able to record that
+// wait, and the walk below is what refuses a ring, between projects as inside one.
+//
+// caller is the one project the request's credential may write, empty for a credential that
+// names none (callerProject). A target outside it is refused here, under the locks, which is the
+// authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
+// taken, and both word it through refuseBlockedByOutsideCallerProject.
+func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
@@ -311,8 +464,8 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project string, targe
 		if err != nil {
 			return err
 		}
-		if targetProject != project {
-			return errorf(http.StatusBadRequest, "BLOCKED_BY_OUTSIDE_PROJECT", "blocked_by issue %s must be in the same project", target)
+		if targetProject != project && caller != "" {
+			return refuseBlockedByOutsideCallerProject(caller, target, targetProject)
 		}
 	}
 	from := make([]waitNode, len(targets))

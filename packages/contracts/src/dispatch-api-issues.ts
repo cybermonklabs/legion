@@ -111,7 +111,7 @@ export const issueFields = {
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
-  /** Issue keys in the same project this issue waits on, sorted. */
+  /** Issue keys this issue waits on, of any project, sorted. */
   blocked_by: z.array(z.string()),
   /** Every priority this issue advances: the ones it states itself and, marked `inherited`, the
    *  ones an issue above it states. Absent from a Dispatch older than priorities. */
@@ -130,7 +130,8 @@ export const issueFields = {
   components: IssueComponentsSchema,
   external_links: z.array(ExternalLinkSchema),
   route: z.string().nullable(),
-  /** The issue's own repository, owner/name, a mapping of its project; null when it inherits. */
+  /** The issue's own repository, owner/name: any repository GitHub could hold, whether or not a
+   *  project maps it; null when it inherits. */
   repo: z.string().nullable(),
   /** The repository Dispatch resolves for the issue: its own, else its nearest ancestor's, else the
    *  project's default mapping, else null. Legion records it when it first records the issue. */

@@ -339,13 +339,18 @@ func ghItems(t *testing.T, pod *corev1.Pod, role claim.Role) []corev1.KeyToPath 
 }
 
 // ghItemsFor is what a gh volume projects for owners, in the order a launch of them builds it:
-// each owner's hosts.yml and config.yml under a directory of its own name.
+// each owner's hosts.yml and config.yml under a directory of its own name, and the bundle's one
+// pairs file in the root after them (ghconfig.PairsFile), which every launch holding a directory
+// at all projects.
 func ghItemsFor(owners ...string) []corev1.KeyToPath {
-	items := make([]corev1.KeyToPath, 0, 2*len(owners))
+	items := make([]corev1.KeyToPath, 0, 2*len(owners)+1)
 	for _, owner := range owners {
 		items = append(items,
 			corev1.KeyToPath{Key: GitHubHostsKey(owner), Path: owner + "/" + ghconfig.HostsFile},
 			corev1.KeyToPath{Key: GitHubConfigKey(owner), Path: owner + "/" + ghconfig.ConfigFile})
+	}
+	if len(items) > 0 {
+		items = append(items, corev1.KeyToPath{Key: GitHubPairsKey, Path: ghconfig.PairsFile})
 	}
 	return items
 }
@@ -439,17 +444,71 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 // own directory answers for all of them.
 const repositoryDirectory = "acme/widgets"
 
-// projectingARepositoryDirectory is a daemon of before that change: every bundle it renders
-// holds a repository directory beside the owner directories, so a pod it launches projects one.
-func projectingARepositoryDirectory(o *Options) {
-	o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		bundle, err := staticCredential(ctx, role, repo)
-		if err != nil {
-			return bundle, err
+// projectARepositoryDirectory makes the pod named name, and the pod template its Sandbox stores,
+// what a daemon of before that change launched: every role's gh volume projecting the repository
+// directory beside the owner directories, and its two keys in every role's Secret. No launch of
+// this daemon can make that pod — no bundle holds such a directory, and ghconfig.Bundle.Validate
+// refuses the name — so the test writes it, and waits for the stores r reads to hold it.
+func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) {
+	t.Helper()
+	projectGhItems(t, g, r, name, ghItemsFor(slices.Sorted(slices.Values(append(slices.Clone(staticDirs), repositoryDirectory)))...))
+	for _, role := range podKindFor(claim.RoleTester).roles() {
+		if g.secret(roleSecretName(name, role)) == nil {
+			continue
 		}
-		bundle.Dirs[repositoryDirectory] = ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
-		return bundle, nil
+		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		editSecret(g, roleSecretName(name, role), func(secret *corev1.Secret) {
+			secret.Data[GitHubHostsKey(repositoryDirectory)] = []byte(rendered.Hosts)
+			secret.Data[GitHubConfigKey(repositoryDirectory)] = []byte(rendered.Config)
+		})
 	}
+}
+
+// projectGhItems makes every role's gh volume of the issue pod named name, and of the pod
+// template its Sandbox stores, project items, as a pod an earlier daemon launched projects what
+// that daemon handed it — a projection no launch of this daemon makes — and waits for the stores
+// r reads to hold it.
+func projectGhItems(t *testing.T, g *rig, r *Runtime, name string, items []corev1.KeyToPath) {
+	t.Helper()
+	roles := podKindFor(claim.RoleTester).roles()
+	project := func(spec *corev1.PodSpec) {
+		for i, volume := range spec.Volumes {
+			for _, role := range roles {
+				if volume.Name == roleVolume(ghVolume, role) && volume.Secret != nil {
+					spec.Volumes[i].Secret.Items = slices.Clone(items)
+				}
+			}
+		}
+	}
+	s := g.sandbox(name)
+	if s == nil {
+		t.Fatalf("sandbox %s is absent", name)
+	}
+	project(&s.Spec.PodTemplate.Spec)
+	u, err := encodeSandbox(*s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+	g.update(g.pod(name), func(pod *corev1.Pod) { project(&pod.Spec) })
+	holds := func(spec corev1.PodSpec) bool {
+		for _, volume := range spec.Volumes {
+			if volume.Name == roleVolume(ghVolume, claim.RoleTester) && volume.Secret != nil {
+				return slices.Equal(volume.Secret.Items, items)
+			}
+		}
+		return false
+	}
+	g.eventually("the sandbox and pod stores to see "+name+" projecting the items an earlier daemon handed it", func() bool {
+		stored, err := r.storedSandbox(name)
+		if err != nil || stored == nil {
+			return false
+		}
+		pod := r.storedPod(name)
+		return pod != nil && holds(stored.Spec.PodTemplate.Spec) && holds(pod.Spec)
+	})
 }
 
 // A pod launched before INFRA-2543 projects a `<owner>/<repo>` gh directory, whose token reaches
@@ -461,9 +520,10 @@ func projectingARepositoryDirectory(o *Options) {
 // an owner directory the pod lacks; the pod the round ends is replaced by one holding owner
 // directories alone, which has drifted from nothing.
 func TestAPodProjectingARepositoryDirectoryHasDrifted(t *testing.T) {
-	g := newRig(t, nil, withOptions(projectingARepositoryDirectory))
+	g := newRig(t, nil)
 	tester := workerSpec(t)
 	testerLoc := g.spawn(tester)
+	projectARepositoryDirectory(t, g, g.r, testerLoc.Sandbox.Name)
 	ghVolumeName := roleVolume(ghVolume, claim.RoleTester)
 	projected := slices.Sorted(slices.Values(append(slices.Clone(staticDirs), repositoryDirectory)))
 	if held := ghItems(t, g.pod(testerLoc.Sandbox.Name), claim.RoleTester); !slices.Equal(held, ghItemsFor(projected...)) {
@@ -547,7 +607,7 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	served := func() []ghrepo.Repository { return repos }
 	renames := ghrepo.MustRenames(smokeRename)
 	installed := appauth.NewInstalled()
-	credential := appauth.GitHubCredential(&namedLeases{}, installedOnMapped{served: served}, served, renames, installed, nil, nil)
+	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnMapped{served: served}), served, renames, installed, nil, nil)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)
@@ -575,10 +635,11 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 // directory, no issue pod is replaced, and the role's own addresses stay where they are.
 //
 // Those addresses are the rest of what this holds, in each state: the role's generation is started
-// with GH_CONFIG_DIR naming the directory of the owner the issue's record names — the directory
-// the pod projects, whose name authorises nothing — its pod is addressed at the cache of the
-// repository that record names, not the one GitHub holds it under now, and that cache's token is
-// minted for the owner serving the repository now, which is the one half a rename does move.
+// with GH_CONFIG_DIR naming the directory the issue's recorded repository routes to by the
+// bundle's pairs — the owner serving it now, the directory `legion gh` answers that repository
+// from (ghconfig.RouteDir) — its pod is addressed at the cache of the repository that record
+// names, not the one GitHub holds it under now, and that cache's token is minted for the owner
+// serving the repository now: the token and GH_CONFIG_DIR follow a rename, never an address.
 func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	stateA := []ghrepo.Repository{servingSmoke}
 	stateB := []ghrepo.Repository{servingSmoke, otherOfRecordedOwner}
@@ -619,7 +680,7 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	}
 	want := reading{
 		moved:      false,
-		configDir:  ghconfig.Dir(GHConfigDir, recordedSmoke.Owner()),
+		configDir:  ghconfig.Dir(GHConfigDir, servingSmoke.Owner()),
 		cacheURL:   g.r.cacheURL(cache),
 		cacheToken: "ghs_provision_" + servingSmoke.Owner(),
 	}
@@ -683,6 +744,11 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 	}
 	launched := ghItems(t, &corev1.Pod{Spec: r3.podTemplate(launchOf(t, r3, spec)).Spec}, claim.RoleTester)
 	for _, item := range ghItemsFor(addedOwner) {
+		// The bundle's pairs file is in both projections — every launch holding a directory
+		// projects it — so the added owner's own two items are what tell them apart.
+		if item.Key == GitHubPairsKey {
+			continue
+		}
 		if !slices.Contains(launched, item) || slices.Contains(ghItems(t, pod, claim.RoleTester), item) {
 			t.Errorf("the control's launch projects %+v, and the pod %+v; want %s at %s in the launch alone", launched, ghItems(t, pod, claim.RoleTester), item.Key, item.Path)
 		}
@@ -925,6 +991,14 @@ func TestEvaluateReadsAPodStaleExactlyWhenRelaunchReplacesIt(t *testing.T) {
 		"the broker's audience changed": {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.Audience = "agent-secrets-next" }), drifts: agentSecretsTokenVolume},
 		"the broker's expiry changed":   {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.TokenExpiry = 30 * time.Minute }), drifts: agentSecretsTokenVolume},
 		"the broker's URL moved alone":  {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.URL = "https://secrets-next.internal.example" }), where: "AGENT_SECRETS_URL"},
+		// The exchange identity is a volume of the pod as the enrollment is: turning it on, or
+		// moving its audience, drifts the pod for its round, and moves no address of the running
+		// generation; turning it off drifts nothing, since a pod that carries the token needs no
+		// replacing for a generation told of none (Runtime.tradesIn).
+		"the exchange identity turned on": {before: enrolled(unchanged), now: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange" }), drifts: agentSecretsExchangeVolume},
+		"the exchange audience changed": {before: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange" }),
+			now: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange-next" }), drifts: agentSecretsExchangeVolume},
+		"the exchange identity turned off": {before: enrolled(func(a *AgentSecrets) { a.ExchangeAudience = "legion-broker-exchange" }), now: enrolled(unchanged)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil, withOptions(tc.before))

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The architect skill and decomposition check size pull requests for efficient, reliable
+  delivery without a preferred count and allow same-repository sibling dependencies.
+  Repeated edits remain one child; to-dos, review fixes and the architect's own work do not
+  become child issues.

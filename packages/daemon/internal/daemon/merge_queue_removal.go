@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -33,18 +34,19 @@ import (
 // that read with what it came to. The row's context has no deadline, and a running row renews its
 // lease, so a read GitHub never answered would hold the issue's role-message lane without end; a
 // read that runs out of issueRead is a failed read. A merged answer applies the merge as the
-// webhook's merge would (intake.PullRequestMerged, which closes the issue, and changes nothing when
-// the merge is already recorded), and nothing is sent to the merger. A failed read is read again
-// after the runtime's wait (workflowRuntime.mergeStateWait), or after GitHub's Retry-After when
-// that is longer, as the merge-state ladder reads a state GitHub has not computed yet, up to
-// mergeStateLadderReads attempts in all. The bound is on attempts, and each attempt makes at most
-// one read: the row's tries (record.OutboxRow.Attempts) count an attempt that a database error or
-// a failed apply ended too, so the log names the attempt and not a count of reads. Any other
-// answer, or the failed read of the last attempt, applies intake.MergeQueueReadDone, whose
-// transaction writes the merger's message (record.MergeQueueRemoval) while the issue still merges
-// at that head, Unread when no read succeeded. The read applies nothing else: no mergeability and
-// no head move, since a fact of that kind can move a phase (workflow's mergeability), and a
-// removal moves none (dispatch://INFRA-3274/spec R1).
+// webhook's merge would, at the head GitHub answers for (intake.PullRequestMerged, which closes the
+// issue, and changes nothing when the merge is already recorded), and nothing is sent to the
+// merger. A failed read is read again after the runtime's wait (workflowRuntime.mergeStateWait),
+// or after GitHub's Retry-After when that is longer, as the merge-state ladder reads a state
+// GitHub has not computed yet, up to mergeStateLadderReads attempts in all. The bound is on
+// attempts, and each attempt makes at most one read: the row's tries (record.OutboxRow.Attempts)
+// count an attempt that a database error or a failed apply ended too, so the log names the
+// attempt and not a count of reads. Any other answer, or the failed read of the last attempt,
+// applies intake.MergeQueueReadDone, whose transaction writes the merger's message
+// (record.MergeQueueRemoval) while the issue still merges at that head, Unread when no read
+// succeeded. The read applies nothing else: no mergeability and no synchronize of the head, since
+// a fact of that kind can move a phase (workflow's mergeability), and a removal moves none
+// (dispatch://INFRA-3274/spec R1).
 //
 // Both facts are applied under an event id that names the row, so a row run again after its finish
 // was lost applies neither a second time. The read and the wait are the runtime's, which attach
@@ -72,7 +74,7 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	case failed == nil && pull.Merged:
 		r.log.Info("outbox merge-queue read: GitHub answered merged; the merge is applied", append(attributes, "mergeCommit", pull.MergeCommitSHA)...)
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-merged:%s:%d", row.Issue, row.ID),
-			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA}, r.handlers...); err != nil {
+			intake.PullRequestMerged{Repo: pr.Repo, Number: payload.Number, MergeSHA: pull.MergeCommitSHA, HeadSHA: pull.Head.SHA}, r.handlers...); err != nil {
 			return fmt.Errorf("apply the merge of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
 		return nil
@@ -103,15 +105,17 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // it reaches, as a phase-ended message stops nothing.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
-// dropped as a phase-ended message nobody holds is (phaseEnded). A phase-ended message is worth
-// nothing later, since the role's next task names its phase anyway. Nothing else tells a merger
-// of this removal: its pull request waits out of the queue with nobody to enqueue it again or send
-// the issue back, and a merger whose pod was released would learn of it only when the release's
-// backstop wakes it (backstop_minutes, an hour by default). So a released merger is woken
-// (wakeForDelivery), and the row waits on its backoff until the woken session holds the role, as
-// it waits while the listener answers that nobody holds it (notify.ErrNoHolder) or that its holder
-// is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet, its start still
-// owed, is no end either: the row waits for it.
+// ended as the row of a phase-ended message nobody holds is (phaseEnded). That row can end because
+// the role's next task names its phase anyway and the listener keeps its message for the role's
+// next holder (publishKeptToRole). Nothing else tells a merger of this removal: its pull request
+// waits out of the queue with nobody to enqueue it again or send the issue back, and a merger
+// whose pod was released would learn of it only when the release's backstop wakes it
+// (backstop_minutes, an hour by default). So a released merger is woken (wakeForDelivery), and
+// the row waits on its backoff until the woken session holds the role, or, while the wake pacing
+// holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
+// (parkedWait), as it waits while the listener answers that nobody holds it (notify.ErrNoHolder)
+// or that its holder is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet,
+// its start still owed, is no end either: the row waits for it.
 //
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the
@@ -160,14 +164,19 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
-	// merger on every attempt and wait for a session nothing brings back.
-	if woken, err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
+	// merger on every attempt and wait for a session nothing brings back. A launch of the merger
+	// the wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait).
+	if waits, turn, err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
 		return err
-	} else if woken {
+	} else if !turn.IsZero() {
+		return r.parkedWait(turn, fmt.Sprintf("the merge-queue removal of %s waits for its merger's launch, which the wake pacing holds until %s",
+			row.Issue, turn.UTC().Format(time.RFC3339)))
+	} else if waits {
 		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)
 	}
 	message := payload.Message(row.Issue, pr.Repo)
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info("outbox merge-queue removal delivered to the merger", attributes...)

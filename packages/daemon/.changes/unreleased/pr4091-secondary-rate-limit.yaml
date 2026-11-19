@@ -1,0 +1,25 @@
+kind: Fixed
+body: |-
+  A 403 or 429 from GitHub whose message names its secondary rate limit is now that limit whatever
+  its `X-RateLimit-Remaining` says. octokit's throttling plugin reads a message saying "secondary
+  rate" that way; the daemon reads the limit's older name, "abuse detection mechanism", the same
+  way, and reads "secondary rate-limit", with a hyphen, as it reads "secondary rate limit". The
+  leak guard matched the hyphenated form from #4011 until #4052 moved its reading to the daemon's
+  GitHub client without it; it is read again so that the guard reads no answer as a limit less
+  often than before.
+
+  In the leak guard's visibility read, a 403 saying "secondary rate-limit" without
+  `X-RateLimit-Remaining: 0` or a `Retry-After` was read as a refusal; it is now read with the
+  unauthenticated `git ls-remote`, as any secondary limit is, and a GraphQL error saying
+  "secondary rate-limit" now goes to that `git ls-remote` too. An answer naming the secondary limit
+  with `X-RateLimit-Remaining: 0` and no `Retry-After` was read as the core limit, so the guard
+  waited for its reset where that was at most two minutes away, and otherwise, or when refused
+  again, read the visibility through GitHub's GraphQL API, whose requests count against the same
+  secondary limit. The guard now makes no further API request and goes to `git ls-remote` at once,
+  which answers only public: a push or `legion gh` write to a private or internal repository that
+  meets such an answer is now refused, where GraphQL used to answer it.
+
+  The daemon's own GitHub REST calls now wait out a 403 saying "secondary rate-limit", or ask
+  again, as they do for the other spelling, where before they took it as GitHub's refusal. An
+  answer naming the secondary limit with no requests left and no `Retry-After` is now held as the
+  secondary limit rather than the core one, and is still waited until its reset.

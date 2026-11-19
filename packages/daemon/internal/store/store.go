@@ -8,11 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +27,14 @@ import (
 // migrateLock is the advisory lock two daemons migrating the same database take
 // turns on. The number is arbitrary and fixed: only agreement matters.
 const migrateLock int64 = 1208001
+
+// sessionResetBound bounds each step that ends apply's hold on a migration's connection: the reset
+// of the connection's session, and the close of a connection whose reset failed
+// (releaseMigrationConn). Five seconds, as for the state route's rollback (internal/api,
+// stateRollbackBound). Each step is one or two round trips to a server that has just answered. So
+// the bound stops only a wait for a server that no longer answers, and a longer bound would only
+// hold the boot.
+const sessionResetBound = 5 * time.Second
 
 // idleBoundParam is the PostgreSQL setting that ends a connection sitting inside an open
 // transaction with no statement running, and idleBound the value this pool's connections carry
@@ -50,6 +60,9 @@ const (
 // caller holding one gets (ErrNestedAcquire).
 type Store struct {
 	pool *Pool
+	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
+	// daemon turns the publication on, and while it is nil no claim write queues one.
+	roleHoldersQueued atomic.Pointer[func(issue string)]
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
@@ -241,9 +254,23 @@ func boots(ctx context.Context, db queryRower, project string) (int, time.Time, 
 // apply runs one migration unless the database already records it, and reports
 // whether it ran. The check, the migration and the record share a transaction,
 // and the advisory lock is held to its end.
+//
+// The transaction runs on a connection that apply takes for itself (Pool.acquire), not through Tx,
+// because apply resets the connection's session before the connection returns to the pool.
+// releaseMigrationConn says why, and what a failed reset changes.
 func (s *Store) apply(ctx context.Context, migration migrations.Migration) (bool, error) {
+	conn, unmark, err := s.pool.acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	// The mark clears only after the connection is back in the pool or closed, so the guard
+	// refuses this caller a second connection for as long as it holds this one.
+	defer func() {
+		releaseMigrationConn(ctx, conn, migration.Name)
+		unmark()
+	}()
 	ran := false
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "select pg_advisory_xact_lock($1)", migrateLock); err != nil {
 			return fmt.Errorf("lock the schema: %w", err)
 		}
@@ -272,6 +299,59 @@ func (s *Store) apply(ctx context.Context, migration migrations.Migration) (bool
 		return false, err
 	}
 	return ran, nil
+}
+
+// releaseMigrationConn returns conn to the pool once apply's transaction has ended, and it resets
+// conn's session first. A migration's own text can run a SET without LOCAL, and its stored code
+// can call set_config(..., false). Either one stays on the session after the commit. Without the
+// reset, the pool's next caller would meet it. A statement_timeout would cancel its queries, or a
+// search_path would resolve its names to another schema's tables. No migration of the daemon does
+// either today. The reset protects the pool's next caller from a later migration that does.
+//
+// The reset runs DISCARD ALL and then pgx's DeallocateAll. DISCARD ALL gives each setting its
+// reset value, ends a SET ROLE, and drops temporary tables and the server's prepared statements.
+// It also releases the session's advisory locks. apply's lock is a transaction lock
+// (pg_advisory_xact_lock), which the commit or the rollback has already released, so no unlock
+// has to run before the reset. pgx caches prepared statements on each connection. After DISCARD
+// ALL, pgx would still name statements that the server has dropped, and the next cached query
+// would fail with SQLSTATE 26000. DeallocateAll empties pgx's caches, so that query prepares
+// again.
+//
+// The reset keeps the idle bound. Open gives idleBoundParam to each connection as a startup
+// parameter (RuntimeParams). DISCARD ALL gives such a setting the value of its startup parameter,
+// not the server's default. Measured on PostgreSQL 18.6, whose default there was 0: a connection
+// opened with 30000 as that startup parameter read 30s. After a session SET of 0 it read 0, and
+// after DISCARD ALL it read 30s again.
+//
+// The reset and the close run on contexts that a cancelled ctx does not cancel, each bounded by
+// sessionResetBound. A connection that pgx has already closed returns to the pool, which destroys
+// it. pgx closes a connection whose statement a cancelled ctx interrupted, or whose rollback
+// failed. A connection whose reset fails carries a session that nobody knows, so
+// releaseMigrationConn removes it from the pool (Hijack) and closes it. It never returns to the
+// pool. The failed reset does not change apply's answer: the migration has already committed or
+// rolled back, and no later caller meets the closed connection. So releaseMigrationConn logs the
+// failure at WARN with the migration's name, and apply returns what its transaction returned, a
+// migration's error included.
+func releaseMigrationConn(ctx context.Context, conn *pgxpool.Conn, migration string) {
+	if conn.Conn().IsClosed() {
+		conn.Release()
+		return
+	}
+	resetCtx, cancelReset := context.WithTimeout(context.WithoutCancel(ctx), sessionResetBound)
+	defer cancelReset()
+	_, err := conn.Exec(resetCtx, "discard all")
+	if err == nil {
+		err = conn.Conn().DeallocateAll(resetCtx)
+	}
+	if err == nil {
+		conn.Release()
+		return
+	}
+	slog.Warn("legion: the session reset of a migration's connection failed, so the connection is closed and not returned to the pool",
+		"migration", migration, "error", err)
+	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), sessionResetBound)
+	defer cancelClose()
+	_ = conn.Hijack().Close(closeCtx)
 }
 
 // widenSchemaVersion makes schema_version.version a bigint when it is still the

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -62,9 +63,9 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var published []model.Event
+	var published []*model.Event
 	if written.Wrote {
-		event, err := s.commitArtifactVersionEvent(r.Context(), tx, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
+		event, err := s.commitArtifactVersionEvent(ledger, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -75,11 +76,22 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), published...)
+	s.publish(r.Context(), appendedEvents(published...)...)
 	WriteJSON(w, http.StatusOK, report)
 }
 
 func (s *server) injectArtifactSchemaFailure(w http.ResponseWriter, r *http.Request) {
+	s.injectArtifactForTest(w, r, s.deps.Docs.InjectSchemaInvalidForTest)
+}
+
+// injectArtifactNewerContent appends to the document an element no build knows
+// (docs.InjectUnknownElementForTest), so a browser test opens a document holding newer content.
+func (s *server) injectArtifactNewerContent(w http.ResponseWriter, r *http.Request) {
+	s.injectArtifactForTest(w, r, s.deps.Docs.InjectUnknownElementForTest)
+}
+
+// injectArtifactForTest runs a docs test hook on the request's document and answers 204.
+func (s *server) injectArtifactForTest(w http.ResponseWriter, r *http.Request, inject func(ctx context.Context, artifactID string) error) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
@@ -92,7 +104,7 @@ func (s *server) injectArtifactSchemaFailure(w http.ResponseWriter, r *http.Requ
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
-	if err := s.deps.Docs.InjectSchemaInvalidForTest(r.Context(), artifact.ID); err != nil {
+	if err := inject(r.Context(), artifact.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

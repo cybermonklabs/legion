@@ -350,7 +350,7 @@ func TestTheGitHubStandReleasesANarrowedTokenAndRefusesAWiderOne(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
-				Installations: map[string]int64{"acme-org": 7}, Answer: tc.answer,
+				Installations: map[string]int64{"acme-org": 7}, Answer: GitHubAnswer{Mode: tc.answer},
 			}).Answer)
 			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
 				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
@@ -390,7 +390,7 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			service := newService(t, ServiceOptions{Plain: true})
 			service.AnswerWith(NewGitHubStand(GitHubOptions{
-				Installations: map[string]int64{"acme-org": 7}, Answer: GitHubTokensRefused,
+				Installations: map[string]int64{"acme-org": 7}, Answer: GitHubAnswer{Mode: GitHubTokensRefused},
 			}).Answer)
 			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
 				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
@@ -407,37 +407,108 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 	}
 }
 
-// TestTheGitHubStandsAnswerIsSetWhileItRuns: the three answers one after another against one
+// TestTheGitHubStandRefusesOnePartOfATokenRequest: the two answers that refuse one part of a
+// request and mint every other, which is what a caller that asks GitHub again with less of a
+// narrowing reads. The repository answer refuses the narrowing naming its repository, mints the
+// one naming another, and mints the request that names no repository at all - the probe that
+// finds the repositories to be the refused part. The permissions answer refuses a read-only
+// narrowing, its second request without actions included, and mints a narrowing that names
+// repositories alone.
+func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
+	value := gitHubAppValue(t)
+	refusedRepository := GitHubAnswer{Mode: GitHubTokensRefusedRepository, Repository: "proofs"}
+	refusedPermissions := GitHubAnswer{Mode: GitHubTokensRefusedPermissions}
+	for _, tc := range []struct {
+		name      string
+		answer    GitHubAnswer
+		narrowing *secrets.GitHubNarrowing
+		refused   bool
+	}{
+		{name: "the repository the answer names", answer: refusedRepository, refused: true,
+			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
+		{name: "another repository, under that same answer", answer: refusedRepository,
+			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"ledger"}}},
+		{name: "a request naming no repository, under that same answer", answer: refusedRepository,
+			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
+		{name: "the permissions a read-only narrowing names", answer: refusedPermissions, refused: true,
+			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", ReadOnly: true}},
+		{name: "repositories alone, under that same answer", answer: refusedPermissions,
+			narrowing: &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := newService(t, ServiceOptions{Plain: true})
+			service.AnswerWith(NewGitHubStand(GitHubOptions{
+				Installations: map[string]int64{"acme-org": 7}, Answer: tc.answer,
+			}).Answer)
+			minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
+				Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: tc.narrowing,
+			})
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("mint the narrowing the answer leaves alone: %v", err)
+				}
+				if token := mintedGitHubToken(t, minted.Value, "acme-org"); token == "" {
+					t.Error("the release holds no token for acme-org")
+				}
+				return
+			}
+			if minted.Value != "" || secrets.MintErrorClass(err) != "narrowing" ||
+				err == nil || !strings.Contains(err.Error(), "422") {
+				t.Fatalf("mint against the %s = %q, %v (class %s); want nothing released and class narrowing naming the 422",
+					tc.name, minted.Value, err, secrets.MintErrorClass(err))
+			}
+		})
+	}
+}
+
+// TestTheGitHubStandsAnswerIsSetWhileItRuns: the answers one after another against one
 // running stand, which is what a check of the narrowing drives on one stack - the ordinary mint,
 // the 422 that releases nothing, the token wider than asked that the minter revokes, and the
-// ordinary mint again as that check's negative control. A stand built with no option starts on
-// the ordinary answer.
+// ordinary mint again as that check's negative control - and the one outage, which a minter
+// that makes one attempt fails at as the upstream's and a minter with a Retry mints through at
+// its second attempt, after which the stand answers as ordinary again with no call to Answers.
+// A stand built with no option starts on the ordinary answer.
 func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	stand := NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
 	service.AnswerWith(stand.Answer)
-	app := secrets.GitHubApp{Base: service.URL()}
 	value := gitHubAppValue(t)
 	narrowing := &secrets.GitHubNarrowing{Owner: "acme-org", Repositories: []string{"proofs"}}
-	mint := func() (secrets.Minted, error) {
+	// retry waits no real time: the row is about what the stand answers, not the backoff.
+	retry := &secrets.Retry{Sleep: func(context.Context, time.Duration) error { return nil }}
+	mint := func(retried bool) (secrets.Minted, error) {
+		app := secrets.GitHubApp{Base: service.URL()}
+		if retried {
+			app.Retry = retry
+		}
 		return app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: []string{"acme-org"}, GitHubNarrowing: narrowing})
 	}
 
 	for _, tc := range []struct {
-		name   string
-		answer GitHubTokenAnswer
-		class  string
+		name    string
+		answer  GitHubTokenAnswer
+		retried bool
+		class   string
+		// tokenCalls is how many token requests the row makes, when it is not one.
+		tokenCalls int
 	}{
 		{name: "the answer it starts on"},
 		{name: "the refusal", answer: GitHubTokensRefused, class: "narrowing"},
 		{name: "the token wider than asked", answer: GitHubTokensWider, class: "upstream"},
 		{name: "the ordinary answer again", answer: GitHubTokensOrdinary},
+		{name: "the outage, to a minter that makes one attempt", answer: GitHubTokensFailOnce, class: "upstream"},
+		{name: "the answer after the outage"},
+		{name: "the outage, to a minter that retries", answer: GitHubTokensFailOnce, retried: true, tokenCalls: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.answer != "" {
-				stand.Answers(tc.answer)
+				stand.Answers(GitHubAnswer{Mode: tc.answer})
 			}
-			minted, err := mint()
+			before := len(service.Requests())
+			minted, err := mint(tc.retried)
+			if want, asked := max(tc.tokenCalls, 1), tokenRequests(service.Requests()[before:]); asked != want {
+				t.Errorf("the mint against the %s made %d token requests; want %d", tc.name, asked, want)
+			}
 			if tc.class == "" {
 				if err != nil {
 					t.Fatalf("mint against the %s: %v", tc.name, err)
@@ -453,6 +524,18 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// tokenRequests is how many of seen are access_tokens requests, the call the stand's outage
+// answers.
+func tokenRequests(seen []Request) int {
+	count := 0
+	for _, request := range seen {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.Path, "/access_tokens") {
+			count++
+		}
+	}
+	return count
 }
 
 // TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt: a check spends a narrowed token
@@ -568,7 +651,7 @@ func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{
-		Installations: map[string]int64{"acme-org": 7}, Answer: GitHubTokensWider,
+		Installations: map[string]int64{"acme-org": 7}, Answer: GitHubAnswer{Mode: GitHubTokensWider},
 	}).Answer)
 
 	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
@@ -689,7 +772,7 @@ func TestTheMicrosoftStandRecordsTheAssertionItWasGiven(t *testing.T) {
 // verdictSchema is the form of reply the model rows ask for: the one the broker's model judge
 // asks for, written here because what the row is about is that a reply of this shape survives
 // the wire the stand-in writes it on.
-const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","refer"]},` +
+const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["grant","deny"]},` +
 	`"reason":{"type":"string"}},"required":["verdict","reason"],"additionalProperties":false}`
 
 // TestTheModelStandAnswersEachCaseARunCanMeet drives agentloop, the reader the broker's judge
@@ -699,7 +782,7 @@ const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string"
 // reader makes of it.
 func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
-	stand := NewModelStand(ModelOptions{Answer: ModelAnswer{Text: `{"verdict":"approve","reason":"the reason names the issue"}`}})
+	stand := NewModelStand(ModelOptions{Answer: ModelAnswer{Text: `{"verdict":"grant","reason":"the reason names the issue"}`}})
 	service.AnswerWith(stand.Answer)
 	ask := func(t *testing.T, bound time.Duration) agentloop.Result {
 		t.Helper()
@@ -725,8 +808,8 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 	if result.Fault != "" {
 		t.Fatalf("the run ended in %s: %s", result.Fault, result.Detail)
 	}
-	if err := json.Unmarshal(result.Value, &answer); err != nil || answer.Verdict != "approve" {
-		t.Fatalf("the value is %s, %v; want the approving object the stand-in was set to", result.Value, err)
+	if err := json.Unmarshal(result.Value, &answer); err != nil || answer.Verdict != "grant" {
+		t.Fatalf("the value is %s, %v; want the granting object the stand-in was set to", result.Value, err)
 	}
 
 	stand.Answers(ModelAnswer{Text: "I have thought about it and I would rather not say."})
@@ -734,7 +817,7 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 		t.Errorf("a reply that is no object ended in %q; want %q", result.Fault, agentloop.FaultMalformed)
 	}
 
-	stand.Answers(ModelAnswer{Text: `{"verdict":"refer","reason":"too late"}`, Delay: 5 * time.Second})
+	stand.Answers(ModelAnswer{Text: `{"verdict":"deny","reason":"too late"}`, Delay: 5 * time.Second})
 	if result := ask(t, 300*time.Millisecond); result.Fault != agentloop.FaultTime {
 		t.Errorf("an answer held past the bound ended in %q; want %q", result.Fault, agentloop.FaultTime)
 	}
@@ -748,33 +831,41 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 	}
 }
 
-// TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes drives judge.Dispatch, the broker's own
-// reader of those two routes, against the stand-in: the issue it holds with its spec, the issue
-// it holds without one, a key it holds no issue for, and a read presenting no token at all.
-func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
+// TestTheDispatchStandAnswersTheReadsItsReaderMakes drives judge.Dispatch, the broker's own
+// reader of those three routes, against the stand-in: the issue it holds with its spec, the
+// issue it holds without one, a key it holds no issue for, the ask a person answered, an id it
+// holds no ask for, and a read presenting no token at all.
+func TestTheDispatchStandAnswersTheReadsItsReaderMakes(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
-	service.AnswerWith(NewDispatchStand(DispatchOptions{Issues: []DispatchIssue{
-		{Key: "INFRA-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
-		{Key: "INFRA-1200", Title: "The local stack", Status: "done"},
-	}}).Answer)
+	service.AnswerWith(NewDispatchStand(DispatchOptions{
+		Issues: []DispatchIssue{
+			{Key: "ACME-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
+			{Key: "ACME-1200", Title: "The local stack", Status: "done"},
+		},
+		Asks: []DispatchAsk{{
+			ID: "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b", IssueKey: "ACME-1353", State: "answered",
+			Question: "Spend the key on this issue's runs?", Options: []string{"Spend it", "Leave it"},
+			AnsweredBy: "approver@example.com", Selected: []string{"Spend it"}, Text: "Go ahead.",
+		}},
+	}).Answer)
 	tokenFile := filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(tokenFile, []byte("the-stand-in-dispatch-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	reader := judge.Dispatch{BaseURL: service.URL(), Account: brokertoken.NewAccountToken(tokenFile)}
 
-	issue, err := reader.Issue(t.Context(), "INFRA-1353")
+	issue, err := reader.Issue(t.Context(), "ACME-1353")
 	if err != nil {
 		t.Fatalf("read the open issue: %v", err)
 	}
-	if issue.Key != "INFRA-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
+	if issue.Key != "ACME-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
 		t.Errorf("the issue read is %+v; want the fixture's own key, title and status", issue)
 	}
 	if !issue.HasSpec || !strings.Contains(issue.Spec, "One model decides.") {
 		t.Errorf("the spec read is %q (held: %v); want the fixture's markdown", issue.Spec, issue.HasSpec)
 	}
 
-	done, err := reader.Issue(t.Context(), "INFRA-1200")
+	done, err := reader.Issue(t.Context(), "ACME-1200")
 	if err != nil {
 		t.Fatalf("read the done issue: %v", err)
 	}
@@ -782,13 +873,28 @@ func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
 		t.Errorf("the done issue read is %+v; want it done and holding no spec", done)
 	}
 
-	if _, err := reader.Issue(t.Context(), "INFRA-9999"); !errors.Is(err, judge.ErrNoIssue) {
+	if _, err := reader.Issue(t.Context(), "ACME-9999"); !errors.Is(err, judge.ErrNoIssue) {
 		t.Errorf("a key no issue carries answered %v; want %v", err, judge.ErrNoIssue)
+	}
+
+	ask, err := reader.Ask(t.Context(), "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b")
+	if err != nil {
+		t.Fatalf("read the answered ask: %v", err)
+	}
+	if ask.IssueKey != "ACME-1353" || ask.State != "answered" || ask.Question != "Spend the key on this issue's runs?" {
+		t.Errorf("the ask read is %+v; want the fixture's own issue, state and question", ask)
+	}
+	if ask.AnsweredBy != "approver@example.com" || len(ask.Selected) != 1 || ask.Selected[0] != "Spend it" || ask.Text != "Go ahead." {
+		t.Errorf("the ask's answer reads %q / %v / %q; want the fixture's own answer", ask.AnsweredBy, ask.Selected, ask.Text)
+	}
+
+	if _, err := reader.Ask(t.Context(), "11111111-2222-4333-a444-555555555555"); !errors.Is(err, judge.ErrNoAsk) {
+		t.Errorf("an id no ask carries answered %v; want %v", err, judge.ErrNoAsk)
 	}
 
 	// The 401 the real API answers a request with no credential, which a fixture of answers
 	// alone would quietly drop: a caller that presented nothing must read the refusal.
-	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/INFRA-1353", nil)
+	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/ACME-1353", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

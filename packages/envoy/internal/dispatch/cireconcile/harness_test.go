@@ -188,7 +188,7 @@ func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObse
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}

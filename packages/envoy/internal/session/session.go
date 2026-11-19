@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -20,15 +19,15 @@ import (
 var ErrNoSessionRecord = errors.New("no session record")
 
 // ConsumerRelaysStored reports whether the session's own consumer holds the stored message of
-// stream sequence storedSeq on topic, so the relay of that consumer (cmd/listener's sessionRelays)
-// is what delivers it and no other path may record anything about it: a dedupe key written for a
-// message this listener handed to nobody would have the next copy of the same event skipped as
-// one the session already has, and an attempt record would have a redelivery of it skipped as one
-// already on its way. A topic the stream does not capture is in no consumer whatever the
-// session's delivery is, and no path of the session's own carries such a message either, so
-// Resolve answers it with ErrNoSessionRecord.
-func (e SessionEntry) ConsumerRelaysStored(topic string, storedSeq uint64) bool {
-	return e.ConsumerHoldsStored(storedSeq) && bus.StreamCaptures(topic)
+// stream sequence storedSeq, on a topic the deployed stream captures (captured), so the relay of
+// that consumer (cmd/listener's sessionRelays) is what delivers it and no other path may record
+// anything about it: a dedupe key written for a message this listener handed to nobody would have
+// the next copy of the same event skipped as one the session already has, and an attempt record
+// would have a redelivery of it skipped as one already on its way. A topic the stream does not
+// capture is in no consumer whatever the session's delivery is, and no path of the session's own
+// carries such a message either, so Resolve answers it with ErrNoSessionRecord.
+func (e SessionEntry) ConsumerRelaysStored(captured bool, storedSeq uint64) bool {
+	return captured && e.ConsumerHoldsStored(storedSeq)
 }
 
 // Resolve decides what a delivery of item to sessionID's session at entry comes to, and there are
@@ -44,17 +43,19 @@ func (e SessionEntry) ConsumerRelaysStored(topic string, storedSeq uint64) bool 
 // caller read, and nothing of the listener it runs in enters the decision.
 //
 // storedSeq is the stream sequence of the durable path's copy of a stored message, 0 for any
-// other delivery. A message is stored on the subject its envelope names as its topic, so that
-// topic and the sequence together decide whether a session on consumer delivery is already held
-// this message by its own consumer (SessionEntry.ConsumerRelaysStored). A delivery that is not
-// the durable's copy of a stored message - the listener's core lane carries one - passes a
-// sequence of 0, which leaves a session on consumer delivery its consumer's copy whatever that
-// copy's sequence is.
-func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, storedSeq uint64) error {
+// other delivery, and captured is whether the deployed stream captures item's topic
+// (bus.Client.DeployedStreamCaptures), which the caller reads from its own bus client, since the
+// consumer's filter is judged on those same subjects (cmd/listener's sessionConsumerFilter). A
+// message is stored on the subject its envelope names as its topic, so the capture and the
+// sequence together decide whether a session on consumer delivery is already held this message by
+// its own consumer (SessionEntry.ConsumerRelaysStored). A delivery that is not the durable's copy
+// of a stored message - the listener's core lane carries one - passes a sequence of 0, which
+// leaves a session on consumer delivery its consumer's copy whatever that copy's sequence is.
+func Resolve(item contracts.Envelope, sessionID string, entry *SessionEntry, storedSeq uint64, captured bool) error {
 	if entry == nil {
 		return fmt.Errorf("%w for session %s", ErrNoSessionRecord, sessionID)
 	}
-	if entry.ConsumerRelaysStored(item.Topic, storedSeq) {
+	if entry.ConsumerRelaysStored(captured, storedSeq) {
 		// The session's consumer holds this stored message, and the listener that owns the session
 		// relays it from there: no other path delivers it, and none records anything about it. A
 		// topic the stream does not store is in no consumer, and so is a durable message stored

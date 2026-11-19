@@ -3,6 +3,8 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"slices"
 	"sync"
@@ -498,4 +500,48 @@ func TestTheWriteATurnStartOwedIsMadeAtTheClaimsNextDecision(t *testing.T) {
 			t.Fatal("the write is still owed after the repair made it")
 		}
 	})
+}
+
+// A claim write the daemon's own stop cut short is owed as any write left unanswered is, and its
+// line is at Info: the stop cancelled the machine's context, the database refused nothing, and a
+// Warn there is one every rollout writes for whichever decision it meets mid-write, sending an
+// operator to a database with nothing wrong. A write that ran out its deadline while the daemon
+// stops did wait on the database, and a cancellation the stop did not make is no stop's, so both
+// keep the Warn.
+func TestAClaimWriteTheDaemonsStopCutShortIsOwedAtInfo(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		stopping bool
+		err      error
+		want     slog.Level
+	}{
+		{name: "cancelled by the stop", stopping: true, err: context.Canceled, want: slog.LevelInfo},
+		{name: "out of its deadline while the daemon stops", stopping: true, err: context.DeadlineExceeded, want: slog.LevelWarn},
+		{name: "cancelled while the daemon runs", stopping: false, err: context.Canceled, want: slog.LevelWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newCountedHarness(t)
+			h.reach(StateReady)
+			// The store's own wrapping, as the write the stop cut in CI was answered.
+			h.store.fail("PutClaim", fmt.Errorf("put claim %s: %w", testToken, tc.err))
+			if tc.stopping {
+				h.shutdown()
+			}
+
+			if err := h.handle(StreamTurnStart{Claim: testToken}); !errors.Is(err, tc.err) {
+				t.Fatalf("the turn start whose write ended = %v, want the write's own %v", err, tc.err)
+			}
+
+			if h.m.owedWrite == nil {
+				t.Fatal("the write left no mark")
+			}
+			owed := h.records.of(owedWriteLine)
+			if len(owed) != 1 {
+				t.Fatalf("the owed write is logged %d times, want once", len(owed))
+			}
+			if owed[0].level != tc.want {
+				t.Fatalf("the owed write is logged at %s, want %s", owed[0].level, tc.want)
+			}
+		})
+	}
 }

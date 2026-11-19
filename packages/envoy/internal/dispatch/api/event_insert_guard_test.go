@@ -1,3 +1,8 @@
+//go:build !race
+
+// The guard is static, as lock_level_test.go's is and for the reason given there: it reads the
+// module's source, so the race detector adds nothing to it.
+
 package api
 
 import (
@@ -9,6 +14,11 @@ import (
 
 // brokerEventInsert is the one source file allowed to insert an event.
 const brokerEventInsert = "internal/dispatch/events/broker.go"
+
+// brokerEventInserts is how many event inserts that file holds: the one a write phase queues
+// (events.Broker.QueueAppendWithLogins). It keeps the invariants below, and the count is here so
+// that an insert moving out of this scan's reach reds rather than passing unseen.
+const brokerEventInserts = 1
 
 var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 
@@ -36,7 +46,7 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)
@@ -64,9 +74,9 @@ func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 			"behind a horizon that passed its id and reach no open subscription. It also allocates the "+
 			"owner's seq under the owner's row lock.", brokerEventInsert, strings.Join(offences, "\n\t"))
 	}
-	if broker != 1 {
-		t.Fatalf("%s holds %d event inserts the scan can see, want 1: if the insert moved or was "+
+	if broker != brokerEventInserts {
+		t.Fatalf("%s holds %d event inserts the scan can see, want %d: if an insert moved or was "+
 			"written around a value this scan cannot resolve, this guard now passes by seeing "+
-			"nothing", brokerEventInsert, broker)
+			"nothing", brokerEventInsert, broker, brokerEventInserts)
 	}
 }

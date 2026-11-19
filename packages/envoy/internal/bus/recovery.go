@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync/atomic"
@@ -23,7 +24,7 @@ func (c *Client) onClosed() {
 // (WithConnectInBackground): nats.go has connected the connection the constructor returned for the
 // first time, and has sent the core subscriptions made before it. It is a connection event as a
 // reconnect in place is, so onReconnect binds the JetStream subscription made before it and runs
-// the reconnect hooks, an owning client's reconciliation of the stream first (ensureStreamOnce).
+// the reconnect hooks, an owning client's ensure of the stream first (ensureStreamOn).
 // nats.go runs it once per connection, and the client never installs a second connection before
 // this one has connected (ensureConnWithContext), so it marks the end of the wait only for c.Conn.
 func (c *Client) onConnect(nc *nats.Conn) {
@@ -35,6 +36,15 @@ func (c *Client) onConnect(nc *nats.Conn) {
 	c.onReconnect(nc)
 }
 
+// onReconnect is the ReconnectedCB, run on nats.go's one callback goroutine. It reports the
+// reconnect (ConnectionChanged), marks the hooks due and hands the rest, the re-subscribe and the
+// run of the reconnect hooks, to a goroutine of its own (afterReconnect), and returns. That rest
+// asks the server, and a request on a connection that drops again waits out its whole bound (a
+// JetStream context's MaxWait, 10 s, for most hooks): run here, it would hold every callback queued
+// behind it, the next disconnect's among them, which reports the outage (ConnectionChanged, the
+// outbox's wake that starts a holder's loss grace) and runs the disconnect hooks
+// (TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce). The run off this goroutine is
+// the one recover already makes after a failed run, and it takes turns with recover's (rewatch).
 func (c *Client) onReconnect(nc *nats.Conn) {
 	// The reconnect is reported first (ConnectionChanged), so a publish waiting for it goes on
 	// without waiting for the re-subscribe and the hooks below.
@@ -65,9 +75,16 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 		c.subscriptionsMu.Unlock()
 	}
 	c.mu.Unlock()
+	go c.afterReconnect(nc)
+}
+
+// afterReconnect re-subscribes what the reconnect left unbound and runs the reconnect hooks for the
+// reconnect of nc, off nats.go's callback goroutine (onReconnect), and starts the recovery for what
+// it could not finish.
+func (c *Client) afterReconnect(nc *nats.Conn) {
 	pending, restoreErr := c.restoreSubscriptions()
 	if errors.Is(restoreErr, errStopped) {
-		// Stopped between the check above and the re-subscribe: same as that branch.
+		// Stopped between onReconnect's check and the re-subscribe: same as that branch.
 		c.closeStopped(nc)
 		return
 	}
@@ -92,13 +109,23 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 			slog.Info("envoy nats reconnect hooks cancelled", slog.String("name", c.name), slog.String("error", hookErr.Error()))
 			return
 		}
-		c.reportHookFailure(hookErr)
+		// A run its connection's loss cancelled is superseded, not failed: the hooks stay due, and
+		// the reconnect or the recovery that replaces the connection runs them again. It is still
+		// the stall's ERROR once the hooks have been uncovered for RepairGrace (reportSuperseded).
+		if errors.Is(hookErr, errRunSuperseded) {
+			c.reportSuperseded(hookErr)
+			hookErr = nil
+		} else {
+			c.reportHookFailure(hookErr)
+		}
 	}
 	// The recovery binds what the restore left unbound, a registration it left to its bind in flight
 	// should that bind fail, and runs the hooks again after a failed run; until the next connection
-	// event nothing else does either.
+	// event nothing else does either. The restore's binds are never under the run's context
+	// (whileConnected): a bind it cancelled would race the server's release of a push-bound durable,
+	// which refuses the next bind with "consumer is already bound to a subscription".
 	if pending || restoreErr != nil || hookErr != nil {
-		go c.recover()
+		c.recover()
 	}
 }
 
@@ -125,8 +152,18 @@ func (c *Client) closeStopped(nc *nats.Conn) {
 // begins that covers it, whatever restoring the subscriptions returned. A run covers every event
 // counted before it began, so an event that lands between runs gets a run of its own and a burst of
 // events that land before one begins gets one. Runs take turns, never two at once, and a run that
-// fails is run again by a recovery, the only way an event gets a second run.
-func (c *Client) AddReconnectHook(hook func(*nats.Conn) error) {
+// fails is run again by a recovery, the only way an event gets a second run. No run is on nats.go's
+// callback goroutine (afterReconnect, recover), so a hook may ask the server and wait for its answer;
+// a disconnect's hooks may run while it waits, and a hook that then fails leaves the hooks due.
+//
+// A hook is given the run's context (whileConnected), which ends when conn leaves CONNECTED or the
+// client stops, and waits on nothing past it: it makes each request it can under it, and waits for
+// one nats.go gives no context (the legacy bucket lookup, a previous watcher's consumer delete)
+// only until it ends. A request sent on a connection that then drops gets no answer, and one that
+// waited out its own bound (10 s for most) there would keep the next reconnect's run behind this
+// one (TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest). A hook whose context
+// has ended returns, with the context's error or its request's.
+func (c *Client) AddReconnectHook(hook func(ctx context.Context, conn *nats.Conn) error) {
 	if hook == nil {
 		return
 	}
@@ -140,7 +177,8 @@ func (c *Client) AddReconnectHook(hook func(*nats.Conn) error) {
 // open through the outage, so the watcher never ends and nothing else says its cache has stopped
 // following the bucket. The hooks run on every disconnect of the client's connection, in the order
 // they were added, on nats.go's callback goroutine and so before the reconnect hooks of the
-// reconnect that follows. A hook returns at once: it runs inside that callback.
+// reconnect that follows, and at once: no reconnect hook holds that goroutine (onReconnect). A hook
+// returns at once: it runs inside that callback.
 func (c *Client) AddDisconnectHook(hook func()) {
 	if hook == nil {
 		return
@@ -229,7 +267,10 @@ func (c *Client) runDrainHooks(conn *nats.Conn, deadline time.Time) {
 // if they are still due. A run that succeeds covers the connection events counted when it began, so
 // an event during the run leaves the hooks due for one more. It keeps what HookStall reports: the
 // error of a run that failed, and the clearing of the stall by a run that covered every event
-// counted since.
+// counted since. A run superseded by its connection's loss or the client's stop (errRunSuperseded)
+// is neither: it keeps no error and covers nothing, so the hooks stay due and the run the next
+// connection event brings moves every piece of state again, whatever this one moved before it was
+// cancelled.
 func (c *Client) rewatch() error {
 	c.rewatchMu.Lock()
 	defer c.rewatchMu.Unlock()
@@ -241,6 +282,9 @@ func (c *Client) rewatch() error {
 		return nil
 	}
 	if err := c.runReconnectHooks(conn); err != nil {
+		if errors.Is(err, errRunSuperseded) {
+			return err
+		}
 		c.mu.Lock()
 		c.lastHookErr = err
 		c.mu.Unlock()
@@ -297,16 +341,108 @@ func (c *Client) reportHookFailure(err error) {
 		slog.Int64("stall_ms", stall.Milliseconds()))
 }
 
+// reportSuperseded reports err, the error of a run its connection's loss or the client's stop
+// superseded (errRunSuperseded). That is no failure of the hooks, so it is an INFO line, until the
+// hooks have been uncovered for RepairGrace or longer: then it is the stall's ERROR all the same
+// (reportHookFailure), since a link that drops during every run supersedes every run, and the
+// paging alarm reads only that ERROR (infra/aws/rendering/metricfilters.go,
+// reconnect-hooks-stalled). A stall reached by superseded runs alone pages as one reached by
+// failed runs does (TestSupersededRunsPastTheRepairGraceRaiseTheStallError).
+func (c *Client) reportSuperseded(err error) {
+	if stall, _ := c.HookStall(); stall >= RepairGrace {
+		c.reportHookFailure(err)
+		return
+	}
+	slog.Info("envoy nats reconnect hooks superseded by a newer connection event", slog.String("name", c.name), slog.String("error", err.Error()))
+}
+
+// runReconnectHooks runs the reconnect hooks on conn, one after another, under a context that ends
+// when conn leaves CONNECTED or the client stops (whileConnected). A run whose context ended, or
+// whose connection is not CONNECTED when its hooks return, is superseded (errRunSuperseded),
+// whatever its hooks returned: a hook may have moved its state before the cancel, or swallowed the
+// cancel and returned nil, so the run covers nothing and every hook runs again on the connection
+// that replaces this one (rewatch).
 func (c *Client) runReconnectHooks(conn *nats.Conn) error {
 	c.reconnectHooksMu.Lock()
 	hooks := slices.Clone(c.reconnectHooks)
 	c.reconnectHooksMu.Unlock()
+	ctx, cancel := c.whileConnected(conn)
+	defer cancel()
+	var hookErr error
 	for _, hook := range hooks {
-		if err := hook(conn); err != nil {
-			return err
+		if hookErr = hook(ctx, conn); hookErr != nil {
+			break
 		}
 	}
-	return nil
+	if err := runSuperseded(ctx, conn); err != nil {
+		return errors.Join(err, hookErr)
+	}
+	return hookErr
+}
+
+// RunEnded reports whether the reconnect hooks' run that gave a hook ctx and conn is over: its
+// context (whileConnected) ended, or conn is not CONNECTED. It is the one rule for that, which
+// runSuperseded and every hook that decides on its own whether a failure is a failure read, so the
+// two cannot disagree. The status is read beside the context because the context is cancelled by
+// a goroutine of its own: nats.go sets RECONNECTING before that goroutine hears of it, and a
+// request made in between fails at once ("outbound buffer limit exceeded", the bus buffers nothing
+// while it reconnects), so a hook can see that failure while the context still reads live
+// (TestARunWhoseConnectionLeftConnectedIsSuperseded).
+func RunEnded(ctx context.Context, conn *nats.Conn) bool {
+	return ctx.Err() != nil || conn == nil || conn.Status() != nats.CONNECTED
+}
+
+// runSuperseded is the errRunSuperseded of a run that is over (RunEnded), naming why, and nil for
+// a run that is not.
+func runSuperseded(ctx context.Context, conn *nats.Conn) error {
+	if !RunEnded(ctx, conn) {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: %w", errRunSuperseded, context.Cause(ctx))
+	}
+	return fmt.Errorf("%w: %w", errRunSuperseded, errRunConnectionLost)
+}
+
+// errRunConnectionLost is the cause of a run's context (context.Cause) when its connection left
+// CONNECTED during the run, and errRunStopped when the client stopped. errRunSuperseded marks a
+// run either one ended: no failure of the hooks, so it keeps no error, logs no WARN and leaves the
+// hooks due for the run that replaces it (rewatch, afterReconnect, recoverUntilHealthy).
+var (
+	errRunConnectionLost = errors.New("bus: the connection the reconnect hooks ran on left CONNECTED")
+	errRunStopped        = errors.New("bus: the client stopped while the reconnect hooks ran")
+	errRunSuperseded     = errors.New("bus: the run of the reconnect hooks was superseded")
+)
+
+// whileConnected is the context of one run of the reconnect hooks on conn: it ends when conn
+// leaves CONNECTED (a disconnect, a reconnect after it, a drain or a close), at once when conn is
+// not CONNECTED as the run begins, or when the client stops. nats.go answers no request sent on a
+// connection that then drops, and fails none of them at the drop (it clears its waiting requests
+// only at a close), so a request under this context is what lets a run end when its connection is
+// gone rather than at the request's own bound.
+func (c *Client) whileConnected(conn *nats.Conn) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	if conn == nil {
+		cancel(errRunConnectionLost)
+		return ctx, func() {}
+	}
+	lost := conn.StatusChanged(nats.DISCONNECTED, nats.RECONNECTING, nats.CLOSED, nats.DRAINING_SUBS, nats.DRAINING_PUBS)
+	if conn.Status() != nats.CONNECTED {
+		cancel(errRunConnectionLost)
+	}
+	go func() {
+		defer conn.RemoveStatusListener(lost)
+		select {
+		case _, ok := <-lost:
+			if ok {
+				cancel(errRunConnectionLost)
+			}
+		case <-c.stopCh:
+			cancel(errRunStopped)
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, func() { cancel(nil) }
 }
 
 // recover attempts to restore the NATS connection and every recoverable subscription after a
@@ -362,9 +498,9 @@ func (c *Client) recoverUntilHealthy() {
 			failure = "envoy nats recovery resubscribe failed"
 			pending, err = c.restoreSubscriptions()
 			// The hooks move onto a connection they have not reached whatever the restore returned,
-			// as onReconnect runs them, and only while they are due: a durable a listener waits out
-			// keeps the restore failing, attempt after attempt, while the hooks' state is already
-			// current. A run onReconnect has in progress is waited for, never joined by a second.
+			// as afterReconnect runs them, and only while they are due: a durable a listener waits
+			// out keeps the restore failing, attempt after attempt, while the hooks' state is already
+			// current. A run afterReconnect has in progress is waited for, never joined by a second.
 			if !c.stopped() {
 				hookErr = c.rewatch()
 			}
@@ -391,7 +527,11 @@ func (c *Client) recoverUntilHealthy() {
 			slog.Error(failure, slog.String("name", c.name), slog.Int("attempt", attempt), slog.String("error", err.Error()))
 		}
 		if hookErr != nil {
-			c.reportHookFailure(hookErr)
+			if errors.Is(hookErr, errRunSuperseded) {
+				c.reportSuperseded(hookErr)
+			} else {
+				c.reportHookFailure(hookErr)
+			}
 		}
 		select {
 		case <-c.stopCh:

@@ -7,6 +7,14 @@
 // model. The refusal strings, the order they are reported in, and the string handling are
 // therefore the contract with that model, not style: a change here is a change there. Each
 // string rule below is narrower than the standard library's nearest function, and says why.
+//
+// Its one case fold, of a host name, a header name and the Basic scheme alike, is fold.ASCII,
+// the fold the model makes: A-Z lowered and nothing else. The Unicode folding of
+// strings.ToLower and strings.EqualFold would fold U+212A KELVIN SIGN onto "k", so
+// "githu\u212a.com" would reach the rule for "githuk.com". The proxy port
+// (internal/broker/airlockproxy) folds the CONNECT host, the SNI and the Host header with the
+// same function before the decision compares them, since host matching is sound only while the
+// two folds are one.
 package airlock
 
 import (
@@ -17,6 +25,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // Allow is one method and path prefix a secret may travel on.
@@ -25,7 +35,9 @@ type Allow struct {
 	PathPrefix string `json:"pathPrefix"`
 }
 
-// SecretRule is one secret's entry: where its value may go and in which headers.
+// SecretRule is one secret's entry: where its value may go and in which headers, and who decides
+// a request for it. An entry with no host binds the value nowhere — the broker releases it to the
+// command, as it releases a name with no entry — and carries only its judge and guidance.
 type SecretRule struct {
 	Name    string   `json:"name"`
 	Hosts   []string `json:"hosts"`
@@ -33,6 +45,30 @@ type SecretRule struct {
 	Allow   []Allow  `json:"allow"`   // nil: any method and path; empty: nothing allowed
 	Kind    string   `json:"kind"`    // "", "aws" or "azure"
 	Judge   *uint32  `json:"judge"`   // the judge's longest lifetime, in seconds
+	// Guidance is what the model judge reads, as the key owner's instruction, when it decides a
+	// request for this key: when to grant it. It is no part of the Lean model, which decides
+	// nothing a request for the key may become, and no part of Digest's fingerprint.
+	Guidance string `json:"guidance,omitempty"`
+}
+
+// Bound is the entry the airlock holds this name's value back by — one that binds at least one
+// host — or nil. It is the one reader of "is this value behind the airlock": an entry with no
+// host says who decides a request for the key and nothing about where its value may go, so its
+// value is released to the command as a name with no entry is.
+func (r Rules) Bound(name string) *SecretRule {
+	if s := r.Lookup(name); s != nil && len(s.Hosts) > 0 {
+		return s
+	}
+	return nil
+}
+
+// Guidance is the judge's guidance for this name, "" when the file names no such secret or its
+// entry carries none.
+func (r Rules) Guidance(name string) string {
+	if s := r.Lookup(name); s != nil {
+		return s.Guidance
+	}
+	return ""
 }
 
 // HeaderNames is the headers this entry's value travels in: the entry's own list, or the one
@@ -94,22 +130,30 @@ type Request struct {
 const maxJudgeSeconds = 900
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
-// index. It reads the entries in order and reports the first failure: a repeated name, an
-// entry with no host, a judge above 900 seconds, or a kind other than "", "aws" or "azure".
-// Whether it answers nil is the same answer as the Lean model's validate, so a new refusal
-// here is a new refusal there.
+// index. It reads the entries in order and reports the first failure: a repeated name, a judge
+// above 900 seconds, a kind other than "", "aws" or "azure", or a host that binds the secret
+// nowhere (HostShapeOK). An entry with no host is valid: it binds the value nowhere and says who
+// decides a request for the key, and Decide refuses every proxy request for it ("secret not
+// behind airlock"). Whether it answers nil is the same answer as the Lean model's validate, so a
+// new refusal here is a new refusal there.
 func Validate(rules Rules) error {
 	seen := make(map[string]bool, len(rules.Secrets))
 	for i, s := range rules.Secrets {
 		switch {
 		case seen[s.Name]:
 			return fmt.Errorf("%s: the name is repeated", entry(i, s))
-		case len(s.Hosts) == 0:
-			return fmt.Errorf("%s: no host, so the airlock binds the secret nowhere", entry(i, s))
 		case s.Judge != nil && *s.Judge > maxJudgeSeconds:
 			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		}
+		// A host HostShapeOK refuses binds the secret nowhere although the entry names it to bind
+		// one: the command gets its placeholder and no call of it is ever swapped. An entry meant to
+		// bind nowhere names no host at all.
+		for _, h := range s.Hosts {
+			if !HostShapeOK(h) {
+				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
+			}
 		}
 		seen[s.Name] = true
 	}
@@ -149,10 +193,13 @@ func (r Rules) JudgeSeconds(name string) (uint32, bool) {
 }
 
 // Digest is the fingerprint of one secret's entry, "" when the file has none for it. It is the
-// SHA-256, in hex, of the entry's JSON as encoding/json marshals a SecretRule: no field's tag
-// carries omitempty, so every field of the entry is in the fingerprint, in the struct's own
-// field order. The broker folds it into its policy version, so a change to one secret's entry
-// ends the grants that entry affects and no others.
+// SHA-256, in hex, of the entry's JSON as encoding/json marshals a SecretRule with its guidance
+// left out: every other field is in the fingerprint, in the struct's own field order, and only
+// guidance carries omitempty, so an entry with none fingerprints as it did before the field
+// existed. The broker folds it into its policy version, so a change to one secret's entry ends
+// the grants that entry affects and no others. Guidance is left out because it tells the judge
+// how to decide requests to come and changes nothing a live grant may do: writing it ends no
+// grant.
 //
 // Digest is no part of the Lean model: it fingerprints a rules file the model says nothing
 // about, and no decision of Decide or Rewrite reads it.
@@ -161,9 +208,11 @@ func (r Rules) Digest(name string) string {
 	if s == nil {
 		return ""
 	}
+	fingerprinted := *s
+	fingerprinted.Guidance = ""
 	// Marshal cannot fail for a SecretRule: every field is a string, a slice of strings or of
 	// Allow, or a *uint32, and encoding/json refuses none of those.
-	encoded, _ := json.Marshal(s)
+	encoded, _ := json.Marshal(fingerprinted)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }
@@ -171,13 +220,13 @@ func (r Rules) Digest(name string) string {
 // HostBound reports whether host matches one of hosts: the same name, or a "*.suffix"
 // pattern, which matches one or more labels before the suffix ("*.example.com" matches
 // "a.example.com" and "a.b.example.com", not "example.com"). Both sides are compared after
-// ASCIILower, never strings.EqualFold.
+// fold.ASCII, never strings.EqualFold.
 func HostBound(hosts []string, host string) bool {
 	bound := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
-		bound[ASCIILower(h)] = true
+		bound[fold.ASCII(h)] = true
 	}
-	h := ASCIILower(host)
+	h := fold.ASCII(host)
 	if bound[h] {
 		return true
 	}
@@ -191,6 +240,48 @@ func HostBound(hosts []string, host string) bool {
 			return true
 		}
 	}
+}
+
+// HostShapeOK reports whether an entry host is one the airlock can bind a request to: a host
+// name, which HostBound holds exactly, or "*." and one, a suffix it looks up. A label is
+// letters, digits and hyphens, never empty and never starting or ending with a hyphen, and the
+// last label is not all digits. Validate holds every entry host to it, and config holds the
+// local stack's stand-in token authority (BROKER_AIRLOCK_TEST_AZURE_AUTHORITY) to it, since a
+// token request reaches the proxy only at a host an entry binds.
+//
+// The host a request carries is a name alone: the CONNECT target's host, with its port taken
+// off and compared against 443 on its own. So a host written with a scheme, a path, a port, or
+// "*" without the "*." that HostBound looks up, matches no request ever.
+//
+// An IPv4 address matches the CONNECT host of a request to it, but check also holds the TLS
+// name to that host, and a TLS client names no address there: RFC 6066 section 3 keeps a
+// literal address out of server_name, and Go's crypto/tls and curl send none for one. So check
+// refuses every request to such an entry "sni mismatch", on a connection the proxy decrypts
+// because the entry binds its host, where without the entry it would be a tunnel. A host name
+// is told from a dotted-decimal address by its last label, which in a host name is never all
+// digits (RFC 1123 section 2.1), and that is the test here: it refuses an IPv4 literal, "*."
+// over a suffix only an address ends in, and any other host whose last label is all digits,
+// which is no host name either. An IPv6 literal holds a ':' that no label takes.
+func HostShapeOK(host string) bool {
+	name := strings.TrimPrefix(host, "*.")
+	if name == "" {
+		return false
+	}
+	labels := strings.Split(name, ".")
+	for _, label := range labels {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := range len(label) {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return strings.Trim(labels[len(labels)-1], "0123456789") != ""
 }
 
 // allowOK reports whether allow covers the request. A nil list allows any method and path;
@@ -219,7 +310,7 @@ var methodOverrideHeaders = []string{"x-http-method-override", "x-http-method", 
 func hasMethodOverride(r *Request) bool {
 	for _, h := range r.Headers {
 		for _, n := range methodOverrideHeaders {
-			if ASCIILower(h[0]) == n {
+			if fold.ASCII(h[0]) == n {
 				return true
 			}
 		}
@@ -331,7 +422,7 @@ func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
 	for i, h := range r.Headers {
 		out.Headers[i] = h
 		for _, n := range names {
-			if ASCIILower(h[0]) == ASCIILower(n) {
+			if fold.ASCII(h[0]) == fold.ASCII(n) {
 				out.Headers[i][1] = substitute(g.Placeholder, value, h[1])
 				break
 			}
@@ -373,14 +464,14 @@ func substitute(p, value, v string) string {
 }
 
 // basicPayload decodes the "user:pass" behind a header value of the form "Basic <base64>",
-// the scheme compared with ASCIILower. Three narrow choices, each a place where the handy
+// the scheme compared with fold.ASCII. Three narrow choices, each a place where the handy
 // standard-library call would part from the model:
 //   - the credential is trimmed of spaces and horizontal tabs alone (HTTP's optional
 //     whitespace), not of every Unicode space that strings.TrimSpace takes;
 //   - base64.StdEncoding: the standard alphabet, padding required;
 //   - a payload counts only when it is valid UTF-8, because the model's strings are.
 func basicPayload(v string) (string, bool) {
-	if len(v) <= 6 || ASCIILower(v[:6]) != "basic " {
+	if len(v) <= 6 || fold.ASCII(v[:6]) != "basic " {
 		return "", false
 	}
 	dec, err := base64.StdEncoding.DecodeString(strings.Trim(v[6:], " \t"))
@@ -392,26 +483,4 @@ func basicPayload(v string) (string, bool) {
 		return "", false
 	}
 	return payload, true
-}
-
-// ASCIILower lower-cases A-Z alone. Host names and header names are ASCII tokens, and the
-// Unicode folding of strings.ToLower and strings.EqualFold would fold U+212A KELVIN SIGN
-// onto "k", so "githu\u212a.com" would reach the rule for "githuk.com"; the model folds no
-// such thing.
-//
-// It is exported for the proxy port (internal/broker/airlockproxy), which folds the CONNECT
-// host, the SNI and the Host header this same narrow way before the decision compares them.
-// That package held a byte-for-byte copy of the fold, and host matching is sound only while
-// the two are one function. It is the same fold the model makes, unchanged by being exported,
-// as airlock.Carries is the same function the model calls carries. This package's own
-// comparisons of a host name, a header name and the Basic scheme all go through it, so there
-// is one fold here and not an exported one beside an unexported twin.
-func ASCIILower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if 'A' <= c && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
 }

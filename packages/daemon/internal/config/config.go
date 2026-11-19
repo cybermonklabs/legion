@@ -5,7 +5,7 @@
 // is refused with the message that names its replacement, worded exactly as operators have met it;
 // anything else is a typo, refused as an unknown key. One kind is not refused: a warned key
 // (warnedKeys) is accepted, changes nothing, and is kept as a Warning the daemon logs at boot and
-// `legion start --check-config` prints after its OK line. Under `runtime: kubernetes` the loader
+// `legion config check` prints after its OK line. Under `runtime: kubernetes` the loader
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
@@ -14,8 +14,8 @@
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
-// configuration loads on a machine that has none of the files it names; `legion start
-// --check-config` then reads them as boot does (daemon.CheckStart).
+// configuration loads on a machine that has none of the files it names; `legion config check`
+// then reads them as boot does (daemon.CheckStart).
 package config
 
 import (
@@ -175,14 +175,12 @@ type Config struct {
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
-	// runs has been quiet for longer than this, nothing of that tree is at work, and either at
-	// least one quiet issue of it waits by no rule of the daemon's own or the project's line can
-	// no longer move, the daemon tells the project's controller once for that tree. The line can
-	// still move while some issue of the project holds a slot and waits by no such rule, or some
-	// claim of the project is at work (admit's lineCanMove, dispatch://INFRA-2560 R5). The quiet
-	// time and the work are what `record.QuietTrees` measures — the tree's own now
-	// less the newest movement of its root, of the issues under it the workflow still runs and of
-	// those issues' claims' steps — and it is the one measure both the admission pass and the
+	// runs has been quiet for longer than this and nothing of it is at work, the daemon tells the
+	// project's controller once for that tree, unless the tree waits by design (admit's
+	// tellStalledTrees, dispatch://INFRA-2560 R5). The quiet time and the work are what
+	// `record.QuietTrees` measures — the tree's own now less the newest movement of its root, of
+	// the issues under it the workflow still runs and of those issues' claims' steps — and it is
+	// the one measure both the admission pass and the
 	// state read, so a notice and a reported quiet time can never disagree. The pass that sends
 	// the notice is the admission pass (admit's tellStalledTrees), which reads this key on every
 	// pass it makes and tells the controller once for each stall: the root it names carries the
@@ -264,7 +262,7 @@ type Config struct {
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
 	// `legion start` logs each before any other work this boot does with the configuration, and
-	// `legion start --check-config` prints each right after its OK line, so an operator reads the
+	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
 	Warnings []string
 }
@@ -273,9 +271,10 @@ const (
 	defaultPort         = 13370
 	defaultBind         = "127.0.0.1"
 	defaultAdmissionCap = 4
-	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is a
-	// countKeys row, because that reader is the one that refuses a burst below 1; the rate is read
-	// on its own, since 0 is how an operator turns the pacing off.
+	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is
+	// on the key table's own row for it (keytable.go's positiveKey), because that reader is the
+	// one that refuses a burst below 1; the rate is read on its own, since 0 is how an operator
+	// turns the pacing off.
 	defaultWorkerWakesPerMinute = 8
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
@@ -324,37 +323,6 @@ const (
 	defaultPodUpdateGrace = 30 * time.Minute
 )
 
-// durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
-// and the new probe interval). Every one of them is held to the timer bound.
-var durationKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *time.Duration
-}{
-	{"worker_boot_timeout_seconds", 120, func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
-	{"worker_rpc_timeout_seconds", 5, func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
-	{"worker_stop_timeout_seconds", 10, func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
-	{"tree_stop_timeout_seconds", 60, func(c *Config) *time.Duration { return &c.TreeStopTimeout }},
-	{"slow_command_timeout_seconds", 300, func(c *Config) *time.Duration { return &c.SlowCommandTimeout }},
-	{"probe_interval_seconds", 30, func(c *Config) *time.Duration { return &c.ProbeInterval }},
-	{"controller_wake_interval_seconds", 3600, func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
-}
-
-// countKeys are the positive-integer keys with no unit, and their defaults: the registration
-// deadline's interval count (config.ts DEFAULT_WORKER_BOOT_REGISTRATION_DEADLINE_INTERVALS), the
-// supervision budgets, and the wake pacing's burst.
-var countKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *int
-}{
-	{"worker_boot_registration_deadline_intervals", 3, func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
-	{"launch_failure_limit", 3, func(c *Config) *int { return &c.LaunchFailureLimit }},
-	{"prompt_failure_limit", 3, func(c *Config) *int { return &c.PromptFailureLimit }},
-	{"prompt_retire_limit", 2, func(c *Config) *int { return &c.PromptRetireLimit }},
-	{"worker_wake_burst", 1, func(c *Config) *int { return &c.WorkerWakeBurst }},
-}
-
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
 // rather than ignored: an operator who sets one expects it to act, and the daemon has nothing that
 // would.
@@ -362,7 +330,7 @@ var tossedKeys = map[string]string{
 	"worker_cap":                 "the running-worker cap no longer exists (LEGION-208 Requirement 8)",
 	"worker_idle_retire_seconds": `an idle window retires no worker: it releases the worker's issue pod, and the key for it is runtime.kubernetes.idle_release (idle_minutes, backstop_minutes), which suspends every claim of the released pod with the source released and brings them back on the next wake (INFRA-945)`,
 	"resync_interval_seconds":    `the mirror of Dispatch and GitHub as truth, and resync's drift healing, no longer exist (LEGION-208 Design, "Ported, and tossed")`,
-	"max_recursion_depth":        "an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+	"max_recursion_depth":        "no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 }
 
 // warnedKeys are the settings that no longer exist and that a file may carry all the same, mapped
@@ -370,7 +338,7 @@ var tossedKeys = map[string]string{
 // value from it, and warns: the reviewer's rule for this loader is that a refusal must close a
 // vulnerability, and a count nothing reads closes none, so refusing a boot over it would stop a
 // deployment for a word in a file. The refusal this key would otherwise carry is the warning's
-// own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
+// own text (Config.Warnings, readKeys), which boot logs and `legion config check`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
 	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
@@ -466,7 +434,7 @@ func Load(path string, env func(string) string) (Config, error) {
 
 // LoadForValidation checks a configuration without executing its App private-key commands or
 // secrets reads, and answers its Warnings as Load does. It is the Go equivalent of the shipped
-// daemon's --check-config path.
+// daemon's `legion config check` path.
 func LoadForValidation(path string, env func(string) string) (Config, error) {
 	return load(path, env, false)
 }
@@ -517,8 +485,8 @@ func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 	return root, nil
 }
 
-// readKeys walks the top-level keys in file order, reading the modelled ones and classifying the
-// rest.
+// readKeys walks the top-level keys in file order, dispatching each modelled one through the key
+// table (keytable.go) and classifying the rest.
 func readKeys(root *yaml.Node) (fileConfig, error) {
 	file := fileConfig{Durations: map[string]int{}, Counts: map[string]int{}}
 	if root == nil {
@@ -527,155 +495,23 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i].Value, root.Content[i+1]
 		var err error
-		switch key {
-		case "project":
-			file.Project, err = readString(value, key)
-		case "bind":
-			file.Bind, err = readString(value, key)
-		case "advertise_host":
-			file.AdvertiseHost, err = readAdvertiseHost(value, key)
-		case "postgres_dsn":
-			file.PostgresDSN, err = readString(value, key)
-		case "state_dir":
-			file.StateDir, err = readString(value, key)
-		case "port":
-			file.Port, err = readInt(value, key)
-		case "admission_cap":
-			file.AdmissionCap, err = readInt(value, key)
-		case "runtime":
-			file.Kubernetes, file.Tmux, err = readRuntime(value)
-		case "daemon_url":
-			file.DaemonURL, err = readString(value, key)
-		case "omp_invocation":
-			file.OmpInvocation, err = readNonEmptyString(value, key)
-		case "omp_launch_prefix":
-			file.OmpLaunchPrefix, err = readLaunchPrefix(value, key)
-		case "provider_keys":
-			file.ProviderKeys, err = readProviderKeys(value, key)
-		case "instructions":
-			file.Instructions, err = readNonEmptyString(value, key)
-		case "worker_stream_port":
-			file.WorkerStreamPort, err = readInt(value, key)
-		case "worker_wakes_per_minute":
-			file.WorkerWakesPerMinute, err = readInt(value, key)
-		case "operator_token_file":
-			file.OperatorTokenFile, err = readNonEmptyString(value, key)
-		case "envoy_url":
-			file.EnvoyURL, err = readString(value, key)
-		case "nats_urls":
-			file.NatsURLs, err = readNatsURLs(value, key)
-		case "envoy_token_file":
-			file.EnvoyTokenFile, err = readNonEmptyString(value, key)
-		case "nats_nkey_seed_file":
-			file.NatsNkeySeedFile, err = readNonEmptyString(value, key)
-		case "nats_daemon_nkey_seed_file":
-			file.NatsDaemonNkeySeedFile, err = readNonEmptyString(value, key)
-		case "dispatch_url":
-			file.DispatchURL, err = readString(value, key)
-		case "dispatch_token_file":
-			file.DispatchTokenFile, err = readNonEmptyString(value, key)
-		case "projects":
-			// The projects' own warnings join whatever a warned key above them raised, in file
-			// order: one list carries both, so neither producer may write over the other.
-			var raised []string
-			file.Projects, raised, err = readProjects(value, key)
-			file.Warnings = append(file.Warnings, raised...)
-		case "gates":
-			file.Gates, err = readGates(value, key)
-		case "github_apps":
-			file.GitHubApps, err = readGitHubApps(value, key)
-		case "linger_hours":
-			file.Linger, err = readHours(value, key)
-		case "production_check_hours":
-			file.ProductionCheckBound, err = readHours(value, key)
-		case "pod_update_grace_minutes":
-			file.PodUpdateGrace, err = readMinutes(value, key)
-		case "stalled_tree_notice_hours":
-			file.StalledTreeNotice, err = readHours(value, key)
-		case "worker_silence_minutes":
-			file.WorkerSilence, err = readMinutes(value, key)
-		case "worker_background_hours":
-			file.WorkerBackground, err = readHours(value, key)
-		// Both round caps are read here rather than through countKeys, which carries a default
-		// for every key it holds and so could never report that the operator named neither.
-		case "pod_update_max_open_rounds":
-			file.PodUpdateMaxOpenRounds, err = readPositiveInteger(value, key, 0)
-		case "pod_update_rounds_per_minute":
-			file.PodUpdateRoundsPerMinute, err = readPositiveInteger(value, key, 0)
-		case "review_round_cap":
-			file.ReviewRoundCap, err = readPositiveInteger(value, key, 0)
-		case "controller":
-			file.Controller, err = readString(value, key)
-		case "capabilities":
-			file.Capabilities, err = readCapabilities(value, key)
-		case "worker_backends":
-			file.WorkerBackends, err = readWorkerBackends(value, key)
-		case "role_config_files":
-			file.RoleConfigFiles, err = readRoleConfigFiles(value, key)
-		case stallBackstopKey:
-			file.WorkerStallBackstops, err = readStallBackstops(value, key)
-		case repositoryRenamesKey:
-			file.RepositoryRenames, err = readRepositoryRenames(value, key)
-		case hooksKey:
-			file.Hooks, err = readHooks(value, key)
+		descriptor, modelled := topLevelByName[key]
+		switch {
+		case modelled:
+			err = descriptor.Read(value, key, &file)
+		case warnedKeys[key] != "":
+			// The value is read for nothing, so no shape of it is refused: the key changes
+			// nothing whatever it says.
+			file.Warnings = append(file.Warnings,
+				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			switch {
-			case isDurationKey(key) || isCountKey(key):
-				err = readPositive(value, key, file)
-			case warnedKeys[key] != "":
-				// The value is read for nothing, so no shape of it is refused: the key changes
-				// nothing whatever it says.
-				file.Warnings = append(file.Warnings,
-					fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
-			default:
-				err = classify(key)
-			}
+			err = classify(key)
 		}
 		if err != nil {
 			return fileConfig{}, err
 		}
 	}
 	return file, nil
-}
-
-func isDurationKey(key string) bool {
-	for _, d := range durationKeys {
-		if d.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-func isCountKey(key string) bool {
-	for _, c := range countKeys {
-		if c.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-// readPositive reads a duration or count key into the file's map: a positive integer and, for a
-// duration, at most the timer bound (config.ts readPositiveInteger, and loadConfigFromFile's
-// lifecycle keys).
-func readPositive(value *yaml.Node, key string, file fileConfig) error {
-	read, err := readInt(value, key)
-	if err != nil || read == nil {
-		return err
-	}
-	if *read <= 0 {
-		return fmt.Errorf("%s must be a positive integer", key)
-	}
-	if isDurationKey(key) {
-		if *read > maxTimerSeconds {
-			return fmt.Errorf("%s must be at most %d", key, maxTimerSeconds)
-		}
-		file.Durations[key] = *read
-	} else {
-		file.Counts[key] = *read
-	}
-	return nil
 }
 
 // classify refuses an unmodelled key, naming its class.
@@ -754,6 +590,23 @@ func stringOf(value *yaml.Node, key string) (string, error) {
 	return *read, nil
 }
 
+// cleanAbsolutePath is a path key's value, refused when it is relative or unclean, the empty
+// string (`instructions: ""`) among them: the daemon reads such a file at boot from wherever it
+// starts, where a relative path resolves against no directory of the operator's. A key written
+// with no value at all never reaches it, since describedMembers leaves a null member out and the
+// key then reads as unset. The `memory` block's `instructions` and a variant's read through it
+// alike, so the two keys answer one refusal.
+func cleanAbsolutePath(value *yaml.Node, key string) (string, error) {
+	path, err := stringOf(value, key)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", key, path)
+	}
+	return path, nil
+}
+
 // optionalString is a string key a blank value refuses, "" when it is unset.
 func optionalString(value *yaml.Node, key string) (string, error) {
 	read, err := readNonEmptyString(value, key)
@@ -773,30 +626,53 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is members' refusal of a name the mapping may not carry.
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
 type unknownKeyError struct{ key, name string }
 
 func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
 
-// members returns a mapping's members by name, refusing a name it does not know or names twice. A
-// member whose value is null is left out, as an unset key.
-func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.Node, error) {
+// describedMembers returns a mapping's members by name, refusing a name it does not know or names
+// twice. A member whose value is null is left out, as an unset key. It is the one reader of a
+// mapping in the loader: group is the dotted path of one nestedKeys entry (keytable.go), whose
+// members are the names the mapping may carry, each with the line `legion config reference --json`
+// prints for it, so every nested key the loader accepts is described. key is the path this mapping
+// was reached by, which a refusal names, and which differs from group where a project key or a
+// sequence index stands in it. A group nestedKeys does not hold panics: it is a reader naming a
+// mapping the configuration reference does not know, which is a bug TestNoKeyBypassesTheKeyTable
+// catches, never a value.
+func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Node, error) {
+	described, ok := nestedByPath[group]
+	if !ok {
+		panic("config: no nestedKeys group " + group)
+	}
 	found := map[string]*yaml.Node{}
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
-		name, member := value.Content[i].Value, value.Content[i+1]
-		if !slices.Contains(known, name) {
+		name, node := value.Content[i].Value, value.Content[i+1]
+		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
 			return nil, unknownKeyError{key, name}
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("%s names %s twice", key, name)
 		}
 		seen[name] = true
-		if member.Tag != "!!null" {
-			found[name] = member
+		if node.Tag != "!!null" {
+			found[name] = node
 		}
 	}
 	return found, nil
+}
+
+// namesKey reports whether the mapping value names the key name, whatever value follows it. It
+// reads the mapping's own keys, since describedMembers leaves out a member whose value is null, so
+// a key written with nothing after it counts as named.
+func namesKey(value *yaml.Node, name string) bool {
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
 }
 
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.
@@ -820,7 +696,7 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 // dispatchBase is `dispatch_url`: a base URL, never its clients' `/mcp` endpoint, which the clients
 // append themselves (the shipped `requireNoMcpSuffix`, config.ts). A trailing slash is gone
 // by then, so `/mcp/` is caught too. Its scheme must be http or https: anything else — a typo such
-// as `htp` — is a misconfiguration `--check-config` should catch now, rather than reaching the
+// as `htp` — is a misconfiguration `legion config check` should catch now, rather than reaching the
 // daemon's HTTP client as "unsupported protocol scheme", which the boot's readiness gate would
 // otherwise wait out forever as if Dispatch were merely unreachable (LEGION-580).
 func dispatchBase(value, key string) (string, error) {
@@ -915,8 +791,8 @@ const providerKeysShape = "provider_keys must be a mapping of the variable OMP r
 // the real gh the `legion gh` wrapper runs, and GH_TOKEN, GITHUB_TOKEN and GH_HOST set to the
 // empty string so nothing outranks the files. Each runtime's runtimeOwned holds the six and refuses
 // a provider key named for one — tmux at its construction, after boot has read every provider key
-// from secretsd, kubernetes in CheckPod — so the loader refuses it first, where `legion start
-// --check-config` sees it: the shim refuses to start over a provider key its own environment
+// from secretsd, kubernetes in CheckPod — so the loader refuses it first, where `legion config
+// check` sees it: the shim refuses to start over a provider key its own environment
 // already names, an empty value included (shim.ReadProviderEnv, LEGION-186), so such a key would
 // stop every pane.
 var paneGitHubEnv = []string{"GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH"}
@@ -1185,7 +1061,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
 	}
-	// 0 is the pacing off, which is why the rate is no countKeys row: that reader refuses it.
+	// 0 is the pacing off, which is why the rate's row names no positive default: that reader
+	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
 	}
@@ -1221,6 +1098,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkMemory(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := checkExperiments(cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
@@ -1294,16 +1174,17 @@ func checkProviderKeyFiles(file fileConfig) error {
 // checkSlackChannels refuses a project's slack_channels unless the daemon launches the
 // controller (`controller: daemon`) enrolled with the secrets broker
 // (`runtime.kubernetes.agent_secrets`): the controller answers a mention with slack_post, whose
-// bot token, LEGION_SLACK_BOT_TOKEN, is the Legion daemon service's secret, which the broker grants
-// only to that service's own pods. Anywhere else the controller would hear mentions it could never
-// answer. Projects are checked in key order, so the refusal names the same one every load.
+// bot token, LEGION_SLACK_BOT_TOKEN, is a shared agent secret the broker grants a session with a
+// broker identity, which that enrollment gives the controller. Anywhere else the controller would
+// hear mentions it could never answer. Projects are checked in key order, so the refusal names the
+// same one every load.
 func checkSlackChannels(cfg Config) error {
 	if cfg.ControllerLaunch == ControllerLaunchDaemon && cfg.Runtime.Kubernetes != nil && cfg.Runtime.Kubernetes.AgentSecrets != nil {
 		return nil
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		if len(cfg.Projects[key].SlackChannels) > 0 {
-			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants the Slack bot token (LEGION_SLACK_BOT_TOKEN) only to the Legion daemon service's own pods", key)
+			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)", key)
 		}
 	}
 	return nil
@@ -1385,19 +1266,12 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		return fmt.Errorf("worker_stream_port must differ from port (both %d)", cfg.Port)
 	}
 
-	for _, d := range durationKeys {
-		seconds, ok := file.Durations[d.key]
-		if !ok {
-			seconds = d.defaultValue
+	// Every positive-integer key, each onto the field its own row names (keytable.go's
+	// positiveKey): the number the file carries, or that row's default where it carries none.
+	for _, row := range topLevelKeys {
+		if row.Positive != nil {
+			row.Positive.resolve(row.Name, file, cfg)
 		}
-		*d.field(cfg) = time.Duration(seconds) * time.Second
-	}
-	for _, c := range countKeys {
-		count, ok := file.Counts[c.key]
-		if !ok {
-			count = c.defaultValue
-		}
-		*c.field(cfg) = count
 	}
 	// The registration deadline is one timer for the product, so each factor fitting is not
 	// enough (resolveDaemonConfig in config.ts). The product is judged by dividing the bound

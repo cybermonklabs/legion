@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The role prompts leave whole test suites to CI: the planner names a suite by its CI job, the
+  implementer runs the tests it changed by name before a hand-off, and the tester records a
+  CI-run check from CI's job and uses a running build as its user would. Every role with a
+  session may work beside the role whose phase it is. A handoff body goes on standard input,
+  never through the write tool. The reviewer pushes nothing to the branch it reviews, a prose
+  fix included. The plan traces each requirement clause to its tests, and names the tests of
+  four kinds of requirement before any code. The merger merges into a base other than the
+  default branch with a merge commit where the repository allows one, and names the real
+  blocker when GitHub refuses a merge. A date estimate names the work left and what it rests
+  on, and no Dispatch token is put in a command's arguments.

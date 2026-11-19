@@ -7,9 +7,9 @@ import {
   type AgentStreamControlMessage,
   agentStreamControlSubject,
   agentStreamFramesSubject,
-  agentSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  legacyAgentSubject,
   type OpenAsk,
   type OpenAsksResponse,
   ROLE_TOPIC_PREFIX,
@@ -69,6 +69,7 @@ import {
   dispatchSettings,
 } from "@legion/envoy-client/dispatch-config";
 import { defaultExec } from "@legion/envoy-client/dispatch-cwd";
+import { goBlankPattern } from "@legion/envoy-client/dispatch-execute";
 import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
@@ -93,9 +94,14 @@ import {
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings";
-import { messageFor } from "@legion/envoy-client/errors";
+import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
 import { machineID } from "@legion/envoy-client/machine";
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection";
+import {
+  type BrokerNatsCredential,
+  followNatsCredential,
+  keepNatsCredential,
+} from "@legion/envoy-client/nats-credential";
 import {
   readSessionAnswers,
   sessionAnswersFailureLine,
@@ -116,6 +122,7 @@ import {
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
+  publishResultDetails,
   sendConfirmationText,
   sessionsOnMachine,
   toMessageMetadata,
@@ -175,13 +182,13 @@ import {
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
-import { logger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
+import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
 import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
-import { CardAges } from "../src/card-age";
+import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
 import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
@@ -204,9 +211,16 @@ import {
   type TaskHandle,
   taskWasAbandoned,
 } from "../src/registration-state";
+import { scrubbedConsole, scrubbedHost, scrubbedLogger } from "../src/scrubbed-host";
 import { ServerClock } from "../src/server-clock";
-import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-context";
+import {
+  ANSWERS_SENT_ENTRY,
+  type CarriedAnswers,
+  carriedAnswers,
+  withSessionAnswers,
+} from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
+import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { TypedPictures } from "../src/typed-pictures";
 import {
   MOVED_SESSION_REASON,
@@ -315,6 +329,41 @@ export function setNatsConnectForTests(dial: typeof connect): void {
 // file's stand-in, with that file's state. Production callers never call this.
 export function resetNatsConnectForTests(): void {
   delete natsConnectStore[NATS_CONNECT];
+}
+
+/**
+ * Whether this process has logged that a session it decides for is not the one a session pod's
+ * launch named for its role (`sessionRoleRefusal` in the entry). The line is logged once per
+ * process, whichever extension instance of it decides first, and an instance may come from a
+ * later load of this entry (each top-level session of an ACP host), so the mark lives on
+ * `globalThis`, as the NATS stand-in above does.
+ */
+const SESSION_ROLE_LOGGED = Symbol.for("legion.pi-envoy.session-role-logged");
+
+interface GlobalSessionRoleLogged {
+  [key: symbol]: true | undefined;
+}
+
+const sessionRoleLoggedStore = globalThis as unknown as GlobalSessionRoleLogged;
+
+// The mark outlives every instance of this entry in the process, so a suite clears it between
+// rows, as it clears the NATS stand-in above. Production callers never call this.
+export function resetSessionRoleLoggedForTests(): void {
+  delete sessionRoleLoggedStore[SESSION_ROLE_LOGGED];
+}
+
+/**
+ * A role's name as the listener reads a claim's: with the characters Go's `strings.TrimSpace`
+ * takes trimmed from both ends, which is Go's set and not JavaScript's `trim` (`goBlankPattern`
+ * says where the two differ).
+ */
+function listenerRoleName(role: string): string {
+  const characters = [...role];
+  let start = 0;
+  let end = characters.length;
+  while (start < end && goBlankPattern.test(characters[start] ?? "")) start += 1;
+  while (end > start && goBlankPattern.test(characters[end - 1] ?? "")) end -= 1;
+  return characters.slice(start, end).join("");
 }
 
 const NATS_RETRY_INTERVAL_MS = 15_000;
@@ -578,7 +627,7 @@ class RegistrationError extends Error {}
 // opens the subject.
 class InboundError extends Error {
   readonly decided: boolean;
-  constructor(message: string, decided: boolean, options: ErrorOptions) {
+  constructor(message: string, decided: boolean, options?: ErrorOptions) {
     super(message, options);
     this.decided = decided;
   }
@@ -658,9 +707,16 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * is on by the time the request goes out.
  */
 const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
-  sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
+  sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session)?.client;
 
-export default function envoyExtension(pi: PiApi): void {
+/** The host's logger, every message and field it is handed passing the scrub of the secrets this
+ *  process holds (`../src/scrubbed-host`). */
+const logger = scrubbedLogger(hostLogger);
+
+export default function envoyExtension(hostApi: PiApi): void {
+  // Every notice, tool answer and tool error this extension gives the host passes the scrub of
+  // the secrets this process holds, the backstop under the rules that name no peer's text.
+  const pi = scrubbedHost(hostApi);
   logger.debug("extension instance loaded", { extension: import.meta.url });
   // The interface the Legion plugin reads (`@legion/pi-shared/interface`). `undefined` when an
   // Envoy entry at another interface version published first: that entry's object stays the one
@@ -782,6 +838,9 @@ export default function envoyExtension(pi: PiApi): void {
   const passDeadlineMs = (): number => active?.settings.passDeadlineMs ?? MIN_PASS_DEADLINE_MS;
   const delivered = createDeliveryDedupe();
   let connection: NatsConnection | undefined;
+  // Stops the keeper of `connection`'s broker token (`keepNatsCredential`): one per connection,
+  // replaced with the connection and stopped at shutdown.
+  let stopNatsKeeper = (): void => {};
   let sessionDirectory = "";
   let sessionID = "";
   // The key this instance last published its session under, so a switch that changes the id or
@@ -1031,10 +1090,15 @@ export default function envoyExtension(pi: PiApi): void {
   // record. Oh My Pi refreshes the shell's environment after `session_start`, `session_switch`
   // and `session_branch`; any other caller refreshes it itself. A caller after `session_start`
   // passes `ui`, so a record it cannot write is a notice at once: the start notices are shown once.
+  // A session with no id yet names none, as "" rather than a delete: a delete reaches
+  // `process.env` alone, and the C environment the process started with keeps a value it
+  // inherited (an omp started from another session's shell), which a child Oh My Pi starts in a
+  // PTY begins from with the variables built from `Bun.env` laid over it. "" lies over that value,
+  // and every reader takes "" as unset (the `dispatch` CLI, `legion git`, this file, AskGate).
   const bindDispatchSession = (id: string, ui?: SessionContext["ui"]): void => {
     process.env.DISPATCH_STATE_DIR ||= sessionStateRoot(process.env);
     if (id === "") {
-      delete process.env.DISPATCH_SESSION_ID;
+      process.env.DISPATCH_SESSION_ID = "";
       dispatchLedger = undefined;
       return;
     }
@@ -1110,7 +1174,7 @@ export default function envoyExtension(pi: PiApi): void {
   const requireInbound = () => {
     const { inbound } = requireEnvoy().settings;
     if ("off" in inbound) {
-      throw new Error(`inbound messages are off for this session: ${inbound.off}`);
+      throw new LoggableError(`inbound messages are off for this session: ${inbound.off}`);
     }
     return inbound;
   };
@@ -1119,15 +1183,34 @@ export default function envoyExtension(pi: PiApi): void {
   // this session uses, and a queued task dials through its handle, which closes a connection the
   // task was refused while the dial was in flight rather than leave it dangling.
   const dialNats = async (): Promise<NatsConnection> => {
-    const { natsUrls, natsSeed } = requireInbound();
+    const { natsUrls, natsCredential } = requireInbound();
+    // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
+    // The start has nothing to do until it holds one, so it waits for ready within its bound
+    // (`TRADE_DEADLINE_MS`, or the pass deadline less the 10 s the rest of the pass needs where
+    // that is shorter, or half a pass shorter than 20 s, `startTradeBoundMs`): a first trade's
+    // prompt 503 is traded again inside it rather than costing the session its registration until
+    // the next heartbeat, and a broker that never grants fails the start naming the trade's cause.
+    if (natsCredential.kind === "broker") {
+      await natsCredential.broker.ready({
+        waitForReady: true,
+        boundMs: startTradeBoundMs(passDeadlineMs()),
+      });
+    }
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
     return (natsConnectStore[NATS_CONNECT] ?? connect)(
       natsConnectionOptions({
         servers: natsUrls,
         name: `omp-${sessionID || "unknown"}`,
-        seed: natsSeed,
+        credential: natsCredential,
       })
     );
+  };
+
+  // The session's broker token, where its NATS connection presents one (`NATS_AUTH=broker`).
+  const brokerNatsCredentialOf = (): BrokerNatsCredential | undefined => {
+    const inbound = active?.settings.inbound;
+    if (inbound === undefined || "off" in inbound) return undefined;
+    return inbound.natsCredential.kind === "broker" ? inbound.natsCredential.broker : undefined;
   };
 
   // The session's one NATS connection, dialled if it has none. A queued task reaches it through
@@ -1146,12 +1229,23 @@ export default function envoyExtension(pi: PiApi): void {
     if (shuttingDown || connection?.isClosed() === false) {
       await dialled.close().catch(() => {});
       if (!shuttingDown && connection?.isClosed() === false) return connection;
-      throw new Error(
+      throw new LoggableError(
         "the session shut down while its NATS dial was in flight; the connection it opened was closed"
       );
     }
     connection = dialled;
     void watchReconnects(dialled);
+    const broker = brokerNatsCredentialOf();
+    if (broker !== undefined) {
+      stopNatsKeeper();
+      // Told as every other inbound outage is, in the log and as a notice: a token that cannot be
+      // renewed, or that the server refuses, is a session that stops receiving. The keeper says
+      // each cause once and again every 30 minutes while it lasts, so the notice does too.
+      stopNatsKeeper = keepNatsCredential(dialled, broker, (text) => {
+        logger.warn(`envoy: ${text}`);
+        activeSessionContext?.ui.notify(`envoy: ${text}`, "warning");
+      });
+    }
     return connection;
   };
 
@@ -1172,7 +1266,7 @@ export default function envoyExtension(pi: PiApi): void {
       }
     } catch (error) {
       logger.warn("envoy: the NATS connection's status reader failed", {
-        error: messageFor(error),
+        error: natsFailureReason(error),
       });
     }
   };
@@ -1229,12 +1323,30 @@ export default function envoyExtension(pi: PiApi): void {
   });
 
   // When each card reached each session this process serves, which every model request shows
-  // beside the card's send time (`../src/card-age`): a card's `message_end` in a session fixes it
-  // for that session, so a session the host moves to reads when it was shown the card itself. The
+  // beside the card's send time (`../src/card-age`): a card's delivery in a session is the one the
+  // session records for it, else what that session's own `message_end`, ledger record or entry
+  // position gives, so a session the host moves to reads when it was shown the card itself. The
   // listener's clock, from its replies, says how much of the gap this machine's clock made.
   const cardAges = new CardAges({
     now: () => Date.now(),
     clockOffset: () => serverClock.offset(),
+    // The delivery a session first gives a card goes into its file, so every later request, and
+    // the first of a process that resumes the session, shows the card with the same bytes.
+    // `CardAges` calls this synchronously while the request or the card's `message_end` is
+    // handled, so the session it names is the one the host is on and no guard is needed, unlike
+    // the answers record, which is written after an await. A write that throws is logged; the
+    // request still shows the card's time, and a process that resumes the session takes it from
+    // the card's ledger record or its place in the session.
+    record: (session, entry) => {
+      try {
+        pi.appendEntry(CARD_DELIVERED_ENTRY, entry);
+      } catch (error) {
+        logger.warn(
+          `envoy: the time card ${entry.event_id} reached session ${session} could not be recorded in the session file`,
+          { error: messageFor(error) }
+        );
+      }
+    },
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
@@ -1529,7 +1641,7 @@ export default function envoyExtension(pi: PiApi): void {
         // The frame carries the Dispatch message id, so the live view re-keys it over the
         // person's Dispatch turn instead of drawing the line twice.
         if (session !== "") {
-          agentStream.record(
+          agentStreamOf(session).record(
             agentStreamFramesSubject(session),
             {
               content: [{ text: report, type: "text" }],
@@ -1661,7 +1773,7 @@ export default function envoyExtension(pi: PiApi): void {
       .then(async (reply) => {
         // A `/model` or `/effort` has run by now: the viewer's header shows its result before the
         // reply that names it reaches the page.
-        refreshAgentStreamSettings(sessionID);
+        refreshAgentStreamSettings(hostSessionID());
         if (reply === undefined) return;
         await postTypedInputReply(delivery, replySessionID, reply);
       })
@@ -1906,7 +2018,7 @@ export default function envoyExtension(pi: PiApi): void {
       relayed.release();
       void work().catch((error: unknown) => {
         held.release();
-        console.warn(
+        scrubbedConsole.warn(
           `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
           error
         );
@@ -1915,13 +2027,13 @@ export default function envoyExtension(pi: PiApi): void {
     };
     try {
       if (rendered.rejectedDelivery !== undefined) {
-        console.warn(
+        scrubbedConsole.warn(
           `[envoy] rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
         );
         const rejected = rendered.rejectedDelivery;
         offWorker(() => refuse(rejected, "Invalid Dispatch targeted delivery frame"));
       } else if (rendered.malformedDelivery === true) {
-        console.warn(
+        scrubbedConsole.warn(
           "[envoy] dropping malformed Dispatch targeted delivery without a reply address"
         );
         claim.settle();
@@ -2111,7 +2223,10 @@ export default function envoyExtension(pi: PiApi): void {
     } catch (error) {
       handing = false;
       held.release();
-      console.warn(`[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`, error);
+      scrubbedConsole.warn(
+        `[envoy] failed to deliver envelope ${envelope?.event_id ?? "unknown"}`,
+        error
+      );
       // The failure is the relay's to count: the frame comes again, or, from its third delivery
       // on, the relay shows its failure notice (`createConsumerDelivery`).
       throw error;
@@ -2167,11 +2282,12 @@ export default function envoyExtension(pi: PiApi): void {
   // would hold the session's registration for ten seconds times the subjects it opened.
   const unanswered = new Set<NatsConnection>();
 
-  // `promise`, or a rejection naming `what`, once `ms` pass.
+  // `promise`, or a rejection naming `what`, once `ms` pass. Its text is this plugin's own, so a
+  // NATS failure notice prints it whole (`LoggableError`).
   const within = async <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
     const expired = Promise.withResolvers<never>();
     const timer = setTimeout(
-      () => expired.reject(new Error(`${what} timed out after ${ms} ms`)),
+      () => expired.reject(new LoggableError(`${what} timed out after ${ms} ms`)),
       ms
     );
     try {
@@ -2270,7 +2386,11 @@ export default function envoyExtension(pi: PiApi): void {
   // the role claim's to open again, which a restored process without the role never does.
   const followedSubjects = (): string[] => {
     if (sessionID === "") return [];
-    return replayFollowedSubjects(agentSubject(sessionID), followed, registrationState.isRoleBound);
+    return replayFollowedSubjects(
+      legacyAgentSubject(sessionID),
+      followed,
+      registrationState.isRoleBound
+    );
   };
 
   // Acts on a `subscription.removed` naming this session, which the relay delivers like any
@@ -2563,10 +2683,35 @@ export default function envoyExtension(pi: PiApi): void {
   // capture, so nothing is retained by the bus; the Dispatch relay forwards them to a human
   // watching the session and writes none of it down. The publisher stays silent unless a viewer
   // is attached, so a session nobody has open puts no conversation on the wire at all.
-  const agentStream = new AgentStreamPublisher({
-    now: () => Date.now(),
-    publish: (subject, payload) => connection?.publish(subject, codec.encode(payload)),
-  });
+  //
+  // Each session has a ring of its own, so a replay answers its session's turns alone, however
+  // the host's moves and this process's passes interleave: a turn is kept in the ring of the
+  // session the host records it under (`recordAgentStreamMessage`), and a control subject replays
+  // and arms its own session's ring alone. A ring whose viewer still watches is kept after the
+  // host moves on, so what that session still records (a person's shell command it ran) reaches
+  // that viewer on its own subject; every other ring of a session this process no longer serves
+  // is dropped (`pruneAgentStreams`) when a ring is made and when the control subject moves. So at
+  // most the served session's, the host's live one and the rings still watched are held, and a
+  // watch lapses within AGENT_STREAM_WATCH_TTL_MS of its viewer's last ping.
+  const agentStreams = new Map<string, AgentStreamPublisher>();
+  /** Forgets the ring of every session but the `kept` ones, and those a viewer still watches. */
+  const pruneAgentStreams = (...kept: string[]): void => {
+    for (const [session, ring] of agentStreams) {
+      if (!kept.includes(session) && !ring.watched) agentStreams.delete(session);
+    }
+  };
+  const agentStreamOf = (session: string): AgentStreamPublisher => {
+    let ring = agentStreams.get(session);
+    if (ring === undefined) {
+      pruneAgentStreams(agentStreamControlSession);
+      ring = new AgentStreamPublisher({
+        now: () => Date.now(),
+        publish: (subject, payload) => connection?.publish(subject, codec.encode(payload)),
+      });
+      agentStreams.set(session, ring);
+    }
+    return ring;
+  };
   // The control subscription this session currently holds, and the id it was opened for.
   let agentStreamControl: Subscription | undefined;
   let agentStreamControlSession = "";
@@ -2619,7 +2764,7 @@ export default function envoyExtension(pi: PiApi): void {
         ...description,
       });
     }
-    agentStream.setCommands(agentStreamFramesSubject(session), commands);
+    agentStreamOf(session).setCommands(agentStreamFramesSubject(session), commands);
   };
 
   // The model and thinking level a viewer's header shows (`liveSessionSettings`). The host fires no
@@ -2631,7 +2776,7 @@ export default function envoyExtension(pi: PiApi): void {
   const refreshAgentStreamSettings = (session: string): void => {
     if (session === "") return;
     try {
-      agentStream.setSettings(
+      agentStreamOf(session).setSettings(
         agentStreamFramesSubject(session),
         liveSessionSettings(liveAgentSession(session))
       );
@@ -2665,7 +2810,7 @@ export default function envoyExtension(pi: PiApi): void {
   const publishAgentStreamContext = (session: string, usage: ContextUsage | undefined): void => {
     agentStreamContextRefreshedAt = Date.now();
     try {
-      agentStream.setContext(agentStreamFramesSubject(session), usage);
+      agentStreamOf(session).setContext(agentStreamFramesSubject(session), usage);
     } catch (error) {
       logger.warn("envoy: could not publish the agent stream's context frame", {
         error: messageFor(error),
@@ -2736,6 +2881,9 @@ export default function envoyExtension(pi: PiApi): void {
           if (typeof parsed !== "object" || parsed === null) continue;
           const request = parsed as AgentStreamControlMessage;
           if (request.type !== "replay" && request.type !== "watch") continue;
+          // A message already queued when the control subject moved belongs to a session whose
+          // ring was dropped: answered, it would make that ring again and arm it.
+          if (agentStreamControlSession !== session) continue;
           refreshAgentStreamSettings(session);
           const attached = agentStreamViewerAttached;
           if (
@@ -2758,19 +2906,21 @@ export default function envoyExtension(pi: PiApi): void {
             }
           }
           // The answer is taken before this message arms anything, so a bare replay request
-          // from a client that never attached a viewer gets an empty history, not the ring.
+          // from a client that never attached a viewer gets an empty history, not the ring. It is
+          // this session's own ring, which holds this session's turns alone.
+          const ring = agentStreamOf(session);
           const reply = message.reply;
           const answer =
             request.type === "replay" && reply !== undefined
-              ? JSON.stringify(agentStream.replay(session))
+              ? JSON.stringify(ring.replay(session))
               : undefined;
           // A viewer arming a session nobody was watching is sent the settings and commands as
           // they stand: what was read before it arrived was kept unpublished, and a page held open
           // while this session was relaunched gets no replay from this process (`publishState`).
-          const arming = !agentStream.watched;
-          agentStream.noteViewer();
+          const arming = !ring.watched;
+          ring.noteViewer();
           agentStreamViewerAttached = true;
-          if (arming) agentStream.publishState(agentStreamFramesSubject(session));
+          if (arming) ring.publishState(agentStreamFramesSubject(session));
           if (answer === undefined || reply === undefined) continue;
           connection?.publish(reply, codec.encode(answer));
         } catch (error) {
@@ -2798,10 +2948,11 @@ export default function envoyExtension(pi: PiApi): void {
     if (agentStreamControlSession === session && agentStreamControl !== undefined) return;
     agentStreamControl?.unsubscribe();
     agentStreamControl = undefined;
-    // A different session under the same extension instance is a different conversation: the
-    // ring still holds the previous one, and a viewer opening the new id must not be served it.
+    // A different session under the same extension instance is a different conversation: its
+    // ring is its own, and of the sessions this process served before only a ring a viewer still
+    // watches is kept, so a viewer opening the new id is served the new conversation alone.
     if (agentStreamControlSession !== session) {
-      agentStream.reset();
+      pruneAgentStreams(session);
       agentStreamViewerAttached = false;
       agentStreamCommandsRefreshedOnWatchAt = -Infinity;
       forgetAgentStreamContext();
@@ -2833,39 +2984,53 @@ export default function envoyExtension(pi: PiApi): void {
   /** One of this session's messages, on its way to whoever has the session open, tagged with the
    *  Dispatch message a user message delivered when it matches a person's turn this extension sent
    *  in. Only the top-level instance publishes: a `task` subagent's instance never learns a session
-   *  id, and its work reaches the viewer as the parent's tool call anyway. */
-  const recordAgentStreamMessage = (message: unknown, streaming: boolean): void => {
-    if (sessionID === "") return;
-    agentStream.record(
-      agentStreamFramesSubject(sessionID),
+   *  id, and its work reaches the viewer as the parent's tool call anyway. `host` is the session
+   *  the host records the message under, read from the event's own context: this instance's
+   *  `sessionID` trails a move with no event (a rollback) until the next pass, and a message kept
+   *  under it would be replayed to a viewer of a session it is not part of. */
+  const recordAgentStreamMessage = (message: unknown, streaming: boolean, host: string): void => {
+    if (sessionID === "" || host === "") return;
+    agentStreamOf(host).record(
+      agentStreamFramesSubject(host),
       message,
       streaming,
-      matchInjectedUserTurn(sessionID, message)
+      matchInjectedUserTurn(host, message)
     );
   };
+  /** The session the host is on as an event reports it, else as this instance last saw it. */
+  const eventSessionID = (context: SessionContext | undefined): string =>
+    context?.sessionManager.getSessionId() ?? hostSessionID();
 
-  pi.on("message_start", async (event) => {
+  pi.on("message_start", async (event, context) => {
     // A tagged message starts in the live session's transcript, so its pictures join that set.
     const shown = typedPictures.started(event.message);
     if (shown !== undefined) markPicturesShown(shownPictures(sessionID), shown);
-    recordAgentStreamMessage(event.message, true);
+    recordAgentStreamMessage(event.message, true, eventSessionID(context));
   });
-  pi.on("message_update", async (event) => {
-    recordAgentStreamMessage(event.message, true);
+  pi.on("message_update", async (event, context) => {
+    recordAgentStreamMessage(event.message, true, eventSessionID(context));
   });
 
   // The host writes a message to the transcript as it ends it: a card or a person's turn handed to
-  // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`), and a
-  // card's write is when it reached this session (`../src/card-age`). A card the host appended
-  // also arms the wake's check (`../src/card-wake`).
+  // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`). A
+  // card's write fixes when it reached this session in the order every request reads it too: the
+  // delivery the session records for the card's event, else the time the session's entries give
+  // the event (its ledger record, or the newest message time up to its first entry, which is the
+  // older card's for a card a resumed process replays), else the time of this write
+  // (`../src/card-age`). A card the host appended also arms the wake's check (`../src/card-wake`).
   pi.on("message_end", async (event, context) => {
     const { message } = event;
     if (!shuttingDown) cardWake.messageEnd(message, context);
-    recordAgentStreamMessage(message, false);
+    const host = eventSessionID(context);
+    recordAgentStreamMessage(message, false, host);
     // Every message of a turn moves the context window's filling, and this is where the host has
     // finished one.
-    refreshAgentStreamContext(sessionID);
-    cardAges.written(message, context.sessionManager.getSessionId());
+    refreshAgentStreamContext(host);
+    cardAges.written(
+      message,
+      context.sessionManager.getSessionId(),
+      () => context.sessionManager.getBranch?.() ?? []
+    );
     await unwritten.written(message);
   });
   // The host asks whether any extension handles `session_before_compact`, which turns its
@@ -2873,23 +3038,25 @@ export default function envoyExtension(pi: PiApi): void {
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(eventSessionID(context));
   });
-  pi.on("auto_compaction_end", async (event) => {
+  pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);
-    refreshAgentStreamContext(sessionID);
+    refreshAgentStreamContext(eventSessionID(context));
   });
   pi.on("auto_retry_end", async (event) => cardWake.autoRetryEnd(event));
 
   // A turn runs on the model and level set when it starts, and a retry's fallback moves the session
   // onto another model: either can follow a change no event announced. A subagent's instance knows
-  // no session id and publishes nothing.
-  pi.on("turn_start", async () => {
-    refreshAgentStreamSettings(sessionID);
-    refreshAgentStreamContext(sessionID);
+  // no session id and publishes nothing. Each frame goes to the ring of the session the host is on,
+  // which this instance's `sessionID` trails after a move with no event.
+  pi.on("turn_start", async (_event, context) => {
+    const host = eventSessionID(context);
+    refreshAgentStreamSettings(host);
+    refreshAgentStreamContext(host);
   });
-  pi.on("retry_fallback_applied", async () => {
-    refreshAgentStreamSettings(sessionID);
+  pi.on("retry_fallback_applied", async (_event, context) => {
+    refreshAgentStreamSettings(eventSessionID(context));
   });
 
   // The host's own session id. Oh My Pi moves its one session manager before it dispatches the
@@ -2913,6 +3080,56 @@ export default function envoyExtension(pi: PiApi): void {
         ? `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} was in flight; the next pass keeps the hold for the session the host is on, or hands it back`
         : `the session moved from ${from} to ${hostSessionID()} while its claim of role ${role} ran; nothing was claimed`
     );
+
+  // The Envoy role a session pod's launch named (`ENVOY_SESSION_ROLE`) and the one session it named
+  // it for (`ENVOY_SESSION_ROLE_SESSION`, the id the pod starts the agent with; the deployment
+  // repository's sessions workload sets both once t-e-32 lands). That session claims the role
+  // itself, under its own credential, which the listener holds to that very session, at every
+  // pass that registers it (`settleRole`). No other session claims it, by any path: not a process
+  // the agent starts in the pod, such as an `omp -p` review, which gets the same environment; not
+  // an ACP host's other session; not an id a `/new`, a `/fork` or a tree branch mints, though a
+  // fork's or a branch's transcript carries the named session's record of the claim. Each pass
+  // compares the session open then. Read when the instance is created; nothing takes them out of
+  // the environment.
+  const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
+  const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
+  // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
+  // named session's alone, so every other session is refused it, and with no session named every
+  // session is. The name is read as the listener reads a claim's (`listenerRoleName`), so a padded
+  // name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`), whichever
+  // session and path meets it first, and the person is told once for each session refused, on
+  // screen, where the role stays and how to take it back.
+  const sessionRoleNotified = new Set<string>();
+  const sessionRoleRefusal = (id: string, role: string): string | undefined => {
+    if (
+      sessionRole === undefined ||
+      listenerRoleName(role) !== sessionRole ||
+      id === sessionRoleSession
+    ) {
+      return undefined;
+    }
+    const refusal = `envoy: ENVOY_SESSION_ROLE ${sessionRole} belongs to session ${sessionRoleSession ?? "none"}; this session ${id} claims nothing`;
+    if (sessionRoleLoggedStore[SESSION_ROLE_LOGGED] === undefined) {
+      sessionRoleLoggedStore[SESSION_ROLE_LOGGED] = true;
+      logger.warn(refusal);
+    }
+    if (!sessionRoleNotified.has(id)) {
+      sessionRoleNotified.add(id);
+      activeSessionContext?.ui.notify(
+        sessionRoleSession === undefined
+          ? `envoy: role ${sessionRole} is the pod's, but the pod names no session for it, so no session claims it; messages to the role are not delivered here`
+          : `envoy: role ${sessionRole} stays with the pod's session ${sessionRoleSession}; messages to the role are not delivered here. /resume ${sessionRoleSession} takes it back`,
+        "warning"
+      );
+    }
+    return refusal;
+  };
+  // A claim the model or a plugin asks for refuses the launch's role to a session the launch did
+  // not name, before it calls the listener.
+  const requireSessionRoleFor = (id: string, role: string): void => {
+    const refusal = sessionRoleRefusal(id, role);
+    if (refusal !== undefined) throw new Error(refusal);
+  };
 
   // The registration and role state the two serial queues write, the queues themselves, each
   // task's deadline and this extension instance's client instance id, all private to
@@ -2938,12 +3155,24 @@ export default function envoyExtension(pi: PiApi): void {
       // that holds a role heartbeats from here on, whichever claim took it. The record names the
       // session the claim was made for and this process, so a second process reading the same
       // transcript — a continuation that resumed a live session's id — tells its own records
-      // from this one's.
-      pi.appendEntry(ROLE_CLAIM_ENTRY, {
-        role,
-        session_id: claimedFor,
-        client_instance_id: clientInstanceID,
-      });
+      // from this one's. The launch's role is claimed again at every pass, so a claim of it that
+      // the newest record on the branch already names — that role, for that session, by this
+      // process — writes nothing.
+      const newest =
+        role === sessionRole
+          ? transcriptRoleRecord(activeSessionContext?.sessionManager.getBranch?.() ?? [])
+          : undefined;
+      const recorded =
+        newest?.role === role &&
+        newest.session_id === claimedFor &&
+        newest.client_instance_id === clientInstanceID;
+      if (!recorded) {
+        pi.appendEntry(ROLE_CLAIM_ENTRY, {
+          role,
+          session_id: claimedFor,
+          client_instance_id: clientInstanceID,
+        });
+      }
       if (activeSessionContext !== undefined) ensureHeartbeat(activeSessionContext);
     },
     dial: dialNats,
@@ -3018,10 +3247,13 @@ export default function envoyExtension(pi: PiApi): void {
    *  it left at a `/new`, a fork or a branch — once that session's registration has settled or
    *  `settleMs` have passed. The DELETE carries this client instance's id
    *  (`registrationState.deregister`), so it removes only a record this instance's registration
-   *  wrote. */
+   *  wrote. Where the caller must be done by `endsAt` (a shutdown), the DELETE gets what is left
+   *  until then: its credential waits on that less the request's reserve, so a broker credential
+   *  still waiting on a trade leaves the DELETE time to go without it. */
   const deregisterSession = async (
     id: string,
-    settleMs: number = REGISTRATION_SETTLE_MS
+    settleMs: number = REGISTRATION_SETTLE_MS,
+    endsAt?: number
   ): Promise<void> => {
     if (id === "" || active === undefined) return;
     const registering = registrationsInFlight.get(id);
@@ -3034,7 +3266,7 @@ export default function envoyExtension(pi: PiApi): void {
         clearTimeout(timer);
       }
     }
-    await registrationState.deregister(id);
+    await registrationState.deregister(id, endsAt === undefined ? undefined : endsAt - Date.now());
   };
 
   // Said once per outage: the listener refused this session's registration, so no consumer
@@ -3094,7 +3326,7 @@ export default function envoyExtension(pi: PiApi): void {
     const role = registrationState.heldRole();
     return registerWithRelay({
       relay: asking?.delivery,
-      ownAgentSubject: agentSubject(registeringFor),
+      ownAgentSubject: legacyAgentSubject(registeringFor),
       followed,
       roles: role === undefined ? [] : [role],
       outage: inboundOutage,
@@ -3369,7 +3601,7 @@ export default function envoyExtension(pi: PiApi): void {
       activeSessionContext?.sessionManager.getEntries() ?? []
     ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
     for (const topic of new Set([...registered, ...remembered])) {
-      if (topic === agentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
+      if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
       if (retired.includes(topic)) continue;
       await handle.subscribe(topic);
     }
@@ -3406,29 +3638,41 @@ export default function envoyExtension(pi: PiApi): void {
   //    survives `omp --resume` after the listener has reaped a dead session's rows), and a
   //    recorded release is final. A fork's branch is a copy of its parent's, so it records its
   //    parent's role; a `/new` records none; a resume or branch records its own.
+  //  - Otherwise, when `id` is the session the launch named for it, the role a session pod's
+  //    launch named (`sessionRole`), which the pass claims outright (`settleRole`), so the
+  //    listener never refuses it. A move the model makes with `envoy_role_set` is a record, which
+  //    no pass undoes.
   //  - Otherwise the role this process holds, when its hold is under `id` or a session `id`
   //    continues (a tree navigation to before the claim, or a fork from before it).
   //  - Otherwise, once when a pass establishes a resumed or switched session (`readRows`), the
   //    listener's rows for `id` (a same-id resume inside the reap window) and for the sessions it
   //    continues.
-  // None of them while the listener has refused that role to `id`. The pass
-  // claims it softly (`settleRole`): a session's records may be stale evidence (the parent of a
-  // fork whose role moved to the child, a second process on the same transcript), and it must not
-  // take a role another live session holds. The listener decides that atomically: a soft claim
-  // naming a predecessor takes the role from that predecessor only when the predecessor has no
-  // live registry entry, when its live entry carries this client instance's own instance id, or
-  // when either side carries no instance id. A predecessor still live under another client
-  // instance keeps the role, and the claim is refused naming it.
+  // None of them while the listener has refused that role to `id`, and never the launch's role
+  // for a session the launch did not name (`sessionRoleRefusal`): a fork's branch records it, and
+  // a fork is another session. The pass claims every role but the launch's softly (`settleRole`):
+  // a session's records may be stale evidence (the parent of a fork whose role moved to the
+  // child, a second process on the same transcript), and it must not take a role another live
+  // session holds. The listener decides that atomically: a soft claim naming a predecessor takes
+  // the role from that predecessor only when the predecessor has no live registry entry, when its
+  // live entry carries this client instance's own instance id, or when either side carries no
+  // instance id. A predecessor still live under another client instance keeps the role, and the
+  // claim is refused naming it.
   const desiredRole = async (
     handle: TaskHandle,
     id: string,
     branch: readonly unknown[],
     readRows: boolean
   ): Promise<string | undefined> => {
-    const want = (role: string) => (registrationState.refusalFor(id) === role ? undefined : role);
+    const want = (role: string) =>
+      registrationState.refusalFor(id) === role || sessionRoleRefusal(id, role) !== undefined
+        ? undefined
+        : role;
     const recorded = recordedRole(branch);
     if (recorded === null) return undefined;
     if (recorded !== undefined) return want(recorded);
+    if (sessionRole !== undefined && sessionRoleRefusal(id, sessionRole) === undefined) {
+      return sessionRole;
+    }
     const held = registrationState.heldRole();
     const holdID = registrationState.holdSessionID();
     const lineage = continuedBy(id);
@@ -3560,11 +3804,24 @@ export default function envoyExtension(pi: PiApi): void {
       if (host !== lastHeard) lastHeard = "";
     }
     for (const other of handle.forgetOtherAgentSessions(host)) {
-      unfollow(agentSubject(other));
+      unfollow(legacyAgentSubject(other));
       leftSessions.add(other);
     }
     // Another session's relay: its unsettled frames go back to the listener (`nak`).
     if (relay !== undefined && relay.sessionID !== host) closeRelay();
+    // Another session's agent-stream control subject, closed here: a viewer of that session is
+    // answered nothing more, which a failed move to this one never reaches `watchAgentStream` to
+    // do. Its ring is kept only while that viewer still watches; this session's ring holds what
+    // the host recorded under it.
+    if (agentStreamControlSession !== "" && agentStreamControlSession !== host) {
+      agentStreamControl?.unsubscribe();
+      agentStreamControl = undefined;
+      pruneAgentStreams(host);
+      agentStreamControlSession = "";
+      agentStreamViewerAttached = false;
+      agentStreamCommandsRefreshedOnWatchAt = -Infinity;
+      forgetAgentStreamContext();
+    }
     if (host === "") {
       handle.markEstablished(host);
       ensureHeartbeat(context);
@@ -3580,8 +3837,17 @@ export default function envoyExtension(pi: PiApi): void {
     if (inbound && registrationState.inboundOpenSession() !== host) {
       try {
         handle.markAgentSessionOpen(host);
-        await handle.connect();
-        await handle.subscribe(agentSubject(host));
+        const connected = await handle.connect();
+        // The auth service grants a session's token that session's subjects alone, so a session
+        // the connection was not admitted as - one the host switched to - subscribes nothing
+        // until the connection is back, admitted with its token (`followNatsCredential`).
+        // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
+        // a short pass deadline would run on beside the pass after it.
+        const broker = brokerNatsCredentialOf();
+        if (broker !== undefined) {
+          await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
+        }
+        await handle.subscribe(legacyAgentSubject(host));
         // The relay subject opens before any registration asks for consumer delivery, so the
         // listener's first relayed frame has a subscriber.
         await openRelay(context, host, handle.connect);
@@ -3635,11 +3901,26 @@ export default function envoyExtension(pi: PiApi): void {
     leftSessions.delete(host);
     for (const other of leftSessions) forgetBrokerSession(other);
     leftSessions.clear();
+    // nats.js's own error can carry what the servers were set to (a resolver's error names the
+    // host it looked up, a socket's the port, a password's digits included), so a notice carries
+    // its code, the server's own text, or this plugin's own message (`natsFailureReason`).
+    const failureText =
+      inboundFailure === undefined ? undefined : natsFailureReason(inboundFailure);
     if (registration !== undefined) {
-      throw new RegistrationError(messageFor(registration.error), { cause: registration.error });
+      // A registration refused for want of the relay subject the failed dial would have opened
+      // names that dial's own failure too: it is the cause a person can act on (a hub with no auth
+      // service under NATS_AUTH=broker says so and what to unset), which the refusal alone hides.
+      const refused = messageFor(registration.error);
+      throw new RegistrationError(
+        failureText === undefined
+          ? refused
+          : `${refused}, because its NATS connection failed: ${failureText}`,
+        { cause: registration.error }
+      );
     }
-    if (inboundFailure !== undefined) {
-      throw new InboundError(messageFor(inboundFailure), decided, { cause: inboundFailure });
+    if (failureText !== undefined) {
+      // No cause: nats.js's own error still carries what the text leaves out.
+      throw new InboundError(failureText, decided);
     }
     return decided;
   };
@@ -3691,7 +3972,12 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
+    // The launch's role is claimed at every pass that registered the session the launch named,
+    // below, rather than read as held between two registrations: the launch named this session
+    // its holder.
+    const launched = desired === sessionRole && host === sessionRoleSession;
     if (
+      !launched &&
       !registrationState.holdIsUnconfirmed() &&
       registrationState.heldRole() === desired &&
       registrationState.holdSessionID() === host
@@ -3727,24 +4013,27 @@ export default function envoyExtension(pi: PiApi): void {
       handle.markRoleSettled(host);
       return true;
     }
-    // The claim may supersede this process's own hold of the role, wherever the listener names
-    // it, or else whichever session the host session continues the listener names (a fork's hold
-    // from this process or an earlier one).
+    // The launch's role is claimed outright, last-claim-wins, as the pod's own claimer did: a
+    // holder that is another session is stale (an evicted pod's session the registry still lists
+    // as live for minutes) or wrong, and a soft claim would leave the role with it. Every other
+    // claim is soft and may supersede this process's own hold of the role, wherever the listener
+    // names it, or else whichever session the host session continues the listener names (a
+    // fork's hold from this process or an earlier one).
     const holdID = registrationState.holdSessionID();
     let supersedes =
       registrationState.heldRole() === desired && holdID !== undefined && holdID !== ""
         ? holdID
         : undefined;
     const lineage = continuedBy(host);
-    if (supersedes === undefined && lineage.length > 1) {
+    if (!launched && supersedes === undefined && lineage.length > 1) {
       const holder = await handle.readRoleHolder(desired);
       if (holder !== undefined && holder !== host && lineage.includes(holder)) supersedes = holder;
     }
     try {
-      const claimed = await handle.claimRole(desired, {
-        soft: true,
-        previousSessionID: supersedes,
-      });
+      const claimed = await handle.claimRole(
+        desired,
+        launched ? {} : { soft: true, previousSessionID: supersedes }
+      );
       if (claimed && unheard) handle.noteNoticesClosed(desired);
     } catch (error) {
       // This catch would otherwise swallow a step the handle refused: the check says so instead.
@@ -3787,6 +4076,7 @@ export default function envoyExtension(pi: PiApi): void {
     // a held role would take them all and deliver none, so the claim refuses before any listener
     // call registers the session or sets the role.
     requireInbound();
+    requireSessionRoleFor(targetSessionID, role);
     if (registrationState.establishedFor() !== targetSessionID) {
       await establishForBridge(context);
     }
@@ -3967,10 +4257,15 @@ export default function envoyExtension(pi: PiApi): void {
     // Ends at once a role the host session's own records rule out, so the new session never
     // takes the old role's notices while an earlier pass finishes; the pass hands the hold back.
     // Only a record this process acts on ends anything (`recordedRole`): a release another
-    // process wrote on this transcript ends no role this one holds.
+    // process wrote on this transcript ends no role this one holds. The launch's role ends here
+    // too, as a recorded release would end it, when the launch did not name this session: a fork
+    // or a branch carries the named session's record of it, and would otherwise follow its notice
+    // subjects until its first pass, which waits on its registration.
+    const held = registrationState.heldRole();
+    const launchRoleRefused = held !== undefined && sessionRoleRefusal(host, held) !== undefined;
     registrationState.endUnwantedRole(
       host,
-      recordedRole(context.sessionManager.getBranch?.() ?? []),
+      launchRoleRefused ? null : recordedRole(context.sessionManager.getBranch?.() ?? []),
       continuedBy(host)
     );
     // With inbound messages off the session opens no agent subject; a heartbeat's pass, when a
@@ -4065,7 +4360,11 @@ export default function envoyExtension(pi: PiApi): void {
       askgateBeat = undefined;
       closeStore(askgateOwner.store);
     }
+    // The token keeper stops before the drain: a renewal it ran on a draining connection would be
+    // refused and warned about as a failure, at a stop nobody asked to be warned of.
+    stopNatsKeeper();
     const deadline = Promise.withResolvers<void>();
+    const endsAt = Date.now() + SHUTDOWN_DEADLINE_MS;
     const timer = setTimeout(deadline.resolve, SHUTDOWN_DEADLINE_MS);
     try {
       // The heartbeat has stopped (`shuttingDown`), so no new registration starts; one already on
@@ -4076,7 +4375,7 @@ export default function envoyExtension(pi: PiApi): void {
       // record left behind outlives the process by the gone horizon. The drain runs beside the
       // wait: it needs no listener call, and both share that deadline, which is what the host's
       // own limit on a shutdown handler leaves them.
-      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS).catch(
+      const deregistration = deregisterSession(sessionID, SHUTDOWN_SETTLE_MS, endsAt).catch(
         () => undefined
       );
       const draining = connection?.drain().catch(() => undefined) ?? Promise.resolve();
@@ -4097,6 +4396,7 @@ export default function envoyExtension(pi: PiApi): void {
       // (its instance never ran restoreLocalSessionState, so its `sessionID` stayed empty).
       const liveSessionID = context.sessionManager.getSessionId();
       forgetAgentStreamContext();
+      agentStreams.clear();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }
@@ -4145,14 +4445,16 @@ export default function envoyExtension(pi: PiApi): void {
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
-      // The failure line shows nothing a person wrote.
-      return read.text === undefined ? undefined : { text: read.text, words: read.words ?? [] };
+      return carriedAnswers(read);
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs
-      // only the list: the request says the list could not be read, and why.
-      logger.warn(`envoy: people's answers could not be read: ${messageFor(error)}`);
-      return { text: sessionAnswersFailureLine(messageFor(error)), words: [] };
+      // only the list: it gives the failure line, with the error as its reason, which
+      // `withSessionAnswers` appends after the last message unless the newest answers message
+      // sent is a failure line already. The log says why through its failure episode
+      // (`readFailed`), once per episode as for every failed read, so nothing is logged here.
+      const reason = messageFor(error);
+      return { text: sessionAnswersFailureLine(reason), reason };
     }
   };
 
@@ -4161,35 +4463,51 @@ export default function envoyExtension(pi: PiApi): void {
     // (`../src/card-age`), so a reader whose inbox ran behind does not take a late card's stamp
     // for the present time. Every session that reaches Dispatch, Legion panes and `task` subagents
     // included, also carries the dispatch-first skill on every request at the head, where its
-    // bytes never change, and on every request of its main loop what people wrote to it: after the
-    // last message when it shows something new, then where it went (`withSessionAnswers`). The host runs this handler on
-    // its side turns, its handoff prompt and a remote compaction's conversions too;
-    // `withSessionAnswers` leaves the list off those. Oh My Pi hands this handler no abort signal:
-    // it races the handler against the run's own and drops what an aborted handler returns, and
-    // the read it shares goes on to fill the cache.
+    // bytes never change, and on every request of its main loop what people wrote to it: every
+    // answers message an earlier request sent, which the session records and each request
+    // rebuilds at its old place with its old bytes, and a new one after the last message when the
+    // read shows a change (`withSessionAnswers`). The host runs this handler on its side turns,
+    // its handoff prompt and a remote compaction's conversions too; `withSessionAnswers` leaves
+    // the answers off those and records nothing for them. Oh My Pi hands this handler no abort
+    // signal: it races the handler against the run's own and drops what an aborted handler
+    // returns, and the handler goes on to its read, which it shares and which goes on to fill the
+    // cache, and to its decision and its record, which come after those of every earlier request
+    // of the session, so the request after it rebuilds what it recorded (`withSessionAnswers`).
     pi.on("context", async (event, context) => {
       // The host's own live id, as `message_end` reads it: this one process serves one session at
       // a time and moves between them, and a session that followed the same topic reads the same
       // event when its own host writes it, not when the session before it did (`../src/card-age`).
+      // It is also the session the request is built from, as it began: the host can move to
+      // another session while the read waits, and an answers message this request sent, like the
+      // branch it reads again after the read, belongs to this one alone.
+      const id = context.sessionManager.getSessionId();
       const aged = cardAges.annotate(
         event.messages,
         () => context.sessionManager.getBranch?.() ?? [],
-        context.sessionManager.getSessionId()
+        id
       );
       if (!atStart.dispatch.enabled) return aged === undefined ? undefined : { messages: aged };
       const withSkill = withDispatchFirst(aged ?? event.messages, DISPATCH_FIRST_CONTEXT);
       const messages = await withSessionAnswers(withSkill ?? aged ?? event.messages, {
-        branch: () => context.sessionManager.getBranch?.() ?? [],
+        // The session's branch, read before the read and again after it: undefined once the host
+        // is on another session than `id`, whose branch is not this request's, and the request
+        // then decides from the branch as it began, and `record` below writes nothing.
+        branch: () =>
+          context.sessionManager.getSessionId() === id
+            ? (context.sessionManager.getBranch?.() ?? [])
+            : undefined,
         session: context.sessionManager,
-        id: context.sessionManager.getSessionId(),
+        id,
         // Read off the live `AgentSession` (18.12.2), whose getters the declared host surface
         // leaves out: `get isCompacting() { return this.#C.isCompacting; }` and
         // `get compactionSpeculation() { return this.#C.speculationState; }`, the compaction
         // controller's `this.#i !== undefined || this.#u !== undefined || this.#l !== undefined`
         // (an automatic or manual compaction, or a handoff) and `e.armed ? "armed" : "running"`
-        // for a speculative one. A session the registry does not list reads as not compacting.
+        // for a speculative one. A session the registry does not list reads as not compacting. It
+        // is read after the read too, so it asks about `id`, the session the request was built
+        // from, and not the one the host may have moved to while the read waited.
         compacting: () => {
-          const live = liveAgentSession(context.sessionManager.getSessionId());
+          const live = liveAgentSession(id);
           return (
             live !== undefined &&
             (("isCompacting" in live && live.isCompacting === true) ||
@@ -4197,6 +4515,40 @@ export default function envoyExtension(pi: PiApi): void {
           );
         },
         read: () => sessionAnswersText(context),
+        // The answers message this request appends goes into the session file as it is sent, so
+        // every later request, and the first of a process that resumes the session, rebuilds it
+        // where it went. The write is guarded as `recordNotice` is: when the host moved to another
+        // session while the read waited, the entry would land in that session's file, so nothing
+        // is written and the log says so; the request still carries the message.
+        record: (entry) => {
+          if (context.sessionManager.getSessionId() !== id) {
+            logger.warn(
+              "envoy: the message of people's answers this request sent was not recorded: the host moved to another session while the request waited on the read"
+            );
+            return;
+          }
+          try {
+            pi.appendEntry(ANSWERS_SENT_ENTRY, entry);
+          } catch (error) {
+            logger.warn(
+              "envoy: the message of people's answers this request sent could not be recorded in the session file",
+              { error: messageFor(error) }
+            );
+          }
+        },
+        // The first failed read of a failure episode, which runs until a read Dispatch answers,
+        // whether the request shows the model a message for it (the failure line, or the cached
+        // list when it shows something new, after the last message) or keeps the answers messages
+        // sent, which do not name this read's failure. Logged once per episode, so a lasting
+        // failure logs one line. The reason is this copy's read's own, as its failure line would
+        // carry it, or the sentence an older copy's read line names, as that copy's renderer wrote
+        // it, ending with a full stop, `?` or `!`.
+        readFailed: (reason, shown) =>
+          logger.warn(
+            shown
+              ? `envoy: people's answers could not be read (${reason}); the request tells the model after its last message`
+              : `envoy: people's answers could not be read (${reason}); the request keeps the answers messages sent, which do not name this read's failure`
+          ),
       });
       const result = messages ?? withSkill ?? aged;
       return result === undefined ? undefined : { messages: result };
@@ -4697,7 +5049,7 @@ export default function envoyExtension(pi: PiApi): void {
           // so it is told by name, in the listener's own words, rather than left following a
           // subject nothing is ever delivered on. A private stream subject is left out of the
           // registration without a word, as it always was (`refuseUncapturedTopics`).
-          refuseUncapturedTopics(sessionID, agentSubject(sessionID), requested);
+          refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
           const added: string[] = [];
           const already: string[] = [];
           for (const topic of requested) {
@@ -4732,7 +5084,7 @@ export default function envoyExtension(pi: PiApi): void {
           // The session's own inbox is not a subscription the tool manages.
           // A role topic is followed through the independently-held role claim: drop the local
           // follow without unregistering that interest.
-          const inbox = agentSubject(sessionID);
+          const inbox = legacyAgentSubject(sessionID);
           // Concrete subjects, a named `X.>` already expanded to `X.>` and `X`.
           const candidates = topicsFor(parameters, [...followed]).filter(
             (subject) => subject !== inbox
@@ -4794,6 +5146,8 @@ export default function envoyExtension(pi: PiApi): void {
             recipient: result.recipient,
             recipient_state: result.recipientState,
             confirmed: result.confirmed,
+            state: result.state,
+            ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
           });
         }
         case EnvoyToolOperation.publish: {
@@ -4813,15 +5167,17 @@ export default function envoyExtension(pi: PiApi): void {
           // role lane, which its holder does not follow, actually goes undelivered: a
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
-          // visible here: a plain topic's subscribers are not in the answer at all, since the
-          // stream stores one copy each session's own consumer delivers. AGENTS.md and the
+          // visible here: a plain topic's answer counts its subscribers and names none, since
+          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
           // envoy skill carry the general rule. A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
           // holder it names is the session the resolution read, which never received the message.
           const undelivered =
             result.kept !== true && source !== "" && result.holder === source && inSubagent;
-          const published = publishConfirmationText(result);
+          // The listener sends a message for a kept copy no session took only to the publish's
+          // source session, and a subagent whose parent cannot be resolved publishes from none.
+          const published = publishConfirmationText(result, { senderNamed: source !== "" });
           return toolSuccess(
             undelivered
               ? `${published}\nNot delivered: that holder is the session this subagent sends as, and the listener drops a message whose source session is its recipient, so the agent that spawned you did not receive it. Reach it with a write to its agent:// address instead.`
@@ -4829,10 +5185,7 @@ export default function envoyExtension(pi: PiApi): void {
             {
               event_id: result.envelope.event_id,
               topic,
-              ...(result.holder === undefined ? {} : { holder: result.holder }),
-              ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
-              ...(result.kept === undefined ? {} : { kept: result.kept }),
-              ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
+              ...publishResultDetails(result),
               ...(undelivered ? { undelivered_echo: true } : {}),
             }
           );
@@ -4848,6 +5201,7 @@ export default function envoyExtension(pi: PiApi): void {
             async (handle) => {
               target = sessionID;
               handle.actFor(target);
+              requireSessionRoleFor(target, role);
               const held = registrationState.heldRole();
               const moving = held !== undefined && held !== role;
               // Moving off a role closes every subscription another plugin opened `whileHolding`

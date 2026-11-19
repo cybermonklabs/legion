@@ -114,7 +114,7 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -753,6 +753,46 @@ test("read_record hands on the place of an issue standing in the admission line"
     record: Record<string, unknown>;
   };
   expect(holding.record).not.toHaveProperty("waitingLine");
+});
+
+test("read_record hands on what a reviewing issue's round waits on from GitHub", async () => {
+  const state = daemonFixture("state.json");
+  const issues = state.issues as Record<string, Record<string, unknown>>;
+  const architect = {
+    ...implementer,
+    tree: "LEGION-219",
+    issue: "LEGION-219",
+    role: "architect" as const,
+  };
+  const { ops } = runtime(architect, state);
+
+  const stuck = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-219" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(stuck.record.mergeWait).toEqual(issues["LEGION-219"].mergeWait);
+  expect(stuck.record.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+  // LEGION-218's fixture holds no merge state, no read time and neither told mark.
+  const first = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-218" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(first.record.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // An issue whose round waits on nothing from GitHub has no such wait at all.
+  const working = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" })) as {
+    record: Record<string, unknown>;
+  };
+  expect(working.record).not.toHaveProperty("mergeWait");
 });
 
 // Contract 75: the daemon's state says why a claim failed and which phase a hold stopped, and

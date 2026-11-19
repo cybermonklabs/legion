@@ -22,9 +22,9 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // The image probe, as a Sandbox: a daemon off the cluster is not the image its workers run, so it
@@ -197,7 +197,8 @@ type ImageProbe struct {
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
 	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
 	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), and exits, so it is sized for that and not for a role's work.
+	// setting), holds its TLS clients to the compromised chains, and exits, so it is sized for that
+	// and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
 
@@ -1147,8 +1148,9 @@ func tailBytes(r io.Reader, keep int) ([]byte, bool, error) {
 	}
 }
 
-// undefinedFlag is Go's flag package refusing a flag the probed CLI does not define.
-var undefinedFlag = regexp.MustCompile(`flag provided but not defined: (-\S+)`)
+// undefinedFlag is the probed CLI refusing a flag it does not define: pflag's words, which a
+// legion on cobra prints, and Go's flag package's, which an image built before that printed.
+var undefinedFlag = regexp.MustCompile(`(?:unknown flag|flag provided but not defined): (-\S+)`)
 
 // judge is the verdict on a finished probe pod and its log, logErr when the log could not be read
 // (judgeProbeLog), in this order, carrying on a pass what the OK line reported of the image, in
@@ -1320,10 +1322,12 @@ type probeSpec struct {
 // and already retried on failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day
 // eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
-// passes that role's overlays (--role-config-files), with the project's memory overlays
-// (Options.MemoryConfigFiles) after them for every workflow role, which any tree's memory group
-// may give them to, and never for the controller, which runs in no tree: the probe reads each
-// value as that role's Oh My Pi will. None are passed for a deployment that names neither.
+// passes that role's overlays (--role-config-files), and for every workflow role one value per
+// arm the project declares that names overlays (Options.ExperimentVariants), that arm's files
+// after the role's own — never for the controller, which runs in no tree and so is in no arm:
+// the probe reads each value as that role's Oh My Pi will. The values are the boot gate's own
+// (runtime.RoleOverlayValues), so a pane deployment and a pod deployment are read alike. None
+// are passed for a deployment that names neither.
 func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) probeSandbox {
 	labels := map[string]string{labelProject: r.project, labelProbe: "image"}
 	providers, providersMounts := r.providers()
@@ -1335,8 +1339,9 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 	// the providers Secret there, which it does when something needs it (mountsProviders: a provider
 	// key, a providers secret, or a session database URL key); a directory it is told and cannot read
 	// refuses the probe, and with it the daemon's boot. Under cloudsql-iam no URL key is held — each
-	// pod signs in to Cloud SQL as itself — so a deployment with no provider key and no providers
-	// secret has no such directory, and the probe is told none.
+	// pod signs in to Cloud SQL as itself, or as the service account it impersonates — so a
+	// deployment with no provider key and no providers secret has no such directory, and the probe
+	// is told none.
 	if r.mountsProviders() {
 		command = append(command, "--provider-env-dir", ProvidersDir)
 	}
@@ -1348,18 +1353,15 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 	if r.testPostgres {
 		command = append(command, "--test-postgres", RoleProbeDir+"/"+launcher.TestPGDirName)
 	}
-	// Each role that names overlays of its own, and every workflow role of a project whose memory
-	// overlays reach it, is read as it will start: the probe pod mounts the operator's volumes as
-	// every pod does, so a file a role's PI_CONFIG_FILES names and the mounts lack refuses the
-	// boot here, naming the role and the file, rather than that role's Oh My Pi at its first
-	// launch.
+	// Each role that names overlays of its own, and every workflow role of a project whose
+	// declared variants name overlays, is read as it will start: the probe pod mounts the
+	// operator's volumes as every pod does, so a file a role's PI_CONFIG_FILES names and the
+	// mounts lack refuses the boot here, naming the role and the file, rather than that role's Oh
+	// My Pi at its first launch. One value per role per arm, deduplicated, and the role's own
+	// files alone for a role no arm reaches (runtime.RoleOverlayValues).
 	for _, role := range roleConfigRoles {
-		files := r.roleConfigFiles[role]
-		if role != claim.RoleController {
-			files = withMemoryOverlays(files, r.memoryConfigFiles)
-		}
-		if len(files) > 0 {
-			command = append(command, bootprobe.RoleConfigFilesFlag, bootprobe.RoleConfigFilesValue(string(role), files))
+		for _, value := range runtime.RoleOverlayValues(role, r.roleConfigFiles[role], r.experimentVariants) {
+			command = append(command, bootprobe.RoleConfigFilesFlag, bootprobe.RoleConfigFilesValue(string(role), value.Files))
 		}
 	}
 	container := corev1.Container{

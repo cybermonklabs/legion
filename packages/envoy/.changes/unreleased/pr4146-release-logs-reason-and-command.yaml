@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  Each release of a grant writes one INFO line, `broker: released a grant`, after its `grant.used`
+  audit row, and both name the reason the grant's request gave. `POST /v1/grants/{id}/values` takes
+  two optional fields, which `agent-secrets NAME -- <command>` sends: `command`, the first 32
+  arguments, each cut to 256 bytes; and `reason`, this call's own `--reason`, recorded as
+  `call_reason` where it differs from the grant's, which it does when the call got a live grant
+  back. The broker replaces with `[redacted]` each value of 8 bytes or more the release handed
+  out, each string of 8 bytes or more of a stored JSON value, each minted token and placeholder,
+  and every GitHub, AWS, Google, Slack or PEM credential of a known shape. Any other secret on a
+  command line, a shorter value among them, is logged as typed: pass secrets in the environment.
+  `GET /v1/grant-log` answers the row with these fields. The airlock proxy's
+  release writes `airlock=true` in their place. A client meeting a broker from before these fields
+  sends the release once more without them; that broker logs and counts each first try as a
+  refused `INVALID_NARROWING`, which is expected until it is rolled.

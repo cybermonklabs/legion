@@ -152,6 +152,9 @@ type memStore struct {
 	failures map[string]error
 	// onPut, when set, runs on every PutClaim before it is recorded.
 	onPut func(Claim)
+	// holds is the claim each name of a session is held for, as the store's claim_sessions table
+	// keeps it (HoldSessions); every claim of a harness is of one project.
+	holds map[Hold]claim.Token
 }
 
 func newMemStore() *memStore {
@@ -159,8 +162,129 @@ func newMemStore() *memStore {
 		claims:     map[claim.Token]Claim{},
 		deliveries: map[claim.Token]Delivery{},
 		failures:   map[string]error{},
+		holds:      map[Hold]claim.Token{},
 	}
 }
+
+// HoldSessions is the store's: the first claim to record a name holds it, all of one call's names
+// or none, a call whose new names take the claim past MaxHeldNamesPerClaim records none, and the
+// answer about a name never changes after. Every claim of a harness is of one project. A call on a
+// context already cancelled answers its error and holds nothing, as a query of Postgres does.
+func (s *memStore) HoldSessions(ctx context.Context, _ string, token claim.Token, holds []Hold) ([]claim.Token, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["HoldSessions"]; err != nil {
+		return nil, err
+	}
+	holders := make([]claim.Token, len(holds))
+	mine, added := true, map[Hold]bool{}
+	for i, h := range holds {
+		if h.Name == "" {
+			return nil, errors.New("hold session: an empty name")
+		}
+		holder, held := s.holds[h]
+		if !held {
+			holder = token
+			added[h] = true
+		}
+		holders[i] = holder
+		mine = mine && holder == token
+	}
+	if !mine {
+		return holders, nil
+	}
+	if len(added) > 0 {
+		held := len(added)
+		for _, holder := range s.holds {
+			if holder == token {
+				held++
+			}
+		}
+		if held > MaxHeldNamesPerClaim {
+			return nil, fmt.Errorf("%d names held with this call's %d new ones: %w", held, len(added), ErrHeldNamesCap)
+		}
+	}
+	for _, h := range holds {
+		s.holds[h] = token
+	}
+	return holders, nil
+}
+
+// ClaimHolds is the store's.
+func (s *memStore) ClaimHolds(_ context.Context, _ string, token claim.Token) ([]Hold, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var holds []Hold
+	for h, holder := range s.holds {
+		if holder == token {
+			holds = append(holds, h)
+		}
+	}
+	slices.SortFunc(holds, CompareHolds)
+	return holds, nil
+}
+
+// ReleaseHolds is the store's one transaction: it writes c and deletes every one of holds held
+// for c's claim, and answers the names it deleted, in kind and then name order. A claim write the
+// store refuses (fail("PutClaim")) frees nothing, as the store's rollback does.
+func (s *memStore) ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error) {
+	if err := s.PutClaim(ctx, c); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var freed []Hold
+	for _, h := range holds {
+		if s.holds[h] == c.Token {
+			delete(s.holds, h)
+			freed = append(freed, h)
+		}
+	}
+	slices.SortFunc(freed, CompareHolds)
+	return freed, nil
+}
+
+// fillHolds holds n session ids of earlier sessions for token, to bring it toward the cap.
+func (s *memStore) fillHolds(token claim.Token, n int) {
+	for i := range n {
+		s.setHold(sessionID(fmt.Sprintf("ses_earlier_%d", i)), token)
+	}
+}
+
+// heldBy is how many names the store holds for token.
+func (s *memStore) heldBy(token claim.Token) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, holder := range s.holds {
+		if holder == token {
+			n++
+		}
+	}
+	return n
+}
+
+// setHold records holder as h's, as an operator settling a held-for-none name or a migration
+// does, under the store's lock so it may run while a machine does.
+func (s *memStore) setHold(h Hold, holder claim.Token) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holds[h] = holder
+}
+
+// holdOf is the claim h is held for, and whether any is.
+func (s *memStore) holdOf(h Hold) (claim.Token, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	holder, held := s.holds[h]
+	return holder, held
+}
+
+// sessionID is the hold of a session id.
+func sessionID(id string) Hold { return Hold{Kind: HoldSessionID, Name: id} }
 
 func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	s.mu.Lock()
@@ -176,7 +300,16 @@ func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	// The step columns are PutClaimStep's alone, as they are in the store (store's putClaim): a
 	// machine's write carries whatever its in-memory claim last read, and a step recorded since
 	// that read must survive it.
-	c.Step = s.claims[c.Token].Step
+	held, stored := s.claims[c.Token]
+	c.Step = held.Step
+	// So are the four activity columns PutClaimActivity's (reportActivity), with the store's one
+	// exception: a write that moves the generation is a launch, and it clears them, as an insert
+	// leaves them at their defaults.
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds, c.ActivityNextReminderAt = time.Time{}, false, nil, time.Time{}
+	if stored && held.Generation == c.Generation {
+		c.ActivityAt, c.ActivityBackground = held.ActivityAt, held.ActivityBackground
+		c.ActivityKinds, c.ActivityNextReminderAt = slices.Clone(held.ActivityKinds), held.ActivityNextReminderAt
+	}
 	s.claims[c.Token] = c
 	s.puts = append(s.puts, c)
 	return nil
@@ -286,6 +419,41 @@ func (s *memStore) PutClaimStep(_ context.Context, token claim.Token, step StepR
 	c.Step = held
 	s.claims[token] = c
 	return true, nil
+}
+
+// reportActivity is a session's activity report reaching the store, with the rules the real one
+// holds to (store.Store.PutClaimActivity): it is written onto the launch it names alone, so a
+// report of a launch the claim has moved past is refused, and one older than the report recorded
+// is dropped. It answers whether the store holds the claim at that launch.
+func (s *memStore) reportActivity(token claim.Token, generation uint64, report ActivityReport) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, known := s.claims[token]
+	if !known || c.Generation != generation {
+		return false
+	}
+	if !c.ActivityAt.IsZero() && report.At.Before(c.ActivityAt) {
+		return true
+	}
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds = report.At, report.Background, slices.Clone(report.Kinds)
+	s.claims[token] = c
+	return true
+}
+
+// ClaimActivity is the store's read of one launch's activity report (store.Store.ClaimActivity):
+// the report of the launch the row records, and no report for any other launch or for a launch
+// that has reported nothing.
+func (s *memStore) ClaimActivity(_ context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["ClaimActivity"]; err != nil {
+		return ActivityReport{}, false, err
+	}
+	c, known := s.claims[token]
+	if !known || c.Generation != generation || c.ActivityAt.IsZero() {
+		return ActivityReport{}, false, nil
+	}
+	return ActivityReport{At: c.ActivityAt, Background: c.ActivityBackground, Kinds: slices.Clone(c.ActivityKinds)}, true, nil
 }
 
 // step is the record the store holds for token, as a claim read carries it back.
@@ -583,8 +751,11 @@ func newBareHarness(t *testing.T) *harness {
 		Runtime: h.rt,
 		Conns:   h.conns,
 		Store:   h.store,
-		Specs:   h.specs,
-		Clock:   h.clock,
+		// The store's read of a launch's activity report, which a let-go records the background
+		// work it ended from (recordEnd); a test reports into it through reportActivity.
+		ClaimActivity: h.store.ClaimActivity,
+		Specs:         h.specs,
+		Clock:         h.clock,
 		// Both handlers over the one logger: the text buffer every test that reads lines uses,
 		// and the recorder a test that reads an attribute's own value asks (logRecords.of).
 		Log: slog.New(logRecorder{
@@ -661,9 +832,13 @@ func (h *harness) post(ev Event, result bool) error {
 // promptInTurn is the delivery of the prompt the agent took and has not reported the end of: the
 // one whose work the turn now ending did. It is read before the end reaches the machine, so a
 // task that end re-sends is the next turn's prompt rather than this one's. A prompt the
-// connection refused reports nothing, and neither does one the agent has already refused late:
-// Oh My Pi answers a prompt once, a failure or a result, and the machine stops waiting for the
-// result at exactly the moment it takes that task back (awaitingResult).
+// connection refused reports nothing, and neither does one the agent has already answered with
+// no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
+// and the machine stops waiting for that prompt's result at exactly the moment it takes that
+// answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
+// its turn, starting late, reports it only while it is the last prompt the connection accepted:
+// the fake connection keeps that one alone (fake.Conn's TakePromptResult), so a test whose task
+// was sent again since posts the first prompt's result itself.
 func (h *harness) promptInTurn() string {
 	conn, ok := h.conns.Conn(h.token)
 	if !ok {
@@ -674,10 +849,22 @@ func (h *harness) promptInTurn() string {
 		return ""
 	}
 	delivery, _ := reporter.TakePromptResult()
-	if delivery != h.m.awaitingResult {
+	h.m.mu.Lock()
+	held := slices.Contains(h.m.outstanding, delivery)
+	h.m.mu.Unlock()
+	if !held {
 		return ""
 	}
 	return delivery
+}
+
+// outstanding is every prompt of the pending task the machine waits on a result for
+// (Machine.outstanding), read under the machine's lock, since a send's goroutine may be handling
+// its acknowledgement.
+func (h *harness) outstanding() []string {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	return slices.Clone(h.m.outstanding)
 }
 
 func (h *harness) must(ev Event) {
@@ -978,7 +1165,9 @@ func adoptRefusal(reason string) error {
 // fakeEnroller is the broker as the machine sees it: it records every enrollment and revocation,
 // mints ids, and fails what the test told it to. It verifies the pod token's expiry against now
 // as the broker does (enroll.Service.Create): an expired token is refused POD_TOKEN_EXPIRED and
-// one whose expiry cannot be read POD_IDENTITY_MISMATCH.
+// one whose expiry cannot be read POD_IDENTITY_MISMATCH. carried is what Carried answers for each
+// session id it is asked (the broker's POST /v1/enrollments/carried), and asked every list of ids
+// it was asked, in order.
 type fakeEnroller struct {
 	mu          sync.Mutex
 	enrollments []PodEnrollment
@@ -989,6 +1178,47 @@ type fakeEnroller struct {
 	calls       int // every Revoke call, failed or not
 	next        int
 	now         func() time.Time
+	carried     map[string][]CarriedEnrollment
+	carriedErr  error
+	asked       [][]string
+}
+
+func (f *fakeEnroller) Carried(_ context.Context, sessionIDs []string) ([]CarriedEnrollment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, slices.Clone(sessionIDs))
+	if f.carriedErr != nil {
+		return nil, f.carriedErr
+	}
+	answer := []CarriedEnrollment{}
+	for _, id := range sessionIDs {
+		answer = append(answer, f.carried[id]...)
+	}
+	return answer, nil
+}
+
+// carry makes Carried answer c for its session id.
+func (f *fakeEnroller) carry(c CarriedEnrollment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.carried == nil {
+		f.carried = map[string][]CarriedEnrollment{}
+	}
+	f.carried[c.SessionID] = append(f.carried[c.SessionID], c)
+}
+
+// endCarry makes Carried answer nothing for sessionID, as once its carry ends.
+func (f *fakeEnroller) endCarry(sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.carried, sessionID)
+}
+
+// askedCarried is every list of session ids Carried was asked, in order.
+func (f *fakeEnroller) askedCarried() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.asked)
 }
 
 func (f *fakeEnroller) Enroll(_ context.Context, e PodEnrollment) (string, error) {

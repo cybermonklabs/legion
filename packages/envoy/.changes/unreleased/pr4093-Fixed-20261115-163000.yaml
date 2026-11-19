@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A document write holding a typed block the build does not know is refused, where it crashed the
+  request. A `:::calout` typo, or a block type a newer build introduced, made the write compare two
+  of the parse's refusals with `==`, and that refusal held a slice, so the comparison panicked and
+  the request ended with no answer. The write is now refused `400 INVALID_MARKDOWN`, naming the
+  unknown typed block.
+time: 2026-11-15T16:30:00Z
+custom:
+    Issue: fix-pmdoc-unknown-element-pointer

@@ -12,7 +12,7 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    `child_of` parent. A `child_of` under `Referenced by:` is a child of this issue, not its parent.
 3. Leave a child whose `issues.<KEY>.tree` is a root in `admission.trees`, or that has an ancestor
    that is, because that tree's architect owns it. `admission.trees` is the live trees: a slot is
-   one issue the daemon has started, held until its work is past its review, until it is done, or until Dispatch takes it out of the workflow, so a tree is live whether or not its root holds one.
+   one issue the daemon has started, held as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree is live whether or not its root holds one.
 4. Every other row with no `issues.<KEY>` entry in `read_state` is a root to you, a child whose
    tree is not in `admission.trees` included. Read who set its label
    ("Triage a root", step 2). A root a person labelled is queued by the daemon and needs nothing
@@ -29,8 +29,8 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    leave it. Note its `Assignee:`: that person answers the tree's asks, because their Inbox opens on the
    issues they hold. Never reassign it, because who holds an issue is the people's decision, made
    from the issue header.
-2. Find who set the label. `dispatch read` does not show who set a label, so list its events:
-   `curl -sS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"`,
+2. Find who set the label. `dispatch read` does not show who set a label, so list its events in bash:
+   `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"`,
    oldest first, 200 a page. When a page holds 200 events, read the next with
    `&after=<the last event's seq>` until a page holds fewer: the setter is the newest transition,
    and the daemon reads the whole log. The event that added the label set it, and its `actor` is
@@ -102,5 +102,6 @@ Filing or admitting an issue, name each priority it advances (`--advance <id>` o
 `dispatch priorities` lists the ids, and names each issue in flight that advances no priority.
 
 Taking the label off a waiting root drops it from the waiting line; taking it off an admitted tree
-does not stop it. A child needs no label: it runs under its tree's architect once its root is
-admitted. A child outside a live tree is admitted as a root of its own and needs the label.
+does not stop it. A child needs no label: it runs in its tree once its root is admitted, and under
+its own architect once its first phase starts. A child outside a live tree is admitted as a root
+of its own and needs the label.

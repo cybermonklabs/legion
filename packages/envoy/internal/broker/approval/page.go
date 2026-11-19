@@ -66,8 +66,12 @@ type recordView struct {
 	// MayDecide is whether the signed-in person may decide it (record.MayDecide).
 	MayDecide bool
 	// Buttons is whether the page offers Approve and Deny for it: a pending agent_secret record
-	// the person may decide.
+	// the person may decide, and not one the model judge holds.
 	Buttons bool
+	// JudgeDeciding is whether the model judge holds this record now. The page prints such a
+	// record read-only: nobody decides it here until the judge has given it up, and if the judge
+	// cannot decide it, it comes back to its person as an ordinary card.
+	JudgeDeciding bool
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
@@ -113,7 +117,7 @@ type pageView struct {
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
-		writeMessage(w, http.StatusBadRequest, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
+		writeMessage(w, http.StatusBadRequest, codeRecordIDInput, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
 		return
 	}
 	switching := r.URL.Query().Get("switch") == "1"
@@ -126,7 +130,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	case errors.Is(err, pgx.ErrNoRows):
 		m := say("No such request", "The secrets broker has no credential request "+id+".")
 		m.Login = sess.Login
-		writeMessage(w, http.StatusNotFound, m)
+		writeMessage(w, http.StatusNotFound, codeRecordNotFound, m)
 		return
 	case err != nil:
 		writeUnavailable(w, "read the request", err)
@@ -152,7 +156,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	if main.Buttons {
 		printed = append(printed, id)
 	}
-	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login)
+	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login, requests.PendingStates{})
 	if err != nil {
 		writeUnavailable(w, "list the pending requests", err)
 		return
@@ -233,7 +237,8 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	if d.State == "pending" && !v.Pending {
 		v.State = "expired"
 	}
-	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide
+	v.JudgeDeciding = v.Pending && d.JudgeDeciding
+	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
 	return v
 }
 
@@ -417,7 +422,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		writeMessage(w, http.StatusBadRequest, say("Not a decision", "The form could not be read, so nothing was decided."))
+		writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not a decision", "The form could not be read, so nothing was decided."))
 		return
 	}
 	if !sess.live() {
@@ -427,7 +432,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		} else {
 			m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
 		}
-		writeMessage(w, http.StatusOK, m)
+		writeMessage(w, http.StatusOK, "", m)
 		return
 	}
 	form := r.PostForm
@@ -437,7 +442,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		approve = true
 	case "deny":
 	default:
-		writeMessage(w, http.StatusBadRequest, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
+		writeMessage(w, http.StatusBadRequest, codeDecisionInvalid, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
 		return
 	}
 	printed, printedOK := recordIDs(form["printed"])
@@ -445,22 +450,22 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	expires, err := strconv.ParseInt(form.Get("expires"), 10, 64)
 	token, tokenErr := hex.DecodeString(form.Get("token"))
 	if !printedOK || !decideOK || len(decide) == 0 || err != nil || tokenErr != nil {
-		writeMessage(w, http.StatusBadRequest, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
+		writeMessage(w, http.StatusBadRequest, codeDecisionRecordsInvalid, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
 		return
 	}
 	switch {
 	case !hmac.Equal(token, pageMAC(sess.secret, expires, printed)):
-		writeMessage(w, http.StatusForbidden, say("Refused",
+		writeMessage(w, http.StatusForbidden, codePageTokenInvalid, say("Refused",
 			"This form was not made for your sign-in, so nothing was decided. Open the request again."))
 		return
 	case time.Now().Unix() >= expires:
-		writeMessage(w, http.StatusForbidden, say("Page expired",
+		writeMessage(w, http.StatusForbidden, codePageExpired, say("Page expired",
 			"This page is more than an hour old, so nothing was decided. Open the request again."))
 		return
 	}
 	for _, id := range decide {
 		if !slices.Contains(printed, id) {
-			writeMessage(w, http.StatusForbidden, say("Refused",
+			writeMessage(w, http.StatusForbidden, codeRecordNotPrinted, say("Refused",
 				"This form names a request its page did not print, so nothing was decided. Open the request again."))
 			return
 		}
@@ -512,6 +517,8 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "already decided", false
 	case errors.Is(err, record.ErrNotApprover), errors.Is(err, requests.ErrGrantChainInvalid):
 		return "refused: " + err.Error(), false
+	case errors.Is(err, requests.ErrJudgeHolds):
+		return "refused: the model judge is deciding this request", false
 	}
 	slog.Error("approval page: decide the record", "record", id, "error", err)
 	return "error", false

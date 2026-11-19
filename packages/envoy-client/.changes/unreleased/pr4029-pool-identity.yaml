@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `AGENT_SECRETS_MACHINE_IDENTITY=pool` trades at the secrets broker, where the session client
+  refused it before. The client mints a Google identity token through a workload identity pool,
+  as the Go client's `PoolIdentity` does, from `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
+  `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
+  A missing one is an error that names it.
+custom:
+    Issue: pr4029

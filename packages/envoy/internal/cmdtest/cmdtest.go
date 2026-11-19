@@ -118,7 +118,8 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 type Process struct {
 	Cmd    *exec.Cmd
 	Output *LockedBuffer
-	// Exited is closed once the process has exited and Cmd.ProcessState is set.
+	// Exited is closed once the process has exited, Cmd.ProcessState is set and the afterExit
+	// StartThen was given has returned.
 	Exited <-chan struct{}
 	// name is what failures call the process.
 	name string
@@ -128,6 +129,14 @@ type Process struct {
 // Output, and kills it when the test ends if it is still running. It closes every file in
 // cmd.ExtraFiles once cmd.Start returns, whether the process started or not (CloseExtraFiles).
 func Start(t testing.TB, name string, cmd *exec.Cmd) *Process {
+	t.Helper()
+	return StartThen(t, name, cmd, nil)
+}
+
+// StartThen is Start with afterExit, which runs once cmd.Wait has returned and before Exited is
+// closed, in the goroutine that waits on the process. So whoever sees Exited closed sees what
+// afterExit did. afterExit never runs for a process that did not start, and nil runs nothing.
+func StartThen(t testing.TB, name string, cmd *exec.Cmd, afterExit func()) *Process {
 	t.Helper()
 	exited := make(chan struct{})
 	process := &Process{Cmd: cmd, Output: &LockedBuffer{}, Exited: exited, name: name}
@@ -139,6 +148,9 @@ func Start(t testing.TB, name string, cmd *exec.Cmd) *Process {
 	}
 	go func() {
 		_ = cmd.Wait()
+		if afterExit != nil {
+			afterExit()
+		}
 		close(exited)
 	}()
 	t.Cleanup(func() {
@@ -247,6 +259,24 @@ func (h *HeldPort) Pass(cmd *exec.Cmd, envName string) {
 	// ExtraFiles entry i is descriptor 3+i in the process.
 	cmd.Env = append(cmd.Env, envName+"="+strconv.Itoa(3+len(cmd.ExtraFiles)))
 	cmd.ExtraFiles = append(cmd.ExtraFiles, h.file)
+}
+
+// SocketListens reports whether /proc/net/tcp lists a listening socket of inode, on any address:
+// the inode names a socket whoever holds a descriptor of it, where its port is any program's to
+// bind once the socket is closed. A line's fourth field is its state, 0A for LISTEN, and its
+// tenth the socket's inode.
+func SocketListens(t testing.TB, inode string) bool {
+	t.Helper()
+	table, err := os.ReadFile("/proc/net/tcp")
+	if err != nil {
+		t.Fatalf("read the listening sockets: %v", err)
+	}
+	for line := range strings.SplitSeq(string(table), "\n") {
+		if fields := strings.Fields(line); len(fields) > 9 && fields[3] == "0A" && fields[9] == inode {
+			return true
+		}
+	}
+	return false
 }
 
 // LockedBuffer is a buffer a process's output, or a logger, writes from more than one goroutine

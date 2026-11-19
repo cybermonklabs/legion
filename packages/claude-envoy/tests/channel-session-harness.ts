@@ -86,8 +86,18 @@ export class FakeNats implements ChannelConnection {
 
   /** When set, a flush never settles, as on a stalled connection. */
   stallFlush = false
+  /** How many flushes reject with nats.js's DISCONNECT, as every pending flush does each time the
+   *  connection redials, before flushes succeed again. */
+  failFlushes = 0
+  /** Every flush asked for, the failed ones included. */
+  flushes = 0
 
   flush(): Promise<void> {
+    this.flushes += 1
+    if (this.failFlushes > 0) {
+      this.failFlushes -= 1
+      return Promise.reject(new Error("DISCONNECT"))
+    }
     return this.stallFlush ? new Promise<void>(() => undefined) : Promise.resolve()
   }
 
@@ -133,18 +143,11 @@ export class FakeNats implements ChannelConnection {
   emitOn(pattern: string, subject: string, raw: string, reply?: string): void {
     const queue = this.subscriptions.get(pattern)
     if (queue === undefined) throw new Error(`no subscription for ${pattern}`)
-    const message = {
+    this.deliver(queue, {
       subject,
       data: new TextEncoder().encode(raw),
       ...(reply === undefined ? {} : { reply }),
-    }
-    if (queue.waiter === undefined) {
-      queue.messages.push(message)
-      return
-    }
-    const waiter = queue.waiter
-    queue.waiter = undefined
-    waiter.resolve(message)
+    })
   }
 
   /**
@@ -175,12 +178,35 @@ export class FakeNats implements ChannelConnection {
       [RelayHeader.storedAt, frame.storedAt ?? new Date().toISOString()],
       ...(frame.gap === true ? [[RelayHeader.gap, "true"] as [string, string]] : []),
     ])
-    const message: ChannelBrokerMessage = {
+    this.deliver(queue, {
       subject,
       data: new TextEncoder().encode(frame.raw),
       reply: frame.reply,
       headers: { get: (name) => headers.get(name) },
-    }
+    })
+  }
+
+  /**
+   * The listener's connection probe on `sessionID`'s relay subject: a core request carrying
+   * `Envoy-Probe: 1` and no body, never a frame's headers. Answers whether a subscription took
+   * it; false is the no-responders a server answers for a subject nothing subscribes, which the
+   * listener reads as stopped.
+   */
+  emitProbe(sessionID: string, reply: string): boolean {
+    const subject = deliverSubject(sessionID)
+    const queue = this.subscriptions.get(subject)
+    if (queue === undefined) return false
+    this.deliver(queue, {
+      subject,
+      data: new Uint8Array(),
+      reply,
+      headers: { get: (name) => (name === RelayHeader.probe ? "1" : undefined) },
+    })
+    return true
+  }
+
+  /** Hands `message` to the iterator parked on `queue`, or queues it for the next pull. */
+  private deliver(queue: Queue, message: ChannelBrokerMessage): void {
     if (queue.waiter === undefined) {
       queue.messages.push(message)
       return
@@ -406,6 +432,7 @@ export function sessionOptions(
     configFile: sessionConfigFile("claude", process.env),
     stateDirectory,
     clientInstanceID: randomBytes(16).toString("hex"),
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
     ...extra,
   }

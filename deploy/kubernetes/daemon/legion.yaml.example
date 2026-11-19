@@ -1,10 +1,10 @@
-# legion start --config legion.yaml      (legion start --check-config --config legion.yaml checks it)
+# legion start --config legion.yaml      (legion config check --config legion.yaml checks it)
 # The Legion daemon's file, complete for a Kubernetes deployment. Relative paths resolve against
 # this file's directory, and the loader refuses any key it does not know, naming it.
 #
 # Every value but bind is a placeholder; replace each with yours. bind: 0.0.0.0 is real: a daemon
 # whose own pod restarts onto a new IP binds every interface (below). As written, the file passes
-# `legion start --check-config` once the three token files and the kubeconfig it names exist and
+# `legion config check` once the three token files and the kubeconfig it names exist and
 # LEGION_POSTGRES_DSN (or postgres_dsn below) names a Postgres.
 # Every example.com host is a documentation domain (RFC 2606) and legion-daemon-widgets.legion.svc
 # the Service name this example's convention gives (below); the App ids are made up; the image
@@ -93,9 +93,14 @@ projects:
   #   commit_issue_trailer_repos: [acme/widgets] # optional: the repositories whose commits carry
   #                                    # their issue key, as the Dispatch: <KEY> trailer the pane's
   #                                    # jj appends, so a squash landing the branch carries the key.
-  #                                    # Each must be one Dispatch maps to this project; a pane of
-  #                                    # any other repository stamps nothing
-  #   memory:                          # optional: what each tree this project opens runs with:
+  #                                    # Boot warns about a name Dispatch's mapping for this
+  #                                    # project does not hold, which catches a typo, and the pane
+  #                                    # stamps all the same; a pane of any other repository
+  #                                    # stamps nothing
+  #   memory:                          # optional: what each tree this project opens runs with. The
+  #                                    # block is the experiment named memory (experiments below),
+  #                                    # so write the block or experiments.memory, never both; the
+  #                                    # block itself is accepted and refused in no new way:
   #     mode: on                       # off (the default, and what a project with no memory block
   #                                    # gets), on, or random, a fair coin for each tree. The draw is
   #                                    # made once, when the tree's lifecycle row is first created,
@@ -118,6 +123,35 @@ projects:
   #                                    # boot and appends its text to every memory-group role's
   #                                    # system prompt, after the deployment's own instructions.
   #                                    # mode: on with no instructions appends nothing
+  #   experiments:                     # optional: what this project draws its trees and its issues
+  #                                    # into, by the name each draw records. The memory block above
+  #                                    # is the experiment named memory, written the other way
+  #     plan-length:                   # one experiment; its name is 1 to 32 characters of a-z, 0-9
+  #                                    # and -, and the project names it once
+  #       mode: random                 # off (the default, and what a block with no mode gets), on,
+  #                                    # which gives every new unit the on_variant arm, or random,
+  #                                    # which draws among the arms by their weights. The draw is
+  #                                    # made once, when the unit is opened, and the unit keeps that
+  #                                    # arm for its whole life under any later mode
+  #       unit: issue                  # tree (the default) draws once for a whole tree and gives
+  #                                    # every issue of it the same arm; issue draws for each issue
+  #       variants:                    # the arms it compares, at least two while mode is not off
+  #         - name: long               # the arm a draw records
+  #           weight: 1                # its share of a random draw against the other arms; 1 by
+  #                                    # default, and a whole number above zero
+  #           config_files: [/etc/legion-experiments/plan-length.yml] # Oh My Pi overlays every role
+  #                                    # of a unit drawn into this arm names in PI_CONFIG_FILES
+  #                                    # after pod.env's and the role's own (role_config_files), so
+  #                                    # they outrank both. Under runtime: kubernetes each file must
+  #                                    # be in a pod.volume_mounts mount below: uncomment the
+  #                                    # operator-experiments volume and mount there too, a
+  #                                    # ConfigMap legion-operator-experiments mounted at
+  #                                    # /etc/legion-experiments. The day a project declares an arm
+  #                                    # with overlay files, every live issue pod of the deployment
+  #                                    # drifts and is replaced: a role cannot read a file its pod
+  #                                    # does not mount
+  #         - name: control            # the arm that names no file at all is the control the others
+  #                                    # are measured against
 # repository_renames:                  # optional: a repository that moved, which the daemon then
 #   - from: acme/widgets-legacy        # treats as one repository wherever it compares a name —
 #     to: acme/widgets                 # GitHub's events name the new repository while every tree
@@ -150,7 +184,7 @@ projects:
 #                                      # may move to one owner, and a rename inside the owner
 #                                      # (acme/a -> acme/b) counts as a move to that owner, so it
 #                                      # refuses acme/a -> acme/b beside acme/c -> d/c.
-#                                      # --check-config prints one line
+#                                      # legion config check prints one line
 #                                      # per pair, to read the equivalence back before a transfer.
 # hooks:                               # optional: the words the daemon puts in front of an
 #   - name: work-back                  # issue's workers when its work keeps going back to an
@@ -188,7 +222,7 @@ projects:
 #                                      # this file's directory, as instructions is: an edited
 #                                      # file reaches the workers at the next start of the
 #                                      # daemon, and a missing, unreadable or empty one refuses
-#                                      # the boot and --check-config with it.
+#                                      # the boot and legion config check with it.
 gates:
   design: [spec]                       # the design gate steps, in the order a person approves
                                        # them: decisions (the root issue's decisions document),
@@ -202,7 +236,7 @@ gates:
                                        # registration opens its record at once and no person is
                                        # asked. Any other word, a value that is neither a word
                                        # nor a list, and a list naming one step twice are
-                                       # refused at load. --check-config prints the resolved
+                                       # refused at load. legion config check prints the resolved
                                        # list, design-gate-steps=decisions,criteria, or
                                        # design-gate-steps=none when the list is empty.
 github_apps:
@@ -269,15 +303,9 @@ github_apps:
 #                                      # no GitHub event of its pull request, no phase change, no
 #                                      # handoff, no start, no completion — and no agent of it steps,
 #                                      # so a turn that runs for a day keeps its tree moving. A tree
-#                                      # with a role at work is never told, and neither is one
-#                                      # whose every quiet issue waits by design — a root awaiting a
-#                                      # person, an issue a blocked-by link holds, an issue held for
-#                                      # its open children, or one that needs an admission slot and
-#                                      # holds none — while the project's line can still move: some
-#                                      # issue of the project holds a slot and waits by no such
-#                                      # rule, or some claim of the project is at work. Where that
-#                                      # line cannot move, the controller is told about every tree
-#                                      # of the project, however its members wait. 6 by
+#                                      # with a role at work is never told, and neither is a tree
+#                                      # that waits by design: the documentation site's "Running
+#                                      # Legion" page says which, under this key. 6 by
 #                                      # default, a decimal number of hours. No value turns the
 #                                      # notice off; a deployment that wants fewer notices raises
 #                                      # the number, to 596 at most, and 0, a negative number and a
@@ -308,15 +336,26 @@ runtime:
     issue_volume: 50Gi                 # each issue pod's own volume (and the daemon-launched controller's); 50Gi is the default
     session_store: postgres            # required: where every pod's Oh My Pi keeps its sessions, a store that
                                        # keeps them in a database — postgres, or cloudsql-iam (each pod signs in
-                                       # to Cloud SQL as itself and holds no URL; it takes session_database in
-                                       # place of session_dsn_secret, docs/kubernetes.md "Selecting the store").
+                                       # to Cloud SQL over IAM, as itself or as a service account it impersonates,
+                                       # and holds no URL; it takes session_database in place of
+                                       # session_dsn_secret, docs/kubernetes.md "Selecting the store").
                                        # pvc and an omitted key are refused: an issue pod's disk is deleted with
                                        # the pod, so a session kept as a file on it would die with it and the
                                        # next launch's resume would fail on the missing file
     session_dsn_secret: SESSION_DSN    # required with postgres: the key of the providers Secret holding that
                                        # database's postgres:// URL, which every pod mounts
+    # session_database:                # required with cloudsql-iam, in place of session_dsn_secret.
+    #   instance: example-project:us-central1:example-instance   # required. The connection name of the Cloud SQL instance.
+    #   name: legion_sessions          # required. The database in that instance.
+    #   user: legion-sessions@example-project.iam   # required. The IAM database login that each pod signs in as.
+    #   impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com   # optional.
+    #                                  # The proxy in each pod acts as (impersonates) this Google service
+    #                                  # account. It uses the pod's own credentials to do this. It signs in
+    #                                  # to Cloud SQL as this account. Then user must be the login of this
+    #                                  # account: its email without .gserviceaccount.com. Without this
+    #                                  # member, each pod signs in with its own identity.
     # resources:                       # two keys, each a pod's reservation: issue, every issue pod's (its one
-    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers, three with a skills_repository), and
+    #   issue: { memory: 32Gi, memory_request: 19Gi }   # roles container and both init containers), and
     #   controller: { cpu: 2, memory: 8Gi }  # controller, the daemon-launched controller's pod's (controller:
     #                                  # daemon only, else refused). cpu and memory are the limits, each
     #                                  # requested in full unless cpu_request or memory_request sets less (at most
@@ -329,12 +368,55 @@ runtime:
     #                                  # 80Gi over 6Gi of disk; controller 1 and 4Gi, 10Gi over 1Gi. On GKE
     #                                  # Autopilot, which caps a pod's ephemeral storage at 10Gi, set
     #                                  # issue: { ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi }
+    # sandbox:                         # optional: the sandbox the project's issue pods run in.
+    #   type: gvisor                   # gvisor or microvm. gvisor is the default.
+    #   canary_issues: [WIDGETS-12]    # issues whose pods run in the other sandbox, for a canary.
+    #                                  # Each is an exact issue key, named once. The default is [].
+    #   microvm:                       # where a microVM pod runs.
+    #     compute_class: example-microvm # the ComputeClass whose nodes run the microVM pods.
+    #                                  # Required while type is microvm or canary_issues names an
+    #                                  # issue.
+    #     storage_class: example-microvm-disk # the class of a microVM pod's workspace volume.
+    #                                  # The default is storage_class above.
+    #     metadata:                    # optional: a microVM pod's launcher serves the metadata
+    #                                  # server's paths inside the pod. The pod then gets its
+    #                                  # Google credential without the node's own address.
+    #       workload_pool: example-project.svc.id.goog # the cluster's Workload Identity pool.
+    #       identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster
+    #                                  # the cluster's identity provider.
+    #                                  # That launcher sets GCE_METADATA_HOST and GCE_METADATA_IP to
+    #                                  # the endpoint's address, so pod.env must not set them.
+    #                                  # A microvm block does nothing while no issue pod runs in a
+    #                                  # microVM. The controller's pod, the repository cache pods
+    #                                  # and the image probe always run in gVisor. While an issue
+    #                                  # pod runs in a microVM, scheduling must not name
+    #                                  # sandbox.gke.io/runtime: the RuntimeClass places the pod.
     # repository_cache:                # each mapped repository's cache pod, which every issue pod's feed is
     #   volume: 20Gi                   # filled from before GitHub is asked for the rest: the cache's own volume,
     #   refresh_minutes: 10            # holding a bare clone; how often it fetches GitHub; how long it outlives
     #   retain_hours: 168              # its repository leaving the mapping; and its one container's reservation,
     #   resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # as a pod's.
     #                                  # These are the defaults. Issue pods reach the cache pods on port 8418.
+    # memory_guard:                    # the memory guard in each issue pod's launcher: when the pod's anonymous
+    #   issue_pods:                    # memory reaches act_percent (50 to 95) of the container's memory limit
+    #     enabled: true                # and the processes it may end hold at least floor_percent (1 to 50) of
+    #     act_percent: 85              # it, it ends the largest of them with SIGKILL and tells the role whose
+    #     floor_percent: 10            # process it was. Legion's own processes and each role's agent are never
+    #     wait_seconds: 5              # ended. After a kill it waits up to wait_seconds (1 to 60) for the
+    #     interval_milliseconds: 100   # reading to fall, and it reads every interval_milliseconds (50 to 5000).
+    #                                  # These are the defaults. enabled: false sends the launchers no settings,
+    #                                  # so each issue pod's guard, which runs at these defaults from the
+    #                                  # launcher's start, turns off at its first acknowledgement and ends nothing
+    #                                  # from then on, and a command that fills the limit then ends every role of
+    #                                  # the pod with the container.
+    # volume_trim:                     # the cache trimmer in each issue pod's launcher, which deletes the oldest
+    #   enabled: true                  # entries of the four cache roots on the issue volume: it reads the volume
+    #   high_percent: 85               # every interval_seconds, sweeps once the used fraction reaches
+    #   low_percent: 70                # high_percent, deletes only an entry in which nothing was modified for
+    #   min_age_minutes: 15            # min_age_minutes, and stops at the first reading at or below low_percent
+    #   interval_seconds: 60           # unless something stops it sooner. These are the defaults. enabled: false
+    #                                  # stops each pod's sweeping, and its trimmer then reads and deletes
+    #                                  # nothing until a daemon hands it settings again (docs/kubernetes.md).
     kubeconfig: ./kubeconfig           # the daemon's own identity
     context: legion-daemon
     # plugins:                         # the exact pi-legion/pi-envoy pair a stale-plugin relaunch installs
@@ -347,26 +429,33 @@ runtime:
     #                                  # second line). Set it for a daemon built from an unreleased commit
     #                                  # (every Stage 4a/4b run), or to pin a different published pair than
     #                                  # this binary links.
-    # skills_repository: acme/agent-skills
-    #                                  # the Oh My Pi plugin marketplace every issue pod's roles
-    #                                  # install their skills from. Each issue pod clones its
-    #                                  # default branch shallow in an init container of its own,
-    #                                  # with the project's App token, and every role installs from
-    #                                  # that clone before Oh My Pi starts: a pod's skills are that
-    #                                  # branch as of the pod's start, with no image rebuild and no
-    #                                  # fetch in any role's launch (docs/kubernetes.md, Operator
-    #                                  # configuration)
-    # setup: [/bin/sh, -c, '[ -n "${LEGION_CONTROLLER:-}" ] || omp plugin list | grep -q agent-skills || { echo "agent-skills is not installed" >&2; exit 1; }']
-    #                                  # a command every role runs before each start of its
+    # setup:                           # a command every role runs before each start of its
     #                                  # Oh My Pi, in its working directory with the role's environment
     #                                  # (its git answers github.com with the role's App token); Oh My Pi
     #                                  # starts only once it exits 0, and a failure counts as a failed
-    #                                  # launch (docs/kubernetes.md, Configuration).
-    #                                  # It must fetch nothing: a clone in a role's launch context ends
-    #                                  # the pod's gVisor sandbox, so install skills with
-    #                                  # skills_repository above and leave this to check they are there.
-    #                                  # The controller's pod installs no skill, so the check skips it
-    #                                  # (LEGION_CONTROLLER is set in the controller's agent alone).
+    #                                  # launch. It may install an Oh My Pi plugin marketplace from
+    #                                  # GitHub: such an install, which renames a directory in the role's
+    #                                  # home overlay, stopped the pod's gVisor sandbox until
+    #                                  # legion-v19.18.1 mounted that overlay with userxattr
+    #                                  # (dispatch://INFRA-1262). This example skips the controller and
+    #                                  # exits 0 when its install fails, so it stops no role
+    #                                  # (docs/kubernetes.md, Configuration).
+    #   - /bin/sh
+    #   - -c
+    #   - |
+    #     [ -z "${LEGION_CONTROLLER:-}" ] || exit 0
+    #     cd "$HOME" || { echo "setup: cd $HOME failed" >&2; exit 0; }
+    #     repo=acme/agent-skills marketplace=acme-skills plugin=agent-skills
+    #     omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+    #     if ! timeout 120 omp plugin marketplace add "$repo"; then
+    #       echo "setup: omp plugin marketplace add $repo failed" >&2
+    #     elif ! timeout 60 omp plugin install "$plugin@$marketplace" --force; then
+    #       echo "setup: omp plugin install $plugin@$marketplace failed" >&2
+    #     elif ! omp plugin enable "$plugin@$marketplace"; then
+    #       echo "setup: omp plugin enable $plugin@$marketplace failed" >&2
+    #     fi
+    #     omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+    #     exit 0
     pod:                               # the model route: deploy/kubernetes/operator-route/pod.yml
       env:
         PI_CONFIG_FILES: /etc/legion-operator/overlay.yml
@@ -408,6 +497,8 @@ runtime:
         #   config_map: {name: legion-operator-roles}
         # - name: operator-memory      # the project's memory.config_files overlays (above)
         #   config_map: {name: legion-operator-memory}
+        # - name: operator-experiments # an experiment variant's config_files overlays (above)
+        #   config_map: {name: legion-operator-experiments}
       volume_mounts:
         - {volume: operator-route, mount_path: /home/legion/.omp/profiles/legion/agent/models.yml, sub_path: models.yml}
         - {volume: operator-route, mount_path: /etc/legion-operator/overlay.yml, sub_path: overlay.yml}
@@ -417,6 +508,7 @@ runtime:
         # - {volume: nas, mount_path: /mnt/nas, read_only: false}          # writable
         # - {volume: operator-roles, mount_path: /etc/legion-operator-roles} # role_config_files' overlays
         # - {volume: operator-memory, mount_path: /etc/legion-memory} # memory.config_files' overlays
+        # - {volume: operator-experiments, mount_path: /etc/legion-experiments} # a variant's config_files overlays
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
 # capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets

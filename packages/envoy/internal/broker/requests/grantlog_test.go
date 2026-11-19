@@ -18,28 +18,28 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// grantLogLine is one captured store.GrantLogMessage line: its attributes by key, and the level
-// it was written at.
-type grantLogLine struct {
+// loggedLine is one captured log line: its attributes by key, and the level it was written at.
+type loggedLine struct {
 	attrs map[string]any
 	level slog.Level
 }
 
-// grantLogLines are the grant-log lines capture holds, in the order they were written, so a test
-// reads the attributes the request machine logged rather than a rendering of them. Every other
-// line the broker logs is skipped: this is the one line the access review's log pipeline keeps.
-// The records are one test's own: logtest puts the previous default logger back when it ends.
-func grantLogLines(t *testing.T, capture *logtest.Recorder) []grantLogLine {
+// loggedLines are the lines capture holds whose message is message, in the order they were
+// written, so a test reads the attributes the broker logged rather than a rendering of them:
+// store.GrantLogMessage, the one line the access review's log pipeline keeps, or a release's
+// ReleasedMessage. Every other line is skipped. The records are one test's own: logtest puts the
+// previous default logger back when it ends.
+func loggedLines(t *testing.T, capture *logtest.Recorder, message string) []loggedLine {
 	t.Helper()
-	var lines []grantLogLine
+	var lines []loggedLine
 	for _, r := range capture.Records() {
-		if r.Message != store.GrantLogMessage {
+		if r.Message != message {
 			continue
 		}
-		line := grantLogLine{attrs: map[string]any{}, level: r.Level}
+		line := loggedLine{attrs: map[string]any{}, level: r.Level}
 		r.Attrs(func(a slog.Attr) bool {
 			if _, twice := line.attrs[a.Key]; twice {
-				t.Fatalf("the grant-log line carries %q twice", a.Key)
+				t.Fatalf("the %q line carries %q twice", message, a.Key)
 			}
 			line.attrs[a.Key] = a.Value.Any()
 			return true
@@ -108,11 +108,11 @@ func sameAttr(got, want any) bool {
 // routeLine is ev as store.LogGrantEvent writes it, captured. The drift test compares the
 // machine's line with the route's event through that one writer rather than rendering the event
 // a second way of its own, so what it pins is the two constructions and nothing else.
-func routeLine(t *testing.T, capture *logtest.Recorder, ev store.GrantLogEvent) grantLogLine {
+func routeLine(t *testing.T, capture *logtest.Recorder, ev store.GrantLogEvent) loggedLine {
 	t.Helper()
-	before := len(grantLogLines(t, capture))
+	before := len(loggedLines(t, capture, store.GrantLogMessage))
 	store.LogGrantEvent(ev)
-	lines := grantLogLines(t, capture)
+	lines := loggedLines(t, capture, store.GrantLogMessage)
 	if len(lines) != before+1 {
 		t.Fatalf("LogGrantEvent wrote %d lines, want one", len(lines)-before)
 	}
@@ -120,9 +120,9 @@ func routeLine(t *testing.T, capture *logtest.Recorder, ev store.GrantLogEvent) 
 }
 
 // lineFor is the one captured line naming kind and request.
-func lineFor(t *testing.T, lines []grantLogLine, kind, requestID string) grantLogLine {
+func lineFor(t *testing.T, lines []loggedLine, kind, requestID string) loggedLine {
 	t.Helper()
-	var found []grantLogLine
+	var found []loggedLine
 	for _, line := range lines {
 		if line.attrs["kind"] == kind && line.attrs["request_id"] == requestID {
 			found = append(found, line)
@@ -165,15 +165,15 @@ func TestGrantLogLineAndTheRoutesEventSayTheSameThing(t *testing.T) {
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-drift")
 	nameSession(t, m, pod, "sess-pod")
 
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "")
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "", nil)
 	if err != nil || automatic.State != "granted" {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", automatic, err)
 	}
-	service, err := m.Create(ctx, pod, signRequest(t, m, podKey, "run the job", "SERVICE_KEY"), "")
+	service, err := m.Create(ctx, pod, signRequest(t, m, podKey, "run the job", "SERVICE_KEY"), "", nil)
 	if err != nil || service.State != "granted" {
 		t.Fatalf("Create(SERVICE_KEY) = %+v, %v; want granted", service, err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "ship the release", "DEEL_API_KEY"), "")
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "ship the release", "DEEL_API_KEY"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", pending, err)
 	}
@@ -181,7 +181,7 @@ func TestGrantLogLineAndTheRoutesEventSayTheSameThing(t *testing.T) {
 		t.Fatalf("ApplyDecision = %+v, %v; want granted", decision, err)
 	}
 
-	machineLines := grantLogLines(t, capture)
+	machineLines := loggedLines(t, capture, store.GrantLogMessage)
 	events := readGrantLog(t, m, since)
 	for _, tc := range []struct {
 		name, kind, request string
@@ -269,7 +269,7 @@ func loggedRows(trail [][3]string) [][3]string {
 
 // linedRows are the captured lines in the same shape as loggedRows, so one compares with the
 // other.
-func linedRows(t *testing.T, lines []grantLogLine) [][3]string {
+func linedRows(t *testing.T, lines []loggedLine) [][3]string {
 	t.Helper()
 	var lined [][3]string
 	for _, line := range lines {
@@ -293,28 +293,28 @@ func linedRows(t *testing.T, lines []grantLogLine) [][3]string {
 // TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse pins the volume: one line per
 // request decision and per grant end, in the order the audit table holds those rows, and none at
 // all for a release (grant.used) or for an enrollment's own row. A session that reads its grant
-// every few seconds writes one audit row per release and no line for any of them.
+// every few seconds writes one audit row per release and no grant-log line for any of them.
 func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-volume")
 	ctx := context.Background()
 
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "")
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "", nil)
 	if err != nil || automatic.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", automatic, err)
 	}
 	for range 3 {
-		if _, err := m.Values(ctx, *automatic.GrantID, enr, nil); err != nil {
+		if _, err := m.Values(ctx, *automatic.GrantID, enr, nil, ReleaseCall{}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 	}
-	cancelled, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "")
+	cancelled, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "", nil)
 	if err != nil || cancelled.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", cancelled, err)
 	}
 	if err := m.Cancel(ctx, cancelled.ID, enr); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	approved, err := m.Create(ctx, enr, signRequest(t, m, key, "share it", "SHARED_KEY"), "")
+	approved, err := m.Create(ctx, enr, signRequest(t, m, key, "share it", "SHARED_KEY"), "", nil)
 	if err != nil || approved.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", approved, err)
 	}
@@ -322,7 +322,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	if err != nil || decision.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
-	expired, err := m.Create(ctx, enr, signRequest(t, m, key, "ask alice", "ALICE_KEY"), "")
+	expired, err := m.Create(ctx, enr, signRequest(t, m, key, "ask alice", "ALICE_KEY"), "", nil)
 	if err != nil || expired.RecordID == nil {
 		t.Fatalf("Create(ALICE_KEY) = %+v, %v; want pending", expired, err)
 	}
@@ -340,7 +340,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	capped := policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1")
 	capped.Tags[policy.TagMaxGrant] = "1m"
 	retag(t, m, capped)
-	if _, err := m.Values(ctx, decision.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values under a max-grant below the grant's own lifetime = %v, want ErrGrantNotLive", err)
 	}
 
@@ -354,7 +354,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	if uses != 3 {
 		t.Fatalf("the audit table holds %d grant.used rows, want one per release: the exclusion has to be tested against real rows", uses)
 	}
-	lines := grantLogLines(t, capture)
+	lines := loggedLines(t, capture, store.GrantLogMessage)
 	for _, line := range lines {
 		kind, _ := line.attrs["kind"].(string)
 		if !loggedKind(kind) {
@@ -385,11 +385,11 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-withhold")
 	ctx := context.Background()
 
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "")
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "", nil)
 	if err != nil || automatic.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", automatic, err)
 	}
-	both, err := m.Create(ctx, enr, signRequest(t, m, key, "both of them", "AUTO_TOKEN", "SHARED_KEY"), "")
+	both, err := m.Create(ctx, enr, signRequest(t, m, key, "both of them", "AUTO_TOKEN", "SHARED_KEY"), "", nil)
 	if err != nil || both.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, SHARED_KEY) = %+v, %v; want pending", both, err)
 	}
@@ -397,12 +397,12 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 	if err != nil || decision.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
-	before := len(grantLogLines(t, capture))
+	before := len(loggedLines(t, capture, store.GrantLogMessage))
 	if err := m.RevokeByApprover(ctx, *automatic.GrantID, fixtureOperator, "human:"+fixtureOperator); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
 
-	lines := grantLogLines(t, capture)[before:]
+	lines := loggedLines(t, capture, store.GrantLogMessage)[before:]
 	if len(lines) != 2 {
 		t.Fatalf("the revoke logged %d lines, want one per grant it ended: its own and the one the withhold ended", len(lines))
 	}
@@ -424,4 +424,50 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 	if got := linedRows(t, lines); !reflect.DeepEqual(got, logged[len(logged)-2:]) {
 		t.Fatalf("the two lines are %v, want the two audit rows the revoke wrote, in the table's order: %v", got, logged[len(logged)-2:])
 	}
+}
+
+// TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment: any enrollment of the
+// owner that made a request cancels it (OwnerAndState), and the request.cancelled audit row names the
+// enrollment the request hangs off. The grant-log line carries the ids that row names, so it names
+// that enrollment too, not the caller's, while the actor on both is the caller's session; and the
+// request's detail says another session of the owner cancelled it. The request's own session
+// cancelling still reads as before.
+func TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment(t *testing.T) {
+	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-owner-cancel")
+	ctx := context.Background()
+	other, _ := newEnrollment(t, m.Store, "session", "box-other-"+t.Name(), new(fixtureOperator), nil)
+	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set owner=$3 where id in ($1,$2)`, enr, other, "person:"+fixtureOperator); err != nil {
+		t.Fatalf("give both enrollments the person's owner: %v", err)
+	}
+	cancelled := func(t *testing.T, caller, wantDetail string) {
+		t.Helper()
+		req, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "", nil)
+		if err != nil || req.RecordID == nil {
+			t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", req, err)
+		}
+		if err := m.Cancel(ctx, req.ID, caller); err != nil {
+			t.Fatalf("Cancel as %s: %v", caller, err)
+		}
+		var audited, actor, detail string
+		if err := m.Store.Pool.QueryRow(ctx, `select a.enrollment_id::text, a.actor, r.decision_detail from audit a join requests r on r.id = a.request_id
+			where a.kind='request.cancelled' and a.request_id=$1`, req.ID).Scan(&audited, &actor, &detail); err != nil {
+			t.Fatalf("read the request.cancelled row of %s: %v", req.ID, err)
+		}
+		if audited != enr || actor != "session:"+caller {
+			t.Fatalf("the request.cancelled row names enrollment %s and actor %s, want the request's own %s and the caller's session:%s", audited, actor, enr, caller)
+		}
+		line := lineFor(t, loggedLines(t, capture, store.GrantLogMessage), "request.cancelled", req.ID)
+		if line.attrs["enrollment_id"] != audited || line.attrs["actor"] != actor {
+			t.Fatalf("the grant-log line names enrollment %v and actor %v, want the row's %s and %s", line.attrs["enrollment_id"], line.attrs["actor"], audited, actor)
+		}
+		if detail != wantDetail || line.attrs["detail"] != wantDetail {
+			t.Fatalf("the cancel's detail is %q on the request and %v on the line, want %q", detail, line.attrs["detail"], wantDetail)
+		}
+	}
+	t.Run("another enrollment of the owner", func(t *testing.T) {
+		cancelled(t, other, "cancelled by another session of the owner that made it")
+	})
+	t.Run("the request's own enrollment", func(t *testing.T) {
+		cancelled(t, enr, "cancelled by the requesting session")
+	})
 }

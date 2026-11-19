@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The worker's guide to results says that `--run`, `--observed` and `--negative-control` take
+  text and refuse a bare `-`, and that only one of their `-file` flags may read stdin in a call.

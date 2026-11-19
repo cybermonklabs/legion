@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -23,10 +24,12 @@ create trigger artifact_versions_block_index_owed after insert on artifact_versi
 // A migration is exempt from the table limit only when Postgres's parser reads every one of its
 // statements as a catalog-only kind. What a regular expression over the text would be fooled by -
 // a trigger in a comment, in a string literal, in a dollar-quoted function body, or beside another
-// statement on one line - is read as the server reads it, and a migration that adds an index or a
-// column default, or holds any statement outside the allowlist, is not exempt. A drop is exempt
-// only with RESTRICT, the default: what a cascade drops besides the object the statement names is
-// not in the statement, so the census cannot read it.
+// statement on one line - is read as the server reads it, and a migration that adds an index to a
+// table it does not create, or holds any statement outside the allowlist, is not exempt. A drop is
+// exempt only with RESTRICT, the default: what a cascade drops besides the object the statement
+// names is not in the statement, so the census cannot read it. The classifier reads no catalog
+// here, so every added column and every created index is judged on size; the forms whose answer
+// needs the catalog are tested against a database.
 func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 	for name, tc := range map[string]struct{ sql, want string }{
 		"0122, a function and a trigger":  {migration0122, "create function and create trigger"},
@@ -49,9 +52,9 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		// function runs none of them.
 		"an index inside a dollar-quoted body": {"create function f() returns void language plpgsql as $body$ begin create index i on things (kind); end $body$;", "create function"},
 
-		// Dropping a trigger writes pg_trigger, dropping a function writes pg_proc and dropping an
-		// index deletes its pg_class and pg_index rows, reading no row of the table, so a drop
-		// with RESTRICT - the default - is exempt as a create is.
+		// Dropping a trigger writes pg_trigger, dropping a function writes pg_proc, and dropping an
+		// index or a table deletes its catalog rows and unlinks its storage, reading no row of a
+		// table, so a drop with RESTRICT - the default - is exempt as a create is.
 		"20261102233626, a dropped trigger and its function": {"drop trigger artifact_versions_embeddings_enqueue on artifact_versions;\ndrop function embeddings_enqueue_document();", "drop trigger and drop function"},
 		"20261111002445, the dropped events index":           {"drop index events_person_words;", "drop index"},
 		"a dropped trigger alone":                            {"drop trigger t_owed on things;", "drop trigger"},
@@ -59,36 +62,27 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"a dropped function alone":                           {"drop function owe();", "drop function"},
 		"a dropped index alone":                              {"drop index things_kind;", "drop index"},
 		"a dropped index if exists":                          {"drop index if exists things_kind;", "drop index"},
+		"a dropped table":                                    {"drop table things;", "drop table"},
 		"a drop beside a created trigger":                    {"drop trigger t_old on things; create trigger t_owed after insert on things for each row execute function owe();", "drop trigger and create trigger"},
 
-		"a nullable built-in column":                {"alter table things add column covers text[];", "alter table"},
 		"a not-valid check":                         {"alter table things add constraint c check (kind <> '') not valid;", "alter table"},
 		"a dropped check":                           {"alter table things drop constraint things_kind_check;", "alter table"},
+		"a default set on a column":                 {"alter table things alter column kind set default 'x';", "alter table"},
 		"a validated check":                         {"alter table things add constraint c check (kind <> '');", ""},
-		"a not-null column":                         {"alter table things add column note text not null;", ""},
-		"a not-null column with a default":          {"alter table things add column note text not null default 'x';", ""},
-		"a volatile column default":                 {"alter table things add column token uuid default gen_random_uuid();", ""},
 		"an altered column type":                    {"alter table things alter column kind type varchar;", ""},
 		"constraint validation":                     {"alter table things validate constraint c;", ""},
-		"a domain column":                           {"alter table things add column note custom_domain;", ""},
-		"a serial column":                           {"alter table things add column note serial;", ""},
-		"a generated column":                        {"alter table things add column note text generated always as (kind) stored;", ""},
 		"a cascading constraint drop":               {"alter table things drop constraint c cascade;", ""},
 		"a check beside validation":                 {"alter table things add constraint c check (kind <> '') not valid, validate constraint c;", ""},
 		"an index":                                  {"create index things_kind on things (kind);", ""},
 		"an index concurrently":                     {"create index concurrently things_kind on things (kind)", ""},
-		"a column with a default":                   {"alter table things add column note text default 'x';", ""},
-		"a default set on a column":                 {"alter table things alter column kind set default 'x';", ""},
 		"a trigger and an index":                    {"create trigger t after insert on things for each row execute function owe(); create index i on things (kind);", ""},
-		"two statements on one line":                {"create trigger t after insert on things for each row execute function owe(); alter table things add column n int default 0", ""},
 		"a trigger only in a comment":               {"-- create trigger t after insert on things for each row execute function owe();\ncreate index i on things (kind);", ""},
 		"a trigger only in a block comment":         {"/* create trigger t after insert on things\n for each row execute function owe(); */ create index i on things (kind)", ""},
 		"a trigger only in a string literal":        {"update things set kind = 'create trigger t after insert on things for each row execute function owe()'", ""},
 		"a trigger only in a dollar-quoted literal": {"select $$; create trigger t after insert on things for each row execute function owe(); $$", ""},
 		"a trigger inside a DO block":               {"do $$ begin create trigger t after insert on things for each row execute function owe(); end $$;", ""},
-		// A drop of anything else reads or removes rows, and a drop with cascade reaches objects
-		// the statement does not name, so neither is exempt.
-		"a dropped table":                        {"drop table things;", ""},
+		// A drop of anything else is not exempt, and a drop with cascade reaches objects the
+		// statement does not name.
 		"a dropped index with cascade":           {"drop index things_kind cascade;", ""},
 		"a dropped view":                         {"drop view v;", ""},
 		"a dropped schema":                       {"drop schema s;", ""},
@@ -110,8 +104,49 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"no text":                      {"", ""},
 		"a statement Postgres refuses": {"create trigger t after insert on things for each row", ""},
 	} {
-		if got := tableSizeExemption(tc.sql); got != tc.want {
-			t.Errorf("%s: tableSizeExemption = %q, want %q", name, got, tc.want)
+		if got, _ := tableSizeExemption(context.Background(), nil, nil, tc.sql); got.exemption != tc.want {
+			t.Errorf("%s: tableSizeExemption = %q, want %q", name, got.exemption, tc.want)
+		}
+	}
+	// A migration the census cannot parse is not exempt, and it takes the catalog reads away from
+	// every pending migration after it (laterReadsOff), and their exemptions (laterExemptionsOff),
+	// since the census cannot see what it changes: a VIRTUAL generated column, which PostgreSQL 18
+	// reads and the census's Postgres 17 grammar does not, and a statement Postgres refuses. A
+	// migration that creates or alters an event trigger takes both away too, and so does one that
+	// holds a statement of a kind off the keep-on list, or a statement that names a relation of
+	// pg_catalog. Without a transaction the census counts every relation name as one that can
+	// resolve to a relation of pg_catalog, so a statement that names any relation takes both away
+	// here. The tests of catalog_only_test.go read which relation names count, against a database.
+	// A SELECT that names no relation and calls no set_config leaves the reads on, and one that
+	// calls set_config takes them away and leaves the exemptions. The pass reads every statement for
+	// the exemptions, the ones after a SET of search_path or a set_config call included. Of two
+	// relation names, the words name the one that sorts first, on every run.
+	const eventTrigger = "creates or alters an event trigger"
+	const cannotSee = ", so the census cannot see whether it " + eventTrigger
+	const resolvesToCatalog = ", which can resolve to a relation of pg_catalog or to a relation whose rules read one" + cannotSee
+	for sql, want := range map[string]struct {
+		laterReadsOff      bool
+		laterExemptionsOff string
+	}{
+		"alter table things add column c int generated always as (1) virtual;": {true, "does not parse" + cannotSee},
+		"create trigger t after insert on things for each row":                 {true, "does not parse" + cannotSee},
+		"create event trigger et on ddl_command_start execute function f();":   {true, eventTrigger},
+		"select 1; alter event trigger et enable;":                             {true, eventTrigger},
+		"select set_config('search_path', 'public', false);":                   {true, ""},
+		"select 1;":           {false, ""},
+		"do $$ begin end $$;": {true, "runs a DO block" + cannotSee},
+		"call some_proc();":   {true, "calls a procedure" + cannotSee},
+		"create extension if not exists pgcrypto;":                                          {true, "creates or alters an extension" + cannotSee},
+		"alter extension vector update;":                                                    {true, "creates or alters an extension" + cannotSee},
+		"alter extension vector add function f();":                                          {true, "creates or alters an extension" + cannotSee},
+		"update pg_event_trigger set evtenabled = 'O';":                                     {true, `names "pg_event_trigger"` + resolvesToCatalog},
+		"insert into pg_catalog.pg_cast select * from pg_cast where false;":                 {true, `names "pg_cast"` + resolvesToCatalog},
+		"set search_path = other; update pg_catalog.pg_event_trigger set evtenabled = 'O';": {true, `names "pg_catalog"."pg_event_trigger"` + resolvesToCatalog},
+		"select set_config('search_path', 'other', false); select 1 from pg_event_trigger;": {true, `names "pg_event_trigger"` + resolvesToCatalog},
+		"select set_config('search_path', 'other', false); do $$ begin end $$;":             {true, "runs a DO block" + cannotSee},
+	} {
+		if got, err := tableSizeExemption(context.Background(), nil, nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff != want.laterExemptionsOff {
+			t.Errorf("%q: tableSizeExemption = %+v, %v; want laterReadsOff %v and laterExemptionsOff %q", sql, got, err, want.laterReadsOff, want.laterExemptionsOff)
 		}
 	}
 }

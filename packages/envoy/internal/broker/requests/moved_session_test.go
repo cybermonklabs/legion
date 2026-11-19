@@ -78,7 +78,7 @@ func auditedEnrollment(t *testing.T, m *Machine, kind, grantID string) string {
 func TestAnApprovalAfterTheMoveGrantsToTheEnrollmentTheRequestNamesNow(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -111,7 +111,7 @@ func TestAnApprovalAfterTheMoveGrantsToTheEnrollmentTheRequestNamesNow(t *testin
 	if holder != second {
 		t.Fatalf("grant %s hangs off enrollment %s, want the moved session's %s", dec.GrantID, holder, second)
 	}
-	if released, err := m.Values(ctx, dec.GrantID, second, nil); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
+	if released, err := m.Values(ctx, dec.GrantID, second, nil, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {
 		t.Fatalf("the moved session reading its new grant = %v, %v; want DEEL_API_KEY=deel-v1", released.Values, err)
 	}
 }
@@ -125,7 +125,7 @@ func TestAnApprovalAfterTheMoveGrantsToTheEnrollmentTheRequestNamesNow(t *testin
 func TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -137,7 +137,7 @@ func TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack(t *testing.T) {
 	second, secondKey := nextBox(t, m)
 	moveSession(t, m, first, second)
 
-	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it on the new box", "DEEL_API_KEY"), "")
+	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it on the new box", "DEEL_API_KEY"), "", nil)
 	if err != nil || again.ID != req.ID || again.GrantID == nil || *again.GrantID != dec.GrantID {
 		t.Fatalf("Create on the box the session moved to = %+v, %v; want request %s and its own grant %s back", again, err, req.ID, dec.GrantID)
 	}
@@ -155,7 +155,7 @@ func TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack(t *testing.T) {
 func TestSelfListsTheMovedGrantUnderTheEnrollmentThatHoldsItNow(t *testing.T) {
 	m, first, key, _ := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want an automatic grant", auto, err)
 	}
@@ -176,14 +176,14 @@ func TestSelfListsTheMovedGrantUnderTheEnrollmentThatHoldsItNow(t *testing.T) {
 }
 
 // TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot pins both halves of what a
-// moved card does: pendingRequest reads the requests row's own enrollment_id, so the moved
+// moved card does: pendingRequests reads the requests row's own enrollment_id, so the moved
 // session's next ask for the same name coalesces onto the request a person is already holding
 // rather than opening a second card, and the box it left, which holds nothing now, is refused
 // nothing and opens a card of its own. The approver's list shows each card once.
 func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -191,15 +191,15 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 	second, secondKey := nextBox(t, m)
 	moveSession(t, m, first, second)
 
-	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it on the new box", "DEEL_API_KEY"), "")
+	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it on the new box", "DEEL_API_KEY"), "", nil)
 	if err != nil || again.ID != req.ID || !again.Coalesced {
 		t.Fatalf("Create on the box the session moved to = %+v, %v; want it coalesced onto the pending request %s that moved with it", again, err, req.ID)
 	}
-	if listed, err := m.PendingForApprover(ctx, approver); err != nil || len(listed) != 1 || listed[0].RecordID != *req.RecordID {
+	if listed, err := m.PendingForApprover(ctx, approver, PendingStates{}); err != nil || len(listed) != 1 || listed[0].RecordID != *req.RecordID {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want the moved request's one record %s", approver, listed, err, *req.RecordID)
 	}
 
-	third, err := m.Create(ctx, first, signRequest(t, m, key, "the box it left asks too", "DEEL_API_KEY"), "")
+	third, err := m.Create(ctx, first, signRequest(t, m, key, "the box it left asks too", "DEEL_API_KEY"), "", nil)
 	if err != nil || third.State != "pending" || third.ID == req.ID {
 		t.Fatalf("Create on the box the session left = %+v, %v; want a pending request of its own: the moved one is no longer under it", third, err)
 	}
@@ -209,13 +209,14 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 }
 
 // TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot pins Cancel's owner
-// check after a move: it compares the caller against the requests row's own enrollment_id, which
-// the move rewrote, so the session cancels its card from the box it runs on now and the box it
-// left is ErrNotYours.
+// check after a move: it compares the caller's owner with the owner of the enrollment the request
+// hangs off now, which the move rewrote. Neither box records an owner here, so each is its own
+// (enrollment:<id>): the session cancels its card from the box it runs on now and the box it left
+// is ErrNotYours.
 func TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot(t *testing.T) {
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
 	if err != nil || req.State != "pending" {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, approver)
 	}
@@ -241,7 +242,7 @@ func TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot(t *te
 func TestTheMovedSessionRevokesItsMovedGrantAndTheBoxItLeftCannot(t *testing.T) {
 	m, first, key, _ := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want an automatic grant", auto, err)
 	}
@@ -271,7 +272,7 @@ func TestTheMovedSessionRevokesItsMovedGrantAndTheBoxItLeftCannot(t *testing.T) 
 func TestTheApproversRevokeReachesTheMovedGrant(t *testing.T) {
 	m, first, key, _ := newFixture(t)
 	ctx := context.Background()
-	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
+	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "ALICE_KEY"), "", nil)
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want it pending on a record %s decides", req, err, otherPerson)
 	}
@@ -311,7 +312,7 @@ func TestTheApproversRevokeReachesTheMovedGrant(t *testing.T) {
 func TestTheOperatorsRevokeAfterTheMoveWithholdsAgainstTheBoxTheGrantHangsOffNow(t *testing.T) {
 	m, first, key, operator := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want an automatic grant", auto, err)
 	}
@@ -328,7 +329,7 @@ func TestTheOperatorsRevokeAfterTheMoveWithholdsAgainstTheBoxTheGrantHangsOffNow
 	if names := withheldFrom(t, m, first); len(names) != 0 {
 		t.Fatalf("withheld from the box it left = %v; want nothing: the session is not there", names)
 	}
-	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it again", "AUTO_TOKEN"), "")
+	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it again", "AUTO_TOKEN"), "", nil)
 	if err != nil || again.State != "pending" || again.GrantID != nil {
 		t.Fatalf("Create after the withhold = %+v, %v; want an approval request", again, err)
 	}
@@ -342,7 +343,7 @@ func TestTheOperatorsRevokeAfterTheMoveWithholdsAgainstTheBoxTheGrantHangsOffNow
 func TestAWithholdMadeBeforeTheMoveStillWithholdsAfterIt(t *testing.T) {
 	m, first, key, operator := newFixture(t)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
+	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want an automatic grant", auto, err)
 	}
@@ -362,7 +363,7 @@ func TestAWithholdMadeBeforeTheMoveStillWithholdsAfterIt(t *testing.T) {
 	if names := withheldFrom(t, m, first); len(names) != 0 {
 		t.Fatalf("withheld from the box it left = %v; want nothing: the row moved", names)
 	}
-	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it on the new box", "AUTO_TOKEN"), "")
+	again, err := m.Create(ctx, second, signRequest(t, m, secondKey, "need it on the new box", "AUTO_TOKEN"), "", nil)
 	if err != nil || again.State != "pending" || again.GrantID != nil {
 		t.Fatalf("Create on the box it moved to = %+v, %v; want an approval request: the withhold moved with the session", again, err)
 	}

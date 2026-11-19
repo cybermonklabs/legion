@@ -4,6 +4,7 @@ import {
   legionProjectToken,
   slackMentionTopic,
 } from "@legion/contracts";
+import { scrub } from "@legion/contracts/held-secrets";
 import type { LegionGrant } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import { LegionDaemonApiError, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
@@ -259,8 +260,8 @@ export function createControllerSession(deps: {
     if (launched) recordBootstrappedSession(sessionFile);
 
     const project = requiredEnvironment(process.env, "LEGION_PROJECT");
-    // Only the controller the daemon launched can reply in Slack, so only it hears the project's
-    // channels; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
+    // The daemon names the project's channels to the controller it launched alone, so only it hears
+    // them; any other ignores whatever LEGION_SLACK_CHANNELS it inherited.
     const slackChannels = supervised ? daemonControllerSlackChannels(process.env) : [];
     const client = daemon();
     const { daemon: served } = await client.state();
@@ -280,8 +281,9 @@ export function createControllerSession(deps: {
       })
       .catch((error: unknown) => {
         if (error instanceof LegionDaemonApiError) {
+          // The daemon's detail is its own text, and it can echo the boot token it was sent.
           logger.error(
-            `[legion] claims/register for the controller failed (${error.status}): ${error.detail}`
+            `[legion] claims/register for the controller failed (${error.status}): ${scrub(error.detail)}`
           );
         }
         throw error;

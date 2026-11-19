@@ -10,8 +10,11 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -34,14 +37,12 @@ type specs struct {
 	instructions string
 	secrets      map[string]string
 	prompts      *prompts.Composer
-	// memoryInstructions is the daemon's copy of the block's instructions file
-	// (config.WriteMemoryInstructions), the last fragment of a memory-group launch's system
-	// prompt; "" when the block names none, which `mode: on` may, and nothing is then appended.
-	memoryInstructions string
-	// memoryGroup is whether tree's root record carries the memory group (treeMemoryGroup, over
-	// the daemon's own store). Boot always sets it; it is nil only in a test whose specs literal
-	// leaves it out, and such a specs launches nothing with memory.
-	memoryGroup func(ctx context.Context, tree string) (bool, error)
+	// variants is every arm of a declared experiment the claim's unit was drawn into and that
+	// reaches the claim's role, in the order the project's file declares the experiments, and
+	// the daemon's own copies of the instructions those arms name (launchVariants, over the
+	// daemon's own store). Boot always sets it; it is nil only in a test whose specs literal
+	// leaves it out, and such a specs launches every role in no experiment.
+	variants func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error)
 	// designSteps is the design-gate steps the project gates (gates.design), in the order it
 	// gates them, which a tree's root architect is told after its addressing
 	// (DesignGateFragment); empty for a deployment that gates no step.
@@ -59,7 +60,7 @@ type specs struct {
 	// commit_issue_trailer_repos against, so a launch on the name a transfer moved a repository
 	// away from stamps exactly as one on the name the project wrote. Boot always sets it; it is
 	// nil only in a test whose specs literal leaves it out, and such a specs stamps no issue key
-	// at all, as memoryGroup's nil leaves a launch without memory.
+	// at all, as variants' nil leaves every launch in no experiment.
 	same func(a, b string) bool
 	// identity is the role's App bot identity every pane commits as, minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
@@ -71,9 +72,17 @@ type specs struct {
 	// workflow does not record); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
-	// appOwners is the owner accounts the role's own GitHub App is installed on, lowercased and
-	// sorted: the reach a worker's addressing names beside its own issue's repository, and the
-	// controller's after its design gate steps (RepositoriesClause). The daemon answers it from
+	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
+	// bundle holds a directory for, lowercased and sorted: the reach a worker's addressing names
+	// beside its own issue's repository, and the controller's after its design gate steps
+	// (RepositoriesClause). The two conditions are one rule, GitHubDirs': an installed owner the
+	// last bundle left out — not installed, suspended, granted none, permissions refused, or a
+	// login that is no directory name — holds no token this role could use, so naming it would
+	// promise a reach the role does not have. Under runtime: kubernetes the Apps read are the
+	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
+	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
+	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
+	// The daemon answers it from
 	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
 	// which costs no read of its own on a launch; a role whose App no bundle has been built for
 	// yet — the first launch of a daemon that has built none — is answered the owners of the
@@ -82,6 +91,12 @@ type specs struct {
 	// whether or not a workflow is configured; a nil one names no owner, as an App installed
 	// nowhere does.
 	appOwners func(role claim.Role) []string
+	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
+	// store records the architect claims of the issue's tree at the launch
+	// (workflowRuntime.owningArchitect): what the claim's addressing names (ownerOf). It is nil
+	// for a daemon with no workflow, which records no issue to walk, and in a test whose specs
+	// literal leaves it out; every claim of such a specs is addressed to its tree's architect.
+	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
 	// runtimeName is cfg.Runtime.Name: a stale-plugin install (stalePluginInstall) is Kubernetes'
 	// alone, since a tmux pane always resumes on the plugin installed on the daemon's host.
 	runtimeName string
@@ -118,7 +133,7 @@ func (s specs) ownersOf(role claim.Role) []string {
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
 // when the daemon has one), its prompt — the role prompt parts, the addressing sentence, the
-// deployment instructions and, for a tree in the project's memory group, the memory instructions
+// deployment instructions and the instructions of each arm the claim's unit was drawn into
 // — and its repository with that repository's default branch, whose workspace is on the daemon's
 // host by then when the runtime leaves workspaces to the daemon
 // (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
@@ -175,11 +190,11 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 }
 
 // workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It is the one
-// launch that may carry memory: whether the claim's tree is in the project's memory group
-// (memoryGroup), which decides both the overlays each runtime names last in PI_CONFIG_FILES
-// (runtime.SpawnSpec.Memory) and the memory instructions its prompt ends with. It is the one
-// launch that may stamp an issue key into its commits too (issueTrailer), since it is the one
-// that works a repository.
+// launch that may run in an experiment: the arms the claim's unit was drawn into (variants),
+// which decide both the overlays each runtime names last in PI_CONFIG_FILES
+// (runtime.SpawnSpec.Variants) and the instructions its prompt ends with. It is the one launch
+// that may stamp an issue key into its commits too (issueTrailer), since it is the one that
+// works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
 	promptPaths, err := s.rolePromptPaths(c)
 	if err != nil {
@@ -204,10 +219,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
 		}
 	}
-	addressing, err := AddressingFragment(s.project, c, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
+	architect, err := s.ownerOf(ctx, c)
 	if err != nil {
-		return runtime.SpawnSpec{}, err
+		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -216,21 +232,20 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		Addressing:                 addressing,
 		DeploymentInstructionsPath: s.instructions,
 	}
-	// The memory group is the tree's, read from its root's record alone: a tree the daemon drew
-	// into the memory group keeps its overlays and its instructions while the block names them,
-	// whatever the project's mode is now — the mode decides which new trees are drawn, and only
-	// removing the keys takes the files away. A specs with no reader (memoryGroup nil, a test's)
-	// asks nothing, so none of its launches carries memory, and a project whose block names no
-	// instructions file appends nothing, its memory-group panes being the overlays alone.
-	if s.memoryGroup != nil {
-		memory, err := s.memoryGroup(ctx, c.Tree)
+	// The arms are read from the record alone: a unit the daemon drew into an arm keeps that
+	// arm's overlays and its instructions while the project's file names them, whatever the
+	// experiment's mode is now — the mode decides which new units are drawn, and only taking the
+	// arm out of the file takes the files away. An experiment whose `roles` leaves this claim's
+	// role out gives this launch none of its arms, while the unit keeps the arm it drew
+	// (config.Experiment.Reaches). A specs with no reader (variants nil, a test's) asks
+	// nothing, so each of its launches runs in no experiment, and an arm that names no
+	// instructions file appends nothing, its roles getting the overlays alone.
+	if s.variants != nil {
+		arms, err := s.variants(ctx, c.Tree, c.Issue, c.Role)
 		if err != nil {
-			return runtime.SpawnSpec{}, fmt.Errorf("the memory group of tree %s: %w", c.Tree, err)
+			return runtime.SpawnSpec{}, fmt.Errorf("the experiment variants of %s: %w", c.Token, err)
 		}
-		if memory {
-			spec.Memory = true
-			spec.Prompt.MemoryInstructionsPath = s.memoryInstructions
-		}
+		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
@@ -244,6 +259,53 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
 	return spec, nil
+}
+
+// ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:
+// for a claim on its tree's root, whatever its role, the tree's architect, which is the root's
+// own; for a claim on any other issue, the end of the owner walk over the claims the store
+// records now (owner), so a planner launched while its child's own architect holds its role is
+// told that architect, and one launched while that architect does not hold its role (it failed,
+// for example) is told the architect above it. A specs with no owner reader addresses every claim
+// to its tree's architect. A read that fails fails the launch, as a repository read does.
+func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, error) {
+	if s.owner == nil || claim.IsTreeRoot(c.Issue, c.Tree) {
+		return claim.NewToken(s.project, c.Tree, claim.RoleArchitect)
+	}
+	return s.owner(ctx, s.project, c)
+}
+
+// owningArchitect is specs.owner: the architect that owns c, a claim on an issue that is not its
+// tree's root, as the store records the architect claims of the issue's tree now
+// (record.ReadOwnerWalk). It is where a worker-died about c's role goes, so the architect the
+// daemon tells when this claim fails is the one it answers to. For a phase worker the walk starts
+// at its issue, so it is the issue's own architect while that claim holds its role, else the
+// nearest one above it that does, else the tree root's; for the issue's own architect it starts
+// at the issue's parent (record.NoticeStartsAtParent), which is the architect above it. An issue
+// the workflow does not record, such as an operator's claim, has no tree to walk, so its claim is
+// its tree's architect's. project is the claim project token every token of the launch is spelled
+// in. It reads in a read-only transaction of its own, as the supervisor's predicates read a
+// record.
+func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c supervise.Claim) (claim.Token, error) {
+	owner, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
+	if err != nil {
+		return "", err
+	}
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		issue, err := w.records.Issue(ctx, tx, c.Issue)
+		if err != nil || issue == nil {
+			return err
+		}
+		walk, err := record.ReadOwnerWalk(ctx, w.records, tx, project, issue.Tree)
+		if err != nil {
+			return err
+		}
+		owner, err = walk.Architect(*issue, c.Role == claim.RoleArchitect)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)
+	}
+	return owner, nil
 }
 
 // passthrough merges into env each of names the daemon's own environment holds, and no other: a
@@ -355,9 +417,9 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // they change; a spec cannot set that variable.
 // It has no repository and no git identity: the controller works Dispatch, never a checkout, and
 // commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
-// which validateControllerShape refuses on a controller's spec). It is in no memory group and is
-// told no memory instructions whatever the project's mode is: a memory group is a tree's, and the
-// controller runs in none.
+// which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
+// told no variant instructions whatever the modes are: an experiment's unit is a tree or an
+// issue of one, and the controller runs in neither.
 //
 // Of the passthrough variables it carries the two refusal cooldowns itself: the model fallback
 // those two bound serves every Legion role, the controller's session among them
@@ -407,34 +469,52 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	return parts.RolePromptPaths, nil
 }
 
-// AddressingFragment is the sentence that tells an agent where it and its peers are reached: its
-// own role topic, the tree architect's, and the project controller's, spelled from the tokens so
-// the model never hand-encodes one; then, when repo is not the zero repository, the issue's own
-// repository and default branch and the reach its role's own App gives it (RepositoriesClause) —
-// left off entirely for a daemon that runs no workflow, whose claims name no repository. It is
-// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is
-// told.
+// AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
+// on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
+// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
+// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was the
+// project's mapping view before, so a label checked out before that change does not build against
+// a rig that passes owners.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; the architect that owns your issue is `%s%s`; "+
+	return addressingFragment(project, c, architect, repo, defaultBranch, owners), nil
+}
+
+// addressingFragment is the sentence that tells an agent where it and its peers are reached: its
+// own role topic, the topic of architect, and the project controller's, spelled from the tokens so
+// the model never hand-encodes one; then, when repo is not the zero repository, the issue's own
+// repository and default branch and the reach its role's own App gives it (RepositoriesClause) —
+// left off entirely for a daemon that runs no workflow, whose claims name no repository.
+//
+// architect is the architect that owns c (specs.ownerOf): its tree's architect for a claim on the
+// tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
+// architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
+// above it, and the sentence names it that way.
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
+	owner := "the architect that owns your issue is"
+	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
+		owner = "the architect above you is"
+	}
+	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+
 		"the project's controller is `%s%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
-		notify.RoleTopicPrefix, c.Token, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
+		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
 	if c.SessionLost {
 		// The agent this launch starts is a fresh session on a claim that had one: nothing in it
 		// says an earlier session existed, so it would read an empty transcript as a fresh start
 		// and redo work that is already pushed (dispatch://INFRA-714 R8).
 		fragment += " The session this claim recorded was found in no session store, so this is a new session: " +
 			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " +
-			"Read your issue and the committed handoffs in your workspace before you continue, and tell your architect what you found."
+			"Read your issue and the committed handoffs in your workspace before you continue. " +
+			"Then tell the architect named above what you found, unless you are your tree's root architect."
 	}
 	if repo.IsZero() {
-		return fragment, nil
+		return fragment
 	}
 	return fragment + " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
-		repo.String(), defaultBranch, RepositoriesClause(owners)), nil
+		repo.String(), defaultBranch, RepositoriesClause(owners))
 }
 
 // RepositoriesClause tells an agent how far its GitHub token reaches, as a clause that ends in a

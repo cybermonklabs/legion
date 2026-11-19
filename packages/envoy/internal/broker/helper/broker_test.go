@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -101,6 +102,8 @@ type fakeBroker struct {
 	lastProof              string // the Proof header the most recent Enroll call carried
 	lastProofURL           string // the exact URL that Proof header was signed for
 
+	enrollHeldFor string
+
 	lastLoginRequest   string // the compact request object the most recent device authorization carried
 	pendingThumbprint  string // the embedded key's thumbprint from that request object
 	deviceCode         string // the device code minted for the most recent login
@@ -155,6 +158,22 @@ type fakeBroker struct {
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
+	// deviceAuthFail answers the next N device authorizations 503 without reading them: an outage
+	// of the broker's OAuth front door, whose 503 can come after the broker acted.
+	deviceAuthFail int
+	// deviceAuthHold, when set, holds every device authorization until its request's context ends
+	// (the client has given up on it), and deviceAuthEnded counts each such end, so a test can tell
+	// that the helper ended the request rather than left it running.
+	deviceAuthHold  bool
+	deviceAuthEnded int
+	// revokeGate, when set, holds every DELETE until the test closes it, after revokeAttempts has
+	// counted it, so a test can keep a revoke in flight for exactly as long as it needs.
+	revokeGate chan struct{}
+	// enrollEmpty2xx answers every enroll 200 with {} — no enrollment_id — a 2xx the helper cannot
+	// read, so the outcome is unknown. deviceAuthEmpty2xx does the same for the device
+	// authorization, answering 200 with no device_code or user_code.
+	enrollEmpty2xx     bool
+	deviceAuthEmpty2xx bool
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -183,9 +202,18 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			writeJSON(w, 401, map[string]string{"code": "LAUNCHER_INVALID", "error": "the launcher credential is not valid"})
 			return
 		}
+		if f.enrollHeldFor != "" {
+			writeJSON(w, 403, map[string]string{"code": "MEMBERSHIP_HELD",
+				"error": f.enrollHeldFor + "'s credentials are held by Dispatch; they work again when " + f.enrollHeldFor + " signs in to Dispatch, or when Dispatch can confirm " + f.enrollHeldFor + " with Google again"})
+			return
+		}
 		if f.failFirst > 0 {
 			f.failFirst--
 			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
+			return
+		}
+		if f.enrollEmpty2xx {
+			writeJSON(w, 200, map[string]string{})
 			return
 		}
 		var body map[string]any
@@ -239,6 +267,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		f.mu.Lock()
 		f.revokeAttempts++
+		gate := f.revokeGate
+		f.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+		f.mu.Lock()
 		if f.revokeForbidden[r.PathValue("id")] {
 			f.mu.Unlock()
 			writeJSON(w, 403, map[string]string{"code": "OPERATOR_MISMATCH", "error": "the enrollment belongs to another operator"})
@@ -343,7 +377,27 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	})
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.deviceAuthHold {
+			f.mu.Unlock()
+			// The server watches the connection for the client's close, which is what ends the
+			// request's context, only once the request's body is read.
+			_ = r.ParseForm()
+			<-r.Context().Done()
+			f.mu.Lock()
+			f.deviceAuthEnded++
+			f.mu.Unlock()
+			return
+		}
 		defer f.mu.Unlock()
+		if f.deviceAuthFail > 0 {
+			f.deviceAuthFail--
+			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
+			return
+		}
+		if f.deviceAuthEmpty2xx {
+			writeJSON(w, 200, map[string]any{})
+			return
+		}
 		_ = r.ParseForm()
 		f.lastLoginRequest = r.PostForm.Get("request")
 		ro, err := record.VerifyRequestObject(f.lastLoginRequest, f.srv.URL, time.Minute, time.Now())
@@ -566,7 +620,7 @@ func machineFilePath(t *testing.T) string {
 // without exercising Login itself.
 func loggedInBroker(t *testing.T, f *fakeBroker, operator string) *Broker {
 	t.Helper()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, operator), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -587,7 +641,7 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {
 	f := newFakeBroker(t) // records the login request object; issues on the first poll
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	code, err := b.Login(context.Background(), "example-host-devbox")
 	if err != nil || !regexp.MustCompile(`^[A-Z2-9]{4}-[A-Z2-9]{4}$`).MatchString(code) {
@@ -621,7 +675,7 @@ func TestNoCredentialAndExpiredCredentialBothNameTheLoginCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 
@@ -687,14 +741,14 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 	fresh := b.cred.Load()
 
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(old, rejected); err != rejected {
+	if err := b.clearOnInvalid(context.Background(), old, rejected); err != rejected {
 		t.Fatalf("a rejection of a replaced credential reached its caller as %v; want the broker's refusal as it came", err)
 	}
 	if b.cred.Load() != fresh || b.LoginStatus().State != "issued" {
 		t.Fatalf("a late rejection of the replaced credential changed the new login: cred replaced %v, state %q", b.cred.Load() != fresh, b.LoginStatus().State)
 	}
 
-	if err := b.clearOnInvalid(fresh, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), fresh, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if b.cred.Load() != nil || b.LoginStatus().State == "issued" {
@@ -729,7 +783,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 		}
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if got := <-read; got.State != "expired" || !got.Refused || got.CredentialHeld {
@@ -753,7 +807,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 		t.Fatal(err)
 	}
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
-	if err := b.clearOnInvalid(held, rejected); !errors.Is(err, errNoCredential) {
+	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
 	if got := b.LoginStatus(); got.State != "pending" || !got.Refused || got.CredentialHeld {
@@ -776,7 +830,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 // fresh rather than reusing the denied/expired attempt's key.
 func TestDeniedAndExpiredLoginsSurfaceTheirState(t *testing.T) {
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 
 	f.mu.Lock()
@@ -864,10 +918,47 @@ func TestRenewSignsWithTheSessionKeyAndRevokeIsIdempotent(t *testing.T) {
 }
 
 func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
-	b := &Broker{URL: "http://127.0.0.1:1", OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
+	b := &Broker{URL: brokeraddr.New("http://127.0.0.1:1"), OperatorFile: filepath.Join(t.TempDir(), "none"), HTTP: http.DefaultClient}
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)
 	_, _, err := b.EnrollIdentity(context.Background(), sess.identity())
 	if err == nil || !strings.Contains(err.Error(), "agent-secrets machine login") {
 		t.Fatalf("expected the remedy in the error, got %v", err)
+	}
+}
+
+// TestABrokerErrorNamesOnlyTheFieldsItHas pins BrokerError.Error's four shapes: the status alone,
+// the status with a code, the status with a message, and the filled form. The filled form is what
+// the broker's own refusals carry, and nocredential_test.go matches its "broker 401
+// LAUNCHER_INVALID" prefix; each shape with an empty part drops that part, so a front door's 502
+// with no JSON body does not read "broker 502 : ".
+func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
+	for _, tc := range []struct {
+		err  BrokerError
+		want string
+	}{
+		{BrokerError{Status: 502}, "broker 502"},
+		{BrokerError{Status: 502, Code: "DATABASE"}, "broker 502 DATABASE"},
+		{BrokerError{Status: 502, Message: "postgres unreachable"}, "broker 502: postgres unreachable"},
+		{BrokerError{Status: 403, Code: "SESSION_HELD", Message: "the session s belongs to another principal"},
+			"broker 403 SESSION_HELD: the session s belongs to another principal"},
+	} {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("BrokerError%+v: %q; want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
+// TestASaveAfterTheBrokerClosesWritesNothing: once Close returns, no save of the machine login
+// writes into its directory, so the caller that closed the broker can remove that directory
+// while a refresh or an approved login is still finishing.
+func TestASaveAfterTheBrokerClosesWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	b := &Broker{MachineFile: filepath.Join(dir, "machine.json")}
+	b.Close()
+	if err := b.saveFile(testMachineFile(t, "cred-1", "refresh-1")); err != nil {
+		t.Fatalf("a save after Close: %v; want nil, since it writes nothing", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("a save after Close wrote into the directory: %v %v", entries, err)
 	}
 }

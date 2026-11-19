@@ -41,7 +41,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -93,6 +96,12 @@ type bootConfig struct {
 	// as. Empty means the CI reconcile pass records no verdict check at all.
 	ReviewerAppID  string
 	IdentityHeader string
+	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
+	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
+	// name; empty under any other identity. IAPKeySetURL is where IAP's signing keys are read,
+	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
+	IAPAudience  string
+	IAPKeySetURL string
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -143,6 +152,10 @@ type bootConfig struct {
 	// five minutes; only DISPATCH_TEST_CI_RECONCILE_INTERVAL, under the test hooks, sets it, since
 	// no process-level test can wait five minutes for a pass.
 	CIReconcileInterval time.Duration
+	// RedeliveryInterval is how often the webhook redelivery sweep runs, zero for
+	// redeliver.Interval's two minutes; only DISPATCH_TEST_REDELIVERY_INTERVAL, under the test
+	// hooks, sets it, since no process-level test can wait two minutes for a sweep.
+	RedeliveryInterval time.Duration
 	// DeliveryReconcileInterval is how often the delivery reconcile pass runs, zero for
 	// delivery.ReconcileInterval's five minutes; only DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
 	// under the test hooks, sets it, since no end-to-end test can wait five minutes for a pass.
@@ -171,6 +184,10 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
+	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
+	// the test hooks, sets it.
+	ArchitectureImportAtStart bool
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -336,6 +353,23 @@ func main() {
 		agentStream = agentstream.NewNATS(streamConn)
 	}
 
+	// A person's targeted message to a session that neither the listener's registry nor its
+	// known-session store holds is queued on that session's own subject, published through the
+	// NATS client. With test hooks and no NATS it goes to an in-process recorder the e2e harness
+	// reads (GET /api/v1/messages/_test/queued) instead, and with neither such a message settles
+	// failed. Only a value that is there is put in the interface: a nil *bus.Client in it would
+	// read as a publisher.
+	var agentPublisher api.AgentPublisher
+	switch {
+	case natsClient != nil:
+		agentPublisher = natsClient
+	case boot.TestHooksEnabled:
+		agentPublisher = api.NewAgentPublishRecorder()
+		slog.Info("dispatch: targeted messages for a session no store holds go to the test hook's recorder")
+	default:
+		slog.Info("dispatch: a targeted message to a session no store holds fails: queueing it needs NATS")
+	}
+
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
@@ -431,6 +465,9 @@ func main() {
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
+	if boot.IAPAudience != "" {
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+	}
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
@@ -504,6 +541,7 @@ func main() {
 		Events:         broker,
 		App:            appCfg,
 		AgentStream:    agentStream,
+		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
 	}
@@ -557,8 +595,9 @@ func main() {
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain) and the
-	//     task progress reconciliation (retrying, briefly, rows another writer held).
+	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
+	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
+	//     rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -596,8 +635,9 @@ func main() {
 	// Deliberately NOT leased, in three classes:
 	//   - already claims its own work, so two processes never do one unit of it twice: the
 	//     embedding queue (embedqueue, `for update skip locked`), the task progress
-	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (NATS's
-	//     push-durable exclusivity, which delivery.StartIntakes takes).
+	//     reconciliation (`for no key update ... skip locked`) and the delivery intakes (each
+	//     delivers from its durable only while it holds that durable's duty.Hold, which
+	//     delivery.StartIntakes takes).
 	//   - per-process by design, because each serves this process's own connections or memory:
 	//     the delivery live hub and its listener (migration 0107_events_notify.up.sql states that
 	//     purpose), the event stream relay, the document rooms' timers, the document compaction
@@ -605,16 +645,84 @@ func main() {
 	//     loads noted, and the hourly compaction sweep below is the leased pass over the
 	//     documents doc_compaction_owed names, those with rows to fold), the process's shared
 	//     listener hub (its connection is this process's membership and every loop above waits on
-	//     a wake of this process's own, so it has to run in every process) and the room sync
+	//     a wake of this process's own, so it has to run in every process), the room sync
 	//     registered on it (it serves the rooms resident in this process: it catches them up with
-	//     the other processes' writes and answers their room queries).
+	//     the other processes' writes and answers their room queries) and the document sockets'
+	//     schema re-check (it closes this process's own sockets).
 	//   - a boot one-shot already serialised by an advisory lock or idempotent: the migrations,
 	//     retirePlainRefreshTokens, restoreDecidedWordings, repairIssueAsks and SeedRepoProjects
 	//     above, and the embedding coverage pass (two processes' passes at once leave what one
 	//     leaves).
-	leases, err := database.Pool.Leases()
+	leaseCallers, err := database.Pool.Leases()
 	if err != nil {
 		slog.Error("dispatch: open the lease pool for the maintenance loops", "error", err)
+		os.Exit(1)
+	}
+	// reserve takes the lease pool's connection for one caller, by a name that says which caller
+	// it is, and ends the process if that name has reserved one already. Every caller reserves
+	// just below, before any loop starts and whether or not this configuration runs its loop, so
+	// every configuration reserves the same callers; leaseCallers.Complete then checks them
+	// against the pool's size while nothing of this process is yet at work.
+	//
+	// The check sees only callers that reserve. For hands every name the same pool, so a
+	// goroutine added inside a caller that has reserved already, or one reservation variable
+	// passed to a second consumer, takes a connection nothing counted, and the count still
+	// matches. Each caller that can hold a connection while another does needs a reserve of its
+	// own here.
+	reserve := func(name string) duty.Leases {
+		leases, err := leaseCallers.For(name)
+		if err != nil {
+			slog.Error("dispatch: reserve a connection of the lease pool", "caller", name, "error", err)
+			os.Exit(1)
+		}
+		return leases
+	}
+
+	// Every caller's connection, taken here, before the first loop below starts. Each
+	// reservation goes to the one consumer named after it.
+	settlementResumptionLeases := reserve("settlement resumption")
+	searchTermStatsLeases := reserve("search term statistics")
+	referenceExcerptLeases := reserve("reference excerpts")
+	documentCompactionLeases := reserve("document compaction")
+	editNoticesLeases := reserve("edit notices")
+	blockIndexLeases := reserve("block index")
+	issueAskRepairLeases := reserve("issue ask repair")
+	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
+	// configuration runs them, as every caller's here is: the count the pool is sized for is the
+	// same in every configuration.
+	redeliverLeases := reserve("webhook redelivery")
+	ciReconcileLeases := reserve("CI reconcile")
+	architectureImportLeases := reserve("architecture import")
+	deliveryReconcileLeases := reserve("delivery reconcile")
+	maintenanceSweepLeases := reserve("maintenance sweep")
+	// The registry's prune (processes.RunPrune), which the registration below starts: reserved
+	// here so that this process's count is the same whether or not the registry admits it.
+	registryPruneLeases := reserve("process registry prune")
+	// The embeddings project_key fill (api.RunEmbeddingProjectKeyFill): it is leased like any
+	// loop, and it holds its connection for the one pass of one to two hours it makes, so it
+	// reserves a caller of its own here as the loops do.
+	embeddingProjectKeyFillLeases := reserve("embeddings project key fill")
+	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
+	// that this process's count is the same whether or not it has work to do.
+	textTreeFillLeases := reserve("text tree fill")
+	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
+	// this process's count is the same whether or not any project names a daemon.
+	legionSamplerLeases := reserve("Legion sampler")
+	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
+	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
+	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
+	if err != nil {
+		slog.Error("dispatch delivery: reserve the lease pool for the intakes", "error", err)
+		os.Exit(1)
+	}
+	// Every caller of the lease pool has reserved its connection now, so the count is this
+	// process's real one: a caller short of a connection would wait for one for as long as the
+	// longest pass - minutes, for the compaction - with an intake's hold reported lost
+	// meanwhile, and a connection short of a caller is one the process opens and nothing uses.
+	// Either is a wiring mistake, so the process refuses to serve rather than run short. Nothing
+	// has started yet - no loop, no intake, no listener - so this exit has nothing to stop.
+	if err := leaseCallers.Complete(); err != nil {
+		slog.Error("dispatch: the lease pool's callers are not its connections", "error", err)
 		os.Exit(1)
 	}
 
@@ -676,7 +784,10 @@ func main() {
 	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
 	// comment has the AIMD mechanism and the headroom this leaves). A nil embedder (meaning
 	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on.
+	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
+	// below; it embeds and drops only while its embedder's identity is the active one, which every
+	// process decides from the live registry rows (embedqueue, active.go), so a process configured
+	// with another embedder than the fleet's leaves the vectors as they are.
 	var backgroundEmbedder embed.Embedder
 	if embedder != nil {
 		backgroundEmbedder = embed.NewRateLimitedEmbedder(embedder)
@@ -689,15 +800,16 @@ func main() {
 	// still hold listener connections of their own (store.Pool.Listener).
 	//
 	// A wake is registered only for a loop that will read it: with no embedder embedqueue.Run
-	// returns at once, and without NATS or the GitHub App no intake starts to route by the
-	// settings, so neither channel is LISTENed on.
+	// returns at once, without NATS or the GitHub App no intake starts to route by the settings,
+	// and without the GitHub App this process keeps no copy of the GitHub reads' record (below),
+	// so none of those channels is LISTENed on.
 	listenerHub := &pglisten.Hub{
 		Owner: "dispatch",
 		Dial: func(ctx context.Context) (*pgx.Conn, error) {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake <-chan struct{}
+	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
 	if backgroundEmbedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
@@ -706,6 +818,9 @@ func main() {
 	eventsWake := listenerHub.Wake(api.EventsChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
+	}
+	if appCfg != nil {
+		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
@@ -732,10 +847,10 @@ func main() {
 	// (api.RunEmbeddingProjectKeyFill, which says why the retry is written there and not taken
 	// from duty's loops). It is the one leased caller here that stops of its own accord, so its
 	// goroutine and its connection of the lease pool go back for good once the rows are labelled.
-	go api.RunEmbeddingProjectKeyFill(ctx, database, leases)
+	go api.RunEmbeddingProjectKeyFill(ctx, database, embeddingProjectKeyFillLeases)
 	// A settlement a shutdown cut short, here or in the task this one replaces, runs without
 	// anyone opening its document. One process per period arms them (docs.RunSettlementResumption).
-	go documentService.RunSettlementResumption(ctx, leases)
+	go documentService.RunSettlementResumption(ctx, settlementResumptionLeases)
 	// The document rooms' room sync, registered on the hub above and run beside it: a document
 	// written by another process is announced over Postgres, and the room this process holds for
 	// it catches up from the stored updates within that round trip, so its browsers see the write
@@ -746,9 +861,15 @@ func main() {
 	runRoomSync := documentService.RegisterRoomSync(listenerHub)
 	go runRoomSync(ctx)
 	go listenerHub.Run(ctx)
+	// Every live window each document socket this process serves that is writable is
+	// checked again against the live server processes' schema numbers (registered below), and one
+	// the fleet no longer admits closes with contracts.DocumentAdmissionRevokedCloseCode, once the
+	// message in flight on it is out, on which the provider reconnects and is admitted again
+	// (docs.Service.authorize).
+	go documentService.RunSchemaAdmission(ctx)
 	// The related-item check's keyword statistics (each project's df and N), rebuilt at
 	// boot and every ten minutes.
-	go api.RunSearchTermStatsRefresh(ctx, database.Pool, api.SearchTermStatsInterval, leases)
+	go api.RunSearchTermStatsRefresh(ctx, database.Pool, api.SearchTermStatsInterval, searchTermStatsLeases)
 	// Issues whose spec's task count is not their latest version's - every row the migration that
 	// added the count columns found, and any the task this one replaces versions while both run -
 	// are counted again once at start, so their progress shows without anyone editing them
@@ -758,39 +879,61 @@ func main() {
 	// The references route serves each document mention's stored excerpt; this fills the ones no
 	// version write stored: every mention indexed before migration 0092, and each rebuild-refs
 	// inserts (LEGION-531), woken by the refs trigger that announces each mention left owed.
-	go documentService.RunReferenceExcerptReconciliation(ctx, leases, excerptsWake)
+	go documentService.RunReferenceExcerptReconciliation(ctx, referenceExcerptLeases, excerptsWake)
 	// Documents the compaction queues let go - every room a restart, a Shutdown or a Quiesce
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
 	// (INFRA-593).
-	go documentService.RunCompactionSweep(ctx, leases)
+	go documentService.RunCompactionSweep(ctx, documentCompactionLeases)
 	// Every stored text written before INFRA-635 stored display trees, and every stored text at
 	// all after a deploy raises pmdoc.DisplayTreeVersion, gets its tree without waiting for a
 	// reader to open it; the same pass drops the trees of every version before the two newest,
 	// which is what lets a rolling deploy and a rollback read each other's rows.
-	go texttreefill.Run(ctx, database.Pool, leases)
+	go texttreefill.Run(ctx, database.Pool, textTreeFillLeases)
 	// Each document's edit notice goes once its quiet window after a person's last
 	// settled version ends, as one artifact.human_edited event; the window is a row, so a notice
 	// still pending when this process stops is sent by the next sweep of either process. The sweep
 	// is woken by the trigger that announces each notice given a due time, and waits for the
 	// earliest one.
-	go documentService.RunEditNotices(ctx, leases, editNoticesWake)
+	go documentService.RunEditNotices(ctx, editNoticesLeases, editNoticesWake)
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
-	go documentService.RunBlockIndexReconciliation(ctx, leases)
+	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
-	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, leases)
+	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
+
+	// Each of the four loops below that reads GitHub under a lease records its newest attempt in
+	// the record of GitHub reads (githubreads, store.GitHubReadAttempts) when its pass ends, and
+	// this process keeps a copy of the record, loaded at start and again at every write any
+	// process makes (the wake above), which GET /healthz answers from (gitHubReads), so the probe
+	// sends the database nothing. Without the GitHub App no loop reads GitHub, and there is
+	// nothing to record or keep.
+	var (
+		recordGitHubRead githubreads.Recorder
+		gitHubReadCopy   *githubreads.Copy
+	)
+	if appCfg != nil {
+		attempts := store.NewGitHubReadAttempts(database.Pool)
+		recordGitHubRead = attempts.Record
+		gitHubReadCopy = &githubreads.Copy{}
+		go gitHubReadCopy.Run(ctx, attempts.All, gitHubReadsWake, slog.Default())
+	}
 
 	sweeper, err := webhookSweeper(natsClient, database, appCfg, boot.GitHubAPIBase, boot.NATSReplicas)
 	if err != nil {
 		slog.Error("dispatch: open webhook redelivery", "error", err)
 		os.Exit(1)
 	}
+	redeliveryInterval := redeliver.Interval
+	if boot.RedeliveryInterval > 0 {
+		redeliveryInterval = boot.RedeliveryInterval
+	}
 	if sweeper != nil {
-		slog.Info("dispatch: redelivering the GitHub App webhook's failed deliveries", "client_id", appCfg.ClientID, "interval", redeliver.Interval)
-		go sweeper.Run(ctx, redeliver.Interval, leases)
+		sweeper.GitHubReads = recordGitHubRead
+		slog.Info("dispatch: redelivering the GitHub App webhook's failed deliveries", "client_id", appCfg.ClientID, "interval", redeliveryInterval)
+		go sweeper.Run(ctx, redeliveryInterval, redeliverLeases)
 	} else {
 		slog.Info("dispatch: webhook redelivery off: it needs NATS and the GitHub App private key")
 	}
@@ -820,42 +963,59 @@ func main() {
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
 		}
+		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, leases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
 
-	go architecture.Run(ctx, appCtx.Architecture(), leases)
+	appCtx.Architecture().GitHubReads = recordGitHubRead
+	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases, boot.ArchitectureImportAtStart)
+
+	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
+	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
+	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
+	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for.
+	go legion.RunSampler(ctx, database.Pool, legionSamplerLeases)
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker)
+	reconcile := delivery.NewReconcile(database.Pool, appCtx.GitHub(), broker).RecordGitHubReads(recordGitHubRead)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
 	if boot.DeliveryReconcileInterval > 0 {
 		reconcile.TickEvery(boot.DeliveryReconcileInterval)
 	}
-	go reconcile.Run(ctx, leases)
-	// waitIntakes waits for the intakes' stop, which shutdown runs before it closes the database
-	// pool; with no NATS client there is nothing to wait for.
+	go reconcile.Run(ctx, deliveryReconcileLeases)
+	// waitIntakes waits for both intakes to stop once ctx is cancelled; StartIntakes returns it as
+	// a sync.OnceFunc, so a second call returns once the first has. The shutdown runs it before it
+	// closes the database pool: an intake releases its duty.Hold through that pool as it stops,
+	// and a hold left in place for its TTL names the stopped process's deliver subject, which a
+	// process of the build before holds, binding by lookup, goes on delivering at, so the next
+	// holder would read that binding as a dead holder's and take it over. Every exit after the
+	// intakes start runs it too (exitAfterIntakes, stopIntakesOnExit, and the stop during the
+	// registry's admission wait), since each intake can hold its durable before this process
+	// serves anything. With no NATS client there is nothing to wait for.
 	waitIntakes := func() {}
 	if natsClient != nil {
 		// The intake and the job intake (LEGION-690) each bind a durable, so each takes a client of
-		// its own (delivery.StartIntakes). Their Runs return once ctx is cancelled; the intake's
-		// begins stopping then, at the signal, beside the HTTP drain and the document shutdown, and
+		// its own (delivery.StartIntakes). Their Runs return once ctx is cancelled; each begins
+		// stopping then, at the signal, beside the HTTP drain and the document shutdown, and
 		// returns once a message still in its handler has been acknowledged, or given up at its
-		// stop budget from the signal and handed back, so the clients close after it. Each connects
-		// in the background as the publisher does, and its bind poll binds the durable once it has.
+		// stop budget from the signal and handed back, with the messages behind it handed back too
+		// and the intake's hold released, so another process takes its durable over at once and
+		// the clients close after it. Each connects in the background as the publisher does, and
+		// its poll takes the durable's hold once it has.
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, appCtx.GitHub(), broker, settingsWake)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -881,6 +1041,14 @@ func main() {
 	announcer := startup.New(startup.Deps{Pool: database.Pool, Publisher: announcements})
 
 	routesHandler, background := routes.New(appCtx)
+	// exitAfterIntakes ends a process that started its intakes and will not serve: it stops them,
+	// releasing their holds, and exits 1. The deferred stop (stopIntakesOnExit) does not run on an
+	// os.Exit, so every exit here goes through this.
+	exitAfterIntakes := func() {
+		cancel()
+		waitIntakes()
+		os.Exit(1)
+	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
 	// since its last pass, woken by every event commit whichever process made it. It reads the log
 	// only up to the safe horizon of the API server's one events.Horizon, as the live event feed
@@ -896,8 +1064,20 @@ func main() {
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, leases, background.ResumeDeliveries)
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
+	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
+	// loop this process did not start, for want of NATS or of the App's private key, is a read it
+	// does not run.
+	var reads *gitHubReads
+	if appCfg != nil {
+		reads = &gitHubReads{recordCopy: gitHubReadCopy, runs: map[githubreads.Read]bool{
+			githubreads.WebhookRedelivery:  sweeper != nil,
+			githubreads.ArchitectureImport: appCtx.Architecture().HasApp(),
+			githubreads.DeliveryReconcile:  reconcile.HasApp(),
+			githubreads.CIReconcile:        reconciler != nil,
+		}}
+	}
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -910,23 +1090,38 @@ func main() {
 	}
 	if err != nil {
 		slog.Error("dispatch: listen", "addr", boot.ListenAddr, "error", err)
-		os.Exit(1)
+		exitAfterIntakes()
+	}
+	// The registry row carries the document schema numbers this build reads and creates,
+	// which every process's document socket admission reads; the identity of its embedder, "" with
+	// none, the same string the embedding queue compares stored vectors with, from which every
+	// process's queue takes the one identity that embeds and drops (embedqueue, active.go); and
+	// whether it stores files in a bucket, which keeps an upload's bytes in its row as well while
+	// any live process has none, and refuses backfill-files meanwhile.
+	embedderIdentity := ""
+	if embedder != nil {
+		embedderIdentity = embedder.Identity()
 	}
 	registration, err := joinRegistry(ctx, database, processes.Instance{
-		Commit:         buildCommit,
-		DashboardBuild: dashboardBuild.Build,
-		SigningKeys:    signingKey.Fingerprints(),
-	}, leases, announcer)
+		Commit:           buildCommit,
+		DashboardBuild:   dashboardBuild.Build,
+		SigningKeys:      signingKey.Fingerprints(),
+		SchemaVersion:    pmdoc.SchemaVersion(),
+		SchemaCreatable:  pmdoc.SchemaCreatable(),
+		EmbedderIdentity: embedderIdentity,
+		FileStore:        fileStore != nil,
+	}, registryPruneLeases, announcer)
 	if err != nil {
 		// A deploy that stops this process while the registration waits for a refusing peer's
 		// heartbeat to lapse (processes.Register's wait, up to a live window and a heartbeat) stops
 		// a process that has served nothing: a clean stop, not a failed start.
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
+			waitIntakes()
 			slog.Info("dispatch: stopped while waiting for admission to the registry of live server processes")
 			return
 		}
 		slog.Error("dispatch: register this server process", "error", err)
-		os.Exit(1)
+		exitAfterIntakes()
 	}
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
@@ -1143,6 +1338,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_HORIZON_WARN_EVERY", &boot.HorizonWarnEvery},
 		{"DISPATCH_TEST_EDIT_NOTICE_QUIET", &boot.EditNoticeQuiet},
 		{"DISPATCH_TEST_CI_RECONCILE_INTERVAL", &boot.CIReconcileInterval},
+		{"DISPATCH_TEST_REDELIVERY_INTERVAL", &boot.RedeliveryInterval},
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
@@ -1161,6 +1357,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1185,11 +1382,20 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, errors.New("DISPATCH_DEV_SIGNIN_SHARED_KEY is read only with DISPATCH_DEV_SIGNIN=1, by the processes of one local harness; unset it, and set DISPATCH_SIGNING_KEY to give a deployment's processes one key")
 	}
 
+	iapAudience := strings.TrimSpace(env.get("DISPATCH_IAP_AUDIENCE"))
 	switch mode := identityMode; {
 	case mode == "" || mode == "cookie":
 		// Cookie identity takes no sign-in setting: with none set, and no DISPATCH_DEV_SIGNIN,
 		// Dispatch asks nobody to sign in, refuses every cookie an earlier sign-in minted (requestIdentityFor), and serves
 		// its agent-token API alone.
+	case mode == "iap":
+		if iapAudience == "" {
+			return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE required: DISPATCH_IDENTITY=iap admits a request only on an assertion Identity-Aware Proxy signed for that audience, /projects/<project number>/global/backendServices/<backend service id> behind a load balancer")
+		}
+		if !iapAudienceShape.MatchString(iapAudience) {
+			return bootConfig{}, fmt.Errorf("DISPATCH_IAP_AUDIENCE=%q must be the audience IAP signs its assertions for, which begins /projects/<project number>/, such as /projects/<project number>/global/backendServices/<backend service id>", iapAudience)
+		}
+		boot.IAPAudience, boot.IAPKeySetURL = iapAudience, oidc.IAPKeySetURL
 	case strings.HasPrefix(mode, "header:"):
 		boot.IdentityHeader = strings.TrimSpace(strings.TrimPrefix(mode, "header:"))
 		if boot.IdentityHeader == "" {
@@ -1199,7 +1405,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, errors.New("DISPATCH_IDENTITY_HEADER_TRUSTED=1 required: header identity is only for tests and local harnesses")
 		}
 	default:
-		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie or header:<Header-Name>)", mode)
+		return bootConfig{}, fmt.Errorf("DISPATCH_IDENTITY=%q (expected cookie, iap or header:<Header-Name>)", mode)
+	}
+	if iapAudience != "" && boot.IAPAudience == "" {
+		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
 	}
 	envoyURL := strings.TrimSpace(env.get("ENVOY_URL"))
 	if envoyURL == "" {
@@ -1263,7 +1472,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 // or one derived from DISPATCH_DEV_SIGNIN_SHARED_KEY under a dev-only label (sessionSigningKey),
 // which the other processes of its harness derive too and a production server never signs with.
 func devSignInFence(boot bootConfig, env settingValues) error {
-	if boot.IdentityHeader != "" {
+	if boot.IdentityHeader != "" || boot.IAPAudience != "" {
 		return errors.New("DISPATCH_DEV_SIGNIN=1 mints session cookies, so DISPATCH_IDENTITY must be cookie")
 	}
 	if boot.SignInIssuer != "" {
@@ -1676,9 +1885,9 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -1691,6 +1900,94 @@ func dispatchHandler(handler http.Handler, registry *metrics.Registry, database 
 type issuers struct {
 	signIn        *oidc.CodeFlow
 	serviceTokens *oidc.LazyVerifier
+}
+
+// gitHubReads is what /healthz names the GitHub reads from (githubreads): which of the four this
+// process runs, and its copy of the record of each read's newest attempt. main builds it only
+// where a GitHub App is configured, and nil names none (`github: null`).
+type gitHubReads struct {
+	// runs holds true for each read whose loop this process runs.
+	runs map[githubreads.Read]bool
+	// recordCopy is the copy githubreads.Copy.Run keeps, which a write by any process refreshes.
+	recordCopy *githubreads.Copy
+}
+
+// gitHubReadState is the state /healthz names for one GitHub read.
+type gitHubReadState string
+
+const (
+	// gitHubReadSucceeded: the newest recorded attempt sent requests to GitHub and noted no
+	// failure.
+	gitHubReadSucceeded gitHubReadState = "succeeded"
+	// gitHubReadFailed: the newest recorded attempt noted a failure.
+	gitHubReadFailed gitHubReadState = "failed"
+	// gitHubReadNoAttempt: the record holds no attempt of the read yet.
+	gitHubReadNoAttempt gitHubReadState = "no_attempt"
+	// gitHubReadUnknown: this process has not read the record yet.
+	gitHubReadUnknown gitHubReadState = "unknown"
+	// gitHubReadOff: this process does not run the read.
+	gitHubReadOff gitHubReadState = "off"
+)
+
+// gitHubReadEntry is one read's entry in /healthz's github member. gitHubReadEntryOf alone makes
+// one: it sets At only where the state is an attempt the record holds, and Cause only where that
+// attempt failed, so no entry says failed without its cause, or names a time or a cause its state
+// does not carry.
+type gitHubReadEntry struct {
+	State gitHubReadState `json:"state"`
+	// At is when the newest attempt was recorded, by the database's clock, in UTC.
+	At *time.Time `json:"at"`
+	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	Cause *string `json:"cause"`
+}
+
+// gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
+// before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
+// otherwise the row's own outcome, with its time, and with its cause when it failed.
+func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
+	if !runs {
+		return gitHubReadEntry{State: gitHubReadOff}
+	}
+	if !loaded {
+		return gitHubReadEntry{State: gitHubReadUnknown}
+	}
+	row, recorded := rows[read]
+	if !recorded {
+		return gitHubReadEntry{State: gitHubReadNoAttempt}
+	}
+	at := row.At.UTC()
+	if row.Succeeded {
+		return gitHubReadEntry{State: gitHubReadSucceeded, At: &at}
+	}
+	cause := row.Cause
+	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &cause}
+}
+
+// gitHubReadsMember is /healthz's github member: one entry for each read, in the order
+// githubreads.Reads names them. It is a struct and not a map so that the keys keep that order.
+type gitHubReadsMember struct {
+	WebhookRedelivery  gitHubReadEntry `json:"webhook_redelivery"`
+	ArchitectureImport gitHubReadEntry `json:"architecture_import"`
+	DeliveryReconcile  gitHubReadEntry `json:"delivery_reconcile"`
+	CIReconcile        gitHubReadEntry `json:"ci_reconcile"`
+}
+
+// member is the github member of one answer, nil where no App is configured. It reads the copy
+// once, so the four entries come from one load, and reads nothing else.
+func (g *gitHubReads) member() *gitHubReadsMember {
+	if g == nil {
+		return nil
+	}
+	rows, loaded := g.recordCopy.Rows()
+	entry := func(read githubreads.Read) gitHubReadEntry {
+		return gitHubReadEntryOf(read, g.runs[read], loaded, rows)
+	}
+	return &gitHubReadsMember{
+		WebhookRedelivery:  entry(githubreads.WebhookRedelivery),
+		ArchitectureImport: entry(githubreads.ArchitectureImport),
+		DeliveryReconcile:  entry(githubreads.DeliveryReconcile),
+		CIReconcile:        entry(githubreads.CIReconcile),
+	}
 }
 
 // serviceTokenVerifier is the verifier of the projected service-account tokens boot's
@@ -1712,6 +2009,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
 // the maintenance pass sweeps.
 //
+// It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
+// the broker mints from a read entry. Dispatch is the one service that asks for it, because its
+// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+//
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
@@ -1728,6 +2030,9 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
+		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
+		// token reaches the routes that list names and no other.
+		ServesReadOnly: true,
 	})
 }
 
@@ -1762,6 +2067,23 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // probe would take that service away for an outage it serves through. A deploy check that needs
 // sign-in asserts `signin: true` itself.
 //
+// Where a GitHub App is configured, `github` names each GitHub read Dispatch makes under a lease
+// (githubreads), `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and
+// `ci_reconcile` in that order, each with its newest attempt's `state`, `at` and `cause`; with no
+// App it is null. The state is `succeeded` when that attempt sent GitHub requests and noted no
+// failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
+// this process has read the record, and `off` where this process does not run the read (no App
+// private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
+// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// It never decides `ok` or the status: a process serves everything but GitHub's own reads while
+// GitHub fails, so failing the probe would take every server process out of service for an outage
+// each of them serves through. It is read from this process's copy of the record
+// (githubreads.Copy), which a write by any process refreshes, so it adds no statement to the
+// database and waits on nothing. The delivery intakes read GitHub too, for each webhook event, and
+// report through `delivery_reconcile`: the delivery reconcile reads the same pull requests and
+// runs with the same App every interval, so a failure of those reads shows there within one pass.
+//
 // Beside those it reports what is deployed: `commit`, the legion commit this process's binary
 // was built from (null when the build did not stamp one), `fleet_commit`, the commit of the latest
 // announcement that every live server process serves one build (startup.Announcer.FleetCommit:
@@ -1781,7 +2103,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // api/request_keys.go): the agents' client reads it before it retries a write under its key, since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -1840,20 +2162,21 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
-			OK              bool    `json:"ok"`
-			DB              bool    `json:"db"`
-			NATS            *bool   `json:"nats"`
-			Files           *bool   `json:"files"`
-			SignIn          *bool   `json:"signin"`
-			ServiceTokens   *bool   `json:"service_tokens"`
-			Commit          *string `json:"commit"`
-			FleetCommit     *string `json:"fleet_commit"`
-			SchemaVersion   *int    `json:"schema_version"`
-			OutboxPublisher bool    `json:"outbox_publisher"`
-			IdempotencyKeys bool    `json:"idempotency_keys"`
+			OK              bool               `json:"ok"`
+			DB              bool               `json:"db"`
+			NATS            *bool              `json:"nats"`
+			Files           *bool              `json:"files"`
+			SignIn          *bool              `json:"signin"`
+			ServiceTokens   *bool              `json:"service_tokens"`
+			GitHub          *gitHubReadsMember `json:"github"`
+			Commit          *string            `json:"commit"`
+			FleetCommit     *string            `json:"fleet_commit"`
+			SchemaVersion   *int               `json:"schema_version"`
+			OutboxPublisher bool               `json:"outbox_publisher"`
+			IdempotencyKeys bool               `json:"idempotency_keys"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
-			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
+			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
 		})
 	}

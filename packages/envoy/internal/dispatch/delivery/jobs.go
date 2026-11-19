@@ -12,7 +12,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -29,22 +28,16 @@ import (
 // GitHub subject, so it is handed job messages too, and acks them by their subject with no decode
 // (intakeKey).
 type JobIntake struct {
-	nats   *bus.Client
 	pool   *store.Pool
 	github *githubapp.Client
 	clock  jobClock
 	// settings is the delivery settings a job event is checked against, shared with the intake
 	// (StartIntakes): a message reads them from memory, not from delivery_settings.
 	settings *SettingsCache
-	// leases is the pool bind takes this durable's consumer lease on (consumerLease), so that one
-	// process at a time reconciles this durable's configuration and subscribes to it
-	// (bindDurableConsumer). It is the delivery intake's lease pool, but not its lease: a lease
-	// name per durable, so that a reconciliation stuck on the other intake's durable does not keep
-	// this one from creating its own.
-	leases duty.Leases
-	// throttle is this intake's own bind-poll state: how recently it reconciled its durable and
-	// how recently it said it was standing by for it (bindThrottle).
-	throttle *bindThrottle
+	// heldDurable is this intake's delivery from bus.DispatchJobDurable under the durable's own
+	// hold and consumer lease, one name each per durable, so that a take-over stuck on the other
+	// intake's durable does not keep this one from delivering.
+	heldDurable
 
 	// ctx is Run's context: every read a timer starts runs under it, so a stopped process stops them.
 	ctx context.Context
@@ -80,10 +73,8 @@ const (
 	jobQuiet         = 2 * time.Second
 	jobMaxWait       = 10 * time.Second
 	jobMaxAckPending = 64
-	// jobAckWait bounds a message the handler never reached, one whose acknowledgement on receipt
-	// the link refused, and one the callback was handed after the stop whose hand-back the link
-	// refused (deliver, which Naks such a message rather than leaving it unanswered); every other
-	// message is acked on receipt, before its checks.
+	// jobAckWait only bounds a message the handler never reached: every message is acked on
+	// receipt, before its checks.
 	jobAckWait = 30 * time.Second
 	// jobCheckTimeout bounds one message's indexed read (RunTracked).
 	jobCheckTimeout = 10 * time.Second
@@ -106,88 +97,41 @@ func (realJobClock) Now() time.Time { return time.Now() }
 func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(time.Until(at), f) }
 
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
-// scheduling its reads by clock and checking each job event against settings.
-func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
-	return &JobIntake{
-		nats: natsClient, pool: pool, github: github, clock: clock, settings: settings, leases: leases,
-		throttle: &bindThrottle{},
-		ctx:      context.Background(), pending: map[runKey]*pendingRun{},
+// scheduling its reads by clock, checking each job event against settings, and holding its
+// durable and taking it over under a hold and a lease it takes on leases.
+func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
+	j := &JobIntake{
+		pool: pool, github: github, clock: clock, settings: settings,
+		ctx: context.Background(), pending: map[runKey]*pendingRun{},
 		reads: make(chan struct{}, reconcilePartialConcurrency),
 	}
+	j.heldDurable = newHeldDurable(natsClient, leases, jobConsumerConfig, jobKey, j.deliver)
+	return j
 }
 
-// Run binds the durable job consumer and handles job events until ctx is cancelled. An attempt
-// that binds nothing -- a failure, or the durable being another process's (bindStandby) -- is
-// made again every durableBindInterval, for the life of the process: a standby that outlives its
-// holder takes the durable over seconds later. A bind under way as ctx ends ends by the stop
-// deadline armed then (stopContext, bindDurableConsumer), as the delivery intake's does.
-//
-// It binds only while its client has a connection, and gives the subscription up at a connection
-// event, for the delivery intake's reasons (Intake.Run): a bind with no connection spends the
-// client's whole JetStream request timeout on a ConsumerInfo nothing answers, and a subscription
-// left in place over an outage comes back -- re-sent by nats.go inside its own reconnect, or
-// bound again by the client on a replacement connection -- beside the process that took the
-// durable over meanwhile, so both would deliver every job event of it (INFRA-1551). The give-up
-// needs no budget of the delivery intake's kind: this intake acknowledges each message on receipt
-// (deliver), so at either give-up it holds nothing in flight to hand back and has nothing to wait
-// for. What a drain does hand the callback is what the client had already buffered, after the
-// give-up has returned, and there the two give-ups part: at a connection event Run goes on, so
-// deliver handles those messages as it does any other, while at the shutdown j.ctx is done and
-// deliver hands each of them back, which gives the next holder of the durable them at once.
+// jobKey keys every message of the job durable alike, and wants every one of them: the job intake
+// handles them one at a time, in the order the durable delivers them, as it did on the
+// subscription's own delivery goroutine before the keyed runner (deliver acks on receipt and
+// holds no GitHub call).
+func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil, true }
+
+// Run delivers job events from the durable job consumer while this process holds the durable's
+// hold, and stands by for the hold while another process holds it, until ctx is cancelled
+// (heldDurable). A standby tries every durableBindInterval for the life of the process, so one
+// that outlives the holder takes the durable over seconds after the holder releases its hold or
+// its hold lapses. When ctx ends it stops delivering, under the stop deadline armed then
+// (stopContext), and releases the hold, then stops every burst's timer.
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
-	stopping, release := stopContext(ctx)
-	defer release()
-	binds := time.NewTicker(durableBindInterval)
-	defer binds.Stop()
-	for {
-		// Taken before the connection's state is read, as ConnectionChanged's own contract asks,
-		// so an event during the bind is not missed.
-		connection := j.nats.ConnectionChanged()
-		var poll <-chan time.Time
-		if j.nats.Connected() {
-			sub, outcome := j.bind(ctx, stopping)
-			if outcome == bindBound {
-				// Nothing polls while this process holds the durable; a give-up starts the ticker
-				// again, a full durableBindInterval from the Reset, as Intake.Run's does.
-				binds.Stop()
-				select {
-				case <-ctx.Done():
-					j.giveUp(sub)
-					return
-				case <-connection:
-					slog.Info(intakeConnectionChangedMessage, "name", bus.DispatchJobDurable)
-					j.giveUp(sub)
-					binds.Reset(durableBindInterval)
-					continue
-				}
-			}
-			poll = binds.C
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-connection:
-		case <-poll:
-		}
-	}
-}
-
-// giveUp ends this process's job subscription through the client, which is what gives up the
-// registration the client keeps of it (bus.Client.DrainSubscription): a bare Unsubscribe would
-// leave a registration the next reconnect binds again, on a durable this process gave up, and
-// sub is itself stale once the client has replaced its connection. The same undo bind hands
-// bindDurableConsumer, for the same reason.
-func (j *JobIntake) giveUp(sub *natsgo.Subscription) {
-	if _, err := j.nats.DrainSubscription(sub); err != nil {
-		slog.Error("dispatch delivery: drain the job intake's subscription", "name", bus.DispatchJobDurable, "error", err)
-	}
+	j.run(ctx, nil, func() bool { return true })
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
 // name and filter, starting at new messages, since a job event older than the process says nothing
-// the run's end event and the reconcile do not.
+// the run's end event and the reconcile do not. A take-over recreates it at its ack floor
+// (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
+// deliveryConsumerConfig gives.
 func jobConsumerConfig() natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchJobDurable,
@@ -197,61 +141,29 @@ func jobConsumerConfig() natsgo.ConsumerConfig {
 		AckPolicy:      natsgo.AckExplicitPolicy,
 		AckWait:        jobAckWait,
 		MaxAckPending:  jobMaxAckPending,
+		Metadata:       consumerGenerationMetadata(),
 	}
-}
-
-// bind creates (on first run) or resumes the durable and subscribes to it, throttling its own
-// reconciliation and standby line on this intake's own bindThrottle. stopping is Run's stop
-// deadline (bindDurableConsumer).
-//
-// The undo it hands back is giveUp, and not a bare Unsubscribe, for giveUp's reason: a bind the
-// server never confirms must leave the client holding no registration of it.
-func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, bindOutcome) {
-	wanted := jobConsumerConfig()
-	return bindDurableConsumer(ctx, stopping, j.nats, j.leases, j.throttle, wanted, func() (*natsgo.Subscription, func(), error) {
-		sub, err := subscribeDurable(j.nats, wanted, "", j.deliver)
-		if err != nil {
-			return nil, nil, err
-		}
-		return sub, func() { j.giveUp(sub) }, nil
-	})
 }
 
 // deliver acks a job message on receipt, then hands its payload to receive. Acking first is safe:
 // the run's end event (Intake) and the reconcile both read every job of a run, so a process that
 // dies with a read pending loses only the early signal, and a message never waits on GitHub.
 //
-// A message that arrives once j.ctx is done is the exception: it is handed back, neither acked
-// nor read. The stop drains this subscription (giveUp), so the client hands this callback what
-// it had already buffered after Run has returned, where acking would lose the early signal for
-// good and the read that follows it would fail under the cancelled context with an ERROR line
-// of its own.
-//
-// What the drain hands this callback does not come back here, because the drain's UNSUB is on
-// the wire ahead of it. nats.go v1.53.1's Conn.unsubscribe (:5416-5476) holds the connection's
-// lock for the whole of a drain's start (:5427-5429): it marks the subscription draining
-// (:5447-5453) and appends the UNSUB to the connection's write buffer, kicking the flusher
-// (:5457-5460). The callback is handed what the client had buffered one message at a time after
-// that, and this Nak is a publish appended to that same write buffer behind the UNSUB. The
-// server therefore sees the unsubscribe first, and redelivers those messages to the next
-// subscriber of the durable rather than to this one; the delivery intake's stop turns on the
-// same order (intake_delivery.go's stop, which drains before it answers anything).
-//
-// A message handed to this callback while the subscription is still bound is the other case:
-// one the server delivers after j.ctx is done and before Run reaches giveUp (Run's ctx case),
-// or during a bind confirmation under a context already cancelled. Its Nak reaches the server
-// with this subscriber's interest still in place, so the server may hand it here again, and it
-// is handed back again, until the UNSUB giveUp sends lands. That window is all that bounds it --
-// the hand-back after the UNSUB goes to the next subscriber -- and nothing is lost, since no pass
-// reads the message.
-//
-// A Nak the link refuses -- which is the state a give-up over an outage begins in -- leaves the
-// message outstanding, as the bare unsubscribe this give-up replaced left it: the next holder is
-// handed it when jobAckWait expires, and the run's end event and the five-minute reconcile both
-// cover it in any case.
-func (j *JobIntake) deliver(msg *natsgo.Msg) {
-	if j.ctx.Err() != nil {
-		redeliverAfter(msg, 0)
+// A message it is handed once this intake has stopped is handed back instead, unread and
+// unacknowledged (intakeDelivery.giveBack): its read would run under the cancelled Run context
+// and fail there ("read whether a job's run is tracked"), so acknowledging it would spend the
+// event's early signal on nothing. The two readings are the two ends of the stop. The delivery's
+// own flag covers a message the callback routes once the stop has begun; Run's context covers
+// the moment between run returning on its ctx (heldDurable.run) and the stop setting that flag,
+// in which the keyed runner can still start a job queued behind the one in hand. What the
+// hand-back answers, and whether it is published at all, is the stop's and the hold's to decide
+// (intakeDelivery.handBack): the message stays outstanding either way, and the next holder is
+// handed it.
+func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
+	msg := message.msg
+	if j.ctx.Err() != nil || d.stopping.Load() {
+		slog.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
+		d.giveBack(msg)
 		return
 	}
 	if err := msg.Ack(); err != nil {

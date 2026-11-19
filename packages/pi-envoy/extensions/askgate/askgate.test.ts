@@ -21,6 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -54,6 +55,9 @@ import { renderTemplate } from "./text";
 
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
+
+/** The Dispatch token the gate's session and the real CLI are handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** Dispatch's answer that the project holds no decision document of the session's name. */
 const NO_DOCUMENT = new DispatchServiceError(
@@ -466,12 +470,9 @@ function dispatchServing(
     return body(documentBlocks(doc.markdown));
   }) as typeof fetch;
   const session = (_directory: string, signal: AbortSignal): DispatchSession => ({
-    client: new DispatchClient(
-      "https://dispatch.example",
-      bearerCredential("token"),
-      fetchImpl,
-      signal
-    ),
+    client: new DispatchClient("https://dispatch.example", bearerCredential("token"), fetchImpl, {
+      signal,
+    }),
     serverUrls: ["https://dispatch.example"],
   });
   return { requests, session };
@@ -5676,7 +5677,7 @@ describe("askgate.ts, the entry", () => {
         OMP_ASKGATE_TIMEOUT_MS: "soon",
         OMP_ASKGATE_RECORD_PROJECT: "INFRA",
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN,
       });
       await loaded.then(
         () => expect.unreachable("the gate loaded"),
@@ -5730,7 +5731,7 @@ describe("askgate.ts, the entry", () => {
       const { loaded, handlers, registration } = await registerOnly({
         OMP_ASKGATE_RECORD_PROJECT: "INFRA",
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN,
       });
       await loaded;
       // The core's handlers are bound too, and the entry's shutdown handler is still the first.
@@ -5931,7 +5932,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     DISPATCH_SESSION_ID: "ses-real-cli",
     DISPATCH_STATE_DIR: path.join(work, "state"),
     DISPATCH_URL: "http://127.0.0.1:9",
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN,
   };
   // Block mode, so a post that does not use its marker is refused, never posted with a warning:
   // a post that succeeds then proves the marker the gate minted matched. The harness's default
@@ -6485,15 +6486,51 @@ describe("rules check", () => {
     await g.device("c", "dispatch_comment", COMMENT);
     await g.device("m", "dispatch_message", { issue: "X-1", body: "Keep it as it is." });
     await g.device("e", "dispatch_edit_ask", { ask: "a-1", question: "Keep it as it is?" });
-    await g.device("d", "dispatch_doc_edit", {
-      issue: "X-1",
-      ops: [{ op: "replace", find: "Old.", with: ":::ask{#a}" }],
-    });
+    await g.device("d", "dispatch_doc_edit", replaceWith("Keep it as it is."));
     expect(g.calls.filter(isRules)).toHaveLength(0);
     expect(g.calls.filter(isCharter)).toHaveLength(4);
     expect(g.entries.map((e) => [e.decision, e.ruleOutcome])).toEqual(
       Array(4).fill(["allow", undefined])
     );
+  });
+  test("a replace whose with opens an ask block reaches the rules model, as an insert's markdown does (rules test 13a)", async () => {
+    // A `replace` writes the blocks its `with` names (dispatch://INFRA-1520), so a `with` that
+    // opens an ask block opens that ask and the rules model reviews it, where before this the
+    // gate read a `replace` as opening none.
+    const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
+    const replaced = await g.device(
+      "r",
+      "dispatch_doc_edit",
+      replaceWith(`:::ask{#cache}\n${KEEP_INPUT.question}\n:::`)
+    );
+    expect(replaced?.block).toBe(true);
+    expect(replaced?.reason).toContain(
+      'The ask block #cache that starts \'I checked the cache path and it is fine. Should I change it?\' matches the rule "no change": "keep it as it is".'
+    );
+    expect(g.calls.filter(isRules)).toHaveLength(1);
+    expect(g.entries.map((e) => [e.decision, e.rule, e.ruleOutcome])).toEqual([
+      ["revise", "no_change", "match"],
+    ]);
+  });
+  test("a replace whose with opens an ask block under a list marker reaches the rules model with that ask's question (rules test 13b)", async () => {
+    // The server cuts the matched item's own marker off such a `with` and parses what is left
+    // (docs/edits.go's replacementMarkdown), so the gate reads that string too: read as sent, the
+    // ask block opens inside the list item and carries no text, and the rules model would match
+    // on nothing while the server opened the ask with the question.
+    const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });
+    const replaced = await g.device(
+      "r",
+      "dispatch_doc_edit",
+      replaceWith(`- :::ask{#cache}\n${KEEP_INPUT.question}\n:::`)
+    );
+    expect(replaced?.block).toBe(true);
+    expect(replaced?.reason).toContain(
+      'The ask block #cache that starts \'I checked the cache path and it is fine. Should I change it?\' matches the rule "no change": "keep it as it is".'
+    );
+    expect(g.calls.filter(isRules)).toHaveLength(1);
+    expect(g.entries.map((e) => [e.decision, e.rule, e.ruleOutcome])).toEqual([
+      ["revise", "no_change", "match"],
+    ]);
   });
   test("two rules refusals on one target trip its breaker: the second says so, the third goes out unasked (rules test 14)", async () => {
     const g = bind({ complete: bySystem(ALLOW, NO_CHANGE) });

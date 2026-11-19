@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// imageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
+// ImageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
 // worker.Dockerfile, ENV), which every container inherits, and which a pod's env therefore may not
 // override: AWS_CA_BUNDLE holds the AWS CLI to the system root bundle the image probe verifies;
 // CGO_ENABLED=0 keeps cgo off by default in every process that inherits the image's environment,
@@ -30,9 +30,11 @@ import (
 // LEGION_LEAK_CHECK_TAG is the tag of the shared public leak check the daemon reads and pushes to
 // the pod's launcher, which installs it once for the pod before any role starts
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
-// and PATH, which the runtime sets as well. TestImageEnvIsWhatTheWorkerImageSets holds the list to
-// the Dockerfile.
-var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH"}
+// PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
+// skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
+// the Dockerfile. cmd/legion's TLS probe keeps these variables, but gives each client a HOME of
+// its own (tls_probe.go).
+var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
 // env may set it too: the pod baseline yields to the operator's own value, and the operator's
@@ -49,13 +51,15 @@ type setter struct {
 // (claudelaunch.Environment) and the session its launcher keeps (claudelaunch.SessionVariable),
 // which it tells a Claude role alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
-// image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
+// image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
 // `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
 // of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
 // since `composed` deliberately leaves them out, and every name of `composed`, the spend
-// attributes alone today), and the operator's own pod env. The first setter of a name is the one
-// named.
-func podVariables(pod Pod, launchSecrets []string) map[string]setter {
+// attributes alone today), and the operator's own pod env. The exchange identity's two variables
+// (exchangeOwned) are the runtime's only where exchange says the deployment names an exchange
+// audience; otherwise nothing of Legion's sets them, and the operator's pod env may, as it could
+// before the key existed. The first setter of a name is the one named.
+func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
 		if _, taken := set[name]; !taken {
@@ -88,7 +92,12 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
 	}
-	for _, name := range imageEnv {
+	if exchange {
+		for _, name := range slices.Sorted(maps.Keys(exchangeOwned)) {
+			add(name, "Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience", false)
+		}
+	}
+	for _, name := range ImageEnv {
 		add(name, "the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)", false)
 	}
 	for name := range (runtime.GitIdentity{}).Env() {
@@ -121,10 +130,10 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 // runs from hides it or is hidden by it; and a mount at, under, or above xdgStateHome
 // (/home/legion/.local/state), the path Legion reserves in the image's home directory: no role's
 // agent keeps its Oh My Pi state there any more — each role has a separate state home, under the
-// issue's scratch on its volume (roleStateHome), which legionMountPaths() already fences through
+// issue's scratch on its volume (roleStateHome), which legionMountPaths already fences through
 // TreeRoot — and the image makes nothing there either, but Legion names it to the issue pod's
 // workspace-init (xdgEnvironment), so an operator's mount over it is refused here, at
-// `--check-config`, rather than left to surprise someone in a pod. (An operator's
+// `legion config check`, rather than left to surprise someone in a pod. (An operator's
 // pod.VolumeMounts reaches the launcher containers and the image probe's and no init container, so
 // this row speaks for the name rather than for workspace-init.) A provider key must name a
 // variable nothing else in the pod sets, since the shim refuses one its own environment names
@@ -132,18 +141,22 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 // Pi's environment gains after (the pod baseline), and skips one whose `<NAME>_FILE` pointer the
 // pod sets (shim.ReadProviderEnv); and it must read neither a providers secret's key nor the
 // providers Secret's key that holds the session database's URL (Store.DSNSecretKey, which the
-// postgres store alone has: under cloudsql-iam each pod signs in as itself and mounts no session
-// key at all), which the shim would export into Oh My Pi's environment under the provider key's
-// name. launchSecrets are the secrets every launch's spec carries, by name, and providersSecrets
-// those of them the providers Secret carries, none of which may be the session database's URL
-// key. configure runs it, and the daemon before its boot and for `legion start --check-config`.
-func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store) error {
+// postgres store alone has: under cloudsql-iam each pod signs in as itself, or as the service
+// account it impersonates, and mounts no session key at all), which the shim would export into Oh
+// My Pi's environment under the provider key's name. launchSecrets are the secrets every launch's
+// spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
+// which may be the session database's URL key. exchange is whether the deployment names an
+// exchange audience (runtime.kubernetes.agent_secrets.exchange_audience): only then are the
+// exchange identity's variables (exchangeOwned), volume and mount path Legion's, and refused; a
+// deployment that names none keeps them the operator's, as before the key existed. configure runs
+// it, and the daemon before its boot and for `legion config check`.
+func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange bool) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
 		return fmt.Errorf("runtime.kubernetes.session_dsn_secret %s is the providers Secret's key the pod mounts as the launch secret %s: name a key of its own for the session database's URL",
 			sessionDSNKey, sessionDSNKey)
 	}
-	variables := podVariables(pod, launchSecrets)
+	variables := podVariables(pod, launchSecrets, exchange)
 	for _, name := range slices.Sorted(maps.Keys(pod.Env)) {
 		if s := variables[name]; !s.operatorMay {
 			return fmt.Errorf("runtime.kubernetes.pod.env sets %s, which %s", name, s.who)
@@ -157,7 +170,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
 		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
 	}
-	volumes := legionVolumeNames()
+	volumes := legionVolumeNames(exchange)
 	for i, volume := range pod.Volumes {
 		if slices.Contains(volumes, volume.Name) {
 			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].name %s is a volume Legion puts in every pod", i, volume.Name)
@@ -176,7 +189,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 		paths           []string
 		owns, forbidden string
 	}{
-		{legionMountPaths(), "Legion mounts in every pod", "one of Legion's"},
+		{legionMountPaths(exchange), "Legion mounts in every pod", "one of Legion's"},
 		{imageOwned, "the worker image owns", "one of the image's"},
 		{[]string{xdgStateHome}, "Legion reserves in the image's home directory", "Legion's reserved state home"},
 	}

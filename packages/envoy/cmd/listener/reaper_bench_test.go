@@ -33,12 +33,12 @@ func benchmarkReap(b *testing.B, n int) {
 	}
 	b.Cleanup(client.Close)
 	quiet := slog.New(slog.DiscardHandler)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithLogger(quiet))
+	registry, err := store.Open(b.Context(), client.Conn, store.WithReplicas(1), store.WithLogger(quiet))
 	if err != nil {
 		b.Fatalf("open registry: %v", err)
 	}
 	b.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionLogger(quiet))
+	sessions, err := session.OpenSessionRegistry(b.Context(), client.Conn, session.WithSessionReplicas(1), session.WithSessionLogger(quiet))
 	if err != nil {
 		b.Fatalf("open session registry: %v", err)
 	}
@@ -69,7 +69,7 @@ func benchmarkReap(b *testing.B, n int) {
 					SessionID: id,
 					MachineID: "bench-machine",
 					Dir:       "/bench/" + id,
-				}, []string{contracts.AgentSubject(id), "notifications.team.bench"}); err != nil {
+				}, []string{contracts.LegacyAgentSubject(id), "notifications.team.bench"}); err != nil {
 					failed = fmt.Errorf("upsert interest %s: %w", id, err)
 					continue
 				}

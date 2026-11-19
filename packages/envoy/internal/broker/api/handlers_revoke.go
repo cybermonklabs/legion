@@ -8,6 +8,8 @@ package api
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/broker/answer"
 )
 
 // revokeOAuthToken is POST /v1/oauth/revoke: the RFC 7009 request, a form whose token parameter
@@ -27,8 +29,9 @@ func (s *server) revokeOAuthToken(w http.ResponseWriter, r *http.Request, caller
 	if !readOAuthForm(w, r) {
 		return
 	}
-	slog.Info("token revocation relayed", "caller", callerName, "client_id", r.PostForm.Get("client_id"),
-		"token_type_hint", r.PostForm.Get("token_type_hint"))
+	// The two form fields are the caller's own text, so the line cuts each (answer.ClipFields).
+	slog.Info("token revocation relayed", answer.ClipFields([]any{"caller", callerName,
+		"client_id", r.PostForm.Get("client_id"), "token_type_hint", r.PostForm.Get("token_type_hint")})...)
 	s.deps.OAuth.Revoke(w, withoutCallerToken(r))
 }
 

@@ -242,8 +242,14 @@ func importDir(f *ast.File, ident string) (string, bool) {
 }
 
 // httpStatus maps a net/http status constant's name to its code, from the names http.StatusText
-// gives each code.
+// gives each code, and renamed's for the three constants not named after their text. A name it
+// does not hold is a status refgen cannot read, and its readers refuse it.
 var httpStatus = func() map[string]int {
+	renamed := map[int]string{
+		http.StatusNonAuthoritativeInfo: "StatusNonAuthoritativeInfo", // "Non-Authoritative Information"
+		http.StatusProxyAuthRequired:    "StatusProxyAuthRequired",    // "Proxy Authentication Required"
+		http.StatusTeapot:               "StatusTeapot",               // "I'm a teapot"
+	}
 	out := map[string]int{}
 	for code := 100; code < 600; code++ {
 		text := http.StatusText(code)
@@ -256,6 +262,9 @@ var httpStatus = func() map[string]int {
 			}
 			return -1
 		}, text)
+		if n, ok := renamed[code]; ok {
+			name = n
+		}
 		out[name] = code
 	}
 	return out

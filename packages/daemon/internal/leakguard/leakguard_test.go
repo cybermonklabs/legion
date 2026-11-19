@@ -208,7 +208,7 @@ exit 0
 `
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), asksForStdin), Public, "STANDIN_RECORD="+record)
 	body := "a body gh reads on its standard input"
-	buffered, err := guard.GhCall(bound(t), GhRequest{
+	answer, err := guard.GhCall(bound(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: strings.NewReader(body),
 		Repo:  "invented-org/invented-repo",
@@ -216,8 +216,8 @@ exit 0
 	if err != nil {
 		t.Fatalf("a clean call: %v", err)
 	}
-	if string(buffered) != body {
-		t.Errorf("the caller got %q back, want the bytes it gave", buffered)
+	if string(answer.Stdin) != body {
+		t.Errorf("the caller got %q back, want the bytes it gave", answer.Stdin)
 	}
 	read, err := os.ReadFile(record)
 	if err != nil {
@@ -235,13 +235,13 @@ exit 0
 func TestTheGhShapeScansWhatItBuffered(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
 	body := "a body naming " + theHost + "\n"
-	buffered, err := guard.GhCall(bound(t), GhRequest{
+	answer, err := guard.GhCall(bound(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: strings.NewReader(body),
 		Repo:  "invented-org/invented-repo",
 	})
-	if string(buffered) != body {
-		t.Errorf("the caller got %q back, want the bytes it gave", buffered)
+	if string(answer.Stdin) != body {
+		t.Errorf("the caller got %q back, want the bytes it gave", answer.Stdin)
 	}
 	refused := refusal(t, err)
 	if want := []string{"the gh call's standard input: " + theClass}; !slices.Equal(refused.Lines, want) {

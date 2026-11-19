@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -74,10 +73,9 @@ const fakeCodegraph = `#!/bin/sh
 printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 `
 
-// issueVolume is one issue's volume and what a pod's two init containers run against it (the third
-// a `skills_repository` adds, `skills-fetch`, mounts nothing of this volume): a PATH whose git
-// clones a local bare remote in place of github.com/acme/widgets, the provisioning token file
-// `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
+// issueVolume is one issue's volume and what a pod's two init containers run against it: a PATH
+// whose git clones a local bare remote in place of github.com/acme/widgets, the provisioning token
+// file `fetch` is pointed at and `provision` never is, the pod's feed, a TMPDIR standing in for the
 // fetching container's own filesystem, and, as in a pod, a jj config home that starts empty and no
 // user configuration. defaultBranch is the remote's default branch, which `provision` is told.
 type issueVolume struct {
@@ -138,17 +136,6 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),
 		"JJ_CONFIG":            filepath.Join(dir, "no-user-config.toml"),
-		// A stand-in shared public leak check, as the environment of a pod's own init container
-		// names one (sandbox.mainEnvironment). In an issue pod the git and jj first on PATH are
-		// Legion's wrappers (/opt/legion/bin), which run the leak guard on every push, and the
-		// guard refuses a push it can resolve no check for (leakguard's Resolve), while
-		// fixtureenv.Isolated — what every fixture command here and every run of the command
-		// under test starts from — drops PUBLIC_LEAK_CHECK with the rest of what reaches past
-		// the test. Without a check of the volume's own, the seed push that builds its remote
-		// stops with LEAK CHECK SETUP ERROR and the row fails before it tests anything. This one
-		// clears every write, as every other fixture that pushes writes one, so these rows prove
-		// the same thing in a pod as on a runner whose git is the real one.
-		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, dir, leakguardtest.Passes),
 	}
 	return v
 }
@@ -156,12 +143,10 @@ func newIssueVolume(t *testing.T) *issueVolume {
 // runner runs one of the volume's own fixture commands — a git or jj that builds its remote or
 // reads one of its repositories, never the command under test. Every such command wants the same
 // environment, which is this one: fixtureenv.Isolated of a home of its own, so it reaches no
-// workspace, repository, remote, credential or configuration of whoever runs the tests, and the
-// volume's stand-in leak check, which is what a push of this fixture's needs in an issue pod
-// (v.env's PUBLIC_LEAK_CHECK).
+// workspace, repository, remote, credential or configuration of whoever runs the tests.
 func (v *issueVolume) runner(t *testing.T) fixturegit.Runner {
 	t.Helper()
-	return fixturegit.Isolated(t, t.TempDir()).With("PUBLIC_LEAK_CHECK=" + v.env["PUBLIC_LEAK_CHECK"])
+	return fixturegit.Isolated(t, t.TempDir())
 }
 
 // withRemote gives the volume's git a real repository to clone: a bare remote whose default branch,
@@ -327,19 +312,19 @@ func TestWorkspaceInitRefusesBeforeTouchingTheVolume(t *testing.T) {
 			name: "no subcommand",
 			args: func(*issueVolume) []string { return nil },
 			code: 2,
-			says: func(*issueVolume) string { return subcommandUsage("workspace-init", workspaceInitCommands) },
+			says: func(*issueVolume) string { return "Usage:\n  legion workspace-init [flags]\n" },
 		},
 		{
 			name: "an unknown subcommand",
 			args: func(v *issueVolume) []string { return append([]string{"init"}, v.args("LEGION-42")[1:]...) },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "init"` },
+			says: func(*issueVolume) string { return `unknown command "init" for "legion workspace-init"` },
 		},
 		{
 			name: "the one-container invocation, with no subcommand",
 			args: func(v *issueVolume) []string { return v.args("LEGION-42")[1:] },
 			code: 2,
-			says: func(*issueVolume) string { return `unknown subcommand "--issue"` },
+			says: func(*issueVolume) string { return `unknown flag: --issue` },
 		},
 		{
 			name: "no --issue",

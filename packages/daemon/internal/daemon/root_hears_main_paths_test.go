@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -231,7 +233,10 @@ func (r *mainPathRig) handBack() {
 
 // runStarts runs every architect start row of the root the outbox holds past the last one the rig
 // ran, oldest first, as the supervise lane runs them: leased, executed, and finished when it acted,
-// which is what releases whatever its task named.
+// which is what releases whatever its task named. A start whose own task waits behind the task the
+// claim still holds is no failure, exactly as the lane reads it (the outbox's settle, "a task
+// behind the claim's pending delivery"): the row is left for its backoff, and the rig goes on from
+// what the start did before it waited.
 func (r *mainPathRig) runStarts() {
 	r.t.Helper()
 	rows, err := r.pool.Query(r.ctx, `select id, kind, issue, payload from outbox
@@ -252,7 +257,11 @@ func (r *mainPathRig) runStarts() {
 	}
 	for _, row := range queued {
 		row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
-		if err := r.runner.execute(r.ctx, row); err != nil {
+		switch err := r.runner.execute(r.ctx, row); {
+		case errors.Is(err, wait.ErrWaiting):
+			r.waitMachine()
+			continue
+		case err != nil:
 			r.t.Fatalf("run the architect start row %d: %v", row.ID, err)
 		}
 		if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
@@ -330,6 +339,33 @@ func (r *mainPathRig) bringUp() {
 	}
 }
 
+// takeTheTask is the architect working the task it has been given: the turn its prompt starts,
+// that turn's end, and the prompt's own result, after which the claim holds no delivery. A path
+// that goes on past a start runs it, because an agent given a task works it, and a claim still
+// holding one is refused the next (supervise's queue, ErrDeliveryPending). It does nothing for a
+// claim that holds no task.
+func (r *mainPathRig) takeTheTask() {
+	r.t.Helper()
+	machine := r.machine()
+	pending := machine.Claim().Pending
+	if pending == nil {
+		return
+	}
+	for _, ev := range []supervise.Event{
+		supervise.StreamTurnStart{Claim: r.token, DeliveryID: pending.ID},
+		supervise.StreamTurnEnd{Claim: r.token},
+		supervise.StreamPromptResult{Claim: r.token, DeliveryID: pending.ID, AgentInvoked: true},
+	} {
+		if err := machine.Handle(r.ctx, ev); err != nil {
+			r.t.Fatalf("handle %T for the architect: %v", ev, err)
+		}
+	}
+	r.waitMachine()
+	if got := machine.Claim().Pending; got != nil {
+		r.t.Fatalf("the architect holds %#v after the turn its task ran, want the task retired", got)
+	}
+}
+
 // recordClaim writes the architect's claim as the daemon persists it, which is what the workflow
 // reads of it (record.Store.RoleRuns, SessionClaimsTree).
 func (r *mainPathRig) recordClaim() {
@@ -396,6 +432,9 @@ func readmissionPath(r *mainPathRig) string {
 	r.admitPass()
 	r.runStarts()
 	r.bringUp()
+	// The first start gives a fresh architect its tree's own first task
+	// (workflow.ArchitectStartTask), which it works before anything parks it.
+	r.takeTheTask()
 	r.park()
 	r.runSuspend()
 	ref := r.decide(mainPathAsk)
@@ -408,7 +447,7 @@ func readmissionPath(r *mainPathRig) string {
 	return ref
 }
 
-// answeredResumePath: the root waits on a person in awaiting_person, holding no slot, its architect
+// answeredResumePath: the root waits on a person in awaiting_person, keeping its slot, its architect
 // still live; a person answers the question it handed them, which answers the wait, and the
 // admission pass that same fact runs takes its answered branch, which gives the architect a task of
 // its own (workflow.Engine.ResumeAwaitedRoot). That task reaches the live architect at once.
@@ -446,6 +485,8 @@ func toldInPlacePath(r *mainPathRig) string {
 	r.admitPass()
 	r.runStarts()
 	r.bringUp()
+	// As above: the admission that launched this architect gave it the root's first task.
+	r.takeTheTask()
 	r.recordClaim()
 	for _, ask := range []string{"ask-a", "ask-b"} {
 		r.apply("opened:"+ask, intake.DispatchAskOpened{Key: r.key, Ask: ask, Kind: record.AskQuestion,
@@ -474,8 +515,10 @@ func toldInPlacePath(r *mainPathRig) string {
 // count is the same as main's own, which sends everything (Deps.RootHears nil).
 //
 // The negative control is the same root parked again while its start task waits on a ready claim:
-// there the answer says no, the task is held rather than prompted to an architect no run of the
-// root owns, and the start of the root's next run is what releases it.
+// there the answer says no, and the task is held rather than prompted to an architect no run of
+// the root owns. The start of the root's next run carries a task of a newer entry, which takes the
+// held task's place: the held task is retired unsent, and the decision it named is told by the
+// catch-up that start writes.
 func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 	for _, path := range mainPaths {
 		t.Run(path.name, func(t *testing.T) {
@@ -484,8 +527,17 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 				rig := newMainPathRig(t, wired)
 				want := path.run(rig)
 				prompts := rig.prompts()
-				if len(prompts) != 1 || !strings.Contains(prompts[0].Message, want) {
-					t.Fatalf("RootHears wired=%t: the architect was prompted %d times with %+v, want exactly one prompt carrying %q",
+				// A path that launches a fresh architect begins with the task admission gave that
+				// start (workflow.ArchitectStartTask), which the path's architect works. The
+				// path's own task is the last prompt, and no other prompt carries it.
+				carried := 0
+				for _, prompt := range prompts {
+					if strings.Contains(prompt.Message, want) {
+						carried++
+					}
+				}
+				if len(prompts) == 0 || carried != 1 || !strings.Contains(prompts[len(prompts)-1].Message, want) {
+					t.Fatalf("RootHears wired=%t: the architect was prompted %d times with %+v, want its last prompt, and only it, carrying %q",
 						wired, len(prompts), prompts, want)
 				}
 				sent[wired] = len(prompts)
@@ -495,10 +547,10 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 					}
 					continue
 				}
-				asked := rig.asked.about(prompts[0].DeliveryID)
+				asked := rig.asked.about(prompts[len(prompts)-1].DeliveryID)
 				if len(asked) == 0 {
 					t.Fatalf("the task prompted as %s was never put to RootHears; every root architect's task of a run is",
-						prompts[0].DeliveryID)
+						prompts[len(prompts)-1].DeliveryID)
 				}
 				for _, call := range asked {
 					if !call.hears || call.claim != rig.token || call.delivery.Phase != "" || call.delivery.Generation == 0 {
@@ -515,8 +567,8 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 
 	// The same root as the fresh admission, parked again before the architect it launched comes up:
 	// the start's task waits on a ready claim while the root has nobody to hear it. The answer holds
-	// it there — unsent, still pending — and the start of the root's next run is what sends it.
-	t.Run("a task of a parked root is held until the root runs again", func(t *testing.T) {
+	// it there — unsent, still pending — for as long as the root is parked.
+	t.Run("a task of a parked root is held, then superseded by the start of the root's next run", func(t *testing.T) {
 		rig := newMainPathRig(t, true)
 		rig.put(rig.waitingRoot())
 		ref := rig.decide(mainPathAsk)
@@ -541,19 +593,55 @@ func TestARootThatMainsCodeResumesGetsItsTaskWithRootHearsWired(t *testing.T) {
 			}
 		}
 
-		// A person hands the root back: its re-admission's start carries no task of its own (the
-		// held one named what the root kept), and is what releases the held task.
+		// A person hands the root back. The re-admission's start carries the root's task of
+		// generation 2 at a newer entry: the first act again, since the architect took nothing of
+		// generation 1 (workflow.ArchitectStartTask's last rule). That task supersedes the held one
+		// (supervise's supersedes), so the start does not send the held task first
+		// (supervise.Machine.StartedBy), its delivery retires the held task unsent, and the
+		// architect's first prompt is the re-admission's own task (dispatch://INFRA-2614 R3, R4).
+		// The decision the held task named is released with it, so no delivery holds it, and the
+		// catch-up the start writes for the running architect (the outbox's start, workflow's
+		// claimReady) names it and claims it.
 		rig.handBack()
 		rig.runStarts()
 		prompts := rig.prompts()
-		if len(prompts) != 1 || prompts[0].DeliveryID != pending.ID || !strings.Contains(prompts[0].Message, ref) {
-			t.Fatalf("after the re-admission the architect was prompted %+v, want the held task %s naming %s once",
-				prompts, pending.ID, ref)
+		if len(prompts) != 1 || prompts[0].DeliveryID == pending.ID ||
+			!strings.Contains(prompts[0].Message, workflow.ArchitectFreshTreeLabel+" 2") || strings.Contains(prompts[0].Message, ref) {
+			t.Fatalf("after the re-admission the architect was prompted %+v, want generation 2's own task alone, not the held task %s",
+				prompts, pending.ID)
 		}
-		for _, call := range rig.asked.about(pending.ID)[len(refused):] {
+		if now := rig.machine().Claim().Pending; now == nil || now.ID != prompts[0].DeliveryID || now.Generation != 2 {
+			t.Fatalf("after the re-admission the architect holds %#v, want generation 2's task %s in the held task's place",
+				now, prompts[0].DeliveryID)
+		}
+		if asked := rig.asked.about(pending.ID); len(asked) != len(refused) {
+			t.Fatalf("RootHears was asked about the held task %s after the re-admission (%+v), want it retired unsent",
+				pending.ID, asked[len(refused):])
+		}
+		asked := rig.asked.about(prompts[0].DeliveryID)
+		if len(asked) == 0 {
+			t.Fatalf("the task prompted as %s was never put to RootHears; every root architect's task of a run is", prompts[0].DeliveryID)
+		}
+		for _, call := range asked {
 			if !call.hears {
 				t.Fatalf("RootHears answered no for %#v after the root was admitted again, want yes", call)
 			}
+		}
+		kept := keptDecisions(t, rig.pool, rig.records, rig.key)
+		if len(kept) != 1 || kept[0].Ref != ref || kept[0].HeldBy.Claim != "" || kept[0].ClaimedBy == 0 {
+			t.Fatalf("%s keeps %#v, want %s held by no delivery and claimed by the catch-up that names it", rig.key, kept, ref)
+		}
+		named := false
+		for _, row := range catchUpRows(t, rig.pool, rig.key) {
+			payload, err := record.DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("decode the catch-up %d of %s: %v", row.ID, rig.key, err)
+			}
+			notice, ok := payload.(record.Notice)
+			named = named || (ok && row.ID == kept[0].ClaimedBy && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, ref))
+		}
+		if !named {
+			t.Fatalf("no catch-up of %s claims and names %s, want the one the re-admission's start wrote", rig.key, ref)
 		}
 	})
 }

@@ -24,14 +24,20 @@ import (
 // deploy, is enough to trigger it.
 //
 // So no listener call runs with a transaction or a pooled connection held, and this file is
-// the one place the shape is spelled:
+// the one place the shape is spelled, for that call and for any other slow read a write
+// decides on:
 //
-//  1. resolve - the listener call, with nothing held;
+//  1. resolve - the slow read (the listener call, or the results write's read of the live
+//               Verification document), with nothing held;
 //  2. lock    - open the transaction and take the locks the write needs;
 //  3. verify  - re-read under those locks whatever the resolution depended on, and decide
 //               with the resolution only while the locked rows still agree with it;
 //  4. redo    - a resolution the lock contradicts is taken once more, bounded, before the
 //               write answers with its own conflict.
+//
+// The results write (recordResultWithFreshWords, results.go) takes this shape for its read of
+// the check's words: a cold read bounded by a minute, which held under the two issues' owner
+// locks would make every writer of either issue wait it out.
 //
 // An outbound listener call (Envoy.Send) never runs inside a transaction at all, and this file
 // spells that half too:
@@ -56,9 +62,11 @@ import (
 // than opening a second one. That attempt keeps the resolution those routes were decided on, for
 // whichever sender finishes it (deliverResolvedCommentMention).
 
-// errStaleResolution is how a locked write reports that a row the pre-transaction listener
-// resolution depended on had changed by the time it held the lock. It never reaches a client:
-// resolveThenLock either redoes the pair or answers with the caller's conflict.
+// errStaleResolution is how a locked write reports that a row the resolution it was handed
+// depended on had changed by the time it held the lock. That resolution is the pre-transaction
+// listener call for a delivery, and the check's words read out of the live document for the
+// results write (recordResultWithFreshWords). It never reaches a client: resolveThenLock
+// either redoes the pair or answers with the caller's conflict.
 var errStaleResolution = errors.New("listener resolution is stale")
 
 // resolutionAttempts is how many times resolveThenLock resolves before it gives up: the
@@ -72,8 +80,8 @@ const resolutionAttempts = 2
 // write owns its own transaction, and owes two things beyond opening it. It MUST re-read,
 // under the locks it takes, every row the resolution depended on, and compare: a write that
 // merely uses R without checking it against what the lock found is the bug this shape exists
-// to prevent, because the interesting case is precisely the row that moved while the listener
-// was answering. And it MUST have rolled back before it reports errStaleResolution, since
+// to prevent, because the interesting case is precisely the row that moved while the resolve
+// ran. And it MUST have rolled back before it reports errStaleResolution, since
 // resolveThenLock calls it again.
 func resolveThenLock[R, T any](
 	ctx context.Context,
@@ -114,10 +122,16 @@ func resolveThenLock[R, T any](
 // frame and hands it over when the session answers again, so a message to a session that missed
 // its heartbeats waits for it rather than being dropped (dispatch://INFRA-392).
 //
-// Only ErrNotFound - no record under that id - and a record the registry calls gone are "no
-// live session <id>", the text comment_delivery.go tests the prefix of and the dashboard prints
-// verbatim. Every other failure takes the error path, so an unreachable listener never reads as
-// an ended session.
+// A session id resolves through SessionIncludingStopped, so a session the listener knows only by
+// its record, one that is not running, is a target like any other too: the listener takes a
+// message for it, stores it and hands it over when it runs again, and the attempt that send
+// settles records `queued` (deliveryOutcome). A role resolves through Role alone, because a
+// stopped session holds no role.
+//
+// Only ErrNotFound - no entry and no record under that id - and a record the registry calls
+// gone are "no live session <id>", the text comment_delivery.go tests the prefix of and the
+// dashboard prints verbatim. Every other failure takes the error path, so an unreachable
+// listener never reads as an ended session.
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText
@@ -127,22 +141,38 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
 	} else {
-		target, err = s.deps.Envoy.Session(ctx, route.ID)
+		target, err = s.deps.Envoy.SessionIncludingStopped(ctx, route.ID)
 		if errors.Is(err, dispatchenvoy.ErrNotFound) {
-			return route.ID, "", "no live session " + route.ID
+			return route.ID, "", noLiveSessionPrefix + " " + route.ID
 		}
 	}
 	if err != nil {
 		return "", "", deliveryErrorText(err)
 	}
 	if target.State == dispatchenvoy.StateGone {
-		return target.SessionID, target.Title, "no live session " + target.SessionID
+		return target.SessionID, target.Title, noLiveSessionPrefix + " " + target.SessionID
 	}
-	if !hasCapability(target.Capabilities, delivery) {
+	if !advertisesDelivery(target, delivery) {
 		return target.SessionID, target.Title,
 			fmt.Sprintf("session %s (%s) does not advertise %s", target.SessionID, target.Title, delivery)
 	}
 	return target.SessionID, target.Title, ""
+}
+
+// advertisesDelivery reports whether target takes this delivery mode, by the rule the listener
+// applies to the same send (cmd/listener/api.go, stoppedDeliveryModeVerdict): its advertised
+// capabilities, except that a stopped session whose record carries none at all is accepted. Such
+// a record is one whose plugin declared no capabilities - the listener's record has stored them
+// since its first write, so none predates the field - and the same plugin is refused this mode
+// while it runs. It is accepted here because the message is stored and the mode is judged where
+// it can be: by the resumed session, whose next registration declares what it takes. Refusing it
+// here would refuse exactly the sends a queued delivery exists for, on the strength of a field
+// nobody filled in.
+func advertisesDelivery(target dispatchenvoy.Session, delivery string) bool {
+	if target.State == dispatchenvoy.StateStopped && len(target.Capabilities) == 0 {
+		return true
+	}
+	return hasCapability(target.Capabilities, delivery)
 }
 
 func hasCapability(capabilities []string, value string) bool {
@@ -162,6 +192,14 @@ const listenerNotConfiguredText = "envoy listener: ENVOY_URL is not configured"
 // answered (dispatchenvoy.ErrUnreachable): a connection refused, reset or timed out, a 502, 503 or
 // 504.
 const listenerUnreachablePrefix = "envoy listener: "
+
+// noLiveSessionPrefix begins the failure a delivery records when the listener holds no live
+// session under the id it names, which follows it after a space: resolveDeliveryTarget writes it
+// for no entry and no record and for a record the registry calls gone, and the listener's send
+// words its own 404 the same way (cmd/listener/api.go). sendResolvedDelivery records it bare for
+// a target that names no session. retryableDeliveryFailure, a mention's session pin
+// (resolveMentionTarget) and Dispatch's own queueing (mayQueueForUnknownSession) read it.
+const noLiveSessionPrefix = "no live session"
 
 // listenerAnsweredPrefix begins the failure deliveryErrorText records for every other
 // dispatchenvoy.ErrUnavailable: a status the listener chose, such as the 401 it gives a token it
@@ -219,7 +257,7 @@ func retryableDeliveryFailure(failure string) bool {
 		return false
 	case failure == receiptTimeoutText,
 		strings.HasPrefix(failure, listenerUnreachablePrefix),
-		strings.HasPrefix(failure, "no live session"):
+		strings.HasPrefix(failure, noLiveSessionPrefix):
 		return true
 	}
 	return false
@@ -248,20 +286,20 @@ func (s *server) newTakeoverRetry() takeoverRetry {
 }
 
 // retry is the one take-over loop every sender runs: it makes a try, and while again allows
-// another after a take-over's failure, renews and tries again; it returns the failure the last try
-// recorded, "" for one that succeeded. try makes one try and returns its failure, leaving whatever
-// else the try produced in its caller's variables. renew prepares the next try of an attempt - it
+// another after a take-over's failure, renews and tries again. try makes one try and returns its
+// failure, "" for one that succeeded, leaving whatever else the try produced - the outcome the
+// sender settles with - in its caller's variables. renew prepares the next try of an attempt - it
 // resolves again what the attempt names and renews the claim - and reports whether this sender
 // still holds the attempt; a sender that no longer does makes no further try and settles with the
-// last one, and an error from renew ends the tries with that error. renew is nil for tries that
-// hold no attempt (resolveThroughTakeover).
-func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func() (bool, error)) (string, error) {
+// last one, and an error from renew ends the tries with that error, which retry returns. renew is
+// nil for tries that hold no attempt (resolveThroughTakeover).
+func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func() (bool, error)) error {
 	failure := try()
 	for r.again(ctx, failure) {
 		if renew != nil {
 			held, err := renew()
 			if err != nil {
-				return failure, err
+				return err
 			}
 			if !held {
 				break
@@ -269,7 +307,7 @@ func (r *takeoverRetry) retry(ctx context.Context, try func() string, renew func
 		}
 		failure = try()
 	}
-	return failure, nil
+	return nil
 }
 
 // resolveThroughTakeover resolves one target as resolveMentionTarget does, with nothing held,
@@ -298,7 +336,7 @@ func (s *server) resolveThroughTakeover(
 		return resolved, takeover
 	}
 	// A try that holds nothing has nothing to renew, so retry answers no error.
-	_, _ = takeover.retry(ctx, resolve, nil)
+	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
 }
 
@@ -355,11 +393,19 @@ type attemptClaim struct {
 }
 
 // deliveryOutcome maps what a send reported to the state and error an attempt row records.
-func deliveryOutcome(deliveryError string) (string, *string) {
-	if deliveryError == "" {
-		return "sent", nil
+// queued is the listener's own word for the target it stored the message for: a session it knows
+// and that is not running (dispatchenvoy.SendStateStopped on the send's answer). The send's
+// answer decides it, not the registry read before it, so a session whose read showed it live and
+// whose process had gone by the send - one that crashed with its registry entry still in place -
+// is recorded queued too.
+func deliveryOutcome(deliveryError string, queued bool) (string, *string) {
+	switch {
+	case deliveryError != "":
+		return model.DeliveryStateFailed, &deliveryError
+	case queued:
+		return model.DeliveryStateQueued, nil
 	}
-	return "failed", &deliveryError
+	return model.DeliveryStateSent, nil
 }
 
 // receiptError renders an attempt row's nullable error as the string a receipt payload carries.

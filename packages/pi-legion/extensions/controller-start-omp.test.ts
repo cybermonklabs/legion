@@ -8,7 +8,7 @@ import {
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
-import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
+import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
@@ -25,6 +25,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   completeLines,
   endsWhole,
@@ -535,7 +536,10 @@ async function startController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state.json", hooks);
   const secretFile = path.join(root, "controller-secret");
-  await writeFile(secretFile, "controller-start-capability\n", { mode: 0o600 });
+  // Random, as the daemon's capability is: the controller holds it, and every line it prints is
+  // scrubbed of it (`@legion/contracts/held-secrets`), so one spelled from words would take those
+  // words out of the refusal the operator reads ("invalid controller capability").
+  await writeFile(secretFile, `${fixtureSecret("ctl")}\n`, { mode: 0o600 });
   const startupHold = path.join(root, "startup-hold.ts");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
@@ -682,7 +686,8 @@ async function startDaemonController(
   const { binary, nats, root, home, workspace, sessions, state, base, turns } =
     await serveController("state-controller-claim.json", hooks);
   const bootFile = path.join(root, "LEGION_BOOT_TOKEN");
-  await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+  // Random, as the daemon's boot token is (see the capability above).
+  await writeFile(bootFile, `${fixtureSecret("boot")}\n`, { mode: 0o600 });
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
@@ -1069,13 +1074,21 @@ test.skipIf(natsUrl === undefined && !onActions)(
 
     // One session on its own deliver subject, answering each frame as the half wants: the word it
     // writes, on its own connection as a session answers, or nothing at all for the half whose
-    // session takes the frame and never answers.
+    // session takes the frame and never answers. A listener's connection probe on that subject
+    // (`RelayHeader.probe`) is no frame: it is answered `done`, as a session's consumer delivery
+    // answers it before it decodes anything, and reaches no half.
     const listens = async (sid: string, answer: (frame: Msg) => void): Promise<void> => {
       const session = await connect({ servers: natsUrl ?? "" });
       cleanup.push(() => session.close());
       const frames = session.subscribe(deliverSubject(sid));
       void (async () => {
-        for await (const message of frames) answer(message);
+        for await (const message of frames) {
+          if (message.headers?.get(RelayHeader.probe) === "1") {
+            if (message.reply) message.respond(codec.encode("done"));
+            continue;
+          }
+          answer(message);
+        }
       })();
       await session.flush();
     };

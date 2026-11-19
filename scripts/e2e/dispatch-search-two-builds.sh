@@ -11,16 +11,16 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/dispatch-search-two-builds.sh --base-commit legion-envoy-v29.47.1
 #
-# DATABASE_URL is required and must name a loopback host: the run drops and recreates its `public`
-# schema, so the base build migrates it from empty and this build migrates it forward, as a
-# deployment's upgrade does. The database must already hold the `vector` extension, which meaning
-# search needs. --base-commit is required and names the commit the base build is built from, which
-# for this proof is the release before pull request #2809 added the five members
-# (legion-envoy-v29.47.1); its tree is taken with `git archive` into the run's own work directory,
-# so the checkout is never touched. The ports are SEARCH_TWO_BUILDS_BASE_PORT (19081),
-# SEARCH_TWO_BUILDS_HEAD_PORT (19082) and SEARCH_TWO_BUILDS_ENVOY_PORT (19083), each refused when
-# something already answers on it, so this proof and dispatch-two-builds.sh beside it hold no
-# port in common. Running them at once still takes a database each: both reset their own
+# DATABASE_URL is required and must name a loopback host: the run empties its `public` schema and
+# keeps the extensions it holds, so the base build migrates it from empty and this build migrates
+# it forward, as a deployment's upgrade does. The database must already hold the `vector`
+# extension, which meaning search needs. --base-commit is required and names the commit the base
+# build is built from, which for this proof is the release before pull request #2809 added the
+# five members (legion-envoy-v29.47.1); its tree is taken with `git archive` into the run's own
+# work directory, so the checkout is never touched. The ports are SEARCH_TWO_BUILDS_BASE_PORT
+# (19081), SEARCH_TWO_BUILDS_HEAD_PORT (19082) and SEARCH_TWO_BUILDS_ENVOY_PORT (19083), each
+# refused when something already answers on it, so this proof and dispatch-two-builds.sh beside it
+# hold no port in common. Running them at once still takes a database each: both reset their own
 # DATABASE_URL's `public` schema, so one database given to both leaves each build migrating a
 # schema the other emptied. The work directory, under TMPDIR, holds the base tree, both binaries
 # and every process's log: removed when the run passes, kept and printed when it fails.
@@ -114,13 +114,14 @@ two_builds_setup 'dispatch search two builds e2e' "$@"
 
 # fetch URL reads one GET as an agent bearer and sets answer_status and answer_body, whatever the
 # status: a case of this proof judges the status itself, and 404 is the answer two of them want.
+# The bearer reaches curl on standard input, in no command line.
 answer_status=''
 answer_body=''
 fetch() {
   local out
   out=$(mktemp "$work/answer.XXXXXX")
-  answer_status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" \
-    -H "Authorization: Bearer $agent_token" "$1") || answer_status=000
+  answer_status=$(printf 'Authorization: Bearer %s' "$agent_token" | curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" \
+    -H @- "$1") || answer_status=000
   answer_body=$(cat "$out")
   rm -f "$out"
 }
@@ -151,7 +152,7 @@ new_issue() {
 coverage_reading=''
 every_item_embedded() {
   local body
-  body=$(curl -sS --max-time "$call_seconds" -H "Authorization: Bearer $agent_token" \
+  body=$(printf 'Authorization: Bearer %s' "$agent_token" | curl -sS --max-time "$call_seconds" -H @- \
     "$head_url/api/v1/search/coverage") || return 1
   # shellcheck disable=SC2016 # the JavaScript below is bun's, not this shell's
   coverage_reading=$(printf '%s' "$body" | bun -e 'let data = ""; process.stdin.on("data", (chunk) => { data += chunk; }); process.stdin.on("end", () => { const report = JSON.parse(data); const kinds = Object.entries(report.kinds ?? {}).map(([kind, counts]) => `${kind} ${counts.lacking}/${counts.items}`).join(", "); console.log(`lacking=${report.total.lacking} items=${report.total.items} (${kinds})`); });') || return 1

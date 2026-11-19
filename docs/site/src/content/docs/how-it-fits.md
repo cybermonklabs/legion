@@ -113,9 +113,10 @@ the signed-in person's identity. The broker opens no ask and writes nothing in D
 reads the pending requests from the broker, and the broker reads one thing back, whether an issue
 its model judge was given is open. A grant lasts the lifetime its request named, else 15 minutes for a request that names a human-tier secret and 12 hours for any other (until its session ends for secrets tagged `default-grant=session`),
 and `agent-secrets NAME -- <command>` runs a command with the granted value in that command's
-environment rather than printing it. People create and change the secrets themselves, in the
-broker's own store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in, with
-`agent-secrets secret`, which has the broker serve each change at once.
+environment rather than printing it. The secrets themselves are created and changed in the
+broker's own store (AWS Secrets Manager or GCP Secret Manager), under whatever cloud credential
+the store's IAM lets write them, with `agent-secrets secret`, which has the broker serve each change
+at once.
 
 ## Envoy: the events between them
 

@@ -267,8 +267,13 @@ describe("ask census --json", () => {
       ],
     ];
 
-    for (const [args, refusal] of refusals) {
-      const refused = await spawnCensus(args);
+    // Each refusal is a process of its own that exits on its arguments and reads nothing another
+    // writes, so they run at once: eight in a row outlast bun's 5-second test limit on a slow
+    // machine.
+    const answered = await Promise.all(
+      refusals.map(async ([args, refusal]) => ({ refusal, refused: await spawnCensus(args) }))
+    );
+    for (const { refusal, refused } of answered) {
       expect(refused.stderr).toContain(refusal);
       expect(refused.exitCode).toBe(1);
       expect(refused.stdout).toBe("");

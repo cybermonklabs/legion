@@ -1,6 +1,6 @@
 ---
 name: legion-controller
-description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
+description: Use when you are a Legion project's controller session, on any controller wake (triage, slot-free, todo, tick, unslotted, awaiting-person, tree-stalled, architect-stalled, parked-decision, held, worker-died, worker-stalled, update-stalled, provider-errors), weekly-plan ranking, backlog stewardship, a clear defect or finding ask a role sends, an issue a person asks you to file, the daily report, an architect's escalation, or a person's message or mention.
 ---
 
 # Legion Controller
@@ -25,7 +25,6 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
 - Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
 - Write every Dispatch comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
-- A message that must reach more than 4 role topics is yours to send and nobody else's (`skill://envoy`). Send it to no more than 4 topics a minute, and send none while a daemon restart or a pod roll is under way, because each publish wakes a session that reads its whole context again, which the provider charges as uncached input: a mean of 576,083 tokens a wake, a median of 493,636 and a ninetieth percentile of 1,327,888. Spread the rest over later turns, and name in your summary the topics you have not sent to yet.
 
 Launch, `gh`, pull requests, takeover: `skill://legion-controller/references/session.md`.
 
@@ -75,12 +74,13 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
+| `architect-stalled on <KEY>` | Read the root's architect claim in `read_state`, then for the first arm take nothing while it is `working`, since the task reaches it when that turn ends, and name it in the day's report, or else `compact` that claim and use `fresh_session` only when it still does not take its task; for the second, `fresh_session` on a failed or retired claim; for the third, decide what the time means (`skill://legion-controller/references/wakes.md`) |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
-| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
+| `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the architect that owns the issue, or, for a stuck child's own architect, to the architect above that child; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
 | An architect's escalation | `skill://legion-controller/references/escalation.md` |
 | A finding ask's reference, or its answer | `skill://legion-controller/references/finding-asks.md` |
 | An answer to a park ask (`Park it`, `Leave it admitted`) or a deferral ask (`Defer it`, `Let it run`) | The procedure that opened it: `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4, or `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 |
@@ -97,8 +97,6 @@ when the holder lets go. `dispatch read` each root in `admission.trees` whose `p
 `admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the
 claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
 
-Before you publish to more than one role topic, read whether a wave of wakes is already running, in the state `read_state` returns: `wakesWaiting`, every wake the daemon's pacing holds until its turn, which is empty at every moment outside a wave; `daemon.startedAt`, since a restart minutes old is a wave; and each claim's `updateRound`, which an open pod-update round sets. While any of the three says a wave is running, publish nothing and say so in your summary, because your wake would land on the same minute as the daemon's own.
-
 ## Issues handed to Legion
 
 The daemon works only issues carrying the Dispatch label `legion` (any case). Work reaches Legion
@@ -106,8 +104,7 @@ by a person's decision: they set the label from the issue header, or ask you to 
 message, a Slack request that asks Legion to do the work, their answer to a finding ask, or a
 directive the weekly plan records with its link). The one exception is a clear defect a role hands
 you whose code no running tree owns: you file it with the label, because its fix is how to do work
-a person already wants, and humans decide what, agents decide how (the operator's answer on one
-such case: a clear defect is fixed, not asked about). A defect whose code a running
+a person already wants, and humans decide what, agents decide how. A defect whose code a running
 tree owns is that tree's, and you file nothing for it. Label an issue only then, because
 a labelled root in `todo` is admitted, so an unasked label starts unasked work. Never take a
 person's label off, because it is their decision. Label an issue before you `set_status` it to
@@ -127,11 +124,12 @@ An issue whose work must start at a commit other than its base branch's head nee
 `legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
 `gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. You
 ask for that command rather than run it, because you edit no repository and push no commit: for a
-root, whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
-daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
-branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
-the issue is admitted, and a child's before the child starts its first phase, which it can do as
-soon as its tree's design gate opens and nothing holds it. Read the branch back before you
+root, whoever hands the work over runs it; for a child of a tree, the architect that owns the
+child's parent runs it. The daemon sets the deadline: its own `issue_branch` row creates
+`legion/<KEY>` at the issue's base branch and leaves a branch GitHub already has where it is, so
+a root's branch must exist before the issue is admitted, and a child's before the child starts its
+first phase, which it can do as soon as its tree's design gate opens and nothing holds it. Read
+the branch back before you
 `set_status` the root to `todo`:
 `gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`. The issue's own spec tells its worker
 which branch to open the pull request against; nothing else carries that.
@@ -150,10 +148,8 @@ When a tree holds a slot while it waits on an event outside Legion, that wait is
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
-tree: a tree of four issues at work holds four slots. An issue holds one of the cap's slots from
-the moment the daemon starts it until its work is past its review — `accepting`, `retro` and
-`merging` hold none — or until it is done or Dispatch takes it out of the
-workflow, so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
+tree: a tree of four issues at work holds four slots. An issue takes its slot when the daemon
+starts it and gives it back as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
 roots of the live trees. The free slots are `admission.cap`, less every issue in
 `admission.active`, which is every issue holding a slot, and less again each issue of
 `admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
@@ -164,13 +160,11 @@ a tree's own root at `admitted` under a design gate a person has opened, a root 
 handed over with the slot it held there, and a child the daemon started that a person set back
 to `todo` — and subtracting such an issue a second time would hide a slot that is free.
 
-The line has two parts, and reading it as one list makes a right order look like a wrong one.
-First the issues whose work came back, oldest first by the moment it came back; then the issues
-that have not started, by the Dispatch rank of each issue's tree root and then its own. Each
-free slot goes to the first issue of the whole line that needs one, so a P2 root can take the
-slot in front of a P0 root that ranks first: the P2 root's work came back, and the P0 root has
-not started. That is the approved design of dispatch://INFRA-980, which finishes started work
-before it starts new work, and it is no defect to report. A move to `backlog` or `icebox` takes
+The line has two parts, and reading it as one list makes a right order look like a wrong one:
+the issues whose work came back stand in the first part, and the issues that have not started in
+the second. So a P2 root whose work came back can take a slot before a P0 root that has not started.
+That is the approved design, and it is no defect to report
+(https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label). A move to `backlog` or `icebox` takes
 an issue out of the line, and a re-rank of the issues ahead of an issue that has not started
 raises that issue inside the second part; neither act moves it ahead of one issue whose work
 came back. `read_state` tells you which part each waiting issue stands in and why

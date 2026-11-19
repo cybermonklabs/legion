@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -57,8 +56,10 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // or an owner, and a bundle's default owner, the directory GH_CONFIG_DIR names, is never minting
 // authority. It rewrites only the directories whose hosts.yml differs
 // (ghconfig.WriteBundle), recreating a root that is gone. A repository that cannot be read, a
-// render that fails, or a render whose default is not the owner of the pane's own repository is
-// logged and the pane keeps its last tokens until the next tick. A controller whose project has
+// render that fails, or a render whose default is not the directory the pane's own repository
+// routes to by the bundle's pairs (ghconfig.RouteDir, which the bundle's default is chosen by:
+// the repository's owner, or the owner a configured pair moved it to) is logged and the pane
+// keeps its last tokens until the next tick. A controller whose project has
 // no GitHub owner to mint for (runtime.ErrNoGitHubOwner) launched with gh acting as nobody, its
 // gh directory empty, and has nothing to refresh: it is passed over without a word, as the
 // sandbox runtime passes over such a controller's pod. A runtime with no credential function
@@ -82,14 +83,14 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		failed := func(err error) {
+		refreshFailed := func(err error) {
 			r.log.Warn("tmux runtime: github credential refresh failed", "claim", token, "role", role, "err", err)
 		}
 		repo := entry.ghRepo
 		if entry.issue == "" && role != claim.RoleController {
 			recorded, err := r.claimRepository(ctx, token)
 			if err != nil {
-				failed(fmt.Errorf("the claim's repository: %w", err))
+				refreshFailed(fmt.Errorf("the claim's repository: %w", err))
 				continue
 			}
 			repo = recorded
@@ -105,18 +106,19 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 			continue
 		}
 		if err != nil {
-			failed(err)
+			refreshFailed(err)
 			continue
 		}
-		owner := strings.ToLower(repo.Owner())
-		if owner != "" && bundle.Default != owner {
-			failed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, owner))
-			continue
+		if !repo.IsZero() {
+			if routed, _, _ := ghconfig.RouteDir(bundle.Pairs, repo.Owner(), repo.Name()); bundle.Default != routed {
+				refreshFailed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed))
+				continue
+			}
 		}
 		root := runtime.GHConfigDir(r.stateDir, token)
 		changed, err := ghconfig.WriteBundle(root, bundle)
 		if err != nil {
-			failed(fmt.Errorf("write the github credential: %w", err))
+			refreshFailed(fmt.Errorf("write the github credential: %w", err))
 			continue
 		}
 		if len(changed) > 0 {

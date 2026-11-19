@@ -1,0 +1,5 @@
+kind: Changed
+body: The description of doc-edit's with says that the replacement is parsed as markdown, which blocks it writes and where that is refused, and the edits route's answer carries the markdown of the blocks the edit wrote.
+time: 2026-11-11T05:35:20.779046695Z
+custom:
+    Issue: pr3516

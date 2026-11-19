@@ -63,9 +63,9 @@ const (
 	// each bounds its grants to an hour (policy.TagRules demands that of the google-service-account
 	// one); requesterOpenSecret lists nobody, which is the negative control: it behaves exactly as
 	// it did before the change.
-	requesterGCloudSami = "GCLOUD_SAMI"
+	requesterGCloudSami = "GCLOUD_DEMO"
 	requesterAzureAdmin = "AZURE_ADMIN"
-	requesterDevAditya  = "DEV_ADITYA"
+	requesterDevAditya  = "DEV_PERSON"
 	requesterOpenSecret = "TEAM_WIKI_TOKEN"
 
 	requesterGCloudValue = "gcloud-sami-value"
@@ -92,7 +92,7 @@ const (
 	requesterBoxService = "shared-box"
 	requesterBoxAccount = "example-sharedbox@example-project.iam.gserviceaccount.com"
 
-	// requesterServiceAccount is the Google service account DEV_ADITYA mints a token as, in the
+	// requesterServiceAccount is the Google service account DEV_PERSON mints a token as, in the
 	// one shape secrets.GoogleServiceAccount accepts, and requesterMintedToken what the fake IAM
 	// Service Account Credentials endpoint answers for it.
 	requesterServiceAccount = "dev-aditya@example-project.iam.gserviceaccount.com"
@@ -117,7 +117,7 @@ const (
 	// grant, which a Legion pod asks for and the person who owns it approves. It is human tier
 	// and admin: "true", so a person decides every release of it; its requesters name jason, who
 	// owns it, and the daemon whose pods ask for it; and it carries the hour cap policy.TagRules
-	// demands of an admin secret and of this kind alike.
+	// demands of an admin secret and of this type alike.
 	requesterGCPAdmin = "GCP_ADMIN"
 	// requesterAdminTrue is the one value the loader reads the admin tag as, the policy's own
 	// AdminTrue: anything else, the empty string included, refuses the secret as admin-malformed.
@@ -130,7 +130,7 @@ const (
 	requesterGCPAdminAccount = "workspace-admin@example-project.iam.gserviceaccount.com"
 	// requesterGCPAdminToken is what the fake IAM Service Account Credentials endpoint answers
 	// for that account: a token of its own, so that the pod reading it has read the mint of
-	// GCP_ADMIN and not DEV_ADITYA's.
+	// GCP_ADMIN and not DEV_PERSON's.
 	requesterGCPAdminToken = "ya29.fake-gcp-admin-access-token"
 
 	// The two Google Workspace scopes GCP_ADMIN's token carries, as its scopes tag names them:
@@ -196,7 +196,7 @@ const (
 // refused with secrets.ErrMintNotBound, the broker logs it class=binding, and the IAM endpoint
 // is never called for it.
 //
-// What this test reaches of the google-service-account kind, and what it does not:
+// What this test reaches of the google-service-account type, and what it does not:
 // cmd/broker/main.go builds secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets}
 // with no BaseURL and no HTTP client, so the one BROKER_* setting the minter reads binds each
 // secret to its account and none points the compiled binary at another IAM endpoint, and this
@@ -210,8 +210,8 @@ const (
 // is Google itself: what the minter sends and the error classes it builds out of what comes back
 // are pinned by internal/broker/secrets' own TestGoogleServiceAccountMintImpersonatesTheStoredAccount,
 // TestGoogleServiceAccountMintNamesGooglesVerdict, TestGoogleServiceAccountMintErrorsQuoteNoToken
-// and TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount, and the wiring of the kind
-// to that minter by cmd/broker's own TestEachKindReachesItsOwnMinter.
+// and TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount, and the wiring of the type
+// to that minter by cmd/broker's own TestEachTypeReachesItsOwnMinter.
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestRequesterRuleEndToEnd(t *testing.T) {
@@ -302,14 +302,14 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		proves  string
 	}{
 		{
-			name: "jason's session is refused DEV_ADITYA, which lists aditya alone",
-			// The google-service-account kind is served to the one person who owns it, so the
+			name: "jason's session is refused DEV_PERSON, which lists aditya alone",
+			// The google-service-account type is served to the one person who owns it, so the
 			// list is exactly aditya and jason is off it whatever the tier would have given him.
 			session: jasonSession, secret: requesterDevAditya,
 			proves: "a secret whose requesters name one person is refused to every other session before owner and tier are read",
 		},
 		{
-			name:    "jason's session is refused GCLOUD_SAMI, which lists the daemon and sami",
+			name:    "jason's session is refused GCLOUD_DEMO, which lists the daemon and sami",
 			session: jasonSession, secret: requesterGCloudSami,
 			proves: "a list of a service and one person admits neither jason's person nor his session's service, which is none",
 		},
@@ -340,7 +340,7 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		})
 	}
 
-	t.Run("aditya's session is granted DEV_ADITYA and reads the token the fake IAM endpoint minted", func(t *testing.T) {
+	t.Run("aditya's session is granted DEV_PERSON and reads the token the fake IAM endpoint minted", func(t *testing.T) {
 		code, stdout, stderr := adityaSession.run(t, cli, base, requesterDevAditya, "--ttl", requesterTTL,
 			"--", "sh", "-c", `printf %s "$`+requesterDevAditya+`"`)
 		if code != 0 || stdout != requesterMintedToken {
@@ -434,11 +434,9 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 			}
 		}
 		// The operator's own line, the one that says the deployment's binding is what to fix.
-		log := broker.Await(t, requests.MintFailedMessage)
-		for _, want := range []string{"class=binding", "name=" + requesterUnboundSecret} {
-			if !strings.Contains(log, want) {
-				t.Fatalf("the broker's %q line does not carry %q:\n%s", requests.MintFailedMessage, want, log)
-			}
+		record := broker.AwaitRecord(t, requests.MintFailedMessage, map[string]any{"name": requesterUnboundSecret})
+		if record["class"] != "binding" {
+			t.Fatalf("the broker's %q line for %s carries class %v, want binding: %v", requests.MintFailedMessage, requesterUnboundSecret, record["class"], record)
 		}
 		// Nothing reached Google at all: the minter refuses an unbound secret before it resolves
 		// the broker's own credential and before it makes any call.
@@ -873,7 +871,7 @@ func newRequesterStore(t *testing.T) *requesterStore {
 		// GCP_ADMIN below, may name registered services beside its owner), and its stored value
 		// names the account the broker impersonates.
 		requesterRow(requesterDevAditya, aditya, policy.TierAgent, `{"service_account":"`+requesterServiceAccount+`"}`, map[string]string{
-			policy.TagKind:       policy.KindGoogleServiceAccount,
+			policy.TagType:       policy.TypeGoogleServiceAccount,
 			policy.TagRequesters: aditya,
 			policy.TagMaxGrant:   requesterMaxGrant,
 		}),
@@ -883,7 +881,7 @@ func newRequesterStore(t *testing.T) *requesterStore {
 		// cap keeps each grant reviewable while it is live, and the scopes are the two Workspace
 		// scopes its token carries and nothing wider.
 		requesterRow(requesterGCPAdmin, jason, policy.TierHuman, `{"service_account":"`+requesterGCPAdminAccount+`"}`, map[string]string{
-			policy.TagKind:       policy.KindGoogleServiceAccount,
+			policy.TagType:       policy.TypeGoogleServiceAccount,
 			policy.TagRequesters: jason + " " + requesterDaemonService,
 			policy.TagMaxGrant:   requesterMaxGrant,
 			policy.TagAdmin:      requesterAdminTrue,
@@ -893,7 +891,7 @@ func newRequesterStore(t *testing.T) *requesterStore {
 		// so the policy serves it and its owner's own session is granted it at once, and left out
 		// of BROKER_SERVICE_ACCOUNT_SECRETS, so the release mints nothing.
 		requesterRow(requesterUnboundSecret, aditya, policy.TierAgent, `{"service_account":"`+requesterUnboundAccount+`"}`, map[string]string{
-			policy.TagKind:       policy.KindGoogleServiceAccount,
+			policy.TagType:       policy.TypeGoogleServiceAccount,
 			policy.TagRequesters: aditya,
 			policy.TagMaxGrant:   requesterMaxGrant,
 		}),

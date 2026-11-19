@@ -18,11 +18,16 @@
 # `const DockerPluginVersion` of packages/envoy/infra/internal/pulumitest/pulumitest.go for the
 # docker provider plugin the envoy-infra live tests install,
 # and .bun-version for the three bun rows.
+# A row named `<tool>-aarch64` is the arm64 build of the `<tool>` row beside it, for the jobs that
+# run on ubuntu-24.04-arm: its `version` is that row's, so it answers to the same pin, and the
+# install action picks one of the two from `uname -m`. The bun rows name their builds the way
+# Bun's own assets do, and answer to .bun-version each.
 # .github/scripts/check-ci-tools.sh is the gate that holds a row to its pin and to this file's
 # shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
 # ci.yaml's `ci-images` job, the one copy path this repository has.
 #
-# Raising a tool is one commit: the row and the pin it answers to move together.
+# Raising a tool is one commit: the row, its `-aarch64` row where it has one, and the pin they
+# answer to move together.
 # A row that disagrees with its pin installs one version and verifies another, and that is the
 # hole .github/scripts/check-ci-tools.sh exists to close, so the tree never holds that state.
 #
@@ -32,12 +37,14 @@
 # consumer there names a digest and the new row is inert until a `FROM` moves onto it, and
 # .bun-version, `ARG BUN_VERSION`, every `FROM` and these three rows follow in the second
 # commit. What a tool row cannot do is go ahead of its pin the way an image row can, because a
-# call site names a row rather than a version: a second row of the same tool has no name a call
-# site could use, and this file's gate refuses two rows of one name for that reason.
+# call site names a row rather than a version: a second row of the same tool for the same machine
+# has no name a call site could use, and this file's gate refuses two rows of one name for that
+# reason.
 #
-# One commit races nothing: ci.yaml's `tool-fallback` job declares `needs: [changes, ci-images]`,
-# so the copy of the new row is filled before `tool-fallback` reads it, and no other job waits on
-# that copy, because an install reaches the copy only where its primary did not serve the bytes.
+# One commit races nothing: ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs each declare
+# `needs: [changes, ci-images]`, so the copy of the new row is filled before either reads it, and
+# no other job waits on that copy, because an install reaches the copy only where its primary did
+# not serve the bytes.
 # The one window it leaves, said out loud: a raise merged while that tool's release asset is
 # down and its copy is not yet filled. In that window the tool has exactly the single source it
 # has today, which is what every install of it had before this file existed.
@@ -69,7 +76,8 @@
 # package and no vendor host serving this archive. That is what that search found and not a fact
 # about the world, which is why the claim a copy makes is the narrower one: that the package
 # holds these exact bytes, which .github/scripts/mirror-ci-tools.sh's read-back after the push
-# and ci.yaml's `tool-fallback` blob check are what decide.
+# and the `tool-fallback` job's blob check (.github/workflows/ci-job-tool-fallback.yaml) are what
+# decide.
 #
 # WHY THE BUN AND jj ROWS PIN THE INSTALLED BINARY AND NOT AN ARCHIVE.
 # `oven-sh/setup-bun` at the commit .github/actions/setup-bun pins verifies no checksum at all,
@@ -154,6 +162,22 @@ tools:
     # digest is checked and the bytes are pushed, or "" to push the archive whole.
     mirror_member: ""
 
+  # crane for an arm64 runner: the release of the row above, built for aarch64. The digest is the
+  # one the release's own checksums.txt gives for this tarball.
+  - name: crane-aarch64
+    version: 0.22.1
+    digest: 898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110
+    digest_of: the release tarball go-containerregistry_Linux_arm64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz
+    mirror_member: ""
+
   # changie, which renders the changelog. .github/actions/install-changie installs it.
   - name: changie
     version: 1.26.0
@@ -167,6 +191,22 @@ tools:
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
+    mirror_member: ""
+
+  # changie for an arm64 runner: the release of the row above, built for aarch64. The digest is
+  # the one the release's own checksums.txt gives for this tarball.
+  - name: changie-aarch64
+    version: 1.26.0
+    digest: ec1e542014b5134f1cf86b3a12e86d566ab5ec9bd3901bf66f42a09cd9865b6e
+    digest_of: the release tarball changie_1.26.0_linux_arm64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_arm64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_arm64.tar.gz
     mirror_member: ""
 
   # mise, which .github/actions/install-jj installs jj with, and which the worker image's tools
@@ -184,6 +224,24 @@ tools:
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
+    mirror_member: ""
+
+  # mise for an arm64 runner, which .github/actions/install-jj installs jj with there. The worker
+  # image builds for linux/amd64 alone, so no ARG of its Dockerfile pins this digest: it is the
+  # one the release's own SHASUMS256.txt gives for this tarball, and the version is the mise
+  # row's, which check-ci-tools.sh holds to ARG MISE_VERSION.
+  - name: mise-aarch64
+    version: 2026.8.12
+    digest: 3ec7d4fd8ebd923794612a3cc89cb44617943845ebf0f4cea9a325dbb3756184
+    digest_of: the release tarball mise-v2026.8.12-linux-arm64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-arm64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-arm64.tar.gz
     mirror_member: ""
 
   # jj, the fork the worker image ships, pinned by `ARG JJ_TOOL`. The version is the part of it in
@@ -206,6 +264,24 @@ tools:
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
+    mirror_member: ./jj
+
+  # jj for an arm64 runner: the same fork release, the aarch64 musl build mise installs there. As
+  # on the row above, `primary` is empty because mise fetches the primary bytes, and the digest is
+  # of the binary mise installs; the release's own asset digest answers for the tarball
+  # `mirror_from` names, and this one was read out of it.
+  - name: jj-aarch64
+    version: 0.45.1-sami.20260910-043938
+    digest: 0bbd6fd2a342def6b376afcb07594e41451f8b19178a15779f08a454690da339
+    digest_of: the jj binary itself, the 20982448-byte `./jj` member of the release tarball
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # Bun for an x64 runner, the version .bun-version pins. `primary` is empty on every bun row:
@@ -280,6 +356,22 @@ tools:
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+    mirror_member: ""
+
+  # elan for an arm64 runner: the release of the row above, built for aarch64. The digest is the
+  # one GitHub records for this release asset.
+  - name: elan-aarch64
+    version: 4.2.4
+    digest: 05febd124d84ebf994b2e7479922a5650b1e950c17ae3bd1ddd776b65bb72bf9
+    digest_of: the release tarball elan-aarch64-unknown-linux-gnu.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-aarch64-unknown-linux-gnu.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-aarch64-unknown-linux-gnu.tar.gz
     mirror_member: ""
 
   # uv, which .github/actions/install-uv installs: the uv the worker image ships, pinned by

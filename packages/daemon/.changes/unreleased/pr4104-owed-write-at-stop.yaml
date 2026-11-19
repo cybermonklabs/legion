@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A claim write that the daemon's own stop cuts short now logs
+  `supervise: a claim write the database did not take` at Info instead of Warn, still with
+  `owed=true`. The stop cancels the write on purpose and the database refused nothing, so a Warn
+  sent the reader to a database with no fault. The next boot takes the claim up from its row, as it
+  does for every decision the stop ends. A write that runs out of its own deadline while the daemon
+  stops still logs at Warn.

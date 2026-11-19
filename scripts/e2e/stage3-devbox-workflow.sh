@@ -412,6 +412,21 @@ claim_session_text() {
   f=$(claim_session_file "$1" "$2") || return 1
   cat -- "$f"
 }
+# pane_bundle_listing ISSUE prints, one a line, what the implementer's own `ls` of its gh bundle's
+# root listed: the words after CRED-OWNERS= in the newest result of its bash tool that holds that
+# line. Only a tool result is read: the instruction holds the command unexpanded, so its own text
+# never starts a line with the marker, and the model's reply could say anything. It fails while
+# the session holds no such result.
+pane_bundle_listing() {
+  local text listed
+  text=$(claim_session_text "$1" implementer) || return 1
+  listed=$(jq -R -r 'fromjson? | objects
+    | select(.type == "message" and .message.role == "toolResult" and .message.toolName == "bash")
+    | .message.content[]? | select(.type == "text") | (.text // "") | split("\n")[]
+    | select(startswith("CRED-OWNERS="))' <<<"$text" | tail -n 1) || return 1
+  [ -n "$listed" ] || return 1
+  tr -s ' ' '\n' <<<"${listed#CRED-OWNERS=}" | sed '/^$/d'
+}
 workspace_jj() {
   local issue=$1
   shift
@@ -713,7 +728,9 @@ port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
 [ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
 docker exec "$pg_container" createdb -U legion legion
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -740,8 +757,9 @@ manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-l
 cat >"$work/instructions.md" <<'EOF'
 # Stage 3 proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
@@ -799,9 +817,10 @@ pass
 
 begin panes-pinned-to-the-rig-before-any-agent-turn
 # The two admitted architects are the only panes before any phase worker: each takes its first turn
-# from the daemon's catch-up notice, not from the proof. Every later pane is checked when it
-# registers and again before each instruction. An architect whose root already waits on a person
-# (it registered its closed gate and stays live) was checked by the pane watcher at its launch.
+# from the task its start carries and the daemon's catch-up notice, not from the proof. Every later
+# pane is checked when it registers and again before each instruction. An architect whose root
+# already waits on a person (it registered its closed gate and stays live) was checked by the pane
+# watcher at its launch.
 wait_for_architect "$root_issue"
 wait_for_architect "$held_issue"
 note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL=http://127.0.0.1:$port_dispatch, DISPATCH_TOKEN_FILE=$state/secrets/dispatch-token, ENVOY_URL=http://127.0.0.1:$port_listener, ENVOY_NATS_URL=nats://127.0.0.1:$port_nats"
@@ -813,15 +832,13 @@ pass
 primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
-  # person, keeping the admission slot it took at its admission: an issue holds one of the cap's
-  # slots from the moment the daemon starts it until its work is past its review — accepting,
-  # retro and merging hold none — or until it is done or Dispatch takes it out of
-  # the workflow.
+  # person, keeping the admission slot it took at its admission: a root in awaiting_person keeps
+  # its slot (root AGENTS.md, "Admission").
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
   # peak this lane needs under that rule: the two roots the daemon starts here hold both rows while
   # their work stands short of its review, each of the two waiting roots is admitted as one of them
-  # gives its row back — the first root when its architect accepts it, the no-change root at its
+  # gives its row back — the first root when it enters accepting, the no-change root at its
   # close — and no scene of the run needs a third root at work beside them.
   drive_gate "$root_issue" "Stage 3 proof gate operation" 1800
   artifact_id=$gate_artifact
@@ -1074,7 +1091,7 @@ primary_issue() {
   # here, after the first look's report and the smoke main's cleanup: what remains of the 30
   # minutes, and a bound deferred by a look still open when it came due (by the look's own
   # two-hour bound) fails here by name rather than hanging. The last look's pending closes the
-  # check as not_run: the tester's claim is retired, its session dropped (issue_close), and the
+  # check as not_run: the tester's claim is retired, its session kept (issue_close), and the
   # state omits the check.
   until_true 1800 "the bound to start the last look of $root_issue's production check" last_look_started "$root_issue"
   state_file check-look-2
@@ -1269,16 +1286,27 @@ restart_scenarios() {
   until_true 240 "the real Go pane bash tool to resolve the launcher directory's gh wrapper" session_contains "$restart_issue" implementer "CRED-GH=$state/bin/gh"
   until_true 240 "the implementer pane to name the real gh its wrapper runs" session_contains "$restart_issue" implementer "CRED-REAL=$realbin/gh"
   until_true 240 "the implementer pane to name its claim's gh directory" session_contains "$restart_issue" implementer "CRED-DIR=$state/secrets/"
-  until_true 240 "the implementer pane to list the bundle's one owner" session_contains "$restart_issue" implementer "CRED-OWNERS=$owner "
+  until_true 240 "the implementer pane to list its gh bundle's root" pane_bundle_listing "$restart_issue"
   until_true 240 "the implementer pane to carry an empty GH_TOKEN" session_contains "$restart_issue" implementer "CRED-TOKEN=."
   implement_app=$(role_app implementer)
   until_true 240 "the implementer pane to authenticate as its App, $implement_app" session_contains "$restart_issue" implementer "CRED-VIEWER=$implement_app"
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
-  # writes for the pane and, since INFRA-513 narrowed every token, a directory per other repository
-  # the project serves under that owner, each holding those two files alone; nothing else is in
-  # either.
+  # writes for the pane and nothing else, since a bundle holds one directory per owner account the
+  # App is installed on and no directory for a repository (INFRA-2543 R2). The root holds that
+  # directory, one more for each other account the App is installed on, and the bundle's one file,
+  # `renames.txt`, the configured renames both wrappers route a moved repository by, which every
+  # bundle this daemon writes carries, empty where the project has no rename that resolves.
+  # GitHub decides which accounts those are and this run does not: stage 3 defaults to this
+  # deployment's Apps, which are installed on several, so another owner's directory is no failure.
+  # The root is read twice, as the pane's own `ls` listed it and as this host holds it, and each
+  # reading must hold $owner and nothing that is neither a lowercased GitHub login, which is what
+  # a bundle's directory is named (ghconfig.IsOwner), nor that one file. A login is ghconfig's
+  # rule: a letter or digit, then up to 38 letters, digits, hyphens and underscores, since a
+  # managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its directory is a bundle's
+  # like any other; a name with a dot or a slash, one opening with a hyphen or an underscore, or
+  # one past 39 characters is still a stranger.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
   cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
@@ -1287,23 +1315,30 @@ restart_scenarios() {
   [ "$cred_dir" = "$cred_root/$owner" ] || fail "the implementer's OMP carries GH_CONFIG_DIR=$cred_dir, want $owner's directory of $cred_root"
   [ "$(pane_value "$cred_omp" LEGION_GH_PATH)" = "$realbin/gh" ] || fail "the implementer's OMP carries LEGION_GH_PATH=$(pane_value "$cred_omp" LEGION_GH_PATH), want $realbin/gh"
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
+  cred_listed=$(pane_bundle_listing "$restart_issue") || fail "the implementer's session holds no bash result that lists its gh bundle's root"
+  grep -qxF -- "$owner" <<<"$cred_listed" || fail "the implementer pane's ls of its gh bundle's root lacks $owner; it listed: $(tr '\n' ' ' <<<"$cred_listed")"
+  cred_strangers=$(grep -vxF -- renames.txt <<<"$cred_listed" | grep -vxE -- '[a-z0-9][a-z0-9_-]{0,38}' || true)
+  [ -z "$cred_strangers" ] ||
+    fail "the implementer pane's ls of its gh bundle's root lists an entry that is neither an owner's directory nor the bundle's renames.txt: $(tr '\n' ' ' <<<"$cred_strangers")"
   for dir in "$cred_root" "$cred_dir"; do
     [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
   done
-  [ "$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want $owner's directory alone"
+  cred_root_entries=$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  [ -d "$cred_root/$owner" ] || fail "$cred_root holds no directory for $owner; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  [ -f "$cred_root/renames.txt" ] || fail "$cred_root holds no renames.txt, which every bundle this daemon writes carries; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  while IFS= read -r entry; do
+    case $entry in
+      "" | renames.txt) continue ;;
+    esac
+    [[ $entry =~ ^[a-z0-9][a-z0-9_-]{0,38}$ ]] && [ -d "$cred_root/$entry" ] ||
+      fail "$cred_root holds $entry, which is neither an owner's directory nor the bundle's renames.txt; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
+  done <<<"$cred_root_entries"
   cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   for want in config.yml hosts.yml; do
     grep -qxF -- "$want" <<<"$cred_owned" || fail "$cred_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   done
-  while read -r cred_entry; do
-    case $cred_entry in
-      "" | config.yml | hosts.yml) continue ;;
-      . | .. | *[!a-z0-9._-]*) fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone" ;;
-    esac
-    [ -d "$cred_dir/$cred_entry" ] || fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone"
-    cred_held=$(find "$cred_dir/$cred_entry" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
-    [ "$cred_held" = "config.yml hosts.yml " ] || fail "$cred_dir/$cred_entry holds $cred_held, want config.yml and hosts.yml alone"
-  done <<<"$cred_owned"
+  [ "$(tr '\n' ' ' <<<"$cred_owned")" = "config.yml hosts.yml " ] ||
+    fail "$cred_dir holds an entry beside its two gh files, and a bundle holds one directory per owner account the App is installed on and no directory for a repository; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
   [ "$(stat -c %a "$cred_dir/hosts.yml")" = 600 ] || fail "$cred_dir/hosts.yml is mode $(stat -c %a "$cred_dir/hosts.yml"), want 600"
   jq -R -s -e '[split("\n")[] | fromjson? | select(.msg == "tmux runtime: github credential written" and .role == "implementer")] | length > 0' <"$evidence/logs/daemon.log" >/dev/null ||
     fail "the daemon log has no 'github credential written' line for an implementer pane"
@@ -1360,7 +1395,7 @@ status_actors() {
   note "every lifecycle transition on $root_issue ($(jq -r '[.[] | select(.type | IN("issue.updated", "issue.closed")) | .payload.status] | join(" ")' "$evidence/root-events.json")) records actor legion-daemon:$project; one agent-attributed write was rejected"
   pass
 }
-# Every workflow notice is for the architect that owns its issue, on that architect's role topic:
+# Every workflow notice is for an architect, on that architect's role topic:
 # the run's pr-blocked, the reviewer's phase-finished at its approval (the architect's acceptance
 # cue) and worker-died reach their architects (checked where each is written), and no phase-worker
 # session of the run receives any notice.

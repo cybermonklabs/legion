@@ -1,43 +1,15 @@
-import { api } from "../../api/client";
+import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import type { BlockSchema } from "../../api/types";
+import { schemaCreatable } from "./schema-creatable";
 
 /**
- * Loads one server schema per session while retaining parsed schemas by their version. A
- * failed fetch is not retained: the next `load` fetches again, so a transient error on page
- * load does not leave every document surface without a schema until reload.
+ * The document schema manifest this page was built with (`pmdoc/schema/blocks.json`, the file the
+ * server of the same build embeds): the nodes, marks and typed blocks its editors build, and its
+ * version. During a release two builds serve one deployment, so the server that answers the page
+ * can be of the other build; the page reads no schema from it. The proof-editor checks the shape
+ * when it builds an editor or the headless engine from it.
  */
-export class BlockSchemaCache {
-  private readonly schemas = new Map<number, BlockSchema>();
-  private loading: Promise<BlockSchema> | undefined;
+export const compiledBlockSchema = manifest as unknown as BlockSchema;
 
-  load(fetchSchema: () => Promise<BlockSchema>): Promise<BlockSchema> {
-    if (this.loading !== undefined) {
-      return this.loading;
-    }
-    const loading = fetchSchema().then(
-      (schema) => {
-        this.schemas.set(schema.version, schema);
-        return schema;
-      },
-      (error: unknown) => {
-        if (this.loading === loading) {
-          this.loading = undefined;
-        }
-        throw error;
-      }
-    );
-    this.loading = loading;
-    return loading;
-  }
-
-  forVersion(version: number): BlockSchema | undefined {
-    return this.schemas.get(version);
-  }
-}
-
-export const blockSchemaCache = new BlockSchemaCache();
-
-/** Fetches the current schema once, then retains it by version for every document surface. */
-export function loadBlockSchema(): Promise<BlockSchema> {
-  return blockSchemaCache.load(() => api.getBlockSchema());
-}
+/** R for the manifest this page was built with, which its document connections present. */
+export const compiledSchemaCreatable = schemaCreatable(compiledBlockSchema);

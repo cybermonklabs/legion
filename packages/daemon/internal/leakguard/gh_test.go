@@ -2,14 +2,105 @@ package leakguard
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
+
+// theProgram is the public_leak_check.py of a stand-in check these tests count as proven: its
+// sha256 (hexSHA256) is the value a caller names in GhRequest.ProvenCheck.
+const theProgram = "# stands for the shared check a read rule was proven against\n"
+
+// A call its caller found writes nothing (GhRequest.WritesNothing), under the check its caller's
+// rule was proven against (GhRequest.ProvenCheck), runs the shared check and nothing more. A check
+// that clears it clears it with no visibility read and no private-name pass, though its argv
+// names a host the rules refuse: a read leaves no text in any repository. A check that refuses
+// it, one that cannot finish, and one its bound stops refuse it as they refuse any call. Under a
+// check that is not the proven one — its program another file, or no file — and as a write, the
+// same call reads the destination's visibility and is refused by the rules.
+func TestAGhCallThatWritesNothingRunsTheSharedCheckAlone(t *testing.T) {
+	const repo = "invented-org/invented-repo"
+	args := []string{"search", "code", theHost}
+	proven := hexSHA256(theProgram)
+	call := func(t *testing.T, ctx context.Context, check, program string, writesNothing bool) ([]string, GhAnswer, error) {
+		t.Helper()
+		var asked []string
+		script := leakguardtest.Write(t, t.TempDir(), check)
+		if program != "" {
+			if err := os.WriteFile(filepath.Join(filepath.Dir(script), checkProgram), []byte(program), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		guard := New(Options{
+			Check:      script,
+			Visibility: answers(Public, &asked),
+			Env:        fixtureenv.Isolated(t.TempDir()),
+		})
+		answer, err := guard.GhCall(ctx, GhRequest{Args: args, Repo: repo, Files: []GhFile{}, WritesNothing: writesNothing, ProvenCheck: proven})
+		return asked, answer, err
+	}
+	t.Run("a read the check clears", func(t *testing.T) {
+		if asked, answer, err := call(t, bound(t), passes, theProgram, true); err != nil || len(asked) != 0 || !answer.CheckedOnly {
+			t.Fatalf("GhCall = %+v, %v, visibility asked of %q; want the read cleared by the check alone", answer, err, asked)
+		}
+	})
+	t.Run("a read the check refuses", func(t *testing.T) {
+		asked, _, err := call(t, bound(t), refuses, theProgram, true)
+		refusal(t, err)
+		if len(asked) != 0 {
+			t.Fatalf("visibility asked of %q for a read the check refused", asked)
+		}
+	})
+	t.Run("a read whose check cannot finish", func(t *testing.T) {
+		_, _, err := call(t, bound(t), cannotFinish, theProgram, true)
+		setupFailure(t, err)
+	})
+	t.Run("a read whose check runs past its bound", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		started := time.Now()
+		asked, _, err := call(t, ctx, "cat >/dev/null 2>&1\nsleep 30\n", theProgram, true)
+		answeredWithin10s(t, started)
+		says(t, setupFailure(t, err), "the shared public leak check", "ran 2 s", "bound of 2 s")
+		if len(asked) != 0 {
+			t.Fatalf("visibility asked of %q for a read whose check was stopped", asked)
+		}
+	})
+	for _, tc := range []struct {
+		name          string
+		program       string
+		writesNothing bool
+	}{
+		{"a read under a check whose program is another file", theProgram + "# an edit\n", true},
+		{"a read under a check with no program beside it", "", true},
+		{"the same call as a write", theProgram, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asked, answer, err := call(t, bound(t), passes, tc.program, tc.writesNothing)
+			if report := refusal(t, err); !strings.Contains(report.Error(), theClass) {
+				t.Fatalf("the refusal does not name the class: %v", report)
+			}
+			if !slices.Equal(asked, []string{repo}) || answer.CheckedOnly {
+				t.Fatalf("visibility asked of %q and checked only %v, want %q asked once and the whole guard", asked, answer.CheckedOnly, repo)
+			}
+		})
+	}
+}
+
+// hexSHA256 is the sha256 of text, in hex.
+func hexSHA256(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
 
 // A gh call that carries its body in a file publishes the file's text, not the file's name, and
 // this repository's own rules must read that text.
@@ -108,6 +199,36 @@ func TestAGhCallsBodyFileOfStandardInputOpensNoFile(t *testing.T) {
 		Repo: "invented-org/invented-repo",
 	}); err != nil {
 		t.Fatalf("a call whose body is standard input: %v", err)
+	}
+}
+
+// gh 2.104.0's --attach uploads a file this guard does not read, so a bare argv naming it, the
+// fallback's input, is refused naming the option, as `legion gh` refuses it before the guard:
+// separately and with its value attached, on every leaf that carries it. The same argv past a
+// bare `--` names no option gh reads and is cleared, and so is the same call without --attach.
+func TestAGhCallsUploadTheGuardDoesNotReadIsASetupFailure(t *testing.T) {
+	for _, args := range [][]string{
+		{"pr", "comment", "1", "--body", "hi", "--attach", "notes.svg"},
+		{"issue", "create", "--title", "t", "--body", "b", "--attach=notes.svg#alt"},
+		{"issue", "artifact", "edit", "142", "2", "--attach", "./flow.png"},
+	} {
+		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			_, err := guard.GhCall(bound(t), GhRequest{Args: args, Repo: "invented-org/invented-repo"})
+			failed := setupFailure(t, err)
+			if !strings.Contains(failed.Error(), "--attach uploads the file it names, which this guard does not read") {
+				t.Fatalf("the failure is %q, want it to name --attach", failed)
+			}
+		})
+	}
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	for _, args := range [][]string{
+		{"pr", "comment", "1", "--body", "hi"},
+		{"repo", "clone", "invented-org/invented-repo", "--", "--attach", "notes.svg"},
+	} {
+		if _, err := guard.GhCall(bound(t), GhRequest{Args: args, Repo: "invented-org/invented-repo"}); err != nil {
+			t.Fatalf("GhCall(%q): %v, want it cleared", args, err)
+		}
 	}
 }
 
@@ -323,7 +444,7 @@ func TestAJsonBodysEscapesAreRead(t *testing.T) {
 // never a truncated buffer handed to gh as though the guard had read the whole.
 func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), leakguardtest.Reading(0, "")), Public)
-	buffered, err := guard.GhCall(bound(t), GhRequest{
+	answer, err := guard.GhCall(bound(t), GhRequest{
 		Args:  []string{"pr", "create", "--body-file", "-"},
 		Stdin: bytes.NewReader(bytes.Repeat([]byte("a"), maxGhFile+1)),
 		Repo:  "invented-org/invented-repo",
@@ -332,7 +453,7 @@ func TestStandardInputPastTheBoundIsASetupFailure(t *testing.T) {
 	if !strings.Contains(failed.Error(), "standard input is longer than") {
 		t.Fatalf("the failure is %q, want it to name the bound", failed)
 	}
-	if buffered != nil {
-		t.Errorf("the caller got %d bytes back of an input the guard never read whole", len(buffered))
+	if answer.Stdin != nil {
+		t.Errorf("the caller got %d bytes back of an input the guard never read whole", len(answer.Stdin))
 	}
 }

@@ -3,12 +3,13 @@ package docs
 import (
 	"context"
 	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -66,6 +67,15 @@ func equivalenceFlows() []equivalenceFlow {
 			run: func(r *flowRun) error { return r.reply("A reply to the seeded comment.") },
 		})
 	}
+	// A mark no manifest of this build names is an element this build does not know, which a
+	// newer build serving the same database can have written: a write over it is refused as
+	// newer content, which no repair answers, not as a tree outside the schema.
+	flows = append(flows, equivalenceFlow{
+		name:    "a reply on a mark this build does not know",
+		corrupt: appendTextMark(crdt.Attributes{"unknown": map[string]any{}}),
+		wantErr: ErrDocNewerContent,
+		run:     func(r *flowRun) error { return r.reply("A reply to the seeded comment.") },
+	})
 	return flows
 }
 
@@ -91,21 +101,38 @@ type flowRun struct {
 	marginWrites int
 }
 
-// operation runs one document call of the flow, recording its result and the events it collected.
+// operation runs one document call of the flow, recording its result, the rows its anchor
+// refreshes refreshed and where in the write phase its events fall. A transaction's events are
+// appended when its write phase runs (Ledger.Commit, INFRA-636), so the events themselves are
+// read off the ledger afterwards (flowObservation.readEvents).
 func (r *flowRun) operation(name string, call func() (any, error)) error {
-	before := len(r.ledger.events)
+	operation := observedOperation{Name: name, from: r.eventBoundary()}
+	refreshed := r.side.refreshes.Load()
 	result, err := call()
-	operation := observedOperation{Name: name, Result: encodeObserved(result)}
-	for _, event := range r.ledger.events[before:] {
-		r.observed.Sequences = append(r.observed.Sequences, event.Seq)
-		event.ID, event.Seq, event.CreatedAt = 0, 0, time.Time{}
-		operation.Events = append(operation.Events, encodeObserved(event))
-	}
-	// refreshAnchors reads the open anchors in no order, so one operation's events are compared
-	// as a set; the operations keep their order.
-	slices.Sort(operation.Events)
+	operation.Result = encodeObserved(result)
+	operation.Refreshed = int(r.side.refreshes.Load() - refreshed)
+	operation.to = r.eventBoundary()
 	r.observed.Operations = append(r.observed.Operations, operation)
 	return err
+}
+
+// eventBoundary marks how many events the transaction had appended at this point of its write
+// phase: a statement of the write phase, queued here, writing nothing, whose callback the batch
+// runs in statement order, as the appends' own callbacks run in theirs. Both sides queue one
+// before and one after every operation alike. A flow that is refused never runs its write phase,
+// so its boundaries stay unreached (-1) and it appended nothing at all.
+func (r *flowRun) eventBoundary() *int {
+	at := -1
+	if err := r.ledger.Queue(func(b *store.WriteBatch) error {
+		b.Queue("", `select 1`).Exec(func(pgconn.CommandTag) error {
+			at = len(r.ledger.events)
+			return nil
+		})
+		return nil
+	}); err != nil {
+		r.t.Fatalf("queue an event boundary: %v", err)
+	}
+	return &at
 }
 
 // project writes the margin record as the side does, and holds the margin write to the path the

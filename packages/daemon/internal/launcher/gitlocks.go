@@ -26,7 +26,8 @@ import (
 // The sweep runs in the launcher process of an issue pod's roles container, where processes of
 // the issue are running, so it decides each lock for itself rather than removing what it finds:
 // a lock some process still holds must never be removed, since two writers would then replace one
-// file.
+// file. It runs only where that launcher is the container's first process, the one that sees
+// every process that may hold a lock (serveGitLockSweep).
 
 // gitLockInterval is how often a pass runs. A minute is short against the hours a wedged clone
 // would otherwise cost the issue — nothing else removes such a lock while the pod runs — and long
@@ -57,6 +58,15 @@ var gitLockRecheck = 2 * time.Second
 // row can hold a pass at: every read a pass makes of the clone is one a role cannot hold, a
 // worktree entry's gitdir that is a fifo among them (internal/workspace's readGitdir).
 var gitLockRemove = os.Remove
+
+// gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc): the container's
+// own, where PID 1 of the container sees every process that may hold a lock. It is a variable for
+// the rows that drive a real launcher, which builds its sweep here and so takes no field of its
+// own. Such a row points it at a /proc of its own (useSweepingLauncher), as it points the memory
+// guard at a pod of its own: the /proc of the machine a test runs on lists processes the row knows
+// nothing of, and on a machine several users share, any git or jj of another user is one whose
+// open files the test cannot read, which keeps every lock the row planted (holders).
+var gitLockProc = "/proc"
 
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
 // decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
@@ -165,6 +175,33 @@ type gitLockSweep struct {
 	refusal string
 }
 
+// serveGitLockSweep is the pod's one sweep of the clone's stale git locks: it builds the sweep
+// (newGitLockSweep), gives it to every role manager, runs its first pass and its clock (serve),
+// and answers the channel serve answers, closed once its ticker has returned.
+//
+// The sweep runs only where the launcher is the container's first process (containerInit), as
+// the memory guard does (serveMemoryGuard). A pass keeps a lock that a process holds open and may
+// remove one that none holds, and it reads the holders from /proc: PID 1 of the container sees
+// every process of the container, each role's namespaces' included, where a launcher started
+// anywhere else (by hand inside a role) sees that role's processes alone and would remove a lock
+// another role's git or jj holds. Any other launcher logs one line, sweeps nothing, and answers a
+// channel already closed. No manager then holds a sweep (manager.gitLocks), so a role start
+// learns nothing (learn) and runs its restore over the clone as the clone stands.
+func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{} {
+	if !containerInit() {
+		managers[0].log.linef("launcher: git lock sweep: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may hold a lock",
+			os.Getpid())
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	sweep := newGitLockSweep(managers[0].log.linef)
+	for _, m := range managers {
+		m.gitLocks = sweep
+	}
+	return sweep.serve(ctx)
+}
+
 // newGitLockSweep is the roles container's sweep over the workspace its own working directory is:
 // the pod sets that container's working directory to the issue's workspace
 // (internal/runtime/sandbox's podkind, WorkingDir: l.workspace), so the launcher needs nothing
@@ -186,15 +223,15 @@ type gitLockSweep struct {
 // person reading the pod's log sees which clone every pass of the pod walks, or which one it
 // would not walk and why.
 //
-// The two numbers a test shortens, the interval and the recheck, and the removal a test holds are
-// read here, in the caller's own goroutine, and never inside the ticker's: they are package
-// variables, and a goroutine still reading one after the test restored it is a data race the race
-// detector fails the test for (serveTestPG reads its interval the same way). The guard and the
-// first pass's bound are constants nothing writes; a test that varies the guard writes the
-// sweep's own field.
+// The two numbers a test shortens, the interval and the recheck, the removal a test holds and the
+// /proc a test points the sweep at are read here, in the caller's own goroutine, and never inside
+// the ticker's: they are package variables, and a goroutine still reading one after the test
+// restored it is a data race the race detector fails the test for (serveTestPG reads its
+// interval the same way). The guard and the first pass's bound are constants nothing writes; a
+// test that varies the guard writes the sweep's own field.
 func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	s := &gitLockSweep{
-		proc: "/proc", guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
+		proc: gitLockProc, guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
 		remove: gitLockRemove, now: time.Now, log: log,
 	}
 	dir, err := os.Getwd()
@@ -263,8 +300,10 @@ func (s *gitLockSweep) serve(ctx context.Context) <-chan struct{} {
 // clone with real git and jj under a budget of its own (restoreBudget). It runs under the
 // container's context all the same, so the container's stop ends it.
 //
-// A nil sweep learns nothing: a manager built without one is a test's, and the controller pod's
-// single-role launcher has none at all.
+// A nil sweep learns nothing and sweeps nothing, and the start goes on to its restore over the
+// clone as it stands, which is what a launcher that runs no sweep must do: a manager built
+// without one is a test's, the controller pod's single-role launcher has none at all, and a roles
+// launcher that is not the container's first process runs none (serveGitLockSweep).
 //
 // A sweep the launcher's own working directory gave its workspace learns nothing either, and
 // answers so before it takes mu: mu is held for a whole pass, the recheck wait inside it, and in

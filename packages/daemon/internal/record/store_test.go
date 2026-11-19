@@ -351,16 +351,38 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		HeadSHA: "b1c2d3", HeadUpdatedAt: updatedAt,
 		Failing: []string{"unit"}, Cancelled: []string{"e2e"}, CheckedHead: "b1c2d3",
 		CheckRuns: []AttemptRun{{Name: "unit", ID: 91}, {Name: "lint", ID: 92}}, Generation: 4,
+		// The commit statuses of the checked head read back in their order, each with its
+		// created_at to the millisecond and the head it was stamped with; the run's anchor and its
+		// settlement step carry theirs through the JSON of the head run.
+		Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute), Head: "b1c2d3"},
+			{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute), Head: "b1c2d3"}},
 		Snapshot: "snapshot-4", Pushes: pushes, Moves: []Move{{Before: "9f8e7d", SHA: "a0b1c2"},
 			{Before: "a0b1c2", SHA: "b1c2d3", Pushed: true, Repeats: []ClassifiedPush{{SHA: "b1c2d3", Before: "a0b1c2", ByReviewApp: true}, {SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"}}}},
 		State: PullRequestMerged, MergeSHA: "d4e5f6",
+		// Every column pullRequestColumns selects is written here and compared by
+		// samePullRequest: a field the store persists and the comparison passes over is a field
+		// this test cannot fail for, whatever the store does with it. The base and the push onto
+		// it, the newest deciding review, GitHub's two verdicts on merging the head and the head
+		// held conflicting are the six that were in that position.
+		Base: "main", BaseMoved: "f0e1d2",
+		ReviewSeen:      ReviewOrder{ID: 4411, SubmittedAt: updatedAt.Add(-2 * time.Hour)},
+		Mergeability:    MergeabilityMergeable,
+		MergeState:      MergeStateClean,
+		ConflictingHead: "a0b1c2",
+		// The moment of the last read that answered is read back as it was written, so the column
+		// the daemon tells a head read a minute ago from one nothing has read for a day by is
+		// carried by the write and the read rather than lost between them.
+		StateReadAt: updatedAt.Add(3 * time.Minute),
 		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
-				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3"},
+				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3",
+				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
 			Pushes: pushes[:1],
 			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
-				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"}}},
+				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"},
+				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute)},
+					{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute)}}}},
 				{Reopened: true}},
 		},
 	}
@@ -747,15 +769,28 @@ func TestAWriteThatEndsAHoldEndsItsReasonWhateverWritesIt(t *testing.T) {
 	})
 }
 
+// samePullRequest compares every field pullRequestColumns selects, and nothing else: a field the
+// store writes and reads that this passes over is a field TestStoreRoundTripsEveryRecord cannot
+// fail for, however the store treats it. The fields of record.PullRequest that no column of that
+// list holds - the attempt counts, the required sets and the head's own counted mark, which
+// PutPullRequest writes its own literals for - are left out for that same reason: the store
+// round-trips none of them.
 func samePullRequest(got, want PullRequest) bool {
 	return got.Issue == want.Issue && got.Repo == want.Repo && got.Number == want.Number &&
 		got.Branch == want.Branch && got.HeadSHA == want.HeadSHA && got.HeadUpdatedAt.Equal(want.HeadUpdatedAt) &&
+		got.Base == want.Base && got.BaseMoved == want.BaseMoved &&
 		got.CheckedHead == want.CheckedHead && reflect.DeepEqual(got.Failing, want.Failing) &&
 		reflect.DeepEqual(append([]string{}, got.Cancelled...), append([]string{}, want.Cancelled...)) &&
 		reflect.DeepEqual(got.CheckRuns, want.CheckRuns) &&
 		got.Generation == want.Generation && got.Snapshot == want.Snapshot &&
+		reflect.DeepEqual(got.Statuses, want.Statuses) &&
 		reflect.DeepEqual(got.Pushes, want.Pushes) && reflect.DeepEqual(got.Moves, want.Moves) &&
-		reflect.DeepEqual(got.Run, want.Run) && got.MergeSHA == want.MergeSHA
+		reflect.DeepEqual(got.Run, want.Run) && got.MergeSHA == want.MergeSHA &&
+		got.ReviewSeen.ID == want.ReviewSeen.ID && got.ReviewSeen.SubmittedAt.Equal(want.ReviewSeen.SubmittedAt) &&
+		got.State == want.State &&
+		got.Mergeability == want.Mergeability && got.MergeState == want.MergeState &&
+		got.ConflictingHead == want.ConflictingHead &&
+		got.StateReadAt.Equal(want.StateReadAt)
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
@@ -853,8 +888,8 @@ func sameInstant(got, want *time.Time) bool {
 }
 
 // A new generation keeps an open pull request but none of the old generation's reading of its CI:
-// the settlement it recorded is of a head nobody has judged since, and its head run would replay
-// the old generation's judgement.
+// the settlement it recorded is of a head nobody has judged since, with the commit statuses it
+// named, and its head run would replay the old generation's judgement.
 func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -864,8 +899,9 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		Issue: issue.Key, Repo: "sjawhar/legion", Number: 1359, Branch: "legion/LEGION-285",
 		HeadSHA: "red-tests", HeadUpdatedAt: time.Date(2026, 9, 25, 21, 0, 0, 0, time.UTC),
 		CheckedHead: "red-tests", Failing: []string{"test"}, CheckRuns: []AttemptRun{},
-		Run:   &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
-		State: PullRequestOpen,
+		Statuses: []CommitStatus{{Context: "ci", State: CommitStatusFailure, CreatedAt: time.Date(2026, 9, 25, 20, 59, 0, 0, time.UTC), Head: "red-tests"}},
+		Run:      &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
+		State:    PullRequestOpen,
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
@@ -878,9 +914,9 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		if got == nil {
 			t.Fatal("the open pull request is gone, want it kept")
 		}
-		if got.CheckedHead != "" || len(got.Failing) != 0 || got.Run != nil {
-			t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v run=%+v, want \"\", none and nil",
-				got.CheckedHead, got.Failing, got.Run)
+		if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.Run != nil {
+			t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v run=%+v, want \"\", none, none and nil",
+				got.CheckedHead, got.Failing, got.Statuses, got.Run)
 		}
 	})
 }
@@ -942,6 +978,92 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 			}
 		}
 	})
+}
+
+// The reviewer's row keeps the commit its newest recorded review read (PhaseRow.ReviewedHead),
+// which the task of a later review round names. A row the release before wrote names no such
+// column and reads back with none. A new generation clears it with the rest of the generation's
+// facts, for one issue (ClearGeneration: the rerun of a child, an adoption) and for a whole tree
+// (ClearTreeGeneration: the re-admission of a root), so the first review of a new generation is
+// told no commit.
+func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
+	ctx := context.Background()
+	const reviewed = "aaa111"
+	reviewerOf := func(t *testing.T, st *store.Store, issue string) PhaseRow {
+		t.Helper()
+		var row PhaseRow
+		inTx(t, st, func(tx pgx.Tx) {
+			rows, err := NewStore().Phases(ctx, tx, issue)
+			must(t, err)
+			row = PhaseRowOf(rows, claim.RoleReviewer)
+		})
+		if row.Role != claim.RoleReviewer {
+			t.Fatalf("%s holds no reviewer's row, want the one the test wrote", issue)
+		}
+		return row
+	}
+	writeReviewer := func(t *testing.T, st *store.Store, issue Issue) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, NewStore().PutIssue(ctx, tx, issue))
+			must(t, NewStore().PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleReviewer, Claim: "reviewer",
+				Decision: &ReviewDecision{State: "changes_requested", Head: reviewed}, ReviewedHead: reviewed}))
+		})
+	}
+
+	t.Run("a row written with the commit reads it back", func(t *testing.T) {
+		st := migratedStore(t)
+		issue := issueFixture("LEGION-288")
+		writeReviewer(t, st, issue)
+		if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != reviewed {
+			t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q as it was written", got, reviewed)
+		}
+	})
+
+	t.Run("a row the release before wrote reads none", func(t *testing.T) {
+		st := migratedStore(t)
+		issue := issueFixture("LEGION-289")
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, NewStore().PutIssue(ctx, tx, issue))
+			// The release before names each column it writes, and reviewed_head is none of them.
+			_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, decision)
+				values ($1, 'reviewer', 'reviewer', '', 0, '', '{"state": "approved", "head": "bbb222"}')`, issue.Key)
+			must(t, err)
+		})
+		row := reviewerOf(t, st, issue.Key)
+		if row.Decision == nil || row.Decision.Head != "bbb222" {
+			t.Fatalf("the reviewer's row reads the decision %+v, want the one the release before wrote: the read is not of that row", row.Decision)
+		}
+		if row.ReviewedHead != "" {
+			t.Fatalf("the reviewer's row the release before wrote reads the reviewed commit %q, want none", row.ReviewedHead)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		key   string
+		clear func(tx pgx.Tx, issue Issue) error
+	}{
+		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
+			return NewStore().ClearGeneration(ctx, tx, issue.Key, time.Now().UTC())
+		}},
+		{name: "a new generation of the tree clears it", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
+			return NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, time.Now().UTC())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			issue := issueFixture(tc.key)
+			writeReviewer(t, st, issue)
+			if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != reviewed {
+				t.Fatalf("before the clear the reviewer's row reads the reviewed commit %q, want %q: the clear would prove nothing", got, reviewed)
+			}
+			inTx(t, st, func(tx pgx.Tx) { must(t, tc.clear(tx, issue)) })
+			if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != "" {
+				t.Fatalf("after the clear the reviewer's row reads the reviewed commit %q, want none: it was the generation's that ended", got)
+			}
+		})
+	}
 }
 
 func TestMarkProcessedIsIdempotent(t *testing.T) {
@@ -2139,9 +2261,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
-			"moved_at", "tree_stalled_told_at"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "conflicting_head", "merge_sha"},
+			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},

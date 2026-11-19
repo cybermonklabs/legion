@@ -1,0 +1,20 @@
+-- 20261114081436_drop_message_deliveries_session_created.up.sql
+-- message_deliveries_session_created, `message_deliveries (session_id, created_at desc) include
+-- (message_id)` where `state = 'sent'` (0147), was built for the one read that lists a session's
+-- sent message deliveries (sessionanswers.List). That read takes queued deliveries too now and
+-- reads message_deliveries_session_taken (20261114081435) instead, whose predicate holds both
+-- states, so this index serves nothing and is write cost on every delivery Dispatch records.
+--
+-- Dropping it in the same release as the wider index is safe while the release before this one
+-- still serves: that build's read names `state = 'sent'`, which implies the wider index's
+-- predicate, and that index carries every column the read returns, so the planner reads the old
+-- query through it index-only as it read through this one. An index is not a shape the running
+-- code reads, so neither release loses an answer, only a plan choice.
+--
+-- `drop index` takes ACCESS EXCLUSIVE on message_deliveries for the instant it unlinks the index,
+-- inside the runner's one transaction; it reads no row of the table and rewrites none. A plain
+-- `drop index` - RESTRICT, which is the default, and no cascade - is one of the census's
+-- catalog-only shapes (pgmigrate's catalogOnlyStatements), so the census lets it through whatever
+-- message_deliveries has grown to, because the time the statement holds its lock does not grow
+-- with the table.
+drop index message_deliveries_session_created;

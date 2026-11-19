@@ -54,18 +54,23 @@ type Options struct {
 	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
 	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
 	Check string
-	// Visibility reads what GitHub reports a repository slug ("owner/name"). Nil is the ordinary
-	// case, the gh read the shared check itself makes (Guard.ghVisibility).
+	// Visibility is the REST read of what GitHub reports a repository slug ("owner/name"). Nil is
+	// the ordinary case, gh's REST read with headers (Guard.ghVisibility). It replaces that first
+	// read alone: a read it refuses for a spent rate limit still goes on to the GraphQL read and
+	// ls-remote, and one that failed on its connection (a *transportError) to curl and ls-remote
+	// (Guard.Visibility), which a test stands gh, curl and git in for on Env's PATH.
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
 	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.
 	OnVisibility func(VisibilitySource)
-	// Env is the environment every child process starts from: the shared check, that gh read, and
-	// the git commands a push's records are read with. Nil means this process's own
-	// (os.Environ()). The guard adds to it the names that make a credential prompt fail closed
-	// (promptsNothing), and each child's own names on top of those.
+	// Env is the environment the guard's children start from: the shared check, the visibility
+	// reads, and the git commands a push's records are read with. Nil means this process's own
+	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
+	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
+	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
+	// own names on top of those.
 	Env []string
 }
 
@@ -78,13 +83,16 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
+	// curl is the curl the visibility read after a failure of gh's connection runs: curlProgram,
+	// which this package's tests alone point at a stand-in (Guard.curlVisibility).
+	curl string
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts}
+	g := &Guard{opts: opts, curl: curlProgram}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }
@@ -98,14 +106,40 @@ func (g *Guard) base() []string {
 	return os.Environ()
 }
 
+// RunByRealGhVar is the variable `legion gh` gives every real gh it runs, naming that gh. A `legion
+// gh` started under it is one a real gh led back to, a wrapper or shim run as the real gh, and it
+// refuses, exit 2, once it has answered gh's own git credential helper and the shared check's
+// visibility read (cmd/legion's runGh). It is exported, as VisibilityReadVar is, so that the name
+// `legion gh` sets and refuses under and the name the guard blanks (Guard.env) are written once.
+const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
+
 // env is the environment a child of this guard starts from: base, the names that make a
-// credential prompt fail closed, and extra on top, which wins over both because exec takes the
-// last value of a name. The base is the caller's rather than read here, so that a child costs
-// one copy of the process environment and not two (Guard.run).
-func (g *Guard) env(base []string, extra ...string) []string {
-	out := make([]string, 0, len(base)+4+len(extra))
-	out = append(out, base...)
+// credential prompt fail closed, RunByRealGhVar blanked, and extra on top, which wins over all
+// three because exec takes the last value of a name. inherit, where it is not nil, keeps only the
+// names of base it answers true for (child.inherit). The base is the caller's rather than read
+// here, so that a child costs one copy of the process environment and not two (Guard.run).
+//
+// RunByRealGhVar is blanked because the guard, and not the real gh, is what runs its children. A
+// real gh's own push reaches the guard with that variable set: gh's git inherits it, and git's
+// pre-push hook runs `legion leak-check pre-push`. The guard's visibility reads run `gh`, which in
+// a pod is `legion gh`, and the shared check's own read reaches `legion gh` too (its
+// answerVisibilityRead, which reads through a guard of its own). Under the variable every one of
+// them would be refused, and so would the push. Blanking it stays bounded: `legion gh` runs each
+// read with a real gh it gives the variable again, so a real gh that leads back to `legion gh` is
+// still refused one start later.
+func (g *Guard) env(base []string, inherit func(name string) bool, extra ...string) []string {
+	out := make([]string, 0, len(base)+5+len(extra))
+	if inherit == nil {
+		out = append(out, base...)
+	} else {
+		for _, entry := range base {
+			if name, _, _ := strings.Cut(entry, "="); inherit(name) {
+				out = append(out, entry)
+			}
+		}
+	}
 	out = append(out, promptsNothing(g.noAnswer)...)
+	out = append(out, RunByRealGhVar+"=")
 	return append(out, extra...)
 }
 

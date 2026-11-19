@@ -1,0 +1,30 @@
+kind: Added
+body: |-
+  With `runtime.kubernetes.agent_secrets.exchange_audience` set, the daemon registers each role's
+  session for its pod at the secrets broker (`POST /v1/oauth/exchange/pod-sessions`, under the
+  daemon's own ServiceAccount token), bound to the role's own key: every write sends the
+  thumbprint the role's shim hello names, and the broker refuses a trade for that session proved
+  with any other key. No registration is sent before the role's hello names its thumbprint: an Oh
+  My Pi role's is made when its agent registers, a Claude Code role's at its shim's hello, and a
+  relaunched role's for the session it resumes, at its new hello. A registration keeps the key its
+  process's first hello names: a later hello of the same process naming another key is logged and
+  changes nothing. It writes each live registration
+  again every 6 hours and retries a failed write at 15 seconds doubling to 5 minutes,
+  `403 POD_REGISTRAR_NOT_LISTED` included. When a role's process ends, the daemon waits for that
+  registration's write in flight, up to the RPC timeout, before the next process writes its own.
+  Every write also sends the claim's launch generation, and the broker keeps the registration of
+  the latest one, so a late write of an earlier process cannot put its key back; an answer at a
+  later generation ends that registration's writes, logged at error level with the pod, the
+  session and both generations, as a later process of the claim's registration, or, when the
+  answered generation is above the claim's current one, as a registration this daemon never made. An
+  answer that names another pod or another key than the daemon sent ends them
+  too, logged with the pod, the session and both values. The registration needs this release's
+  broker, which binds and orders it; an earlier broker refuses the `thumbprint` and `generation`
+  fields. Set no `exchange_audience` until your daemon, its pods and its broker carry three more
+  changes: each role trading with a key of its own, since until then a role's own trade is refused;
+  each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that
+  registered it, not only each registrar to the pods of its own daemon, since until then any
+  `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another
+  claim's session; and the daemon choosing each role's session id rather than taking its agent's
+  report. The daemon already holds each session id to the claim of its project that first recorded
+  it and registers no session another of its claims holds. Unset, no registration is made.

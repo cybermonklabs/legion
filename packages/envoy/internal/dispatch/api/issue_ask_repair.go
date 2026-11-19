@@ -26,7 +26,7 @@ const IssueAskRepairInterval = 10 * time.Minute
 const issueAskRepairTimeout = 5 * time.Minute
 
 // issueAskRepairLease names the lease one interval pass runs under. Two passes running at once
-// are correct - they serialise on each issue's row, and the second finds nothing left - but they
+// are correct - they serialise on each issue's owner lock, and the second finds nothing left - but they
 // would read the same documents for the same result, which is reason enough for one process to
 // run it each interval.
 const issueAskRepairLease = "issue-ask-repair"
@@ -66,22 +66,23 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 //     latest issue.closed whose status is not done;
 //   - a closed issue one of whose documents owes a settlement marked after markedSince (any, when
 //     it is nil) - a write a room stored after the close's sweep, before its process heard of the
-//     close, or a room of a process of an older build, which never hears of it, leaves one, and no
-//     settlement runs while the issue is closed - gets the close's final sweep: its
-//     resolved block asks' blocks and copies, and its answered block asks' copies, the answer left
-//     out, are written again from their rows, and every readable ask block with no ask row and no
-//     source is marked resolved, each one logged, attributed to its latest closer.
+//     close, or a room of a process of an older build, which never hears of it, leaves one - gets
+//     the close's final sweep: its resolved block asks' blocks and copies, and its answered block
+//     asks' copies, the answer left out, are written again from their rows, and every readable ask
+//     block with no ask row and no source is marked resolved, each one logged, attributed to its
+//     latest closer. The sweep's write arms the document's settlement, which saves what the sweep
+//     wrote whether or not the issue is closed.
 //
 // A closed issue's repair writes each of its documents once, the withdrawn asks' blocks beside
 // the sweep's, and counts every unindexed block it marks resolved as swept.
 //
 // An issue with no event naming the closer or the reopener is logged and left as it is: no actor
 // is invented. Every record is dated when the pass writes it. Each issue is repaired in a
-// transaction of its own that holds the issue's row and reads its state and asks again under it,
-// so two passes running at once serialise on the row and the second finds nothing left; a pass
-// that finds nothing writes nothing and appends no event. One issue's failure is logged and the
-// pass goes on to the next; the returned error names how many failed. It reads deps.Store,
-// deps.Docs and deps.Events.
+// transaction of its own that holds the issue's owner lock and reads its state and asks again
+// under it, so two passes running at once serialise on that lock and the second finds nothing
+// left; a pass that finds nothing writes nothing and appends no event. One issue's failure is
+// logged and the pass goes on to the next; the returned error names how many failed. It reads
+// deps.Store, deps.Docs and deps.Events.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
 	s := &server{deps: deps}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
@@ -96,20 +97,21 @@ func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (Is
 // it are dropped. A pass that fails or runs out of time is logged, and the next interval's pass
 // repairs what it left. The boot runs its own pass before this starts (cmd/dispatch).
 //
-// The sweeps are bounded the same way: a closed issue's document keeps owing the settlement its
-// close's own write left for as long as the issue stays closed, so a pass that swept every such
-// document would read every closed issue's documents each interval, for good. After its first
-// pass, which sweeps them all, each pass sweeps only the documents marked owing since the last
-// pass that listed its candidates began, less one interval, so a write whose transaction began
-// before that pass and committed after it is still swept, and the issues that pass did not
-// repair: each one whose repair failed and each one it did not reach before its time ran out. The
-// window moves with every pass that listed its candidates, so one issue that fails every pass
-// costs each pass that issue alone rather than a sweep of every closed issue owing a settlement;
-// a pass that could not list them moves nothing and carries what the pass before it carried. The
-// window and the carried issues live in this call, in the one process that runs it: when the lease
-// moves, another process's pass starts from its own window and carried issues (no window on its
-// first interval pass, so it sweeps every closed issue whose documents owe a settlement) and never
-// sees these.
+// The sweeps are bounded the same way. A closed issue's document settles as an open one's does,
+// so it owes its settlement only until the resumption arms it
+// (docs.Service.RunSettlementResumption), but one whose settlement fails every time keeps owing
+// it, and a pass that swept every closed issue owing a settlement would read such documents each
+// interval, for good. After its first pass, which sweeps them all, each pass sweeps only the
+// documents marked owing since the last pass that listed its candidates began, less one interval,
+// so a write whose transaction began before that pass and committed after it is still swept, and
+// the issues that pass did not repair: each one whose repair failed and each one it did not reach
+// before its time ran out. The window moves with every pass that listed its candidates, so one
+// issue that fails every pass costs each pass that issue alone rather than a sweep of every closed
+// issue owing a settlement; a pass that could not list them moves nothing and carries what the
+// pass before it carried. The window and the carried issues live in this call, in the one process
+// that runs it: when the lease moves, another process's pass starts from its own window and
+// carried issues (no window on its first interval pass, so it sweeps every closed issue whose
+// documents owe a settlement) and never sees these.
 func RunIssueAskRepair(ctx context.Context, deps Deps, leases duty.Leases) {
 	s := &server{deps: deps}
 	var markedSince *time.Time
@@ -223,11 +225,17 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		return repair, err
 	}
 	defer tx.Rollback(ctx)
+	// Every read and the document work run first, holding no transaction id; the asks' rows, their
+	// events and the document writes are queued on the ledger and run as one batch at its commit,
+	// in the order made (INFRA-636), as the close and the reopen this stands in for run them.
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
 	var closed, owesSettlement bool
 	var open, withdrawn int
-	if err := tx.QueryRow(ctx, `select closed_at is not null from issues where key = $1 for no key update`, issueKey).Scan(&closed); err != nil {
+	// The issue's owner lock, then its read in a statement of its own (store.LockOwnerAndRead).
+	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(issueKey), `
+		select closed_at is not null from issues where key = $1
+	`, []any{issueKey}, &closed); err != nil {
 		return repair, fmt.Errorf("lock the issue: %w", err)
 	}
 	if err := tx.QueryRow(ctx, `
@@ -242,7 +250,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 	`, issueKey).Scan(&open, &withdrawn, &owesSettlement); err != nil {
 		return repair, fmt.Errorf("read the issue's asks: %w", err)
 	}
-	var events []model.Event
+	var events []*model.Event
 	switch {
 	case closed && (open > 0 || owesSettlement):
 		closer, found, err := latestIssueEventActor(ctx, tx, `
@@ -271,7 +279,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		}
 		repair.Swept = len(unindexed)
 		var asks []model.Ask
-		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, issueKey, openAsks, closer)
+		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, issueKey, openAsks, closer)
 		if err != nil {
 			return repair, err
 		}
@@ -291,19 +299,21 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 				"issue", issueKey, "withdrawn_asks", withdrawn)
 			return repair, nil
 		}
-		var asks []model.Ask
-		asks, events, err = s.restoreIssueAsksTx(documentCtx, tx, issueKey, reopener)
+		restored, err := s.prepareRestoration(documentCtx, tx, issueKey, reopener)
 		if err != nil {
 			return repair, err
 		}
-		repair.Restored = len(asks)
+		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, reopener); err != nil {
+			return repair, err
+		}
+		repair.Restored = len(restored)
 	default:
 		return repair, nil
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return IssueAskRepair{}, err
 	}
-	s.publish(ctx, events...)
+	s.publish(ctx, appendedEvents(events...)...)
 	if repair.Changed() {
 		slog.Info("dispatch: repaired the asks of an issue", append([]any{"issue", issueKey}, repair.LogArgs()...)...)
 	}

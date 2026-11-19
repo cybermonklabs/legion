@@ -509,8 +509,9 @@ async function runDocEditCommand(
 export function liveDispatch(config: DispatchConfig): DispatchWrites {
   // `dispatchSettings` already trimmed the URL's trailing slashes. Every write acts as the
   // session this process is, which is the session the approval request is opened by and the one
-  // the writes that move it belong to.
-  const actor = { kind: "session", id: process.env.DISPATCH_SESSION_ID ?? "unknown" };
+  // the writes that move it belong to. An empty DISPATCH_SESSION_ID names no session, as an
+  // unset one does: pi-envoy leaves it "" while its session has no id.
+  const actor = { kind: "session", id: process.env.DISPATCH_SESSION_ID || "unknown" };
   // A client's deadline runs from its construction, so each call gets a client of its own.
   const client = () => new DispatchClient(config.url, config.credential);
   const insert = (sentence: string) => ({

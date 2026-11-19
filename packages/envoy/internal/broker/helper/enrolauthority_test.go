@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -156,14 +157,14 @@ func machineIdentityBroker(t *testing.T, f *enrolBroker) (*Broker, *ecdsa.Privat
 		t.Fatal(err)
 	}
 	identity, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: f.srv.URL, Key: key,
+		BrokerURL: brokeraddr.New(f.srv.URL), Key: key,
 		Subject: brokerclient.NewProjectedToken(filepath.Join(t.TempDir(), "token")),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := &Broker{
-		URL: f.srv.URL, Identity: identity, HTTP: f.srv.Client(),
+		URL: brokeraddr.New(f.srv.URL), Identity: identity, HTTP: f.srv.Client(),
 		// The file a machine login would read its approver from, which this machine has not
 		// got: a test that sees it read is a test that caught the bug.
 		OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
@@ -196,13 +197,14 @@ func (s *stubSignIns) Current(context.Context) (*brokerclient.Authority, error) 
 	return s.authority, s.err
 }
 
-func (s *stubSignIns) Refused(credentialID string) {
+func (s *stubSignIns) Refused(_ context.Context, credentialID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refused = append(s.refused, credentialID)
 	if s.onRefused != nil {
 		s.onRefused()
 	}
+	return nil
 }
 
 // signedIn is the authority of a person signed in on this box: a box key of their own and the
@@ -252,7 +254,7 @@ func TestAMachineLoginsSessionStillStatesItsApprover(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), HTTP: f.srv.Client()}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	b.credMu.Lock()
 	b.installCredential(&machineCredential{key: key, id: f.mint("credential-of-the-machine-login", key), expiresAt: time.Now().Add(24 * time.Hour), gone: make(chan struct{})}, &loginState{State: "issued"})

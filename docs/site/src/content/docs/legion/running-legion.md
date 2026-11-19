@@ -67,9 +67,10 @@ child in its one notice. Otherwise (a parent on that
 chain is not `todo`) the architect gets a
 `child-release-stalled` notice at once naming the parent to release first; a child the wave would
 write `todo` under such a child is not written, and its notice says to release it again once that
-child is recorded. When the repository is recovered, each tree's architect gets one more
-`child-release-stalled` notice, listing every child the release left to the recovery that is
-still not recorded, with what to release. That notice waits while the recovery's listing is held
+child is recorded. When the repository is recovered, every child the release left to the recovery
+that is still not recorded is named in one more `child-release-stalled` notice, with what to
+release: a notice to the architect that owns the child's parent, or to the tree's architect when
+that parent is not recorded in the tree. That notice waits while the recovery's listing is held
 for the Dispatch consumer, but for five minutes at most from the first held read (the daemon times
 its next read of the mapping for it), however often the hold is released and made again
 meanwhile: a hold that lasts or keeps coming back (an event that fails at every delivery, say) gets
@@ -97,10 +98,16 @@ stand still. `legion state` names each such repository on a `webhook App missing
 `GITHUB_UNREADABLE`), or `this Dispatch does not answer the webhook App check` (a Dispatch older
 than the check). The check never leaves a repository out and never fails the boot; the boot's
 `repositories` stage line and each `legion workflow repositories changed` line log the same list
-as `withoutWebhookApp`. The check reads only the App's installation, so a repository whose events
-come through a repository webhook is listed too. Install the Envoy App on the repository: the
-daemon names it no more from its next read of the mapping, at a restart or the next change of the
-mapping in Dispatch.
+as `withoutWebhookApp`. A repository only a live issue record names, which the mapping does not, is
+served as well, and Dispatch is asked about it apart from the mapping's read: when an issue is
+first recorded on it, once the boot is done, and after each read of the mapping. `legion state`
+names it the same way and with the same reasons, but the boot's `repositories` line does not,
+since the boot asks about none of them; each one found without the App is logged on a line of its
+own, `legion workflow checked Dispatch's GitHub App on the repositories only a live record names`.
+The check reads only the App's installation, so a repository whose events come through a
+repository webhook is listed too. Install the Envoy App on the repository: the daemon names it no
+more from its next read of the mapping, at a restart or the next change of the mapping in
+Dispatch.
 
 ## The GitHub Apps
 
@@ -113,8 +120,8 @@ decide what they may do there:
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts |
+| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages, statuses, attestations |
+| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts, attestations |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -122,25 +129,35 @@ change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accou
 account granted it. The mint reads that second set before each token and asks for the role's
 permissions cut down to it: a permission the account has not approved is left out of the
 request, and the daemon says so once on its stderr, naming the App, the owner and the
-permission. The daemon itself reads
-GitHub with the implement App too, in a pass as it starts and every two minutes after: it reads
-each open pull request's base branch and the checks that branch requires (its rulesets and its
-branch protection), since only those decide whether CI is red at a head, and so where Legion sends
-the issue. Whether the merge happens is GitHub's to decide, under those same rules.
+permission. An App registered before a permission joined its manifest lacks that permission
+until you add it in the App's settings on GitHub and each account that installed the App
+approves it. The controller, which works no repository, holds a read lease of the review App on
+each account instead: read access to contents, metadata, pull requests, issues, Actions, checks,
+commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
+itself reads GitHub with the implement App too, at two moments and at no other: as the workflow runtime starts, which covers
+what arrived while the daemon was down, and once an agent's handoff has been recorded, the moment
+the daemon next decides on that pull request's state. It runs on no timer, and it reads one issue's
+own pull request rather than a listing of every open one, so a handoff costs the reads of its own
+pull request alone. It reads no repository ruleset, no branch protection, no check run and no
+commit status: whether CI is red at a head reaches the daemon as Envoy's settled observation of
+that head's check runs and commit statuses, and the checks a base branch requires the daemon never
+reads at all, so it names no required check that has never run. Dispatch's CI reconcile reads the
+commit statuses of each open head from GitHub where the Envoy App's token holds the Commit statuses
+permission, and the settlement names each one with its state.
+Whether the merge happens is GitHub's to decide, under the rules that repository sets.
 
-The same pass applies what a GitHub event lost, or still waiting behind the daemon's GitHub
-consumer, would have carried, so such an event leaves the record behind for at most one pass:
+Each of those two reads is the backstop for a webhook that never arrived — GitHub can fail to
+deliver one, and Dispatch's redelivery sweep gives up after five attempts — so what a GitHub event
+lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
+the next of them:
 
-- **An opened or reopened pull request, in any phase.** Every pass lists each served repository's
-  open pull requests, a request per hundred of them. One on an issue's branch, `legion/<KEY>`, of
+- **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
+  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
   the repository itself (not a fork's) that the daemon does not record open is applied as its
   opened webhook would be, a reopen when the record holds the same pull request: the workflow
   records it in whatever phase the issue is, and moves an implementing issue whose implementer
   completed on to testing.
 
-The daemon reads GitHub with the implement App too, but on no timer: no pass comes round over the
-served repositories, and the checks a base branch requires the daemon never reads at all, since
-whether the merge happens is GitHub's to decide under that branch's own rules.
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in
   `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
@@ -182,12 +199,48 @@ bun scripts/github-apps/create.ts --out <new dir> --name-prefix <prefix>- \
 ```
 
 `--org` registers them under an organization, which only its owners and App managers can do;
-without it they belong to the account that clicks. The Apps are private unless you pass
-`--public`, and GitHub lets a private App be installed only on the account that owns it. Register
-them under the one owner whose repositories Legion works, and keep them private. Pass `--public`
-only when Legion works repositories under more than one owner: then any account can install them,
-and an install of the Envoy App sends that account's repository events to your listener and adds
-an installation that Dispatch searches.
+without it they belong to the account that clicks.
+The Apps are private unless you pass `--public`, and GitHub lets a private App be installed only
+on the account that owns it.
+Register them under the one owner whose repositories Legion works, and keep them private.
+Pass `--public` only when Legion works repositories under more than one owner: then any GitHub
+account can install them.
+An install of the Envoy App sends that account's repository events to your listener and adds an
+installation that Dispatch searches.
+An install of a role App counts as every other installation of it does, because the daemon
+keeps no list of owners.
+An account that installs the implement App gets a directory with that App's write token in the
+gh bundle of every implementer and merger, from the next bundle the daemon builds.
+An install of the review App gives every other role that App's token the same way, and the
+controller its read-only one.
+The account's name joins the owners that each later launch of that App's roles is told in the
+`Legion addressing` line of its prompt.
+Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's
+next refresh.
+Under `runtime: kubernetes` the bundle is each role's Secret, and a pod projects the directories
+of its creation, an issue pod only those that both role Apps' bundles hold.
+So once both role Apps are installed on the account, the daemon opens one update round over each
+live issue pod, and the pod that replaces it projects the new directory.
+The controller's pod runs the review App alone and no round covers it: after the review App's
+install it is replaced at its next launch.
+An uninstall opens no round and replaces no pod: the next bundle holds no directory for the
+account, a pane loses its directory at the next refresh, and a running pod keeps one that the
+daemon refreshes no more.
+The one exception is the account that holds the role's own issue repository: that directory cannot
+be left out, and its token is that owner's cached lease, which stays in use until its expiry is no
+more than `refreshWindow` (20 minutes) away.
+Until then every bundle built for that role succeeds and the refresh keeps writing all of its
+directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built
+for that role fails, no refresh writes any of its directories, and the pane or pod keeps its last
+tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the
+installations before it mints anything.
+All of that is true of a daemon that mints with its own App key (`private_key`,
+`private_key_command` or `private_key_secret`).
+A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
+for the accounts the secret's `github-owners` tag lists, so an install by any other account
+gives nothing there.
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its
@@ -234,7 +287,7 @@ Dispatch read them, delete the files, then install every App from
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
   OOM-kills it, which stalls the tree until the pod is relaunched and its roles resume. The
-  `resource-limits` row of `legion state --json` and `legion start --check-config` both name the
+  `resource-limits` row of `legion state --json` and `legion config check` both name the
   `Burstable` pods (`resources: Burstable (a request below the limit): the issue pod; every other
   pod is Guaranteed`). On GKE Autopilot's general-purpose, `Balanced` and `Scale-Out` pods, a
   request below the limit is honoured only in a cluster that supports bursting
@@ -251,8 +304,8 @@ Dispatch read them, delete the files, then install every App from
   [Issue sizing](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#issue-sizing-one-reservation-per-pod)
   for the sources. The image probe pod, which every
   boot runs before anything is served, carries a fixed reservation of its own:
-  250m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
-  at a time and runs no lane or browser, and a larger probe could keep the daemon from
+  500m and 1Gi over 5Gi of disk and a 1Gi request, since `legion probe-image` starts one Oh My Pi
+  at a time, runs no lane and runs its TLS clients one at a time, and a larger probe could keep the daemon from
   booting on a full pool. A pool with no room even for that does not stop the daemon: its probe pod
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
@@ -273,7 +326,9 @@ Dispatch read them, delete the files, then install every App from
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
   its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
-  review keeps both, and an issue pod the pool cannot place stays `Pending` until
+  review keeps both, unless it waits on another issue, when it keeps only its pod
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
+  and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
@@ -305,8 +360,10 @@ Dispatch read them, delete the files, then install every App from
 
 Every agent runs from `ghcr.io/cybermonklabs/legion-worker`, which carries Oh My Pi, Legion's two plugins
 (`@sjawhar/pi-envoy` and `@sjawhar/pi-legion`), the `legion` CLI, a general toolchain (git, jj, gh,
-Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, kubectl, yq, unzip) and the
-client tools a role's own work needs (`psql`, `redis-cli`, `sqlite3`, `nc`, `dig`): `apt` cannot write a system
+mise, Go (with gcc for cgo and the race detector), Node, uv, the AWS CLI, the Google Cloud SDK's
+gcloud and bq, azure-cli's az, kubectl, yq, unzip, tmux, busybox, and the host libraries
+Playwright's WebKit needs) and the client tools a role's own work needs (`psql`, `redis-cli`,
+`sqlite3`, `nc`, `dig`): `apt` cannot write a system
 prefix in an unprivileged container, unpacking
 one by hand works for some tools and not others, and what rules out a client a role unpacks onto
 its own `PATH` is the withheld `operator-setup` capability, not the unpacking itself.
@@ -345,8 +402,8 @@ What each part is for:
   optional `slack_channels` lists Slack channel ids (`C…` or `G…`) whose
   mentions of the Legion Slack app reach the project's controller, which answers in the thread. It
   needs `controller: daemon` and `runtime.kubernetes.agent_secrets`, and the loader refuses it
-  otherwise: the controller replies with the Slack bot token the secrets broker grants only to the
-  Legion daemon service's own pods
+  otherwise: the controller replies with the Slack bot token, which the secrets broker grants it
+  only once the daemon enrolls it with the broker
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
@@ -362,9 +419,11 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its live session, and the
-  other five claims of the issue are retired. With `off`, no check opens at all: the close
-  retires every claim of the issue and releases its pod. The loader refuses any other value,
+  With `tester`, the merge hands the tester the check's first look in its session. A child's
+  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
+  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
+  every claim of the child and releases its pod, and a root's close suspends every claim of its
+  tree for the linger. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -372,9 +431,17 @@ What each part is for:
   The checking agent names its own next look, with `wake_at` on each `pending` report but the
   check's last, and nothing else wakes a check. `projects.<KEY>.deploys` is still accepted and
   read for nothing: the loader warns once per project that sets it, `legion start` logs each
-  warning as it boots, and `legion start --check-config` prints each after its `Config OK` line
+  warning as it boots, and `legion config check` prints each after its `Config OK` line
   and exits 0. Remove the key.
 - **`projects.<KEY>.memory`** (optional) decides what each tree that project opens runs with.
+  The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon
+  reads it as an experiment of unit `tree` whose arms are `memory`, carrying the block's
+  `config_files` and `instructions`, and `none`, carrying neither, at equal weight, with
+  `on_variant: memory`.
+  A project writes the block **or** `experiments.memory`, never both: the two are one experiment
+  spelled twice, and a project that writes both is refused.
+  The block itself is accepted and refused in no new way, so a file that passed before passes
+  now, unchanged.
   `mode` is `off`, the default and what a project with no block gets, `on`, which gives every new
   tree a memory group, or `random`, a fair coin for each new tree:
 
@@ -412,10 +479,63 @@ What each part is for:
   Code — hold whatever the mode is.
   The controller is in no memory group, a tree drawn `none` runs exactly as it ran before the block
   existed, and a block with no `instructions` appends nothing.
-  `legion state` prints one `memory:` line counting the issues drawn under each group and mode —
-  the state names no tree, and a tree handed over as one of its own carries its old tree's draw
-  verbatim, so trees cannot be counted from it — and
+  `legion state` prints one line per declared experiment, the `memory` line among them, counting
+  the issues that hold each arm — every issue carries each answer that applies to it, and a child
+  handed over as a tree of its own takes its old tree's draw verbatim, so a count of trees would
+  count one draw more than once — and
   `legion state --json` shows each issue its tree's group, the mode it was drawn under and when.
+- **`projects.<KEY>.experiments`** (optional) declares the experiments the project draws its trees
+  and its issues into, by the name each draw records:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      experiments:
+        plan-length:
+          mode: random
+          unit: issue
+          variants:
+            - {name: long, weight: 1, config_files: [/etc/legion-experiments/plan-length.yml]}
+            - {name: control, weight: 1}
+  ```
+
+  An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
+  once.
+  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
+  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
+  same arm, or `issue`, which draws for each issue on its own.
+  `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
+  `implementer`, `tester`, `reviewer`, `merger`, each once), and every issue role where the block
+  names none. A launch of a role the list leaves out loads none of this experiment's overlays or
+  instructions, while its unit keeps the arm it drew; the deployment's and the role's own
+  settings, and the arms of any other experiment that reaches the role, still apply. So an
+  experiment that changes how the work is done can leave the roles that judge the work, such as
+  the reviewer, the tester and the architect who signs a merge off, out of its arms, and read
+  their verdicts as its outcome; with every role in the arm, a merge rate or a count of review
+  rounds is partly the treated roles' own verdict.
+  `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
+  since a draw among one arm measures nothing.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
+  number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
+  a role of a unit drawn into it names where the experiment reaches that role, and
+  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
+  appends to that role's system prompt.
+  Both file keys are absolute paths, and neither is required: the arm that names no file at all is
+  the control the others are measured against.
+  A role of a drawn unit that the experiment reaches names each arm's `config_files` in its
+  `PI_CONFIG_FILES` after the operator's own and the role's own, in the order the project's file
+  declares the experiments, and ends its system prompt with each arm's `instructions` in that same
+  order.
+  The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
+  and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
+  stops new draws and takes nothing from a unit already running.
+  Under `runtime: kubernetes` each overlay must be a file one of the operator's pod mounts
+  carries, and the day a project declares an arm with overlay files every live issue pod of the
+  deployment is replaced, since a role cannot read a file its pod does not mount
+  ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
+  "Operator configuration").
+  Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
 - **`projects.<KEY>.commit_issue_trailer_repos`** (optional) names the repositories whose commits
   carry their issue key:
 
@@ -426,15 +546,16 @@ What each part is for:
   ```
 
   A pane working one of them is told that key, and its jj appends a `Dispatch: <KEY>` line to
-  every commit the pane makes in its own workspace, beside the `Omp-Session:` line every pane's
-  commits carry, so a squash landing that branch carries the issue key in its message — which is
-  what a base branch that requires the key in the commit it lands reads.
+  every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
+  lines every pane's commits carry, so a squash landing that branch carries the issue key in its
+  message — which is what a base branch that requires the key in the commit it lands reads.
+  A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
   A pane stamps the commit when its launch's repository is one of the names, whatever [Dispatch
   maps to the project](#the-projects-repositories).
   The boot checks each name against that mapping alone and says once, naming the repository and
   the project, that the mapping does not hold it, which catches a typo.
   A pane of a repository the key does not name is told no key, and its commits carry the session
-  line alone, as does a commit that pane's shell makes in any other jj repository.
+  and role lines alone, as does a commit that pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so `runtime.kubernetes.pod.env` and
   `runtime.tmux.pane_env` are refused for setting it.
   The loader refuses a name that is no `owner/name` and a repository the list names twice,
@@ -473,7 +594,7 @@ What each part is for:
   so the second pair would overwrite the first with nothing said; several
   repositories of one owner may move to one owner, and a rename inside the owner (`a/b` to `a/c`)
   counts as a move to that owner, so `a/b` to `a/c` beside `a/e` to `f/g` is refused.
-  `legion start --check-config` prints one line
+  `legion config check` prints one line
   per configured pair, so you can read back what the daemon will treat as one repository before
   the transfer.
 - **`daemon_url`**, **`envoy_url`**, **`dispatch_url`**, every **`nats_urls`** entry and the
@@ -527,19 +648,22 @@ What each part is for:
   the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
   billed under (`theorem.project=widgets`), and each launch carries them with its own
   `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
-  serves. The agent takes the last value a key is given, which is why Legion's two pairs come
-  last. Both keys reach the spend collector today, and its keep-list of six `theorem.*`
-  attributes drops every other key, so no spend row names an issue yet. A spend row grouped by
-  issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list.
+  serves. A launch in an arm of one of the project's experiments carries `legion.arms` after
+  those: one `<experiment>:<variant>` for each arm it runs with all the overlays of
+  (`legion.arms=memory:memory` once decoded), and none for an arm the pod it keeps holds only
+  some or none of the overlays of, so each model call says which arm's files it ran with. The agent
+  takes the last value a key is given, which is why Legion's pairs come last. A spend row names an
+  issue, a role or an arm only where your spend collector keeps that key: a collector that keeps
+  a list of `theorem.*` attributes alone drops all three (dispatch://INFRA-1835).
   The project controller serves no issue and carries the role alone. The image probe's container
   runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
   role either and keeps it with its trailing commas and whitespace dropped and nothing added.
   Legion reads that value for its content as well as its name, and refuses a member the agent's
   OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
   value, one with an empty key, one whose key or value does not percent-decode or runs past 255
-  characters once decoded, and one naming `legion.issue` or `legion.role`, which
+  characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which
   Legion writes itself. The refusal names that one member and what is wrong with it, never the
-  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  rest of your value, and `legion config check` gives boot's verdict before a restart.
   One such member would cost a launch every attribute of the variable, your own
   `theorem.project` among them, because the detector's caller catches the throw with an empty
   hand. Like every other variable here, the attributes reach a role with the start command of its
@@ -550,14 +674,20 @@ What each part is for:
   `postgres`, whose `session_dsn_secret` names the key of the providers Secret
   ([below](#secrets-and-files)) holding that database's `postgres://…` URL, which every pod, the
   controller's and the image probe's included, mounts read-only; and `cloudsql-iam`, whose
-  `session_database` (`instance`, `name` and `user`, all three required) names a Cloud SQL
-  database each pod signs in to as itself, with no URL held anywhere. No deployment runs
-  `cloudsql-iam` yet; the repository's `docs/kubernetes.md` ("Selecting the store") says what it
-  needs. Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store
-  of earlier releases, are refused with the same line and its reason: an issue pod's disk is
-  deleted with the pod, so a conversation kept as a file on it dies with the pod and the next
-  launch's resume fails on the missing file, retiring the claim after three failures. Name the
-  store and its key, and have the database reachable from the pods, before the daemon boots.
+  `session_database` names a Cloud SQL database each pod signs in to over IAM, with no URL held
+  anywhere. Its `instance`, `name` and `user` are required. Its optional member
+  `impersonate_service_account` names a Google service account that each pod's proxy impersonates
+  with the pod's own credentials and signs in as. `user` must then be that account's IAM login:
+  its email without `.gserviceaccount.com`. A pod under Workload Identity Federation for GKE
+  needs this member, because its identity has no email address and so no Cloud SQL login. The
+  paragraph "What a pod signs in as, and what a deployment grants for it" in
+  [Selecting the store](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#selecting-the-store)
+  says when to set the member and lists what it needs. Each kind refuses the other's key. An
+  omitted `session_store` and `pvc`, the file store of earlier releases, are refused with the same
+  line and its reason: an issue pod's disk is deleted with the pod, so a conversation kept as a
+  file on it dies with the pod and the next launch's resume fails on the missing file, retiring the
+  claim after three failures. Name the store and its key, and have the database reachable from the
+  pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
@@ -566,22 +696,40 @@ What each part is for:
   token at every start and keeps logging in; no person approves it, provided the broker's
   `BROKER_SERVICE_LOGINS` names the daemon's ServiceAccount.
 - **`runtime.kubernetes.setup`** (optional) is a command, as an argv, that every role, in its own
-  namespaces,
-  runs before each start of its Oh My Pi. It runs in the role's working directory with the role's
-  environment, and its `git` answers `https://github.com` with the role's App token for every
-  repository that App's installations hold: write on the owner of the issue's repository, read on
-  every other owner. Oh My Pi starts only once it exits 0; a failure is a failed launch, and its
-  output is in the role's log. Under
-  this runtime it must fetch nothing: a clone in a role's launch context ends the pod's gVisor
-  sandbox a few seconds in, so install skills with `skills_repository` below and leave `setup` to
-  check that they are there.
-- **`runtime.kubernetes.skills_repository`** (optional) is the Oh My Pi plugin marketplace your
-  pods' roles load their skills from, as `owner/name`. Each issue pod clones its default branch
-  shallow in an init container of its own, with the project's App token, and every role installs
-  from that clone before Oh My Pi starts — so a pod's skills are that branch as of the pod's start,
-  with no image rebuild and no fetch in any role's launch. Each role then checks that the files Oh
-  My Pi installed are the ones that commit holds, and fails its launch if they are not, so a pod
-  can always say which commit its agents' skills came from.
+  namespaces, runs before each start of its Oh My Pi. It runs in the role's working directory with
+  the role's environment, and its `git` answers `https://github.com` from the role's gh bundle:
+  the role's own App token on every owner that App is installed on, with the role's own
+  permissions, each reaching every repository that owner's installation holds, and the
+  controller's read-only. Oh My Pi starts only once it exits 0; a failure is a failed launch, and
+  its output is in the role's log. It may install an Oh My Pi plugin marketplace from GitHub. Such
+  an install renames a directory in the role's home overlay, which stopped the pod's gVisor
+  sandbox until legion-v19.18.1 mounted that overlay with `userxattr` (gVisor could not write its
+  opaque mark on the renamed directory). For example:
+
+  ```yaml
+  runtime:
+    kubernetes:
+      setup:
+        - /bin/sh
+        - -c
+        - |
+          [ -z "${LEGION_CONTROLLER:-}" ] || exit 0
+          cd "$HOME" || { echo "setup: cd $HOME failed" >&2; exit 0; }
+          repo=acme/agent-skills marketplace=acme-skills plugin=agent-skills
+          omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+          if ! timeout 120 omp plugin marketplace add "$repo"; then
+            echo "setup: omp plugin marketplace add $repo failed" >&2
+          elif ! timeout 60 omp plugin install "$plugin@$marketplace" --force; then
+            echo "setup: omp plugin install $plugin@$marketplace failed" >&2
+          elif ! omp plugin enable "$plugin@$marketplace"; then
+            echo "setup: omp plugin enable $plugin@$marketplace failed" >&2
+          fi
+          omp plugin marketplace remove "$marketplace" >/dev/null 2>&1
+          exit 0
+  ```
+
+  This example skips the controller and exits 0 when a step fails, so a failed install stops no
+  role.
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).
@@ -595,9 +743,18 @@ What each part is for:
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
-  told, nor is one every quiet issue of which waits by design while the project's line can still
-  move — some issue of the project holds a slot and waits by no such rule, or some claim of it is
-  at work — and no value turns the notice off,
+  told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
+  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
+  at work, or an issue of the line that waits on no other issue can start — nor, whether or not
+  the line can move, one whose only quiet issues gave their slot back to wait on work outside
+  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
+  daemon has released. A wait on a child an architect has not released is no such wait. Where
+  the issue waited on is in this project and its own tree has stopped, that tree is told; a
+  wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
+  and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
+  under `admission.blocked` and in the tick notice's `blocked` list.
+  No value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
@@ -657,12 +814,12 @@ What each part is for:
   you leave out is told exactly what it is told without the key. The loader refuses an unknown
   role, an empty list, a relative path, a path named twice or one every role already names, and a
   role `worker_backends` puts on `claude`. Under Kubernetes each file must be in a mount of
-  `runtime.kubernetes.pod.volume_mounts` (`legion start --check-config` refuses one that is not),
+  `runtime.kubernetes.pod.volume_mounts` (`legion config check` refuses one that is not),
   and the image probe reads each named role's overlays in the pod's mounts at boot, so a file the
   ConfigMap lacks, or one Oh My Pi cannot parse, stops the boot naming the role and the file, never
-  that role's start. Under tmux boot and `--check-config` refuse a file the host does not have, and
-  boot refuses one Oh My Pi cannot parse. The capability report's `model-fallback` row reads only
-  the overlays every role names, so a deployment that turns fallback on for some roles alone
+  that role's start. Under tmux boot and `legion config check` refuse a file the host does not have,
+  and boot refuses one Oh My Pi cannot parse. The capability report's `model-fallback` row reads
+  only the overlays every role names, so a deployment that turns fallback on for some roles alone
   records `capabilities.decided.model-fallback`. Only loading is per role: every role of a pod, and every pane
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
   to a running deployment replaces every affected issue pod at the restart: each of its running
@@ -690,9 +847,10 @@ What each part is for:
   claim whose record holds neither is judged from nothing and left alone, as is a claim in no turn
   and a claim in an open pod-update round, whose replacement that round owns. The stop re-reads
   the claim's own record before it acts, and charges nothing — neither a launch failure nor a
-  death with work outstanding — so a worker it ends keeps its supervision budgets. The issue's
-  architect is told what the record held: how long the agent was silent, the bound it passed, when
-  the turn began, and the call the record names, if any. A tree architect's own stall is told to
+  death with work outstanding — so a worker it ends keeps its supervision budgets. The architect
+  that owns the issue is told what the record held: how long the agent was silent, the bound it
+  passed, when the turn began, and the call the record names, if any. The stall of a child's own
+  architect is told to the architect above that child. A root architect's own stall is told to
   the controller as well.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
@@ -742,11 +900,106 @@ What each part is for:
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.
 
+**Every key in one place: `legion config reference --json`.** The command prints the loader's own
+key table as JSON — one object per top-level key with its `name`, `default`, `required` and
+`description`, and, under `nested`, the keys of the mappings that belong to it — and reads
+nothing: no `legion.yaml`, no daemon, no cluster, so it answers anywhere the binary runs. JSON is
+the one shape it prints, which is why `--json` is required rather than one choice among formats:
+
+```sh
+legion config reference --json | jq '.[] | select(.name == "projects") | .nested[] | select(.path | startswith("projects.<KEY>.experiments"))'
+```
+
+The [configuration reference](/legion/legion/reference/config/) on this site is built from that
+output when the site is built, together with the example files the repository ships, so the page
+and the loader can never disagree about a key.
+
+## Pre-registering an experiment
+
+Write this down before you move an experiment's `mode` off `off`, and keep it where the project
+keeps its decisions. An experiment nobody wrote down before it ran is one whose result can be
+chosen after it ran, and this fleet draws few enough units that the choice would decide the
+answer. A pre-registration states seven things.
+
+1. **The primary outcome.** One measure, named before the first draw, that the experiment is
+   judged on: the share of issues merged with no fix by a person, say, or the median hours from
+   an issue's start to its merge. Say how it is computed and which records it is read from. List
+   secondary measures if you want them, and let none of them decide the experiment. Say which
+   roles the arms reach (`roles`), and check that no reached role decides the outcome: a merge
+   waits on the reviewer's approval and the architect's sign-off, and the tester's fail sends
+   work back, so where the arm reaches those roles a merge rate or a count of review rounds is
+   partly the treatment's own verdict, and a laxer reviewer reads as a better arm. Leave such
+   roles out of `roles`, or choose an outcome no reached role decides.
+
+2. **The unit it randomises, and whether mixing arms inside a tree is a danger for that
+   outcome.** `unit: tree` draws once for a whole tree, so every issue of that tree runs in one
+   arm. `unit: issue` draws for each issue, so two issues of one tree can run in different arms.
+   Mixing inside a tree is safe when an arm cannot reach its siblings — an overlay that changes
+   how one issue's implementer writes its own code, and nothing the tree shares. It is a danger
+   when the arm can reach them: anything that changes what a role writes into the tree's spec,
+   its branch, or its architect's context reaches the tree's other issues, so the control arm
+   measures the treatment too and the difference you read is smaller than the true one. Where an
+   arm can leak, draw for the tree.
+
+3. **The smallest effect worth acting on.** The difference that would make you keep the arm, not
+   the difference you hope for. Everything in part 4 follows from this number.
+
+4. **The units each arm needs, at that project's measured volume.** The fleet runs about 2,200
+   trees a month over four projects, and no tree belongs to two of them, so a project's volume is
+   its own share of that. For one binary outcome at the tree level, a ten-point effect needs
+   about 400 units in each arm, and a five-point effect about 1,600. Write the number your
+   smallest worthwhile effect needs, and the weeks of that project's volume it takes to fill
+   every arm to it. An experiment that cannot reach its number before the date in part 5 is one
+   to widen — more projects, or a larger weight — or not to run.
+
+5. **The date it stops.** A calendar date, fixed before the first draw. On that date read the
+   outcome and set `mode: off`, which stops new draws and leaves every unit already drawn running
+   as it was. Reading the numbers early and stopping because they look good is how a null result
+   becomes a positive one, so if you will look early, say in the pre-registration what an early
+   look may and may not decide.
+
+6. **That the analysis groups by tree.** The issues of one tree are not independent draws: they
+   share a repository, a spec, an architect and each other's work, so two issues of one tree
+   carry much the same information as one issue does. An analysis of an issue-level experiment
+   therefore groups by tree — a mean per tree, or a model with one random effect per tree — and
+   never counts issues as if each had been drawn on its own, which would read a confidence it has
+   not earned. A tree-level experiment is already one row per tree.
+
+7. **The two ways an exposure can be wrong.** An assignment row says which arm a unit was drawn
+   into. It does not promise the unit ran in that arm, and two things break the promise:
+
+   - **A kept pod that does not hold the arm's overlay.** A launch into a pod the daemon keeps
+     names only the overlay files that pod holds, so a pod built before the arm's mount existed
+     starts its role without that arm's files, and the unit runs in neither arm: not the control,
+     which names no file, and not the arm it was drawn into, whose file it cannot read. Each such
+     launch logs one line naming the issue, the role, the experiment and the arm. Read those
+     lines and count the unit out of the exposure for that period.
+   - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
+     only the files the file still holds, so from the moment the arm leaves the file its units run
+     as a unit in no experiment runs. Take an arm out of the file only when the experiment is
+     over, and record the date if you do it sooner, because every unit of that arm is unexposed
+     from then on.
+
+A template to copy:
+
+```text
+Experiment: <name>            Project: <KEY>        Unit: tree | issue
+Primary outcome: <measure, how it is computed, which records it is read from>
+Roles the arms reach: <every issue role> | <the roles `roles` lists>; no reached role decides the outcome, because …
+Mixing inside a tree: <safe, because …> | <a danger, because …; so the unit is the tree>
+Smallest effect worth acting on: <points>
+Units needed per arm: <n> (about 400 for ten points, 1,600 for five, at the tree level)
+Weeks of this project's volume to fill every arm: <n>
+Stops on: <date>     Early looks: <none> | <what one may decide>
+Analysis: grouped by tree (<per-tree mean | random effect per tree>)
+Exposure checks: kept-pod drops from the launch log; the date any arm left the file
+```
+
 ## Secrets and files
 
 - **The operator token** authenticates `legion controller start`, `legion claims` and
-  `legion status <issue> <status>` from an operator's shell. Make one long random string in a file
-  only you can read:
+  `legion issue status <issue> <status>` from an operator's shell. Make one long random string in a
+  file only you can read:
 
   ```sh
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token
@@ -791,7 +1044,7 @@ To stand it up:
    differs and leaves yours. Either way, stop that tool declaring the ConfigMap first.
 3. Put `pod.yml`'s contents under `runtime.kubernetes.pod` in `legion.yaml`, with your endpoint's
    token audience in place of `${MODEL_TOKEN_AUDIENCE}` and the ServiceAccount your pods run as in
-   place of `${POD_SERVICE_ACCOUNT}`. `legion start --check-config` refuses either placeholder
+   place of `${POD_SERVICE_ACCOUNT}`. `legion config check` refuses either placeholder
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
@@ -805,12 +1058,12 @@ relaunched.
 
 ## Check and start the daemon
 
-Validate the file first. `--check-config` makes every refusal boot would make from the
+Validate the file first. `legion config check` makes every refusal boot would make from the
 configuration, the environment and the files it names, without starting anything, running a key
 command or writing a file:
 
 ```sh
-legion start --config legion.yaml --check-config
+legion config check --config legion.yaml
 # Config OK: project=WIDGETS design-gate-steps=spec
 ```
 
@@ -932,7 +1185,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 1. **Pick the new image** and note its digest ([The worker image](#the-worker-image)), and take the
    `legion` binary and both plugins from it.
 2. **Update `legion.yaml`**: set `runtime.kubernetes.image` to the new digest and run
-   `legion start --config legion.yaml --check-config`.
+   `legion config check --config legion.yaml`.
 
    **After the first upgrade to a release that takes the project's repositories from Dispatch,** a
    `legion.yaml` that still sets `projects.<KEY>.repo` is refused at load with
@@ -944,7 +1197,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **After the first upgrade to a release without `review_workflows`,** a `legion.yaml` that still
    sets `projects.<KEY>.review_workflows` is refused at load with
-   `Unknown key "projects.<KEY>.review_workflows"`, by `legion start --check-config` and by the
+   `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
    image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
    the work back to the implementer, which answers and resolves the bot's threads and pushes, and
@@ -954,9 +1207,10 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **After the first upgrade to the release where an issue's disk dies with its pod,** the
    `runtime.kubernetes` block must name a `session_store` that keeps sessions in a database, with
-   that store's key — for a deployment today `session_store: postgres` and `session_dsn_secret`,
-   with the providers Secret holding that key — before the daemon boots: the loader refuses the
-   file otherwise ([legion.yaml](#legionyaml)). Before rolling that change, follow
+   that store's key — `session_store: postgres` with `session_dsn_secret` and the providers Secret
+   holding that key, or `session_store: cloudsql-iam` with `session_database` — before the daemon
+   boots: the loader refuses the file otherwise ([legion.yaml](#legionyaml)). Before rolling that
+   change, follow
    [Copying file sessions before turning it on](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#copying-file-sessions-before-turning-it-on).
    A later reaping of an older Sandbox-owned volume reads the retiring Sandbox's pod template.
    The providers volume's `OMP_SESSION_SQL_DSN` item under `postgres`, or the launcher's three
@@ -1007,37 +1261,47 @@ Closing the terminal leaves the project without one, and the daemon logs
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
-   role of an open issue live and idle between phases, while the root waits on a person, and when a
-   child re-enters. It suspends or ends claims only when an issue leaves the workflow, when a claim
-   moves to another tree, or for a production check after the issue is done. A phase start gives
-   its task to that live claim. At boot the daemon resumes by rule a suspended worker that still
-   owns its issue's phase, but never a claim an operator suspended; a start for an
-   operator-suspended claim waits instead. A notice for an operator-suspended architect waits until
-   the operator resumes it. A drain therefore ends with the operator resuming every claim they
-   suspended, one `legion claims resume` each; `legion claims list --json` names each one's
-   `suspendedBy` (`operator`, `daemon`, `exit`, or `unknown` for one suspended before this
-   release). A daemon suspension of a claim whose issue left the workflow waits for its current turn
-   to finish, with no stop timeout: a child parked in Dispatch (`backlog` or `icebox`) stops its
-   worker only once the worker's current turn ends, and a lingering tree's claims stay suspended
-   until the tree is re-admitted.
+   role of an open issue live and idle between phases and while the root waits on a person. A child
+   that left the workflow and is set back to `todo` gets its own architect and its planner back,
+   on their kept sessions, at its next first phase start, and each other role at the start of its
+   phase. A claim whose session supervise's `forgetSession` has dropped comes back in a new
+   session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
+   when a claim moves to another tree, or for a production check after the issue is done. A phase
+   start gives its task to that live claim. At boot the daemon
+   resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
+   operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
+   operator-suspended architect waits until the operator resumes it. A notice for a child whose
+   own architect an operator suspended goes to the architect above that child. A drain therefore
+   ends with the operator resuming every claim they suspended, one `legion claims resume` each;
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
+   `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
+   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
+   in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
+   and a lingering tree's claims stay suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
-   suspended reads `unknown`. The next phase start, re-admission and the controller keeper resume
-   those as before. The boot's own sweep does not, but a start already queued before the upgrade
-   still resumes one at the first boot, as the earlier release would have. To keep a claim you
-   drained before the upgrade held against every trigger, run `legion claims suspend` on it once
-   the new daemon is up: that records the suspension as yours. Act only on the claims the state
-   names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
+   suspended reads `unknown`. The next phase start, re-admission and the controller keeper
+   resume those as before. The boot's own sweep does not, but a start already queued before the
+   upgrade still resumes one at the first boot, as the earlier release would have. To keep a
+   claim you drained before the upgrade held against every trigger, run `legion claims suspend`
+   on it once the new daemon is up: that records the suspension as yours. Act only on the claims
+   the state names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
    `strandedClaims` in `--json`), and skip those you drained on purpose: resume a suspended
    architect, retry a failed one (`legion claims retry --claim <token>`, which relaunches its
-   session with fresh budgets; `legion claims retry --failed` retries every failed claim, and a
-   failed phase worker whose issue is held for its own role retries that phase), and bring a suspended phase worker back as
-   [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
-   shows for its `suspendedBy`. A claim the state names `retired` takes neither resume nor retry —
-   `legion claims retry` refuses a claim that has not failed — and comes back only on a workflow
-   start of the phase it owns, as that page's `needsWorkflowStart` shows.
-   Never resume or retry by hand a claim of a lingering tree or of an issue parked out of the
-   workflow: re-admission or the issue's return to `todo` starts it.
+   session with fresh budgets, or a new one once supervise's `forgetSession` has dropped it;
+   `legion claims retry --failed` retries every failed claim, and a
+   failed phase worker whose issue is held for its own role retries that phase), and bring a
+   suspended phase worker back as [A tree does not move after a
+   restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart) shows for its
+   `suspendedBy`. A claim the state names `retired` takes no resume. `legion claims retry --claim
+   <token>` starts it again, because the retry reaches a retired claim as well as a failed one:
+   an architect is relaunched on its kept session, as above, and a phase worker whose
+   issue stands in its phase has that phase started again (`--failed` passes over a retired
+   claim). Otherwise it comes back on a workflow start, for example a start of the phase it owns
+   or, for an architect, a start of its issue's run (its tree's admission for a root's, its child's
+   first phase start for a child's own), as that page's `needsWorkflowStart` shows. Never resume
+   or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
+   re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and
@@ -1072,9 +1336,12 @@ Closing the terminal leaves the project without one, and the daemon logs
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
-  memory: none
+  admission.held: none
+  memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
+  plan-length: 4 issues — 2 control (random), 2 long (random)
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
+  merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
@@ -1087,11 +1354,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue holds one of the cap's slots from the moment the daemon starts it until its work is past
-  its review — `accepting`, `retro` and `merging` hold none — or until it is
-  done or Dispatch shows it in `triage`, `icebox` or `backlog`, so a tree of four issues at work
-  holds four of them, and the `live trees` count is the trees that run whether or not any issue
-  of theirs holds one.
+  issue takes a slot when the daemon starts it and gives it back as the admission rule says
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
+  so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
+  trees that run whether or not any issue of theirs holds one.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: the issues whose work came back first, oldest first by the moment it
@@ -1105,6 +1371,49 @@ Closing the terminal leaves the project without one, and the daemon logs
   `waiting line: none` while nothing waits, and
   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
   this caller no sentence at all, which is what a daemon older than the sentence serves.
+
+  **The experiment lines.** There is one per experiment the project declares, counting the issues
+  drawn each arm of that experiment under each mode it was drawn in:
+  `memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)` above. Each count reads
+  `N <variant> (<mode>)`, the arm's own name and the mode in force when that unit was drawn;
+  `none` stands for the empty variant a draw under a mode gives, which is what an experiment at
+  mode `off` draws. A unit a hand-over settled at no arm, because the tree it left held no row
+  for the experiment, records no draw and is counted in no line, as its `memoryGroup` is absent
+  for the `memory` experiment; `--json` still shows its row. The counts
+  of one line are in the order of the name they print and then of the mode; the lines are in the
+  order the daemon declares the experiments, which is the `memory` block's experiment first and
+  then the order `projects.<KEY>.experiments` names the rest in. A project that declares
+  `experiments.memory` writes no `memory` block, so its `memory` line stands at that experiment's
+  own place in the `experiments` order. An experiment no issue holds yet is `none` after
+  its name. Every project declares the `memory` experiment, a project that writes neither the
+  `memory` block nor `experiments.memory` declaring it at mode `off`, under which every new tree
+  is drawn at no arm, so such a
+  deployment reads a `memory` line too — `memory: none` until a tree is drawn, and counts of
+  `none (off)` after, which is the line such a deployment read before any experiment was
+  declared.
+  The lines count issues rather than the trees a tree experiment is drawn for, because each issue
+  in the state carries every answer that applies to it: its tree's for a tree experiment and its
+  own for an issue experiment, so one count serves both kinds. A count of trees would fit a tree
+  experiment alone, and even there it would not count draws: a child handed over as a tree of its
+  own takes its old tree's draw verbatim, so two trees hold one draw.
+  A daemon older than contract 141, which is the daemon the documented rollback leaves, serves
+  no `assignments`, so the `memory` line counts an issue that carries none from its
+  `memoryGroup` and `memoryDrawMode`, wherever `memoryGroup` is set, and reads as the
+  earlier release's own `legion state` prints it.
+
+  **The same answers in `legion state --json`.** Each issue carries `assignments`, one
+  `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared
+  order and then any experiment the file no longer names, in the order of their names; the
+  declaration each answer of a declared experiment was drawn from is in the settings, under
+  `settings.projects.<KEY>.memory` for the block's experiment and
+  `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
+  tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
+  made, and the key itself is absent from an issue no experiment holds an answer for. The three
+  fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
+  (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
+  exactly as they did, absent together where nothing was drawn for that tree. Read
+  `assignments` for a measurement: a declared experiment that is not `memory` appears nowhere
+  else.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
@@ -1129,6 +1438,21 @@ Closing the terminal leaves the project without one, and the daemon logs
   The role is on the line because a check opened before the release that gave the project
   `production_check` is worked by the implementer, and one opened after it by the role that
   setting names.
+
+  The `merge waits` line counts the review rounds whose approved head waits on GitHub's merge
+  state and names the oldest head: its issue, its pull request, the head, and what the record holds
+  of the daemon's last read of that head (`merge waits: none` when no round waits). The part after
+  the head reads one of four ways, each saying what the record holds; only a reading with a state
+  on record says `GitHub said`. `GitHub said blocked, read 2026-10-19T09:00:00Z` is the state GitHub
+  gave for this head and the moment of the daemon's read that gave it. `GitHub said blocked, read
+  time not recorded` is a state GitHub gave for this head with no moment of the read beside it:
+  the time is what is missing, never the read, and the daemon's next read of the pull request
+  records it. `read 2026-10-19T09:00:00Z with no merge state` is a read of this head whose answer
+  carried no merge state, which is rare. `no read recorded for this head` says the record holds no
+  read of this head yet, and the daemon's next read of the pull request fills it. The line says "the oldest head" because that is
+  what it is oldest by: the head that has stood longest, the smallest `headUpdatedAt`, and not the
+  round read longest ago, although the read is the only moment the line prints — the wait an
+  operator acts on is the one a head has sat through.
 
   The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
   seen the start of and no end of: how many, and each by issue and role with the tool, the call id
@@ -1199,7 +1523,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   read; a daemon below contract 58 serves none), beside which the line's own members say where
   that place came from and what it means for the slot the issue waits for:
   `part`, `returned` for an issue whose work came back or `starting` for one that has not
-  started; `kind`, `returning`, `answered`, `queued_root` or `first_phase`; `partPlace` and
+  started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
+  issue that gave its slot back to wait on another issue,
+  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `partPlace` and
   `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
@@ -1209,8 +1535,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
   holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
-  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
-  whose open children hold its own first phase reads `blocked`, and an issue at work whose
+  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, and an issue at work whose
   worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
   answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
@@ -1228,8 +1553,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `repositories` (every repository the daemon serves, the ones Dispatch's mapping names and the
   ones the project's own records name: `owners`, `mapped`, each entry with its `repo`, `default`,
   `cache` and `apps` — `{"implement": bool, "review": bool}`, each role App's installation on that
-  repository — `refused`, each with its `repo` and the `reason` a role App is not installed on it
-  or its installation could not be read, and `withoutWebhookApp` with each served repository
+  repository — `refused`, each with its `repo`, the `reason` a role App is not installed on it or
+  its installation could not be read, and `apps`, the same shape, wherever GitHub answered both
+  Apps' installation reads of `repo` (absent where a read failed or `repo` is no `<owner>/<name>`),
+  and `withoutWebhookApp` with each served repository
   Dispatch's GitHub App is not known to be installed on, its `repo` and `reason`),
   `consumers` (each durable consumer's `name`; `waiting`; `oldestAt` and `oldestAgeSeconds`, the
   stream time of the oldest waiting message and its age in whole seconds, both null when nothing
@@ -1262,11 +1589,11 @@ Closing the terminal leaves the project without one, and the daemon logs
 
 ## Take a tree out
 
-From an operator's shell, `legion status` sets a root's Dispatch status through the daemon, as the
-controller does through its `legion` tool's `set_status`:
+From an operator's shell, `legion issue status` sets a root's Dispatch status through the daemon, as
+the controller does through its `legion` tool's `set_status`:
 
 ```sh
-legion status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
+legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots

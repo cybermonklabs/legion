@@ -1,24 +1,26 @@
 # Architect escalation
 
-Read this when a tree's architect sends you a matter, when a `held` wake carries
+Read this when an architect of a tree sends you a matter, when a `held` wake carries
 `reason: "escalated"`, or when an `update-stalled` wake says the daemon cannot replace an issue's
 pod. Three matters come to you from an architect: a child that looks independent of its tree,
 capacity (an architect says its tree cannot run what it needs under the slots it has), and a
-conflict between trees. An issue-design decision is not one of them: the owning architect writes
-it as a decision block and opens its own finding asks. Send a design decision back to that
-architect with `envoy_publish` to its role, because it is not yours to make.
+conflict between trees. An issue-design decision is not one of them: a root's architect writes
+it as a decision block and opens its own finding asks, and a child's own architect sends it to
+the architect above it, so that the root's architect asks it on the root. Send a design decision
+back to the architect that sent it with `envoy_publish` to its role, because it is not yours to
+make.
 
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
-daemon has started, a root or a child, not trees, and an issue holds one of the cap's slots from
-the moment the daemon starts it until its work is past its review, until it is done, or until
-Dispatch takes it out of the workflow, so a tree's own children compete for it with every other
+daemon has started, a root or a child, not trees, and an issue holds one as
+[Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a tree's own children compete for it with every other
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
 open a finding ask when the deployment needs a larger cap.
 
 For a conflict between trees, read both roots in `read_state` and Dispatch, publish what you read
-to both architects' roles, and open a finding ask when the two need a person's decision.
+to the architect that sent the matter and to the architect that owns the other tree's issue, and
+open a finding ask when the two need a person's decision.
 
 ## An escalated hold
 
@@ -36,7 +38,9 @@ you release it. Read the record, then choose the release.
    `promptFailures`, and `prompt_retire_limit` bounds `promptRetires`. The count that reached its
    limit is the budget that ran out, and the cause word says what spent it. The architect reads
    the same `failure` in its own record and reads these limits nowhere, so name the limit when you
-   answer it.
+   answer it. A `launch_refused` with no count at its limit is a system prompt too large for its
+   pod's start frame, and its `detail` names the role, the size and the limit: only a shorter prompt
+   starts that role, so a release before the prompt is cut fails again at once.
 3. **The release.** The `held` wake gives each release its price. On a root whose tree does not
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
@@ -99,9 +103,11 @@ round's message states (`reasons`), the one line that says what holds the round 
 every claim the round asked (`waiting`, each with its `claim` token, `role`, `state` and
 `answered`). Past the bound no answer holds the round, so `answered` tells you what each role
 said, not whom to prompt. A `failed` claim is never in a pod round's `waiting`: it runs no turn
-on the pod, so the round does not wait for it. Its retry is the architect's or the operator's as
-for any failed role, and yours once the architect escalates the hold
-([An escalated hold](#an-escalated-hold)). A retried claim is asked like any other.
+on the pod, so the round does not wait for it. A failed phase worker's retry is its architect's
+or the operator's, and yours once the architect escalates the hold
+([An escalated hold](#an-escalated-hold)). A failed root architect's retry is the operator's, or
+your restart of its tree after its `worker-died`. A failed child's own architect starts again at
+its child's next phase start, or on the operator's retry. A retried claim is asked like any other.
 
 Before it replaces the pod, the daemon reads nothing of the pod's disk. A role's own push is
 what keeps its work: work a role did not push before the pod goes, a failed claim's included,

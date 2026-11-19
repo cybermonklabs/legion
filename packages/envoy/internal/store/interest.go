@@ -4,15 +4,14 @@ import (
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-type Interest struct {
-	SessionID string   `json:"session_id"`
-	MachineID string   `json:"machine_id"`
-	Dir       string   `json:"dir"`
-	Topics    []string `json:"topics"`
-	UpdatedAt int64    `json:"updated_at"`
-}
+// Interest is one session's persisted interest record, the value the interest bucket stores and
+// the listener's interest routes answer, which the listener's wire package declares
+// (listenerwire.Interest).
+type Interest = listenerwire.Interest
 
 func Merge(item Interest, topics []string) Interest {
 	seen := map[string]bool{}
@@ -35,6 +34,23 @@ func Merge(item Interest, topics []string) Interest {
 	return item
 }
 
+// oneInterest is what makes two spellings of a name one interest while every reader takes both
+// forms: the old form of a topic that has one (contracts.LegacyTwin), and the topic itself
+// otherwise. It is read on both sides of a removal, because the new form of an agent's name is a
+// wildcard over every project (notifications.agent.*.s1), which no stored topic equals: a reading
+// that compared the forms as strings would leave a record's notifications.agent._.s1 and
+// notifications.role.PRIV.<role> standing after their own unsubscribe. A topic with no old form,
+// one over every issue of a project among them, is its own interest.
+func oneInterest(topic string) string {
+	if twin, ok := contracts.LegacyTwin(topic); ok {
+		return twin
+	}
+	return topic
+}
+
+// Remove takes topics out of item, each in every form a reader takes it in (oneInterest): the old
+// and new forms of an issue's, an agent's or a role's name are one interest, and a form left
+// behind would keep the session's consumer filtered on it. No topics at all removes every topic.
 func Remove(item Interest, topics []string) Interest {
 	if len(topics) == 0 {
 		item.Topics = nil
@@ -42,11 +58,11 @@ func Remove(item Interest, topics []string) Interest {
 	}
 	cut := map[string]bool{}
 	for _, topic := range topics {
-		cut[topic] = true
+		cut[oneInterest(topic)] = true
 	}
 	out := make([]string, 0, len(item.Topics))
 	for _, topic := range item.Topics {
-		if cut[topic] {
+		if cut[oneInterest(topic)] {
 			continue
 		}
 		out = append(out, topic)

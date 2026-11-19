@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -242,6 +241,16 @@ func (i installedOnMapped) InstalledOwners(context.Context, appauth.AppRole) ([]
 	return owners, nil
 }
 
+// sourceOf is tokens and installs as the one appauth.Source a credential takes, which the
+// daemon's Manager is by itself: a rig names the two apart, since the lease a mint answers with
+// and the owners each App is installed on are what its tests change one at a time.
+func sourceOf(tokens appauth.Tokens, installs appauth.OwnerInstallations) appauth.Source {
+	return struct {
+		appauth.Tokens
+		appauth.OwnerInstallations
+	}{tokens, installs}
+}
+
 // servingRenamed is a daemon serving repos with the smoke pair configured, built as the daemon
 // builds its own answers from one mapping (daemon's sandboxRuntime): the directories it serves,
 // the gh bundles it renders, the provisioning tokens it mints and the mapping its cache sweep
@@ -255,12 +264,11 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		// hands them to both credentials and the directory set alike: the owners each App's
 		// last bundle read installed, and what the mints found GitHub refuses.
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
-		leases := &namedLeases{}
-		installs := installedOnMapped{served: served}
+		apps := sourceOf(&namedLeases{}, installedOnMapped{served: served})
 		o.Mapped = served
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(leases, installs, served, renames, installed, left, nil)
-		o.ControllerCredential = appauth.ControllerCredential(leases, installs, served, renames, installed, left, nil)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil)
+		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)
 		}
@@ -575,10 +583,9 @@ func withCauselessLeakCheck() rigOption {
 }
 
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
-// carry: the tests that build one drive the launcher protocol itself.
-func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
-}
+// carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
+// build one drive the launcher protocol itself.
+func testLaunchers() *launchers { return volumeLaunchers(nil) }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation
 // carries it to the real resolver (launcherCredential.issue); "" for the project controller's

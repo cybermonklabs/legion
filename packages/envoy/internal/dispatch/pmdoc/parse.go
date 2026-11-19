@@ -145,7 +145,7 @@ func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, err
 // (RepeatedBlockID), and the repair keeps it for its first block, as settlement would. Each untyped
 // block of live the markdown leaves unchanged keeps its id (carryBlockIDs), which the markdown
 // cannot name, so the write leaves it as it was. A block id of any length is written; one longer
-// than text.MaxBlockIDBytes is simply no graph node (refs.IndexBlocks). A document whose rendering,
+// than text.MaxBlockIDBytes is simply no graph node (refs.PlanBlocks). A document whose rendering,
 // the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument);
 // ParseWritten is this parse with that read-back, for a write that goes on to read the same
 // rendering.
@@ -191,6 +191,10 @@ func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *Wr
 	}
 	if err := RepeatedBlockID(live, doc, doc); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
+	}
+	// A write may keep an element live holds that this build cannot create, never add one.
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+		return nil, err
 	}
 	carryBlockIDs(doc, live)
 	EnsureBlockIDs(doc)
@@ -464,7 +468,13 @@ func referencedLabels(nodes []*Node) []string {
 // paragraph, or holds text after its paragraph's last line, is ErrSchema. Every U+0000 in it is
 // read as U+FFFD, as it is in a document's markdown (readInline, parseUnstamped).
 func ParseInline(markdown string, budget *WriteBudget) (nodes []*Node, err error) {
-	return readInline(markdown, inlineMarkdown.run, parser.NewContext(), budget)
+	if nodes, err = readInline(markdown, inlineMarkdown.run, parser.NewContext(), budget); err != nil {
+		return nil, err
+	}
+	if err := refuseUncreatable(nodes, nil); err != nil {
+		return nil, err
+	}
+	return nodes, nil
 }
 
 // readInline is ParseInline read with inline, one of an inlineReader's parsers, in context, a new
@@ -897,9 +907,10 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 // which the browser editor's own schema fills in when the markdown opens the block with another
 // block: an `ask` written with a list first is read holding an empty paragraph ahead of it, since
 // ProseMirror fills a node's content expression from its left (`paragraph+ bullet_list?`). A
-// block whose content is `block+` takes what it is given.
+// block whose content is `block+` takes what it is given, and so does one this build's manifest
+// does not declare, whose content rule it does not know (typedBlock).
 func opensWithAParagraph(name string) bool {
-	typ, ok := schemaTypes[name]
+	typ, ok := typedBlock(name)
 	if !ok {
 		return false
 	}

@@ -7,15 +7,17 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 128,
-    "caller": 128
+    "daemon": 160,
+    "caller": 160
   },
   "admission": {
-    "cap": 3,
+    "cap": 5,
     "active": [
       "LEGION-208",
       "LEGION-210",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-218",
+      "LEGION-219"
     ],
     "waiting": [
       "LEGION-212",
@@ -25,7 +27,9 @@
       "LEGION-208",
       "LEGION-210",
       "LEGION-211",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-218",
+      "LEGION-219"
     ],
     "blocked": [
       {
@@ -260,8 +264,24 @@
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
       "phaseEntry": 4,
       "givenEntry": 4,
+      "entryQueuedAt": "2026-09-22T08:58:14Z",
+      "entryConfirmedAt": "2026-09-22T08:58:51Z",
       "treeMovedAt": "2026-09-22T09:17:12Z",
-      "quietHours": 0.013333333333333334
+      "quietHours": 0.013333333333333334,
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "short",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -277,7 +297,21 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "assignments": [
+        {
+          "experiment": "memory",
+          "variant": "memory",
+          "mode": "random",
+          "drawnAt": "2026-09-20T11:04:05Z"
+        },
+        {
+          "experiment": "plan-length",
+          "variant": "long",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ]
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -307,7 +341,7 @@
               }
             },
             "pendingCause": "died",
-            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -324,8 +358,18 @@
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
       },
+      "architectStalls": [
+        "claim-unreachable"
+      ],
       "treeMovedAt": "2026-09-22T06:18:00Z",
-      "quietHours": 3
+      "quietHours": 3,
+      "assignments": [
+        {
+          "experiment": "plan-length",
+          "variant": "",
+          "mode": ""
+        }
+      ]
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -444,6 +488,124 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "workers": {}
+    },
+    "LEGION-218": {
+      "key": "LEGION-218",
+      "generation": 1,
+      "phase": "reviewing",
+      "status": "needs_review",
+      "tree": "LEGION-218",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_218",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "handoffCommit": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+          "pass": 1,
+          "rounds": 0
+        },
+        "reviewer": {
+          "claim": {
+            "session": "ses_reviewer_218",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "pass": 1,
+          "rounds": 0
+        }
+      },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+        "state": "open",
+        "reviewDecision": "approved"
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
+          "currentVersion": 5,
+          "approvedVersion": 5,
+          "status": "approved"
+        }
+      ],
+      "mergeWait": {
+        "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+        "headUpdatedAt": "2026-09-22T08:58:40Z",
+        "checkRuns": 0
+      },
+      "phaseEntry": 1,
+      "givenEntry": 1,
+      "treeMovedAt": "2026-09-22T09:07:21Z",
+      "quietHours": 0.1775
+    },
+    "LEGION-219": {
+      "key": "LEGION-219",
+      "generation": 3,
+      "phase": "reviewing",
+      "status": "needs_review",
+      "tree": "LEGION-219",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_219",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "handoffCommit": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+          "pass": 2,
+          "rounds": 1,
+          "backwardMoves": {
+            "reviewing-implementing": 1
+          }
+        },
+        "reviewer": {
+          "claim": {
+            "session": "ses_reviewer_219",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "pass": 2,
+          "rounds": 1
+        }
+      },
+      "pullRequest": {
+        "repo": "zeta/tools",
+        "number": 642,
+        "head": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "state": "open",
+        "mergeState": "blocked",
+        "reviewDecision": "approved"
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
+          "currentVersion": 2,
+          "approvedVersion": 2,
+          "status": "approved"
+        }
+      ],
+      "mergeWait": {
+        "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "mergeState": "blocked",
+        "stateReadAt": "2026-09-22T09:16:12Z",
+        "headUpdatedAt": "2026-09-20T14:05:33Z",
+        "checkRuns": 2,
+        "toldHead": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "toldState": "blocked"
+      },
+      "phaseEntry": 2,
+      "givenEntry": 2,
+      "treeMovedAt": "2026-09-20T16:42:58Z",
+      "quietHours": 40.583888888888886
     }
   },
   "pendingStatusWrites": [],
@@ -663,7 +825,15 @@
     "refused": [
       {
         "repo": "acme/gadgets",
-        "reason": "the review App is not installed on acme/gadgets"
+        "reason": "the review App is not installed on acme/gadgets",
+        "apps": {
+          "implement": true,
+          "review": false
+        }
+      },
+      {
+        "repo": "zeta/archive",
+        "reason": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
       }
     ],
     "withoutWebhookApp": [
@@ -747,7 +917,6 @@
           "-c",
           "echo fixture-setup"
         ],
-        "skills_repository": "acme/agent-skills",
         "test_postgres": false,
         "repository_cache": {
           "volume": "40Gi",
@@ -765,6 +934,26 @@
         "idle_release": {
           "idle_minutes": 10,
           "backstop_minutes": 60
+        },
+        "memory_guard": {
+          "issue_pods": {
+            "enabled": true,
+            "act_percent": 80,
+            "floor_percent": 15,
+            "wait_seconds": 8,
+            "interval_milliseconds": 250
+          }
+        },
+        "volume_trim": {
+          "enabled": true,
+          "high_percent": 90,
+          "low_percent": 60,
+          "min_age_minutes": 120,
+          "interval_seconds": 30
+        },
+        "sandbox": {
+          "type": "gvisor",
+          "canary_issues": []
         }
       }
     },
@@ -805,6 +994,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "tester",
         "deploys": []
       },
@@ -813,6 +1003,7 @@
         "memory": {
           "config_files": []
         },
+        "experiments": [],
         "production_check": "off",
         "deploys": []
       }

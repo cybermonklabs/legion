@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `CheckResult` carries `currency` again, as an optional compatibility field (`current` or
+  `older`) for `dispatch` clients older than pi-envoy 17.1.0, which print it and read none of
+  `commit_stands`, `check_words_moved` and `retracted`. Its schema description limits the field
+  to `GET /api/v1/issues/{key}/results` with no `?at=`, says when each word is answered, and
+  says it is removed once no client older than pi-envoy 17.1.0 is in use.

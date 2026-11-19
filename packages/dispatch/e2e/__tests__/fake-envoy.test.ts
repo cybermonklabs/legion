@@ -52,12 +52,18 @@ async function startFakeEnvoy(): Promise<{
   }
 }
 
-/** A fixture write to the fake listening at `origin`. */
-function putFixture(origin: string, path: string, body: unknown): Promise<Response> {
+/** A fixture write to the fake listening at `origin`: a PUT, or the PATCH that changes one seeded
+ *  session (`/__fixture/sessions/<id>`). */
+function putFixture(
+  origin: string,
+  path: string,
+  body: unknown,
+  method: "PUT" | "PATCH" = "PUT"
+): Promise<Response> {
   return Bun.fetch(`${origin}${path}`, {
     body: JSON.stringify(body),
     headers: { "Content-Type": "application/json" },
-    method: "PUT",
+    method,
   });
 }
 
@@ -242,6 +248,97 @@ test("a registry state other than ok refuses all three registry reads, and ok re
     const unknown = await putFixture(origin, "/__fixture/legion-registry", { state: "sideways" });
     expect(unknown.status).toBe(400);
     expect(await unknown.json()).toEqual({ error: "state must be ok, unopened or unreadable" });
+  } finally {
+    await stop();
+  }
+});
+
+/** A send to `target` as Dispatch's listener client writes one, under `key`, asking for a
+ *  session that is running now when `connectedOnly` is set. */
+function send(origin: string, target: string, key: string, connectedOnly = false) {
+  return Bun.fetch(`${origin}/v1/messages/send`, {
+    body: JSON.stringify({
+      expects_reply: false,
+      idempotency_key: key,
+      message: "Report status.",
+      payload: "{}",
+      source: "dispatch",
+      target_session: target,
+      urgency: "normal",
+      ...(connectedOnly ? { connected_only: true } : {}),
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+}
+
+// A stopped session is one the listener knows only by its known-session record: the per-session
+// route answers it only to a read with `stopped` in its `include=` list
+// (`include=unresponsive,stopped`, as Dispatch's delivery read asks), a send to it is stored and
+// answered 200 `state: "stopped"` beside `recipient_state: "gone"`, and a send that asked for a
+// running session is refused 409 with nothing stored. An entry still in place whose plugin has
+// gone - the probe's no-responders - answers `stopped` with its own age's state.
+test("a stopped session is read only with stopped in include=, and a send to it is stored, or refused under connected_only", async () => {
+  const { origin, stop } = await startFakeEnvoy();
+  try {
+    const sessions: FakeSession[] = [
+      { capabilities: ["steer"], session_id: "stopped", title: "Stopped" },
+      { capabilities: ["steer"], session_id: "crashed", title: "Crashed" },
+    ];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    expect(
+      (await putFixture(origin, "/__fixture/sessions/stopped", { stopped: true }, "PATCH")).status
+    ).toBe(200);
+
+    const read = (query: string) => Bun.fetch(`${origin}/v1/registry/stopped${query}`);
+    expect((await read("")).status).toBe(404);
+    expect((await read("?include=unresponsive")).status).toBe(404);
+    const known = await read("?include=unresponsive,stopped");
+    expect(known.status).toBe(200);
+    expect(await known.json()).toEqual({
+      capabilities: ["steer"],
+      last_seen: expect.any(Number),
+      session_id: "stopped",
+      state: "stopped",
+      title: "Stopped",
+      topics: [],
+    });
+    // The list holds the sessions that are running, whatever a caller asks for.
+    const listed = await Bun.fetch(`${origin}/v1/sessions?include=unresponsive,stopped`);
+    expect(await listed.json()).toMatchObject([{ session_id: "crashed", state: "live" }]);
+
+    const queued = await send(origin, "stopped", "key-1");
+    expect(queued.status).toBe(200);
+    expect(await queued.json()).toEqual({
+      event_id: "envelope-1",
+      last_seen: expect.any(Number),
+      recipient: "stopped",
+      recipient_state: "gone",
+      state: "stopped",
+    });
+    const refused = await send(origin, "stopped", "key-2", true);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "the session is stopped" });
+
+    // The entry the registry still reads live, whose send finds no plugin.
+    expect(
+      (await putFixture(origin, "/__fixture/sessions/crashed", { send_state: "stopped" }, "PATCH"))
+        .status
+    ).toBe(200);
+    expect((await Bun.fetch(`${origin}/v1/registry/crashed`)).status).toBe(200);
+    const crashed = await send(origin, "crashed", "key-3");
+    expect(crashed.status).toBe(200);
+    expect(await crashed.json()).toMatchObject({ recipient_state: "live", state: "stopped" });
+    expect((await send(origin, "crashed", "key-4", true)).status).toBe(409);
+
+    // Started again, the session is a running one on every route.
+    expect(
+      (await putFixture(origin, "/__fixture/sessions/stopped", { stopped: false }, "PATCH")).status
+    ).toBe(200);
+    expect((await read("")).status).toBe(200);
+    const sent = await send(origin, "stopped", "key-5", true);
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toMatchObject({ recipient_state: "live", state: "connected" });
   } finally {
     await stop();
   }

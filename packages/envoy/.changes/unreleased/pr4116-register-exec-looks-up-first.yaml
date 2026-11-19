@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `agent-secrets register --exec -- COMMAND` looks `COMMAND` up on `PATH` before it asks the helper
+  to register the session, so a mistyped command exits 127, naming it, and makes no enrolment for a
+  session that never starts.

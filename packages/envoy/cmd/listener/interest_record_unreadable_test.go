@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // An interest record the bucket holds and this build cannot decode is not a bus that did not
@@ -44,14 +45,14 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 		t.Fatalf("connect the bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// Both routes below report each session's roles, so they are refused the bus-unavailable 503
 	// until the role claim view is complete, whatever the records hold.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	// bucket, and that answer is no answer about the record this test is about.
 	waitForSessions(t, sessions)
 	if _, err := registry.Upsert(store.Interest{SessionID: readable, MachineID: "test-machine", Dir: "/test/" + readable},
-		[]string{contracts.AgentSubject(readable), topic}); err != nil {
+		[]string{contracts.LegacyAgentSubject(readable), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", readable, err)
 	}
 	interestBucket, err := client.JS().KeyValue(bus.InterestBucket)
@@ -110,7 +111,7 @@ func TestAnUnreadableInterestRecordIsNotAnsweredAsTheBusNotAnswering(t *testing.
 	} {
 		t.Run(route.path, func(t *testing.T) {
 			recorder := get(route.handler, route.path)
-			var refusal apiError
+			var refusal listenerwire.APIError
 			_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
 			if recorder.Code == http.StatusServiceUnavailable || strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
 				t.Fatalf("GET %s with an unreadable interest record: status %d, body %s; want anything but the bus-unavailable 503 - the bus answered, and the record it answered with cannot be read on any retry",

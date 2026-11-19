@@ -8,8 +8,12 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
@@ -190,9 +194,9 @@ func TestSessionsReportsUnavailableListener(t *testing.T) {
 		t.Fatalf("500: err = %v, want ErrUnavailable", err)
 	}
 
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
-	if _, err := New(closed.URL).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
+	// A port the test holds and nothing listens on: every dial to it is refused.
+	closed := "http://" + testport.Refused(t)
+	if _, err := New(closed).Sessions(context.Background()); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	}
 }
@@ -211,13 +215,13 @@ func TestListInterestsMapsListenerRowsAndDefaultsMissingTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Interest{
-		{
+	want := []listenerwire.InterestRow{
+		{Interest: listenerwire.Interest{
 			SessionID: "s1",
 			Topics:    []string{"notifications.dispatch.issue.T-1", "notifications.dispatch.issue.T-1.>"},
 			UpdatedAt: 1700000000000,
-		},
-		{SessionID: "s2", Topics: []string{}, UpdatedAt: 1700000000001},
+		}},
+		{Interest: listenerwire.Interest{SessionID: "s2", Topics: []string{}, UpdatedAt: 1700000000001}},
 	}
 	if !reflect.DeepEqual(interests, want) {
 		t.Fatalf("interests = %#v, want %#v", interests, want)
@@ -301,7 +305,7 @@ func TestInterestReturnsOneSessionsTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Interest{SessionID: "s1", Topics: []string{"notifications.dispatch.issue.T-1.>"}, UpdatedAt: 42}
+	want := listenerwire.InterestRow{Interest: listenerwire.Interest{SessionID: "s1", Topics: []string{"notifications.dispatch.issue.T-1.>"}, UpdatedAt: 42}}
 	if !reflect.DeepEqual(interest, want) {
 		t.Fatalf("interest = %#v, want %#v", interest, want)
 	}
@@ -446,7 +450,7 @@ func TestRolePreservesListenerNotFoundText(t *testing.T) {
 
 // dispatch://INFRA-392. The listener's lookup route answers an unresponsive holder with its 404:
 // the role cannot be reached now, its state is named, and claim_released is false because the
-// claim stands (cmd/listener roleHolderError, pinned by its own
+// claim stands (listenerwire.RoleRefusal, pinned by its own
 // TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas). A reader that took that
 // refusal for "the role has no holder" dropped every role-routed message to a session that
 // missed its heartbeats - the failure this change exists to remove - so the holder it names is
@@ -647,10 +651,9 @@ func TestSessionSeparatesNoRecordFromNoAnswer(t *testing.T) {
 // A listener that cannot be reached at all says nothing about the session either, so it is the
 // same "ask again" a 503 is - never grounds to call the session gone.
 func TestSessionReportsAnUnreachableListenerAsUnavailable(t *testing.T) {
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 
-	if _, err := New(closed.URL).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
+	if _, err := New(closed).Session(context.Background(), "s1"); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("refused: err = %v, want ErrUnavailable", err)
 	} else if errors.Is(err, ErrNotFound) {
 		t.Fatalf("refused: err = %v, want it not to read as a missing session", err)
@@ -715,19 +718,120 @@ func TestEverySessionReadAsksForTheUnresponsiveSessionsToo(t *testing.T) {
 	}
 }
 
-const legionAgentRow = `{"session_id":"ses-old","legion_project":"infra","issue":"INFRA-448","role":"reviewer",` +
-	`"role_token":"legion-infra-infra-448-reviewer","title":"Legion reviewer · INFRA-448","harness":"omp",` +
+// Only the delivery's read asks for stopped sessions (INFRA-626). The registry route answers a
+// session it knows by its record alone 200 with state stopped when the include list names
+// stopped, and 404 otherwise; Session, Sessions and Role keep the list without it, so an issue
+// claim's holder, the route roster and role resolution never read a stopped session as one that
+// holds anything, while SessionIncludingStopped finds it, with what its record holds.
+func TestOnlyTheDeliveryReadAsksForStoppedSessions(t *testing.T) {
+	var mu sync.Mutex
+	queries := map[string][]string{}
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries[r.URL.Path] = append(queries[r.URL.Path], r.URL.RawQuery)
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/v1/registry/s1" && r.URL.Query().Get("include") == "unresponsive,stopped":
+			_, _ = w.Write([]byte(`{"session_id":"s1","state":"stopped","last_seen":42,"title":"planner","capabilities":["steer"],"topics":["t"]}`))
+		case r.URL.Path == "/v1/roles/legion-planner":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live holder for role legion-planner"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session s1","state":"gone"}`))
+		}
+	}))
+	defer listener.Close()
+	client := New(listener.URL)
+	ctx := context.Background()
+
+	if sessions, err := client.Sessions(ctx); err != nil || len(sessions) != 0 {
+		t.Fatalf("Sessions = %#v, %v; want none", sessions, err)
+	}
+	if _, err := client.Session(ctx, "s1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Session(s1) error = %v, want ErrNotFound: a stopped session is no registry entry", err)
+	}
+	if _, err := client.Role(ctx, "legion-planner"); err == nil {
+		t.Fatal("Role resolved a holder for a role nobody running holds")
+	}
+	stopped, err := client.SessionIncludingStopped(ctx, "s1")
+	if err != nil {
+		t.Fatalf("SessionIncludingStopped(s1): %v", err)
+	}
+	if stopped.SessionID != "s1" || stopped.State != StateStopped || stopped.LastSeen != 42 || stopped.Title != "planner" ||
+		!reflect.DeepEqual(stopped.Capabilities, []string{"steer"}) || stopped.Roles == nil || len(stopped.Roles) != 0 {
+		t.Fatalf("SessionIncludingStopped(s1) = %#v, want the record: stopped, last seen 42, planner, steer, no roles", stopped)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string][]string{
+		"/v1/sessions":             {"include=unresponsive"},
+		"/v1/registry/s1":          {"include=unresponsive", "include=unresponsive,stopped"},
+		"/v1/roles/legion-planner": {"include=unresponsive"},
+	}
+	if !reflect.DeepEqual(queries, want) {
+		t.Fatalf("queries = %#v, want %#v", queries, want)
+	}
+}
+
+// A send's answer says what the listener did with the message - handed to a connected session,
+// or stored for a stopped one - and a send asks connected_only only when its input sets it, so
+// every other send's body leaves the field out.
+func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		connectedOnly bool
+		answer        string
+		wantState     string
+	}{
+		{name: "a send to a stopped session", answer: `{"event_id":"e1","recipient":"s1","recipient_state":"gone","state":"stopped","last_seen":42}`, wantState: SendStateStopped},
+		{name: "a switch to a connected session", connectedOnly: true, answer: `{"event_id":"e2","recipient":"s1","recipient_state":"live","state":"connected"}`, wantState: SendStateConnected},
+		{name: "a listener that predates the field", answer: `{"event_id":"e3","recipient":"s1"}`, wantState: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode the send: %v", err)
+				}
+				if asked, present := body["connected_only"]; present != tc.connectedOnly || (present && asked != true) {
+					t.Errorf("connected_only in the body = %v (present %v), want present only when set", asked, present)
+				}
+				_, _ = w.Write([]byte(tc.answer))
+			}))
+			defer listener.Close()
+			result, err := New(listener.URL).Send(context.Background(), SendInput{
+				TargetSession: "s1", Message: "body", IdempotencyKey: "k", ConnectedOnly: tc.connectedOnly,
+			})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if result.State != tc.wantState {
+				t.Fatalf("state = %q, want %q", result.State, tc.wantState)
+			}
+		})
+	}
+}
+
+const legionAgentRow = `{"session_id":"ses-old","legion_project":"acme","issue":"ACME-448","role":"reviewer",` +
+	`"role_token":"legion-acme-acme-448-reviewer","title":"Legion reviewer · ACME-448","harness":"omp",` +
 	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +
 	`"replaced_by":"ses-new","replaced_at":"2026-10-26T02:00:00Z","added_later":1}`
 
-func wantLegionAgentRow(t *testing.T, got LegionAgent) {
+func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
 	t.Helper()
 	newer, at := "ses-new", "2026-10-26T02:00:00Z"
-	want := LegionAgent{
-		SessionID: "ses-old", LegionProject: "infra", Issue: "INFRA-448", Role: "reviewer",
-		RoleToken: "legion-infra-infra-448-reviewer", Title: "Legion reviewer · INFRA-448", Harness: "omp",
-		StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z", ReplacedBy: &newer, ReplacedAt: &at,
-	}
+	want := listenerwire.LegionAgentAnswer{LegionAgent: listenerwire.LegionAgent{
+		LegionAgentEntry: listenerwire.LegionAgentEntry{
+			SessionID: "ses-old", LegionProject: "acme", Issue: "ACME-448", Role: "reviewer",
+			RoleToken: "legion-acme-acme-448-reviewer", Title: "Legion reviewer · ACME-448", Harness: "omp",
+			StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z",
+		},
+		ReplacedBy: &newer, ReplacedAt: &at,
+	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent = %#v, want %#v", got, want)
 	}
@@ -793,13 +897,13 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		name  string
 		path  string
 		query string
-		call  func(*Client) ([]LegionAgent, error)
+		call  func(*Client) ([]listenerwire.LegionAgentAnswer, error)
 	}{
-		{"by role token", "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "", func(c *Client) ([]LegionAgent, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+		{"by role token", "/v1/legion/agents/roles/legion-acme-acme-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
 		}},
-		{"by issue", "/v1/legion/agents", "issue=INFRA-448", func(c *Client) ([]LegionAgent, error) {
-			return c.IssueAgents(context.Background(), "INFRA-448")
+		{"by issue", "/v1/legion/agents", "issue=ACME-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.IssueAgents(context.Background(), "ACME-448")
 		}},
 	} {
 		for _, listing := range []struct {
@@ -831,11 +935,13 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 // or that cannot be reached, is ErrUnavailable: never an empty list a caller would take for no
 // agents.
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
-	calls := map[string]func(*Client) ([]LegionAgent, error){
-		"RoleAgents": func(c *Client) ([]LegionAgent, error) {
-			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
+	calls := map[string]func(*Client) ([]listenerwire.LegionAgentAnswer, error){
+		"RoleAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.RoleAgents(context.Background(), "legion-acme-acme-448-reviewer")
 		},
-		"IssueAgents": func(c *Client) ([]LegionAgent, error) { return c.IssueAgents(context.Background(), "INFRA-448") },
+		"IssueAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.IssueAgents(context.Background(), "ACME-448")
+		},
 	}
 	for _, tc := range []struct {
 		status int
@@ -862,10 +968,9 @@ func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
 		}
 		listener.Close()
 	}
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		if _, err := call(New(closed.URL)); !errors.Is(err, ErrUnavailable) {
+		if _, err := call(New(closed)); !errors.Is(err, ErrUnavailable) {
 			t.Fatalf("%s on an unreachable listener: %v, want ErrUnavailable", name, err)
 		}
 	}
@@ -891,10 +996,9 @@ func TestOnlyATakeOverIsUnreachable(t *testing.T) {
 			return err
 		},
 	}
-	closed := httptest.NewServer(http.NotFoundHandler())
-	closed.Close()
+	closed := "http://" + testport.Refused(t)
 	for name, call := range calls {
-		err := call(New(closed.URL))
+		err := call(New(closed))
 		if !errors.Is(err, ErrUnreachable) || !errors.Is(err, ErrUnavailable) ||
 			!strings.HasPrefix(err.Error(), "envoy listener unavailable: ") {
 			t.Errorf("%s refused: err = %v, want ErrUnreachable and ErrUnavailable with ErrUnavailable's text", name, err)

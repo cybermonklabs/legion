@@ -212,9 +212,10 @@ type MappedRepositoryView struct {
 // Both are true on a repository the daemon serves, which is the admission rule of each of the
 // two doors into the served set: a mapped repository one of the two Apps does not reach is
 // served for nothing — no token exists for its work — so it stands under
-// RepositoriesView.Refused instead, where the reason names the App that is missing or the read
-// that did not answer; and an issue is recorded on a repository no mapping names only once
-// GitHub has answered that both Apps are installed on it.
+// RepositoriesView.Refused instead, and an issue is recorded on a repository no mapping names only
+// once GitHub has answered that both Apps are installed on it. So the entries where the two can
+// differ are the refused ones, and each carries what GitHub answered of both Apps on the name
+// Dispatch maps (RefusedRepositoryView.Apps).
 type AppInstallationsView struct {
 	Implement bool `json:"implement"`
 	Review    bool `json:"review"`
@@ -244,9 +245,18 @@ type CacheView struct {
 // names it, and why: a role App is not installed on it, or that installation could not be read.
 // A repository no mapping names is never refused for that (INFRA-2543 R6), since the mapping
 // stopped deciding where a project may work.
+//
+// Apps is each role App's installation on Repo as GitHub answered it, so a reader learns which
+// App is missing without parsing Reason. It is present wherever GitHub answered both Apps' reads
+// of Repo, a repository left out for its default-branch read after both answered installed
+// among them (both true then, Reason naming the read), and absent where a read of Repo failed or
+// Repo is no <owner>/<name> at all, Reason naming which. A configured rename's other name, read
+// where neither App answered installed on Repo, is not what Apps answers for: Reason names what
+// GitHub said of it.
 type RefusedRepositoryView struct {
-	Repo   string `json:"repo"`
-	Reason string `json:"reason"`
+	Repo   string                `json:"repo"`
+	Reason string                `json:"reason"`
+	Apps   *AppInstallationsView `json:"apps,omitempty"`
 }
 
 // WebhookAppGapView is a served repository that Dispatch's GitHub App is not installed on, or
@@ -438,20 +448,25 @@ type Admission struct {
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
 	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
 	// past its review — accepting, retro and merging hold none — or until it is done or
-	// Dispatch takes it out of the workflow (record.KeepsSlot). So one tree with three started
-	// children holds three of these, and an issue at work, one held and one waiting on a person
-	// are each here, while one past its review — a merger at work in merging, one in merging
-	// whose start a closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a
-	// merged root standing in merging while the rest of its tree runs — and one whose phase has
-	// left the workflow, done or a status Dispatch took it out of the workflow with, are in
-	// neither list.
+	// Dispatch takes it out of the workflow, except while it waits on another issue before that
+	// point (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
+	// three of these, and an issue at work, one held and one waiting on a person are each here,
+	// while one past its review — a merger at work in merging, one in merging whose start a
+	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
+	// standing in merging while the rest of its tree runs — and one whose phase has left the
+	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
+	// An issue the daemon has started that waits on another issue before its review is missing
+	// from here too, other than the three roots that keep their slot through such a wait
+	// (blockers.waitsOf): it holds no slot while it waits (record.Issue.ReleasedForWaitAt,
+	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
+	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
 	// rank. It carries children as well as roots, for the same reason `active` does. An owed
-	// start in it holds no row and waits for one; an issue in it that holds a row already (the
-	// kinds record.LineEntry.Holds names) stands in both lists until the pass that promotes it,
-	// which takes no second row.
+	// start in it holds no row and waits for one, as does an issue released for what it waits
+	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
+	// stands in both lists until the pass that promotes it, which takes no second row.
 	Waiting []string `json:"waiting"`
 	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
 	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
@@ -460,10 +475,11 @@ type Admission struct {
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
 	Trees []string `json:"trees,omitzero"`
-	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
-	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
-	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
-	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for
+	// (INFRA-225), by issue key: a waiting root admission skips, a child the workflow holds at
+	// `admitted`, and an issue the daemon has started that gave its slot back for the wait,
+	// together in one list, each with what it still waits on. A blocked issue the line carries
+	// is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
 	// Held is every issue the daemon's record holds in the workflow that stands in neither
 	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
@@ -615,14 +631,26 @@ type Issue struct {
 	// Check is the issue's open production check, the work after its close (record.ProductionCheck):
 	// present only while the check is open, and absent once it closed or while none was opened.
 	Check *CheckView `json:"check,omitempty"`
-	// MemoryGroup is the memory group of the issue's tree (memorygroup.Group): `memory` for a
-	// tree whose roles run with the project's memory overlays and instructions, `none` for one
-	// that runs without them, and absent while nothing has drawn for the tree — a tree first
-	// opened before the setting existed, or one the draw never reached. MemoryDrawMode is the
-	// project's memory mode in force when that group was drawn (config.MemoryMode's words) and
-	// MemoryDrawnAt when it was drawn, both absent with the group. The draw is made once, on the
-	// tree's root record, when the tree's lifecycle row is first created, and every issue of the
-	// tree shows its root's: an issue's memory group is its tree's (contract 49).
+	// MergeWait is what the issue's review round waits on from GitHub, present only while it
+	// waits on GitHub's merge state for the pull request's head and absent for every other
+	// round (MergeWaitView).
+	MergeWait *MergeWaitView `json:"mergeWait,omitempty"`
+	// MemoryGroup is the memory group of the issue's tree, read off the assignment of the
+	// experiment named `memory`, whichever spelling declared it (config.Project.ExperimentsDeclared),
+	// and only where that row records a draw: `memory` for a tree whose roles run with the
+	// project's memory overlays and instructions, and `none` for one that runs without them —
+	// the control arm `none` as much as the empty arm an experiment at mode off draws, which the
+	// memory draw before contract 141 wrote as the word `none`. MemoryDrawMode is the mode in
+	// force at that draw (config.ExperimentMode's words) and MemoryDrawnAt the instant of it.
+	// All three are absent together for an issue no `memory` answer applies to — a tree first
+	// opened before the setting existed, or one the draw never reached — and for one whose only
+	// `memory` answer records no draw, which is a hand-over settling a unit at no arm: that tree
+	// answered none of the three before contract 141 and answers none of them now, so a reader
+	// counting the trees a group reached counts the same trees it did. The draw is made once, for
+	// the unit, and every issue of a tree shows its tree's: an issue's memory group is its tree's
+	// (contract 49). They are the one experiment's answer spelled out for the readers that knew
+	// it before any experiment was declared; Assignments below carries that row, and the settled
+	// row these three leave out.
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
@@ -632,19 +660,52 @@ type Issue struct {
 	// sends the entry's own work to a role whose given number is below the entry its row names, on
 	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
 	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
-	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	// daemon has still to reach.
 	//
-	// Both are absent together for an issue whose current phase names no phase worker role: a root
-	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
-	// names no role for that phase, so the sweep passes it over and nothing would ever close a
-	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
-	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
-	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
-	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
-	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
-	// value no reader parses empty.
+	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
+	// phase a root's own architect works, so the two numbers there are the architect's as they
+	// are the implementer's in implementing. Both are absent together for a phase no role works —
+	// awaiting_person, done and held — where no row is read and a difference written for one
+	// would never close. GivenEntry alone is absent where it is 0, which is a role the daemon
+	// holds no claim row of — the start is what creates the claim — and one whose claim has been
+	// queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because
+	// a phases row exists for a role whose claim row does not, where PhaseView.Claim is a
+	// required value no reader parses empty.
 	PhaseEntry int64 `json:"phaseEntry,omitempty"`
 	GivenEntry int64 `json:"givenEntry,omitempty"`
+	// EntryQueuedAt is when a task of an entry was first queued to a claim, and EntryConfirmedAt
+	// is when a turn of that claim's worker first confirmed one (the turn the task's prompt
+	// started). They are the two halves of the handshake between the daemon and the role it hands
+	// work to, beside the two numbers above, which say which work it is: a reader sees that the
+	// entry's task was queued and whether a worker took it.
+	//
+	// Both are read from the claim's own record of the handshake of the last entry it was queued
+	// a task of (supervise.Claim.Handshake), which outlasts the task: the delivery is retired when
+	// the turn that confirmed it ends, and the two times stay. A tree's own root carries its
+	// architect's handshake whatever phase it stands in — admitted, awaiting_person, accepting,
+	// and each phase a phase role works, where the two numbers above are that role's and the two
+	// times are still the architect's. Any other issue carries the handshake of the claim of the
+	// role of its current phase, and none in a phase no role works. Both are absent where no entry
+	// was queued to that claim in the issue's current generation: a role the daemon holds no claim
+	// row of, a re-admitted root whose new architect entry is not queued yet, and one of the
+	// release before this one, whose migration gives the claim the two numbers and no handshake.
+	// EntryConfirmedAt alone is absent while no turn of its worker has confirmed a task of the
+	// entry, which is the root whose architect took nothing.
+	EntryQueuedAt    *time.Time `json:"entryQueuedAt,omitempty"`
+	EntryConfirmedAt *time.Time `json:"entryConfirmedAt,omitempty"`
+	// ArchitectStalls is, for a tree's own root, every arm of the daemon's architect-stalled
+	// reading that holds for that root's architect at this read, in the order the controller is
+	// told them: `took-nothing`, `claim-unreachable` and `slow-before-gate`
+	// (record.ArchitectStallArm). It is the reading the admission pass wakes the controller from
+	// (admit.Admission.ArchitectStallArms, the same reads and the same three predicates), made in
+	// this state's own snapshot, and it carries an arm whether or not the controller was told of
+	// it: the daemon tells each arm once per run and only while a controller is registered. It is
+	// absent for a root no arm holds for and for every issue that is not a tree's root.
+	// `legion state`'s plain line prints it and reads no arm of its own. It arrived with the two
+	// times above (contract 146), and a caller below that contract is served the issues without
+	// all three (api's stateFor, withoutEntryTimes).
+	ArchitectStalls []record.ArchitectStallArm `json:"architectStalls,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
@@ -661,6 +722,33 @@ type Issue struct {
 	// leaving the keys off, would read as a tree nobody measures at all.
 	TreeMovedAt *time.Time `json:"treeMovedAt,omitempty"`
 	QuietHours  *float64   `json:"quietHours,omitempty"`
+	// Assignments is every experiment answer that applies to the issue (record.Assignment): the
+	// arm its tree was drawn into for an experiment whose unit is the tree, and the arm the issue
+	// itself was drawn into for one whose unit is the issue, in the order the project's file
+	// declares the experiments (config.Project.ExperimentsDeclared): the `memory` block's
+	// experiment first, unless `experiments.memory` declares it instead, then the experiments
+	// `settings.projects.<KEY>.experiments` names, in its order, then any experiment the file no
+	// longer names, in the order of their names (contract 141). Absent for an issue no experiment
+	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
+	// the body the route serves a caller below 141 (stateFor, withoutAssignments).
+	Assignments []AssignmentView `json:"assignments,omitempty"`
+}
+
+// AssignmentView is one experiment's answer for an issue as the state shows it
+// (record.Assignment): the name the project declares the experiment under, the arm the draw gave
+// the unit, the mode in force at that draw and the instant of it.
+//
+// Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
+// absent where the row holds none: a hand-over settles a child at no arm for an experiment the
+// tree it left held no row for, and that row — an empty variant, an empty mode and no instant —
+// is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
+// Carried, the record's mark of such a row, is no part of the view: what a reader of the state
+// measures is the arm the unit ran under, and a carried row names the arm as a drawn one does.
+type AssignmentView struct {
+	Experiment string     `json:"experiment"`
+	Variant    string     `json:"variant"`
+	Mode       string     `json:"mode"`
+	DrawnAt    *time.Time `json:"drawnAt,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -1122,6 +1210,10 @@ type SlotView struct {
 // looks for the field rather than repeating the string.
 const WaitingLineField = "waitingLine"
 
+// MergeWaitField is the name `mergeWait` carries on the wire, read from here by the tests that
+// look for the field rather than repeating the string.
+const MergeWaitField = "mergeWait"
+
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read, beside the waiting line's own fields for a program
 // that acts on the line rather than reading the sentence Reason renders: which part the issue
@@ -1233,6 +1325,57 @@ type CheckWakeView struct {
 	Kind   string    `json:"kind"`
 	Detail string    `json:"detail"`
 	At     time.Time `json:"at"`
+}
+
+// MergeWaitView is what an issue's review round waits on from GitHub. It is present only while
+// the round waits on GitHub's merge state for the pull request's head, which is one rule the
+// daemon reads everywhere (classify.RoundWaitsOnMergeState, over the issue, its reviewer's row
+// and its open pull request): a reviewer's approval stands on the head the pull request is at,
+// and the merge state the record holds for that head is not one the issue may advance on. The
+// engine reads that same rule to decide whether to read GitHub for the round, so the object is
+// on the view exactly for the rounds the daemon is reading for.
+//
+// It stands for the round waiting for a first answer and for the stuck round alike — both wait on
+// GitHub's next answer about the same head — and ToldHead with ToldState say what the architect and
+// the reviewer were last told of for it. The reading it is here for is the approval that stands for
+// days while GitHub holds the head on a state the issue may not advance on: the merge state alone
+// is on the pull request's view, but not when it was read, nor what the round's own wait is.
+type MergeWaitView struct {
+	// WaitsOn is the head the round waits on, the pull request's current head: the head the
+	// approval stands on, and the head GitHub's answer is about.
+	WaitsOn string `json:"waitsOn"`
+	// MergeState is the merge state the record holds for that head
+	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
+	// `dirty`, `unknown`. It is absent while the record holds no state for this head: beside no
+	// StateReadAt the record holds no read of this head, and beside a StateReadAt it holds a read
+	// whose answer carried no state (record.PullRequest.StateReadAt says when each is the case).
+	MergeState string `json:"mergeState,omitempty"`
+	// StateReadAt is record.PullRequest.StateReadAt, the moment GitHub's last answer about this
+	// head was in hand, a confirming answer included; that field's doc says who stamps it, what
+	// clears it and what its zero means. It is absent rather than zero when the record holds none,
+	// so a reader never takes a read at the zero instant for a time; absent beside a recorded
+	// MergeState, the record holds a state with no read time.
+	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
+	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
+	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose
+	// event carried no clock does not raise it. Absent when it is zero.
+	HeadUpdatedAt *time.Time `json:"headUpdatedAt,omitempty"`
+	// CheckRuns counts the fence's runs stamped with the current head
+	// (record.PullRequest.CheckRuns, record.AttemptRun.Head): the runs a CI settlement has applied
+	// for this head. The listener settles a head only once every check it has seen there is
+	// terminal, so the count is 0 until CI on the head has settled, and 0 is no evidence of what
+	// GitHub holds: a head whose CI is still running, a head GitHub ran no check on, and a head
+	// whose runs all concluded with their settlement not yet arrived all read 0, so a reader reads
+	// the head's runs and their status on GitHub before acting on it. It is written whatever its
+	// value, so 0 is that reading and not a gap.
+	CheckRuns int `json:"checkRuns"`
+	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
+	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the
+	// reviewer have been told of this round. They name the head and state the reviewer's decision
+	// last records as told, whatever the record holds of the merge state and the read time now,
+	// and a later answer may have moved past them; they are empty when that decision records none.
+	ToldHead  string `json:"toldHead,omitempty"`
+	ToldState string `json:"toldState,omitempty"`
 }
 
 // PendingStatusWrite is a Dispatch-status effect the outbox has not finished, due now or backing off
@@ -1352,16 +1495,18 @@ func StrandedMoves() []StrandedMove {
 //     suspended before 0038, the operator's resume when an operator suspended it and it kept its
 //     task or its phase start waits, otherwise the operator's delivery of its phase's resume task.
 //   - StrandedRetry, a failed architect: the operator's retry (`legion claims retry`), which
-//     relaunches its session with fresh budgets, and a catch-up follows.
+//     relaunches its session with fresh budgets, or a new one once supervise's
+//     Machine.forgetSession has dropped it, and a catch-up follows.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
-//   - StrandedWorkflowStart, a retired claim, whatever its role: only a workflow start relaunches
-//     one, since the operator's retry refuses a claim that has not failed and a retired claim
-//     ignores resume and deliver. A start of its phase sends it the retry the daemon's own start
-//     executor makes of a retired claim, so the move is the act that queues such a start: the
-//     architect's retry_or_escalate of a held phase, a transition into the phase, or the tree's
-//     close and re-admission for an architect, whose tree's admission is the only start of it.
+//   - StrandedWorkflowStart, a retired claim, whatever its role: a retired claim ignores resume
+//     and deliver, and the operator's retry (`legion claims retry`) reaches it as it reaches a
+//     failed one (supervise's operatorRetry), but the move named is a workflow start. A start of
+//     its phase sends it the retry the daemon's own start executor makes of a retired claim, so
+//     the move is the act that queues such a start: the architect's retry_or_escalate of a held
+//     phase, a transition into the phase, or the tree's close and re-admission for an architect,
+//     whose tree's admission is the only workflow start of it.
 //
 // The retired case is read before every other, because a claim released and then retired keeps
 // `suspendedBy: released` on its row and SuspendersOfOperatorClaims copies that value whatever the

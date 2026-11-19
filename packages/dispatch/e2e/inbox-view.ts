@@ -33,6 +33,7 @@ import {
   seedMessageThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { expandedState } from "./settled";
 
 /** The list this file reads: every row, whoever holds it, so the fields have something to say. */
 export const INBOX = "/?assignee=everyone";
@@ -88,7 +89,7 @@ export async function seedEveryField(): Promise<{
   await createProject({ key: "CORE", name: "Core" });
   // MIRROR names carol, which is how she is a person who has signed in and so a person an
   // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
-  await createProject({ key: "MIRROR", name: "Mirror" }, "carol");
+  await createProject({ key: "MIRROR", name: "Mirror" }, { login: "carol" });
   const rows: ViewRow[] = [];
 
   const question = async (
@@ -362,17 +363,18 @@ export async function bandHeadings(page: Page): Promise<string[]> {
 export async function openField(page: Page, field: string): Promise<Locator> {
   const fields = await openFilterFields(page);
   const trigger = fields.getByRole("button", { name: `Filter by ${field}` });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState(`the ${field} filter`, trigger)) === "shut") await trigger.click();
   const label = field === "assignee" ? "Assignee" : field[0]?.toUpperCase() + field.slice(1);
   const options = page.getByRole("listbox", { name: `${label} options` });
   await expect(options).toHaveCount(1);
   return options;
 }
 
-/** The **View** menu, opened. */
+/** The **View** menu, opened. Its trigger says whether it is open already. */
 export async function openView(page: Page): Promise<Locator> {
   const menu = page.getByRole("menu", { name: "View" });
-  if ((await menu.count()) === 0) await page.locator("[data-inbox-view]").click();
+  const trigger = page.locator("[data-inbox-view]");
+  if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   return menu;
 }

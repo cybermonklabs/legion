@@ -67,12 +67,27 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
+	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
+	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
+	TypeLauncherMemoryKill = "launcher_memory_kill"
+	// The cache trimmer in a launcher process reports a sweep of the pod's volume, unasked: the
+	// daemon reads it as the one word it has on a volume filling under the roles that share it,
+	// and tells the issue's architect (INFRA-2009). The settings the trimmer runs by travel the
+	// other way, on the launcher_hello_ack (LauncherVolumeTrim).
+	TypeLauncherVolumeReport = "launcher_volume_report"
 	// The shared public leak check's two directions: the daemon pushing the check's packed
 	// directory, in slices under the frame limit, to a launcher whose hello named a tag, and the
 	// launcher answering each slice, the last with the outcome of its install.
 	TypeLauncherLeakCheck       = "launcher_leak_check"
 	TypeLauncherLeakCheckResult = "launcher_leak_check_result"
 )
+
+// SyntheticModel is the model Claude Code names on a message no model wrote, such as its own answer
+// to a provider's refusal (internal/claudebridge's testdata/api-error-429.jsonl:4). Such a message
+// answers nothing: the bridge writes no message_end for it, and the stream reads none that names it
+// as an answer (internal/stream's answeredBy).
+const SyntheticModel = "<synthetic>"
 
 // The protocol's sizes, verified against the shipped files: the largest plain line including its
 // newline (worker-rpc.ts:8-12), the base64 payload of one chunk (worker-rpc.ts:16-18), the
@@ -179,8 +194,362 @@ type LauncherHello struct {
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 }
 
-// LauncherHelloAck admits a launcher to receive child process commands.
-type LauncherHelloAck struct{}
+// LauncherHelloAck admits a launcher to receive child process commands, and hands it the
+// settings its memory guard and its cache trimmer run by, when this daemon has any to hand it,
+// and whether this daemon knows a kill report the pod's own kernel made.
+type LauncherHelloAck struct {
+	// MemoryGuard is absent rather than zero when no settings are sent, and that absence is what
+	// turns the guard off: a daemon built before the guard and a deployment that turned it off
+	// both send no member at all, where a present member whose numbers are zero is settings the
+	// launcher would refuse. The pointer is what tells the two apart, as it does for
+	// Hello2.AgentSecrets and LauncherState.Child.
+	MemoryGuard *LauncherMemoryGuard `json:"memoryGuard,omitempty"`
+	// VolumeTrim is absent rather than zero when no settings are sent: a daemon built before
+	// this work and a deployment that turned the trimmer off both send no member at all, and the
+	// launcher's trimmer then reads and deletes nothing and discards a report it was holding,
+	// since that daemon has no case for one. A present member whose numbers are zero is settings,
+	// which the launcher refuses, logging each value; its trimmer deletes nothing on them either,
+	// but it tries a report it was holding. The pointer is what tells an absent member from a
+	// zero one, as it does for Hello2.AgentSecrets, StateData.IsStreaming and LauncherState.Child.
+	VolumeTrim *LauncherVolumeTrim `json:"volumeTrim,omitempty"`
+	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
+	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
+	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
+	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
+	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
+	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
+	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
+	// writes.
+	KernelKills bool `json:"kernelKills,omitempty"`
+}
+
+// LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
+// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends the
+// largest process it may end, where those processes hold at least FloorPercent of the limit
+// between them; after a kill it waits up to WaitSeconds for the reading to fall before it ends
+// another.
+//
+// It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
+// which is the same absence a daemon that does not know the guard sends, so one rule in the
+// launcher covers both (LauncherHelloAck.MemoryGuard).
+type LauncherMemoryGuard struct {
+	ActPercent           int `json:"actPercent"`
+	FloorPercent         int `json:"floorPercent"`
+	WaitSeconds          int `json:"waitSeconds"`
+	IntervalMilliseconds int `json:"intervalMilliseconds"`
+}
+
+// The ranges LauncherMemoryGuard's four numbers must be in, and the settings a guard runs by when
+// nobody has said otherwise. Both sides of the wire read them: the daemon's loader refuses a file
+// outside the ranges, and the launcher checks a frame against them a second time, on its own side
+// of a connection that carries version skew both ways (Validate). The two checks are deliberate;
+// their values are one source here, because a widening the launcher did not know would load
+// cleanly in the daemon and then be refused in every pod.
+//
+// The defaults are one source too: they are the settings the launcher's guard runs by before any
+// acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
+// both. The act share's default is the one a measurement may move. Every minimum is above zero
+// because a guard cannot be armed with a zero interval or wait.
+const (
+	MemoryGuardActMin      = 50
+	MemoryGuardActMax      = 95
+	MemoryGuardFloorMin    = 1
+	MemoryGuardFloorMax    = 50
+	MemoryGuardWaitMin     = 1
+	MemoryGuardWaitMax     = 60
+	MemoryGuardIntervalMin = 50
+	MemoryGuardIntervalMax = 5000
+
+	MemoryGuardActDefault      = 85
+	MemoryGuardFloorDefault    = 10
+	MemoryGuardWaitDefault     = 5
+	MemoryGuardIntervalDefault = 100
+)
+
+// LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:
+// ended with SIGKILL by the launcher's memory guard, or, in a microVM pod, stopped by the pod's own
+// kernel (Cause). The launcher sends it, unasked, on the connection of the role whose process it
+// was, and the daemon tells that role why the process is gone (INFRA-3557).
+//
+// Guard is the identifier the guard minted for itself when the launcher process started, and
+// Sequence the guard's own count of its kills, from 1: together they name the kill once, so a
+// report sent twice is applied once. Executable names the process as every line of the guard
+// does: the base name of its executable, or its stat name where the guard could not read that,
+// each character that does not print escaped and the whole cut to MemoryKillExecutableBytes. It
+// carries none of the process's arguments, which may hold a credential no masking rule names, such
+// as a positional password; the role that started the process has them. SizeBytes is the
+// process's anonymous memory as the guard measured it, ReadingBytes the pod's anonymous memory
+// (/proc/meminfo's AnonPages) when it acted, CounterBytes the cgroup's memory counter then, and
+// LimitBytes the container's memory limit.
+//
+// Cause is MemoryKillCauseGuard, empty, for the guard's own kill, the only kill a launcher that
+// predates the member reports, and MemoryKillCauseKernel or MemoryKillCauseKernelProtected for a
+// process the pod's kernel stopped, which the launcher's watch of that kernel reports with an
+// identifier and a count of its own in Guard and Sequence. It is left out when empty, so the
+// guard's report is the bytes it was before the member existed; Validate refuses any other value.
+type LauncherMemoryKill struct {
+	Guard        string          `json:"guard"`
+	Sequence     uint64          `json:"sequence"`
+	PID          int             `json:"pid"`
+	Executable   string          `json:"executable"`
+	SizeBytes    uint64          `json:"sizeBytes"`
+	ReadingBytes uint64          `json:"readingBytes"`
+	CounterBytes uint64          `json:"counterBytes"`
+	LimitBytes   uint64          `json:"limitBytes"`
+	At           time.Time       `json:"at"`
+	Cause        MemoryKillCause `json:"cause,omitempty"`
+}
+
+// MemoryKillCause is what stopped the process a launcher_memory_kill names, which chooses the
+// note its role is told. It is one kind with three values, since a kill has exactly one of them,
+// and its empty value, MemoryKillCauseGuard, is the guard's own kill, which every launcher built
+// before the member reports.
+//
+// MemoryKillCauseKernel and MemoryKillCauseKernelProtected are a process the pod's own kernel
+// stopped because the pod ran out of memory: in a microVM pod, whose kernel is the pod's alone and
+// stops one process rather than the whole sandbox. The first is a command of the role's, one the
+// guard would have been free to end; the second is one of the processes the launcher's classifier
+// protects, which run the role's session (the role-init, the shim, the agent and their helpers),
+// so the role is told what that process's end does to it. A launcher sends either only on a
+// connection whose acknowledgement carried LauncherHelloAck.KernelKills.
+type MemoryKillCause string
+
+const (
+	MemoryKillCauseGuard           MemoryKillCause = ""
+	MemoryKillCauseKernel          MemoryKillCause = "kernel"
+	MemoryKillCauseKernelProtected MemoryKillCause = "kernel-protected"
+)
+
+// MemoryKillExecutableBytes is the most bytes of a process's name a launcher_memory_kill carries:
+// a base name on Linux is at most 255 bytes, so the bound holds whole any name that needs no
+// escape, and it bounds what one report puts into a role's note whatever its sender wrote.
+const MemoryKillExecutableBytes = 256
+
+// LauncherVolumeTrim is what a launcher's cache trimmer runs by: it reads the pod's volume every
+// IntervalSeconds, sweeps the cache roots when the used fraction reaches HighPercent, deletes
+// only entries in which nothing was modified for MinAgeMinutes, and stops deleting at the first
+// reading at or below LowPercent, if nothing stops it sooner (launcher's sweep).
+//
+// It holds no `enabled` member: a deployment that turns the trimmer off sends no member at all,
+// which is the same absence a daemon that does not know this work sends, so one rule in the
+// launcher covers both rather than two that could disagree (LauncherHelloAck.VolumeTrim).
+type LauncherVolumeTrim struct {
+	HighPercent     int `json:"highPercent"`
+	LowPercent      int `json:"lowPercent"`
+	MinAgeMinutes   int `json:"minAgeMinutes"`
+	IntervalSeconds int `json:"intervalSeconds"`
+}
+
+// The ranges LauncherVolumeTrim's four numbers must be in. The launcher's trimmer reads all six
+// and refuses a frame outside them (launcher's refusedTrimSettings), on its own side of a
+// connection this design expects to carry version skew both ways. The daemon's loader refuses a
+// file outside them too (config's readVolumeTrim): it reads the three maxima here, and its
+// minimum is its own rule that each value be a positive integer, which is the minimum of 1 the
+// three take here. The two checks are deliberate, and the maxima are one source here, because a
+// widening of the loader's maximum the trimmer did not know would load cleanly and then be
+// refused by every pod's trimmer, which then sweeps nothing until a daemon sends settings inside
+// its ranges.
+//
+// A mark at 100 is a volume already full: a high mark there would start a sweep only once the
+// roles' writes were already failing for want of space.
+// VolumeIntervalMax is an hour, the longest wait between two looks that is still a trimmer: a
+// pod's caches can fill a volume inside one. VolumeMinAgeMax is seven days, a generous age for a
+// cache entry and far below where the arithmetic breaks: the sweep's cutoff is its start less
+// MinAgeMinutes of time.Duration, which is int64 nanoseconds, so 153,722,868 minutes and above
+// wrap the cutoff past the sweep's own start and make every entry of every root eligible however
+// recently it was written (launcher's sweep). At the maximum, with the Go build cache's extra
+// hour taken off as well (launcher's goCacheMtimeSlack), the cutoff is about 6.1e14 nanoseconds
+// back, against an int64 limit of 9.2e18. The daemon bounds its other keys written in minutes for
+// the same overflow (config's maxTimerMinutes). The bound says nothing about how long a pod
+// lives, which configuration decides (`idle_release`'s `idle_minutes: 0` turns release off and a
+// pod then lives as long as its issue runs), and a trimmer is switched off with `enabled: false`,
+// never with an age. The minima are what a trimmer can be armed with at all: time.NewTicker
+// panics on a non-positive period, so a trimmer armed with an interval of 0 would fault each time
+// its interval loop started, and three of those in a row would switch it off for the life of its
+// launcher process (the launcher's run). It is not armed with one: the trimmer refuses an interval
+// below the minimum before it starts a clock, logs the refusal and stays off, and counts no fault
+// (the launcher's refusedTrimSettings). A high mark of 0 would sweep the caches of a volume that
+// is empty.
+const (
+	VolumeMarkMin     = 1
+	VolumeMarkMax     = 99
+	VolumeMinAgeMin   = 1
+	VolumeMinAgeMax   = 7 * 24 * 60
+	VolumeIntervalMin = 1
+	VolumeIntervalMax = 3600
+)
+
+// LauncherVolumeSize is one target of the trimmer's size walk — a directory two levels under the
+// pod's volume root, a regular file beside such directories in an immediate child of the root,
+// or an immediate child of the root that holds no directory of its own — as the walk measured
+// it: the bytes of the regular files under it, or of the file itself, and of those the bytes of
+// the files whose modification time is more than an hour old and more than a day old, which are
+// what tell a reader a working set from cold bytes.
+//
+// Refused names the first read under Path the walk did not make, and Refusals is how many there
+// were in all: a read the kernel refused, or a directory deeper below Path than the walk
+// descends, which it does not open (internal/launcher's volumeWalkDepth). It is Path/<name> for a
+// name in Path, and Path/.../<name> (depth N) for a name N levels below it, so its size is set
+// by two names and never by the depth of the tree. A size that carries them is what the walk
+// could read under Path and no more: Bytes and its two splits are a lower bound of the
+// directory's own, never the whole of it. The walk went on past each refusal, so neither makes
+// the walk partial (LauncherVolumeReport.SizesPartial). A target the walk could read nothing of
+// — a directory the kernel refused it the open or the listing of, a file whose lstat it refused
+// — is no size: the report names it among SizesMissing with that read (LauncherVolumeMissing).
+type LauncherVolumeSize struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	BytesOverHour int64  `json:"bytesOverHour"`
+	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
+}
+
+// LauncherVolumeMissing is one target the size walk measured none of, or the volume root or an
+// immediate child of it that the walk did not list in full. Reason is why, for a directory the
+// walk could not open or list or a file whose lstat was refused: the read the kernel refused and
+// its answer, as `openat: permission denied`, and never a path, since Path names it already. It
+// is empty for one the cut of a walk left unmeasured, which the report's SizesPartial says.
+type LauncherVolumeMissing struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// The three things that raise an episode, which a report's RaisedBy names. An episode is the run
+// of readings the daemon's notice bounds count against, so what raised it is what a reader needs
+// to tell three reports apart: one of a volume that has just filled, one of a volume that fell to
+// its low mark or below and has filled again, and one whose last two reported sweeps started five
+// points or more above where the episode before it was anchored. A reported sweep, here and below,
+// is one that ended above the low mark and that the settings did not stop, whose start the trimmer
+// reads before it writes its lines about the sweep and makes the sweep's report, so one whose line
+// or report then panics, which sends no report, counts too (the launcher's riseAt).
+const (
+	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
+	VolumeEpisodeFirst = "first"
+	// VolumeEpisodeRecovery is a reading of the trimmer's own at or below the low mark, an
+	// interval's or a sweep's last, after one at or above the high mark.
+	VolumeEpisodeRecovery = "recovery"
+	// VolumeEpisodeRise is a floor five percentage points or more above the anchor of the
+	// episode it ends, the floor being the lower of the last two reported sweep starts, and no
+	// other growth: a reading inside a pause or below the high mark raises none. The anchor of an
+	// episode no rise raised, the first and one a recovery raised, is the lowest start of its
+	// reported sweeps, which a later reported sweep that starts lower lowers; that of one a rise
+	// raised is the floor that raised it, which never moves. So a volume that keeps filling raises
+	// a new episode at each five points its sweep starts climb, one reported sweep after the first
+	// that starts there, except after two reported starts in a row read a transient high such as
+	// 97%: that raises a rise anchored there, and a fill from lower down then raises none until
+	// two starts stand five points above it, and none at all where it is above 95%, until a
+	// recovery starts a new chain. A peak that one start reads raises nothing. Each rise lifts
+	// the anchor five points or more and a reading is at most 100%, so until a recovery a chain
+	// whose anchor is A at its first rise holds at most (100 − A) / 5 rises, rounded down; every
+	// anchor is a reported sweep's start, at or above the high mark that sweep ran by, so a chain
+	// anchored at the high mark holds at most (100 − high mark) / 5, three at the default of 85.
+	// An anchor above 95% can never be passed, and from one of 95% a rise needs two reported sweeps
+	// in a row that start at exactly 100.0%. The daemon sends a report of an episode raised this
+	// way without holding it for the pod's hour, and holds it to the three of its episode like any
+	// other, which only the report of a trimmer that switched itself off passes
+	// (internal/workflow's volumeNoticeHeldBy).
+	VolumeEpisodeRise = "rise"
+)
+
+// LauncherVolumeReport is one sweep of the pod's volume as the launcher's cache trimmer ran it.
+// The launcher sends it unasked, and the daemon tells the issue's architect: nothing else in the
+// system sees a volume the roles of an issue share fill under them (INFRA-2009).
+//
+// Trimmer is the identifier the trimmer minted for itself when the launcher process started. It
+// is what makes a restarted roles container a new counting line for the daemon's notice bounds
+// rather than a repeat of the first episode. Episode is the trimmer's own episode number, from
+// 1, and RaisedBy which of the three things above raised it.
+//
+// UsedBytes and FreeBytes are the volume as the sweep's last reading saw it, and FreedBytes what
+// the sweep freed, read from the volume itself and never counted from the bytes unlinked: a
+// deletion the kernel has not accounted for yet is not space anything can use. FreedBytes is the
+// sweep's first reading's used bytes less its last's, so it is negative where the volume's used
+// bytes grew while the sweep ran. StopReason is why the sweep stopped, in the trimmer's own
+// words, and RefusedReads the /proc reads the kernel refused that no report has carried yet, of
+// this sweep and of earlier ones that sent no report: one per process it could not read, or one
+// for /proc itself when /proc could not be listed.
+//
+// Sizes are the size walk's targets (LauncherVolumeSize) and SizesAt when they were
+// measured: a report made between walks carries the last walk's numbers with that walk's time,
+// so a reader never reads a stale measurement as this sweep's. SizesPartial is a walk that ended
+// early, which is a walk its budget or the container's stop cut before it reached every target.
+// SizesMissing is every target the walk did not measure at all, and the volume root or an
+// immediate child of it where the walk did not list one in full, each with its reason where a
+// read was refused (LauncherVolumeMissing): a directory it could not open or list or a file whose
+// lstat was refused, which ends nothing, and, of a walk that was cut, every target it had not
+// measured when it was cut — where the cut came while it listed them, every one it had listed,
+// the child of the volume root whose names it was reading where the cut came inside one, named
+// whole, and every child it had not yet listed, or the volume root alone where the cut came
+// inside the root's own listing. A directory the walk could read only in part is a size of its
+// own, which names the first read under it the walk did not make (LauncherVolumeSize.Refused).
+//
+// Faults are the panics the trimmer recovered from, each with its stack, and SwitchedOff the one
+// report no sweep produces: the trimmer has stopped itself after three faults in a row of one kind
+// of its work, its readings of the volume, a row that also counts its wait for settings and its
+// interval clock with the line that starts it, or its sweeps and their reports, and this is the
+// last the daemon hears from it until the launcher restarts.
+//
+// Every list above is bounded, because a path two levels under /legion is a name a role of the
+// pod chose and a pod may hold thousands of them: the launcher that built the report cuts each to
+// its cap below (internal/launcher's bound, and for the sizes its walk, which keeps the largest
+// as it measures), and the four Omitted counts are how many entries that cut left out, so a
+// reader is never shown a cut list as the whole of what the trimmer measured. Validate refuses a
+// report whose list is longer than its cap, so the daemon holds a report to the caps whatever
+// sent it. Each path, each reason, the stop reason and each fault are cut in runes by that
+// launcher too, and Validate checks none of them.
+type LauncherVolumeReport struct {
+	Trimmer             string                  `json:"trimmer"`
+	Episode             int                     `json:"episode"`
+	RaisedBy            string                  `json:"raisedBy"`
+	UsedBytes           int64                   `json:"usedBytes"`
+	FreeBytes           int64                   `json:"freeBytes"`
+	FreedBytes          int64                   `json:"freedBytes"`
+	StopReason          string                  `json:"stopReason"`
+	RefusedReads        []string                `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int                     `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []LauncherVolumeSize    `json:"sizes"`
+	SizesOmitted        int                     `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time               `json:"sizesAt"`
+	SizesPartial        bool                    `json:"sizesPartial,omitempty"`
+	SizesMissing        []LauncherVolumeMissing `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int                     `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string                `json:"faults,omitempty"`
+	FaultsOmitted       int                     `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool                    `json:"switchedOff,omitempty"`
+}
+
+// The most entries each list of a LauncherVolumeReport may hold: the launcher's trimmer cuts a
+// list to its cap and counts the rest in the list's Omitted count (internal/launcher's bound and
+// its walk's walkResult.keep), and Validate refuses a report that holds more. They are here, in
+// the one package both ends read, so that the cap the launcher cuts at and the cap the daemon
+// refuses past are one number and not two that could disagree.
+const (
+	// VolumeReportSizes is how many sizes a report carries (Sizes): the largest of what the walk
+	// measured, in the order the walk measured them. A pod's own layout makes about fifteen
+	// directories two levels under the volume root, and a role can make thousands under
+	// /legion/scratch; fifty is room for a layout that grows, and the largest fifty are the ones
+	// a reader acts on, whichever of them the walk reached first.
+	VolumeReportSizes = 50
+	// VolumeReportSizesMissing is how many unmeasured targets a report names, with the volume
+	// root or an immediate child of it where the walk did not list one in full (SizesMissing).
+	// The list can run as long as the one above, so it takes the same cap.
+	VolumeReportSizesMissing = 50
+	// VolumeReportRefusedReads is how many refused /proc reads a report names (RefusedReads): one
+	// per process of the pod the kernel refused a read of, or one for /proc itself. A pod runs
+	// six roles and their children, and an operator who must go and look needs a handful of pids
+	// rather than one per process.
+	VolumeReportRefusedReads = 25
+	// VolumeReportFaults is how many recovered panics a report carries (Faults), the newest ones.
+	// The launcher's trimmer stops itself after three in a row (its volumeFaultLimit) of one kind
+	// of its work, counting its readings' panics, with those of its wait for settings and of its
+	// interval clock and the line that starts it, and its sweeps' in two rows, where a panic of
+	// one kind neither ends the other's row nor adds to it. So the switched-off report's newest
+	// three end with the panic that stopped the trimmer, and either of the two before it can be of
+	// the other kind: two sweep panics, two reading panics, and then a reading run to its end whose
+	// sweep panics stop the trimmer in the sweep row with both reading panics among the three.
+	VolumeReportFaults = 3
+)
 
 // LauncherChild is the actual worker-shim child the launcher has running, if any.
 type LauncherChild struct {
@@ -626,6 +995,8 @@ func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorksp
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
+func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemoryKill }
+func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
 func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
 func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
 
@@ -732,8 +1103,9 @@ func (f LauncherHello) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherHello, plain(f))
 }
 
-func (LauncherHelloAck) MarshalJSON() ([]byte, error) {
-	return marshalFrame(TypeLauncherHelloAck, struct{}{})
+func (f LauncherHelloAck) MarshalJSON() ([]byte, error) {
+	type plain LauncherHelloAck
+	return marshalFrame(TypeLauncherHelloAck, plain(f))
 }
 
 func (f LauncherState) MarshalJSON() ([]byte, error) {
@@ -784,6 +1156,23 @@ func (f LauncherBundleResult) MarshalJSON() ([]byte, error) {
 func (f LauncherRestored) MarshalJSON() ([]byte, error) {
 	type plain LauncherRestored
 	return marshalFrame(TypeLauncherRestored, plain(f))
+}
+
+func (f LauncherMemoryKill) MarshalJSON() ([]byte, error) {
+	type plain LauncherMemoryKill
+	return marshalFrame(TypeLauncherMemoryKill, plain(f))
+}
+
+// MarshalJSON keeps `sizes` an array on the wire, empty rather than `null`, as
+// record.UpdateStalled.MarshalJSON keeps `waiting` one and for the same reason: a strict reader
+// refuses a null. The `plain` alias is what keeps the method from re-entering itself.
+func (f LauncherVolumeReport) MarshalJSON() ([]byte, error) {
+	type plain LauncherVolumeReport
+	out := plain(f)
+	if out.Sizes == nil {
+		out.Sizes = []LauncherVolumeSize{}
+	}
+	return marshalFrame(TypeLauncherVolumeReport, out)
 }
 
 func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
@@ -1164,6 +1553,80 @@ func (f LauncherStop) Validate() error {
 	return nil
 }
 
+// Validate refuses guard settings outside the ranges both sides of the wire hold them to, naming
+// the member and its range. The launcher checks them again rather than trusting the daemon's
+// loader, because a daemon of another release may hold other ranges (MemoryGuardActMin).
+func (g LauncherMemoryGuard) Validate() error {
+	for _, member := range []struct {
+		name          string
+		value, lo, hi int
+	}{
+		{"actPercent", g.ActPercent, MemoryGuardActMin, MemoryGuardActMax},
+		{"floorPercent", g.FloorPercent, MemoryGuardFloorMin, MemoryGuardFloorMax},
+		{"waitSeconds", g.WaitSeconds, MemoryGuardWaitMin, MemoryGuardWaitMax},
+		{"intervalMilliseconds", g.IntervalMilliseconds, MemoryGuardIntervalMin, MemoryGuardIntervalMax},
+	} {
+		if member.value < member.lo || member.value > member.hi {
+			return fmt.Errorf("%w: launcher_hello_ack memoryGuard.%s is %d, not between %d and %d",
+				ErrMalformedFrame, member.name, member.value, member.lo, member.hi)
+		}
+	}
+	return nil
+}
+
+// Validate refuses a kill report the daemon could not apply once or tell a role of: one naming no
+// guard or a sequence below the 1 the guard counts from, which together are the report's
+// identity; one naming no process or no limit; one whose executable is longer than the bound a
+// role's note is held to; and one whose cause is none of the three MemoryKillCause values, which
+// no note says.
+func (f LauncherMemoryKill) Validate() error {
+	switch {
+	case f.Guard == "":
+		return fmt.Errorf("%w: launcher_memory_kill carries no guard", ErrMalformedFrame)
+	case f.Sequence < 1:
+		return fmt.Errorf("%w: launcher_memory_kill sequence is %d", ErrMalformedFrame, f.Sequence)
+	case f.PID <= 0:
+		return fmt.Errorf("%w: launcher_memory_kill pid is %d", ErrMalformedFrame, f.PID)
+	case f.LimitBytes == 0:
+		return fmt.Errorf("%w: launcher_memory_kill carries no limitBytes", ErrMalformedFrame)
+	case len(f.Executable) > MemoryKillExecutableBytes:
+		return fmt.Errorf("%w: launcher_memory_kill executable is %d bytes, limit %d", ErrMalformedFrame, len(f.Executable), MemoryKillExecutableBytes)
+	case f.Cause != MemoryKillCauseGuard && f.Cause != MemoryKillCauseKernel && f.Cause != MemoryKillCauseKernelProtected:
+		return fmt.Errorf("%w: launcher_memory_kill cause is %q, not %q, %q or none",
+			ErrMalformedFrame, f.Cause, MemoryKillCauseKernel, MemoryKillCauseKernelProtected)
+	}
+	return nil
+}
+
+// Validate refuses a volume report the daemon could not count: one naming no trimmer, which is
+// the identity its notice bounds count a restarted roles container apart by, and one whose
+// episode is below the 1 the trimmer counts from. It refuses, too, a report holding more entries
+// in a list than that list's cap (VolumeReportSizes and the three beside it): the daemon renders
+// every entry it is given into a notice, and the launcher's own cut runs only where the sender is
+// that launcher.
+func (f LauncherVolumeReport) Validate() error {
+	switch {
+	case f.Trimmer == "":
+		return fmt.Errorf("%w: launcher_volume_report carries no trimmer", ErrMalformedFrame)
+	case f.Episode < 1:
+		return fmt.Errorf("%w: launcher_volume_report episode is %d", ErrMalformedFrame, f.Episode)
+	}
+	for _, list := range []struct {
+		name      string
+		held, cap int
+	}{
+		{"sizes", len(f.Sizes), VolumeReportSizes},
+		{"sizesMissing", len(f.SizesMissing), VolumeReportSizesMissing},
+		{"refusedReads", len(f.RefusedReads), VolumeReportRefusedReads},
+		{"faults", len(f.Faults), VolumeReportFaults},
+	} {
+		if list.held > list.cap {
+			return fmt.Errorf("%w: launcher_volume_report %s holds %d entries, past the %d a report may hold", ErrMalformedFrame, list.name, list.held, list.cap)
+		}
+	}
+	return nil
+}
+
 // Validate refuses an enrollment frame with no request id or no enrollment id: the daemon is its
 // only sender, so either is a bug to name.
 func (f AgentSecretsEnrollment) Validate() error {
@@ -1247,7 +1710,7 @@ func Decode(line []byte) (Frame, error) {
 	case TypeLauncherHello:
 		return decodeInto[LauncherHello](trimmed)
 	case TypeLauncherHelloAck:
-		return LauncherHelloAck{}, nil
+		return decodeInto[LauncherHelloAck](trimmed)
 	case TypeLauncherState:
 		return decodeInto[LauncherState](trimmed)
 	case TypeLauncherStart:
@@ -1268,6 +1731,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherBundleResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
+	case TypeLauncherMemoryKill:
+		return decodeInto[LauncherMemoryKill](trimmed)
+	case TypeLauncherVolumeReport:
+		return decodeInto[LauncherVolumeReport](trimmed)
 	case TypeLauncherLeakCheck:
 		return decodeInto[LauncherLeakCheck](trimmed)
 	case TypeLauncherLeakCheckResult:

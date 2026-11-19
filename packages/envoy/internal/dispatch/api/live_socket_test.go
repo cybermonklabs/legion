@@ -90,12 +90,15 @@ type socketClient struct {
 	ended   chan struct{}
 	err     error
 	endedAt time.Time
+	// database is the store of the server behind the socket, which a wait on its event feed
+	// names as the test's own (eventFeedFrame): the rig's, or the one servedBy names.
+	database *store.Store
 }
 
 // open dials the socket, failing the test unless the upgrade succeeds; it reads nothing until read.
 func (rig *liveSocketRig) open(t *testing.T, dialer *gws.Dialer, header http.Header) *socketClient {
 	t.Helper()
-	return openLiveSocketAt(t, dialer, rig.url, header)
+	return openLiveSocketAt(t, dialer, rig.url, header).servedBy(rig.database)
 }
 
 // openLiveSocketAt dials the live socket at url, failing the test unless the upgrade succeeds; it
@@ -209,6 +212,58 @@ func (c *socketClient) next(t *testing.T, within time.Duration, what string) any
 			return frame
 		}
 	}
+}
+
+// socketArrival is what arrival sends: the next message but a heartbeat, or, when ended, the
+// socket's end and err its reason.
+type socketArrival struct {
+	data  []byte
+	ended bool
+	err   error
+}
+
+// arrival sends the next message but a heartbeat, or the socket's end, on a channel, for a wait
+// whose bound is not a clock (eventFeedFrame). It takes from frames on a goroutine of its own
+// until it has sent, so the caller takes from frames again only once it has received; the channel
+// is buffered, so the goroutine leaves even when nobody receives, at the latest when the test's
+// cleanup closes the socket.
+func (c *socketClient) arrival() <-chan socketArrival {
+	arrived := make(chan socketArrival, 1)
+	// deliver sends data unless it is a heartbeat, and says whether it sent.
+	deliver := func(data []byte) bool {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &head) == nil && head.Type == "heartbeat" {
+			return false
+		}
+		arrived <- socketArrival{data: data}
+		return true
+	}
+	go func() {
+		for {
+			select {
+			case data := <-c.frames:
+				if deliver(data) {
+					return
+				}
+			case <-c.ended:
+				// The reader queues every message before it ends.
+				for {
+					select {
+					case data := <-c.frames:
+						if deliver(data) {
+							return
+						}
+					default:
+						arrived <- socketArrival{ended: true, err: c.err}
+						return
+					}
+				}
+			}
+		}
+	}()
+	return arrived
 }
 
 func (c *socketClient) snapshot(t *testing.T, within time.Duration, sub string) DeliveryLiveSnapshot {
@@ -693,6 +748,23 @@ func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 	rig.sockets(t, 0)
 }
 
+// A page of a newer build may send members this build does not declare while a release rolls
+// out: a subscribe frame carrying them is answered with its snapshot. A frame type or a view kind
+// this build cannot serve is still refused, so the page reconnects to another process.
+func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
+	rig := newLiveSocketRig(t, testServerOptions{}, nil)
+	seedHubSettings(t, rig.database)
+	client := rig.dial(t, asUser("alice"))
+
+	client.sendText(t, []byte(`{"type":"subscribe","sub":"p","since":1,"view":{"kind":"timeline","window":{"preset":7,"anchor":"end"},"query":"","density":"compact"}}`))
+	client.snapshot(t, 10*time.Second, "p")
+
+	client.sendText(t, []byte(`{"type":"resubscribe","sub":"q"}`))
+	client.refusal(t, 3*time.Second, "q", "INVALID_FRAME")
+	client.sendText(t, []byte(`{"type":"subscribe","sub":"r","view":{"kind":"forecast"}}`))
+	client.refusal(t, 3*time.Second, "r", "INVALID_FRAME")
+}
+
 func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	client := rig.dial(t, asUser("alice"))
@@ -706,7 +778,7 @@ func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 	}{
 		{name: "a subscribe without a view", frame: `{"type":"subscribe","sub":"a"}`, sub: "a", code: "INVALID_FRAME"},
 		{name: "a subscribe without a sub", frame: `{"type":"subscribe"}`, code: "INVALID_FRAME"},
-		{name: "a member no frame declares", frame: `{"type":"subscribe","sub":"b","view":{"kind":"pipeline"},"since":1}`, sub: "b", code: "INVALID_FRAME"},
+		{name: "a view of no kind Dispatch serves", frame: `{"type":"subscribe","sub":"b","view":{"kind":"forecast"},"since":1}`, sub: "b", code: "INVALID_FRAME"},
 		{name: "an unknown type", frame: `{"type":"resubscribe","sub":"c"}`, sub: "c", code: "INVALID_FRAME"},
 		{name: "an unsubscribe without a sub", frame: `{"type":"unsubscribe"}`, code: "INVALID_FRAME"},
 		{name: "text that is not JSON", frame: `subscribe`, code: "INVALID_FRAME"},

@@ -9,7 +9,20 @@
 // The swap: a later request carrying that placeholder is an ordinary header swap of the access
 // token behind it (airlock.Decide and airlock.Rewrite, like every other pair), and a pod that
 // holds no token for the slot does the exchange for itself from what the slot carries, as each
-// pod mints the other kinds for itself.
+// pod mints the other types for itself.
+//
+// Both paths hold the exchange to the token authority's host and to the application and the
+// tenant the name's own document names (azureBound), and build its form from fixed fields
+// (azureExchange.form), since the federated token is the broker's own and not the name's:
+// Entra takes it as the assertion of every application whose federated credential trusts the
+// broker, so an exchange made as whatever application the command named would sell the grant
+// of one name for a token of any of them, and one made at another host the entry binds would
+// hand that host the token itself. Nor does the federated token leave the broker any other way:
+// a request that is no token request and carries its placeholder in a header is refused before
+// anything is sent (serveBound), since the header swap would put the token itself in it, whether
+// it goes to the authority or to another host the entry binds, and whatever that entry's kind: an
+// azure-login name's value is the federated token under an entry of any kind, and only one of
+// kind azure exchanges a command's token request.
 //
 // The exchange is the one place the proxy writes an answer of its own. It still reads no answer
 // of any API service, which is what the design's rule is about: what it reads here is the
@@ -32,6 +45,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The two bounds on what the broker reads of an exchange: a token request's form, which carries
@@ -54,9 +69,12 @@ const (
 //	 "scope":"https://management.azure.com/.default",
 //	 "client_id":"<the application the federated token stands for>"}
 //
-// All three, because the pod that serves a request carrying this placeholder is not always the
-// pod that minted it: a slot naming the scope alone would leave that pod with no endpoint to
-// call - the endpoint is the tenant's own URL, which nothing else of the grant holds - one
+// with "resource" beside them for an exchange at the v1 endpoint, which reads the resource a
+// token is for where v2.0 reads a scope.
+//
+// All of them, because the pod that serves a request carrying this placeholder is not always
+// the pod that minted it: a slot naming the scope alone would leave that pod with no endpoint
+// to call - the endpoint is the tenant's own URL, which nothing else of the grant holds - one
 // naming the endpoint alone with no scope to ask a token for, and one naming neither with no
 // application to ask as. Nothing else of the exchange is in it: the grant type and the
 // assertion type are the federated flow's own constants, and the assertion itself is the real
@@ -64,17 +82,41 @@ const (
 //
 // base64url with no padding because a slot travels as a database key, a map key and part of a
 // log line: that alphabet has no "+", "/" or "=" to escape anywhere, and the same object always
-// encodes to the same string - encoding/json writes a struct's fields in the struct's own order
-// - so two pods that exchange one scope name one slot and share one placeholder.
+// encodes to the same string - encoding/json writes a struct's fields in the struct's own order,
+// and leaves out a resource no exchange at v2.0 has - so two pods that exchange one scope name
+// one slot and share one placeholder.
 type azureExchange struct {
 	Endpoint string `json:"endpoint"`
 	Scope    string `json:"scope"`
 	ClientID string `json:"client_id"`
+	Resource string `json:"resource,omitempty"`
+}
+
+// form is the whole form of the exchange x names, with federated as its assertion: the
+// federated flow's two constants, the application, the scope and, at the v1 endpoint, the
+// resource the exchange asks a token for, and the real federated token. It is built from these
+// fields and from nothing a command wrote, so a field a command adds - a second client_id
+// spelled in another case, a parameter this code does not know - never reaches the endpoint,
+// and one exchange is the same form whichever pod makes it.
+func (x azureExchange) form(federated string) url.Values {
+	form := url.Values{
+		"grant_type":            {"client_credentials"},
+		"client_id":             {x.ClientID},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		"client_assertion":      {federated},
+	}
+	if x.Scope != "" {
+		form.Set("scope", x.Scope)
+	}
+	if x.Resource != "" {
+		form.Set("resource", x.Resource)
+	}
+	return form
 }
 
 // azureAccessSlot is the slot the access token of x lives under.
 func azureAccessSlot(x azureExchange) string {
-	// Three strings, so the marshal cannot fail.
+	// Four strings, so the marshal cannot fail.
 	encoded, _ := json.Marshal(x)
 	return requests.SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString(encoded)
 }
@@ -91,7 +133,7 @@ func azureExchangeOf(slot string) (azureExchange, bool) {
 		return azureExchange{}, false
 	}
 	var x azureExchange
-	if err := json.Unmarshal(decoded, &x); err != nil || x.Endpoint == "" || x.Scope == "" {
+	if err := json.Unmarshal(decoded, &x); err != nil || x.Endpoint == "" || (x.Scope == "" && x.Resource == "") {
 		return azureExchange{}, false
 	}
 	return x, true
@@ -109,6 +151,52 @@ func isAzureAccessSlot(slot string) bool {
 // --federated-token, and the azure-identity library through MSAL - POST a form to one of them.
 func isTokenRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/oauth2/") && strings.HasSuffix(r.URL.Path, "/token")
+}
+
+// The two paths of a token endpoint after its tenant: Microsoft's v2.0 endpoint and its v1 one,
+// the two isTokenRequest reads a request to.
+const (
+	tokenPathV2 = "/oauth2/v2.0/token"
+	tokenPathV1 = "/oauth2/token"
+)
+
+// microsoftAuthority is the host of Microsoft's token authority, the one host the azure kind
+// exchanges at unless Options.AzureAuthority names a stand-in.
+const microsoftAuthority = "login.microsoftonline.com"
+
+// azureBound refuses an exchange of name's federated token that is not made at the token
+// authority, as the application and in the tenant name's own document names (app), before the
+// broker puts its federated token in it. host is the host the exchange would be made at, ASCII
+// lower-cased and with its port if it names one, and it must be authority itself
+// (Server.azureAuthority): an azure entry binds other hosts too - the service an access token
+// is spent at - and an exchange made at one of them would hand that host the federated token.
+// clientIDs is every client_id the exchange's form carries: exactly one, since of two the
+// endpoint and not this check would choose the one that counts. path is the token endpoint's
+// path, which is where the tenant is, and it is read whole - "/", the tenant, then one of the
+// two token paths - so no spelling of another tenant's endpoint, a dot segment or a second
+// segment before the tenant, reads as this one's. scope is not bounded: one application asks
+// for tokens of several resources, and what a token of it may do is Entra's to say.
+//
+// The ids compare exactly, as the document writes them: the session was released that
+// document and signs in with the ids it holds. A spelling that differs, even in case alone, is
+// refused rather than read as the same, which costs a client that respells them a refusal and
+// never reads one application or tenant as another. The refusal names the name and the field
+// and no value, the document's, the command's or the authority's.
+func azureBound(name, authority string, app secrets.AzureLoginValue, host string, clientIDs []string, path string) error {
+	if host != authority {
+		return errors.New("refusing an exchange of " + name + "'s federated token whose host is not the token authority's")
+	}
+	if app.ClientID == "" || len(clientIDs) != 1 || clientIDs[0] != app.ClientID {
+		return errors.New("refusing an exchange of " + name + "'s federated token whose client_id is not the application " + name + "'s secret names")
+	}
+	rest, ok := strings.CutPrefix(path, "/")
+	if ok {
+		rest, ok = strings.CutPrefix(rest, app.TenantID)
+	}
+	if app.TenantID == "" || !ok || (rest != tokenPathV2 && rest != tokenPathV1) {
+		return errors.New("refusing an exchange of " + name + "'s federated token whose tenant, the token endpoint's path, is not the tenant " + name + "'s secret names")
+	}
+	return nil
 }
 
 // accessKey is one access token this pod holds: whose grant, which name of it, and which
@@ -177,47 +265,60 @@ func (s *Server) dropAccess(name string) {
 // exchangeToken answers one token request of an azure name: the broker makes the exchange
 // itself with the real federated token, keeps the access token, and answers the command the
 // endpoint's own answer with a placeholder in place of that token. Nothing of this request
-// reaches the endpoint as the command wrote it.
-func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, federated string) {
+// reaches the endpoint as the command wrote it - the form is the exchange's own
+// (azureExchange.form), taking only the scope and the resource from the command's - and nothing
+// of it reaches the endpoint at all unless it is made at the token authority and as
+// secret.Azure, the application and tenant the name's document names.
+func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, secret requests.AirlockSecret) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxTokenRequest))
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadRequest, "reading this token request's form: "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadRequest, codeTokenRequest, "reading this token request's form: "+err.Error())
 		return
 	}
 	form, err := url.ParseQuery(string(body))
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadRequest, "this token request's body is no application/x-www-form-urlencoded form")
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadRequest, codeTokenRequest, "this token request's body is no application/x-www-form-urlencoded form")
 		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[requests.SlotAzureFederated]
 	if placeholder == "" || form.Get("client_assertion") != placeholder {
 		// Refused rather than forwarded: an assertion that is not this grant's placeholder is
 		// a credential the command holds of its own, and the airlock carries no such thing.
-		s.refuse(w, info, r, chosen, http.StatusForbidden, "refusing a token request whose client_assertion is not this grant's placeholder")
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeTokenAssertion, "refusing a token request whose client_assertion is not this grant's placeholder")
+		return
+	}
+	// The host as this connection reached it: the CONNECT target, which the decision has
+	// already tied to the entry's hosts, the TLS name and the Host header, lower-cased and
+	// with the port a bound connection is opened on left off.
+	host := fold.ASCII(hostHeaderOf(info.target))
+	if err := azureBound(chosen.name, s.azureAuthority, secret.Azure, host, form["client_id"], r.URL.Path); err != nil {
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeTokenApplication, err.Error())
 		return
 	}
 	x := azureExchange{
-		// The endpoint as this connection reached it: the CONNECT target's host, which the
-		// decision has already tied to the entry's hosts, the TLS name and the Host header.
-		Endpoint: "https://" + hostHeaderOf(info.target) + r.URL.Path,
+		// The token authority's endpoint, which azureBound has held this connection's host to.
+		Endpoint: "https://" + s.azureAuthority + r.URL.Path,
 		Scope:    form.Get("scope"),
-		ClientID: form.Get("client_id"),
+		ClientID: secret.Azure.ClientID, // the one client_id the form carries, azureBound says
 	}
-	form.Set("client_assertion", federated)
-	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, form)
+	if strings.HasSuffix(r.URL.Path, tokenPathV1) {
+		// The v1 endpoint reads the resource a token is for, where v2.0 reads a scope.
+		x.Resource = form.Get("resource")
+	}
+	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, x.form(secret.Slots[requests.SlotAzureFederated]))
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadGateway, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())
 		return
 	}
 	if status != http.StatusOK {
 		// The endpoint's own status, with the broker's own words: the endpoint's answer to a
 		// refused exchange names the tenant and the application, and none of it is read out.
-		s.refuse(w, info, r, chosen, status, "the token endpoint refused the exchange of this grant's federated token")
+		s.refuse(w, r, info.callFor(chosen), status, codeExchangeRefused, "the token endpoint refused the exchange of this grant's federated token")
 		return
 	}
 	fields, err := azureAnswerOf(answer)
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadGateway, "the token endpoint's answer to this exchange "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the token endpoint's answer to this exchange "+err.Error())
 		return
 	}
 	token, expires := accessTokenOf(fields, s.now())
@@ -228,20 +329,20 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 	// database's user, its name and its address.
 	minted, err := s.grants.AirlockAccessPlaceholder(r.Context(), info.grant.GrantID, chosen.name, slot)
 	if err != nil {
-		status, why := s.grantRefusal("azure access placeholder", err)
-		s.refuse(w, info, r, chosen, status, why)
+		status, code, why := s.grantRefusal("azure access placeholder", err)
+		s.refuse(w, r, info.callFor(chosen), status, code, why)
 		return
 	}
 	s.accessFor(accessKey{grant: info.grant.GrantID, name: chosen.name, slot: slot}).keep(token, expires)
 	document, err := answerWithPlaceholder(fields, minted)
 	if err != nil {
-		s.refuse(w, info, r, chosen, http.StatusBadGateway, "answering this exchange: "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "answering this exchange: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(document)
-	s.log.Info(callMessage, s.callFields(info, r, chosen, http.StatusOK, "")...)
+	s.log.Info(callMessage, s.callFields(answerOf(w).ID(), info.callFor(chosen), r, http.StatusOK, "")...)
 }
 
 // azureAccess is the real access token behind an azure-access slot: the one this pod holds for
@@ -266,25 +367,22 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 		return "", errors.New("the slot of this placeholder names no https token endpoint")
 	}
 	entry := s.rules.Lookup(chosen.name)
-	if entry == nil || !airlock.HostBound(entry.Hosts, airlock.ASCIILower(endpoint.Hostname())) {
+	if entry == nil || !airlock.HostBound(entry.Hosts, fold.ASCII(endpoint.Hostname())) {
 		// The exchange is a call the broker makes with the real federated token, so where it
 		// is made is held to the same hosts as every other call of this name: the rules file's.
 		return "", errors.New("the token endpoint this slot names is no host " + chosen.name + " is bound to")
+	}
+	if err := azureBound(chosen.name, s.azureAuthority, secret.Azure, fold.ASCII(endpoint.Host), []string{x.ClientID}, endpoint.Path); err != nil {
+		// The slot is the broker's own row, written by an exchange this check let through; one
+		// written before the check existed is held to it all the same.
+		return "", err
 	}
 	federated := secret.Slots[requests.SlotAzureFederated]
 	if federated == "" {
 		return "", errors.New("the broker released no federated token for " + chosen.name + ", so no access token can be exchanged for it")
 	}
-	status, answer, err := s.exchangeAt(ctx, x.Endpoint, url.Values{
-		// The federated flow's own form, which is what the command sent when a pod minted this
-		// slot: the two constants, the application and the scope the slot carries, and the
-		// real assertion.
-		"grant_type":            {"client_credentials"},
-		"client_id":             {x.ClientID},
-		"scope":                 {x.Scope},
-		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
-		"client_assertion":      {federated},
-	})
+	// The same form the exchange that minted this slot sent, built from what the slot carries.
+	status, answer, err := s.exchangeAt(ctx, x.Endpoint, x.form(federated))
 	if err != nil {
 		return "", errors.New("the exchange of this grant's federated token could not be made at " + x.Endpoint + ": " + err.Error())
 	}
@@ -301,21 +399,25 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 }
 
 // exchangeAt makes one exchange: the broker's own POST to the token endpoint, on the transport
-// every upstream call of this proxy goes out on, and the endpoint's status and whole answer.
+// every upstream call of this proxy goes out on, and the endpoint's status and whole answer. The
+// endpoint was sent the real federated token, and the transport's error can quote what it sent
+// back or list the names its certificate holds, so an error is answered as upstreamReason writes
+// it, as an upstream failure's is: the refusal line and the answer the command is given repeat
+// it.
 func (s *Server) exchangeAt(ctx context.Context, endpoint string, form url.Values) (int, []byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, errors.New(upstreamReason(err))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	answer, err := s.upstream.RoundTrip(request)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, errors.New(upstreamReason(err))
 	}
 	defer answer.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(answer.Body, maxTokenAnswer))
 	if err != nil {
-		return answer.StatusCode, nil, err
+		return answer.StatusCode, nil, errors.New(upstreamReason(err))
 	}
 	return answer.StatusCode, body, nil
 }

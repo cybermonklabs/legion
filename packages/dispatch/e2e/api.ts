@@ -134,9 +134,12 @@ export function devSignInError(login: string, status: number, responseText: stri
  *  (`resetDatabaseOnce`, e2e/seed.ts): the only logins whose session cookie outlives a reset. */
 export const resetLogins: readonly string[] = ["alice", "bob"];
 
-/** One login's cached session cookie. */
+/** One cached session cookie, of one login signed in at one process. */
 interface CachedSession {
   cookie: Promise<Cookie>;
+  /** The login the cookie signs in as. The cache is keyed by login and process asked, so a key
+   *  is not a login. */
+  login: string;
   /** Whether the cookie names generation 0, which is where the reset puts `user_sessions` back
    *  (e2e/seed.ts). A cookie minted after a sign-out names a later generation, and the server
    *  admits only the login's current one (identity.CookieIdentity.Login), so the reset would
@@ -147,20 +150,25 @@ interface CachedSession {
 const sessionCookies = new Map<string, CachedSession>();
 
 /** The session cookie the server issues `login` at its dev sign-in route, minted once per
- *  spelling of a login and kept until something revokes it: the generation the cookie names lives
- *  in `user_sessions`, which `resetDatabase` empties and refills for `resetLogins` alone (it
- *  calls `forgetSessions`), and a browser context's Sign out as the same login advances it. A
- *  sign-in that fails, by its answer or by the request itself, is not kept, so the next call asks
- *  again. */
-export function sessionCookie(login: string): Promise<Cookie> {
-  const cached = sessionCookies.get(login);
+ *  spelling of a login and process asked, and kept until something revokes it: the generation
+ *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
+ *  `resetLogins` alone (it calls `forgetSessions`), and a browser context's Sign out as the same
+ *  login advances it. With `target` set the sign-in is pinned to that process, so every request
+ *  a pinned call makes, its sign-in included, is served by the process it names. A sign-in that
+ *  fails, by its answer or by the request itself, is not kept, so the next call asks again. */
+export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
+  const key = `${target ?? ""} ${login}`;
+  const cached = sessionCookies.get(key);
   if (cached !== undefined) {
     return cached.cookie;
   }
   const mint = new URL(devSignInPath(login), baseUrl);
   const session: CachedSession = {
     atGenerationZero: false,
-    cookie: fetch(mint, { redirect: "manual" }).then(async (response) => {
+    cookie: fetch(mint, {
+      headers: target === undefined ? {} : pinnedTo(target),
+      redirect: "manual",
+    }).then(async (response) => {
       const cookie = sessionCookieOf(response, mint);
       if (response.status !== 302 || cookie === undefined) {
         throw devSignInError(login, response.status, await response.text());
@@ -171,11 +179,12 @@ export function sessionCookie(login: string): Promise<Cookie> {
       session.atGenerationZero = cookie.value.split(".")[2] === "0";
       return cookie;
     }),
+    login,
   };
-  sessionCookies.set(login, session);
+  sessionCookies.set(key, session);
   session.cookie.catch(() => {
-    if (sessionCookies.get(login) === session) {
-      sessionCookies.delete(login);
+    if (sessionCookies.get(key) === session) {
+      sessionCookies.delete(key);
     }
   });
   return session.cookie;
@@ -212,19 +221,22 @@ export function reusableSessionCookie(login: string): Promise<Cookie> | undefine
  *  in the row just ended leaves behind. A kept cookie carries no state of its row into the next
  *  one: it names a login and a generation, both of which the emptied database holds again. */
 export function forgetSessions(): void {
-  for (const [login, session] of sessionCookies) {
-    if (!resetLogins.includes(login) || !session.atGenerationZero) {
-      sessionCookies.delete(login);
+  for (const [key, session] of sessionCookies) {
+    if (!resetLogins.includes(session.login) || !session.atGenerationZero) {
+      sessionCookies.delete(key);
     }
   }
   reusedSignIns.clear();
 }
 
-/** Headers that make a plain fetch act as `login`: the session cookie, and the dashboard origin
- *  the server requires on every cookie-authenticated write (enforceCookieOrigin admits a write
- *  whose `Origin` is the dashboard's). */
-export async function userHeaders(login = "alice"): Promise<Record<string, string>> {
-  const cookie = await sessionCookie(login);
+/** Headers that make a plain fetch act as `login`: the session cookie (signed by `target` when it
+ *  is given), and the dashboard origin the server requires on every cookie-authenticated write
+ *  (enforceCookieOrigin admits a write whose `Origin` is the dashboard's). */
+export async function userHeaders(
+  login = "alice",
+  target?: DispatchProcess
+): Promise<Record<string, string>> {
+  const cookie = await sessionCookie(login, target);
   return { Cookie: `${cookie.name}=${cookie.value}`, Origin: dashboardOrigin };
 }
 
@@ -246,7 +258,7 @@ async function request<T>(
   if (as === "agent") {
     headers.Authorization = `Bearer ${options.token ?? e2eAgentToken}`;
   } else {
-    Object.assign(headers, await userHeaders(options.login));
+    Object.assign(headers, await userHeaders(options.login, options.process));
   }
   if (options.idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = options.idempotencyKey;
@@ -351,8 +363,8 @@ function del<P extends PathsOf<"delete">>(
   return send(pattern, "DELETE", args, options);
 }
 
-export function createProject(input: Body<"/api/v1/projects", "post">, login = "alice") {
-  return post("/api/v1/projects", { body: input }, { login });
+export function createProject(input: Body<"/api/v1/projects", "post">, options: ApiOptions = {}) {
+  return post("/api/v1/projects", { body: input }, options);
 }
 
 /** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
@@ -1046,6 +1058,23 @@ export function createHandoff(
   );
 }
 
+/** The Legion daemon of `issue`'s project writes one run of a step, as its outbox does: under the
+ *  agent bearer, naming the session `legion-daemon:<PROJECT>`, the one writer the route admits
+ *  for that project's issues. A field the record already holds is kept, so a start and an end
+ *  may arrive in either order. */
+export function putStep(
+  issue: string,
+  id: string,
+  input: Body<"/api/v1/issues/{key}/steps/{id}", "put">
+) {
+  const project = issue.slice(0, issue.indexOf("-"));
+  return put(
+    "/api/v1/issues/{key}/steps/{id}",
+    { body: input, params: { id, key: issue } },
+    { actor: { id: `legion-daemon:${project}`, kind: "session" }, as: "agent" }
+  );
+}
+
 /** The signed-in human's own per-agent conversation state, as another of their devices sets it. */
 export function putAgentState(
   sessionID: string,
@@ -1118,6 +1147,27 @@ export function slowWrites(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/writes/_test/slow", { body: { delay_ms: delayMs, method, path } }, options);
+}
+
+/**
+ * `GET /api/v1/messages/_test/queued`: every targeted message the server queued itself for a
+ * session that neither the listener's registry nor its known-session store held, oldest first,
+ * each as the envelope that session's agent subject would hold. Test-only endpoint (mounted when
+ * DISPATCH_TEST_HOOKS=1, see run-server.sh): the harness runs Dispatch with NATS disabled, so the
+ * server keeps them in its own memory rather than on a stream, and keeps them for its whole life -
+ * a database reset does not clear them, so a row reads its own message's (`queuedEnvelopesOf`).
+ */
+export function listQueuedMessages(options: ApiOptions = {}) {
+  return get("/api/v1/messages/_test/queued", {}, options);
+}
+
+/** The envelopes the server queued for the message `messageId` (`listQueuedMessages`), oldest
+ *  first: those whose dedupe key, `agent.<session>.<message id>:<mode>`, names it. The rows before
+ *  a row share what the server queued, so this is what a row compares with its own message. */
+export async function queuedEnvelopesOf(messageId: string, options: ApiOptions = {}) {
+  return ((await listQueuedMessages(options)).queued ?? []).filter((envelope) =>
+    envelope.dedupe_key.includes(messageId)
+  );
 }
 
 /** Adds `repo`'s `.dispatch/architecture` on `branch` as one of `project`'s sources, or moves that

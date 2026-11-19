@@ -16,7 +16,8 @@ import (
 // decideAwait alone: a root re-admitted and never promoted holds no slot, and the architect of
 // the generation before it handed a question back in is still on the record until the linger's
 // suspend runs, so the hand-back makes the mark non-zero again. Such a root must not enter
-// awaiting_person — the wait is a slot going back, and this root has none to give — and it must
+// awaiting_person — only a root that holds its slot waits on a person (record.CanWaitOnPerson),
+// and this root holds none — and it must
 // not be taken out of the workflow either, since it is waiting in the line for its first slot.
 //
 // The architect's claim is seeded as the old generation leaves it — suspended, holding the task
@@ -57,10 +58,10 @@ func TestAReadmittedRootWithAHandBackNeitherWaitsOnAPersonNorLeavesTheWorkflow(t
 
 	got := issue(t, pool, root)
 	if got.Phase != phase.Admitted {
-		t.Fatalf("%s stands at %s after the pass, want admitted: a root that was never promoted holds no slot to hand back and leaves the workflow for nothing", root, got.Phase)
+		t.Fatalf("%s stands at %s after the pass, want admitted: a root that was never promoted holds no slot, cannot wait on a person, and leaves the workflow for nothing", root, got.Phase)
 	}
 	if got.Awaiting != nil {
-		t.Fatalf("%s recorded a wait on a person: %+v. The wait is its slot going back, and it holds none", root, got.Awaiting)
+		t.Fatalf("%s recorded a wait on a person: %+v. Only a root that holds its slot waits on a person, and it holds none", root, got.Awaiting)
 	}
 	if got.Status != "todo" {
 		t.Fatalf("%s reads %q after the pass, want todo: nothing of this pass moves a root waiting in the line", root, got.Status)

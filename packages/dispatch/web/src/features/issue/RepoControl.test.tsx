@@ -4,6 +4,12 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import {
+  type Commits,
+  type HeldNotifications,
+  holdNotifications,
+  recordCommits,
+} from "../../__tests__/commits";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -99,7 +105,9 @@ const mappings: RepoProject[] = [
 const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 
-function CachedControl(): ReactNode {
+/** The control as the issue page draws it: with the repository its host reads from the cache,
+ *  each commit of it recorded with that repository. */
+function CachedControl({ commits }: { commits: Commits<string | null> }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -109,12 +117,14 @@ function CachedControl(): ReactNode {
     return null;
   }
   return (
-    <RepoControl
-      issueKey={cached.data.key}
-      project={cached.data.project}
-      repo={cached.data.repo}
-      resolvedRepo={cached.data.resolved_repo}
-    />
+    <commits.Recorded host={cached.data.repo}>
+      <RepoControl
+        issueKey={cached.data.key}
+        project={cached.data.project}
+        repo={cached.data.repo}
+        resolvedRepo={cached.data.resolved_repo}
+      />
+    </commits.Recorded>
   );
 }
 
@@ -151,12 +161,19 @@ function renderControl(
     { ...summary, repo: own.repo, resolved_repo: own.resolvedRepo },
   ]);
   const user = userEvent.setup();
+  // What the box holds, the repository its placeholder names, and its description.
+  const commits = recordCommits<string | null>(() => {
+    const drawn = box();
+    const description = document.getElementById(drawn.getAttribute("aria-describedby") ?? "");
+    return `${drawn.value} | ${drawn.placeholder} | ${description?.textContent}`;
+  });
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      <CachedControl commits={commits} />
     </QueryClientProvider>
   );
   return {
+    commits,
     user,
     listRepoProjects,
     queryClient,
@@ -294,6 +311,66 @@ test("RepoControl sends null for an emptied box", async () => {
   } finally {
     unmount();
     patchIssue.mockRestore();
+  }
+});
+
+// The box writes what was typed when it is left, so a press on the clear control must not take
+// focus from it: the press would write the typed repository, which the reader is throwing away,
+// and the click after it would write the clear. One action is one write.
+test("RepoControl sends the clear alone when a repository was typed first", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: null,
+    resolved_repo: "acme/widgets",
+  });
+  const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
+  try {
+    await user.clear(box());
+    await user.click(box());
+    await user.paste("zed/other");
+    expect(box().value).toBe("zed/other");
+    await user.click(screen.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    // Cleared, the box is empty and inherits, with what was typed gone from it.
+    await waitFor(() => expect(box().placeholder).toBe("acme/widgets"));
+    expect(box().value).toBe("");
+    expect(patchIssue.mock.calls.map(([, patch]) => patch)).toEqual([{ repo: null }]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A browser compiles the box's `pattern` as `^(?:…)$` with the `v` flag, and under that flag a
+// bare hyphen in a character class is a syntax error, which makes the browser ignore the
+// attribute and log the error. So the attribute is compiled here as a browser compiles it, and
+// held to the names the box's own check takes and refuses.
+test("RepoControl's pattern compiles as a browser compiles it", () => {
+  const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" });
+  try {
+    const compiled = new RegExp(`^(?:${box().getAttribute("pattern") ?? ""})$`, "v");
+    // Names GitHub holds, which the pattern must take, and names it could hold no repository at,
+    // which the pattern must refuse: each list keeps the names the pattern got wrong.
+    const held = [
+      "acme/widgets",
+      "Sjawhar/.knives-ledger",
+      "mona-cat_octo/hello--world",
+      "artofcode-/x",
+    ];
+    const notHeld = [
+      "acme gadgets",
+      "x/..",
+      "x/.",
+      "-bad/x",
+      "own%er/x",
+      `owner/${"a".repeat(101)}`,
+    ];
+    expect(held.filter((name) => !compiled.test(name))).toEqual([]);
+    expect(notHeld.filter((name) => compiled.test(name))).toEqual([]);
+  } finally {
+    unmount();
   }
 });
 
@@ -516,6 +593,89 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
     expect(box().value).toBe("");
     expect(box().placeholder).toBe("acme/widgets");
   } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Enter writes what the box holds, and from that press on the control draws it in every commit,
+// with the repository the issue then resolves to: the box, its placeholder and its description.
+// The pick reaches the issue's cache in a microtask of the press, and the control's host only
+// when TanStack Query tells the cache's observers, in a browser a timer later, which the row
+// holds back: a commit before that timer that drew the repository the pick replaces is a frame
+// of it on screen (INFRA-3904).
+test("RepoControl draws the pick, and the repository it resolves to, in every commit from Enter on, while its host still passes the inherited repository it replaces", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { commits, queryClient, unmount, user } = renderControl({
+    repo: null,
+    resolvedRepo: "acme/widgets",
+  });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    const fromPress = commits.markAt(box(), "keydown");
+    notifications = holdNotifications();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+    // The cache draws the pick, and its host has not been told.
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("acme/gadgets");
+    expect(new Set(fromPress().map(({ host }) => host))).toEqual(new Set([null]));
+    notifications.tell();
+    expect(fromPress().at(-1)?.host).toBe("acme/gadgets");
+    await act(async () => {
+      save.resolve({ ...issue, repo: "acme/gadgets", resolved_repo: "acme/gadgets", last_seq: 2 });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(fromPress().map(({ drawn }) => drawn)).toEqual(
+      fromPress().map(() => "acme/gadgets | acme/gadgets | acme/gadgets")
+    );
+  } finally {
+    notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A pick can land before TanStack Query has told the box's host of it: a background tab holds
+// that timer back while a request's answer still lands. Dispatch drops a `.git` suffix before it
+// stores a repository (canonicalRepo), so a pick of `acme/widgets.git` on an issue that holds
+// `acme/widgets` lands as the repository the host passed at the press, and passes still. The box
+// draws what Dispatch stored once the host is told, and keeps no pick Dispatch did not store.
+test("RepoControl draws what Dispatch stored once its host is told, when the pick landed first as the repository its host passed at the press", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+    last_seq: 2,
+  });
+  const { queryClient, unmount, user } = renderControl({
+    repo: "acme/widgets",
+    resolvedRepo: "acme/widgets",
+  });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await user.clear(box());
+    await user.click(box());
+    await user.paste("acme/widgets.git");
+    notifications = holdNotifications();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets.git" }, keyedAttempt);
+    // The pick landed, and its host has been told of nothing.
+    expect(notifications.held()).toBeGreaterThan(0);
+    notifications.tell();
+    expect(box().value).toBe("acme/widgets");
+  } finally {
+    notifications?.tell();
     unmount();
     patchIssue.mockRestore();
   }

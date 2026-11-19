@@ -63,6 +63,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
   planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),
+  reviewArtifact: (client) => client.reviewArtifact("artifact-1", 2, { state: "approved" }),
   recordResult: (client) =>
     client.recordResult("DSP-1", {
       actor,
@@ -121,6 +122,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  listSteps: (client) => client.listSteps("DSP-1"),
 };
 
 afterEach(forgetKeyedLayerMemory);
@@ -149,8 +151,7 @@ test("every DispatchClient method reaches Dispatch through its one request funct
         "http://dispatch.test",
         bearerCredential("secret"),
         recording,
-        undefined,
-        DISPATCH_WRITE_RETRY
+        { writeRetry: DISPATCH_WRITE_RETRY }
       );
 
       await call(client).catch(() => undefined);

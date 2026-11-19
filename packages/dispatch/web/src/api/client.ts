@@ -10,6 +10,12 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   type InboxThreadKind,
+  NO_ROUTE_MESSAGE_PREFIX,
+  NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
+  retryNoRoute,
+  type Sleep,
+  sleep,
 } from "@legion/contracts";
 
 import {
@@ -32,7 +38,6 @@ import type {
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
-  BlockSchema,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
@@ -148,6 +153,26 @@ export type ReferenceSourceKind = NonNullable<
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
+ *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
+export { REFERENCE_TARGETS_MAX };
+
+/** The budget, in characters of query string, that the batches of `referenceTargetsQuery` keep
+ *  each `getReferenceTargets` call inside (`referenceTargetBatches` in `queries.ts`), except a
+ *  batch of one address longer than the budget, which goes alone and passes it: a batch of no
+ *  address would name nothing. `getReferenceTargets` itself writes every reference it is given
+ *  and applies no budget. The server bounds a batch by the count alone and says so
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`): it
+ *  sets no limit on the request line itself, but a proxy in front of it can set one, and 16 KB is
+ *  one known such limit (an AWS load balancer's). A full batch of comment or message references
+ *  encodes to more than that, so a caller splits by the length it writes as well as by the
+ *  count, which is the two-request read that comment describes. The budget is the query alone,
+ *  which leaves the route, the verb and the version of the request line room of their own inside
+ *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
+export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
@@ -341,6 +366,28 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
+// A stored document holding an element this Dispatch process's build cannot read: a newer build
+// wrote it while two builds serve one database during a release. It is not a repairable state, and
+// a replacement would delete the element. A later read can reach a build that reads it, so the read
+// is retried like any transient failure.
+export function isDocumentNewerContent(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === "DOC_NEWER_CONTENT";
+}
+
+// Whether `error` is a Dispatch process's answer that it has no route for the request (`404
+// NOT_FOUND`, NO_ROUTE_MESSAGE_PREFIX). While a release rolls out, two builds of Dispatch answer
+// the page, and the older one answers this way for a route only the newer one serves. No handler
+// ran, so the request is safe to send again whatever its method. A `404 NOT_FOUND` for a resource
+// the server does not know says "not found" instead.
+export function isNoRoute(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
+  );
+}
+
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
  *  message, shown wherever a view would otherwise say an agent is absent. */
 export const AGENT_LIST_REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -355,8 +402,9 @@ export function isAgentListRefilling(error: unknown): boolean {
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
 // Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx) is worth a couple
-// of automatic attempts before surfacing a Retry affordance to the user.
+// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
+// holding content this build cannot read yet) is worth a couple of automatic attempts before
+// surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -681,10 +729,12 @@ function watchBody(response: Response, arrived: () => void): Response {
 
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
-   *  reports no upload progress, so an upload's deadline then runs from its send. */
+   *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
+   *  a no-route retry waits (`answered`). */
   constructor(
     private readonly fetchImpl: FetchImplementation,
-    private readonly upload?: UploadImplementation
+    private readonly upload?: UploadImplementation,
+    private readonly wait: Sleep = sleep
   ) {}
 
   /** One request to Dispatch, answered with what `read` makes of its response. It is held to a
@@ -740,8 +790,14 @@ export class DispatchApiClient {
    *  does, the body of a refusal included; `uploaded` is told how much of an upload's body has gone
    *  up. Any answer of Dispatch's own - one below 500, which no gateway gives for a Dispatch that
    *  is down - says it can be reached on that route (`reachable`), which matters only once it
-   *  could not be. */
-  private async answered(
+   *  could not be.
+   *
+   *  A no-route answer is sent again after each of `NO_ROUTE_RETRY_DELAYS_MS`, with the same
+   *  `init`, so the same body: while a release rolls out, the next attempt may reach the build
+   *  that serves the route. After the last attempt it throws
+   *  `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. An abort of `init.signal` during a wait - the caller's,
+   *  or the deadline's - rejects at once with the abort's reason and sends nothing more. */
+  private answered(
     path: string,
     init: RequestInit,
     arrived?: () => void,
@@ -759,23 +815,31 @@ export class DispatchApiClient {
       arrived?.();
       if (part !== undefined) uploaded?.(part.loaded, part.total);
     };
-    let answer: Response;
-    try {
-      answer =
-        sent.body instanceof FormData && this.upload !== undefined
-          ? await this.upload(path, sent, progress)
-          : await this.fetchImpl(path, sent);
-    } catch (error) {
-      // An abort is the deadline's or the caller's (`exchange`), never the network's.
-      if (init.signal?.aborted === true) throw error;
-      unreachable(routeOf(init.method, path));
-      throw new NetworkError(path, error);
-    }
-    if (answer.status < 500) reachable("answer", routeOf(init.method, path));
-    arrived?.();
-    const response = arrived === undefined ? answer : watchBody(answer, arrived);
-    if (!response.ok) throw await errorFrom(response);
-    return response;
+    const attempt = async (): Promise<Response> => {
+      let answer: Response;
+      try {
+        answer =
+          sent.body instanceof FormData && this.upload !== undefined
+            ? await this.upload(path, sent, progress)
+            : await this.fetchImpl(path, sent);
+      } catch (error) {
+        // An abort is the deadline's or the caller's (`exchange`), never the network's.
+        if (init.signal?.aborted === true) throw error;
+        unreachable(routeOf(init.method, path));
+        throw new NetworkError(path, error);
+      }
+      if (answer.status < 500) reachable("answer", routeOf(init.method, path));
+      arrived?.();
+      const response = arrived === undefined ? answer : watchBody(answer, arrived);
+      if (!response.ok) throw await errorFrom(response);
+      return response;
+    };
+    return retryNoRoute(attempt, isNoRoute, {
+      exhausted: () =>
+        new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE }),
+      signal: init.signal,
+      sleep: this.wait,
+    });
   }
 
   /** The response itself, for a caller that reads its body: the deadline holds until the
@@ -862,9 +926,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getBlockSchema`,
-   *  `getIssueEvents` and `listIssueAskThreads`, each saying beside it what that is - and those
-   *  three go through `json` with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
+   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
+   *  with `routeUrl`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -908,13 +972,6 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ): Promise<Answer<Op<P, "delete">>> {
     return this.send<Answer<Op<P, "delete">>>(writeRequest("delete", pattern, params), bounds);
-  }
-
-  /** The block schema. The route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the
-   *  document gives its body no schema at all; `BlockSchema` is generated from the same source
-   *  those bytes are rendered from, so this one read names what it is answered with. */
-  async getBlockSchema(): Promise<BlockSchema> {
-    return this.json<BlockSchema>(routeUrl("/api/v1/schema/blocks", {}));
   }
 
   listProjects() {
@@ -1400,6 +1457,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/handoffs", { key });
   }
 
+  /** `GET /api/v1/issues/{key}/steps`: each run of each step Legion recorded of the issue, its
+   *  tasks in the order of their first step. An issue Legion never ran answers no task. */
+  listSteps(key: string) {
+    return this.read("/api/v1/issues/{key}/steps", { key });
+  }
+
   /** `GET /api/v1/handoffs/{id}`: one handoff with the body its session wrote. */
   getHandoff(id: string) {
     return this.read("/api/v1/handoffs/{id}", { id });
@@ -1592,6 +1655,16 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}/collaborators", { key });
   }
 
+  /** What many `dispatch://` references point at, in one read: one member per `ref` in the
+   *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
+   *  all their names through this, in as few requests as both bounds allow
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
+   *  past that the server answers `400 CAP_EXCEEDED`. */
+  getReferenceTargets(refs: readonly string[]) {
+    return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });
+  }
+
   /** The edges at a node; `kind` keeps those of one kind - `part_of` lists a document's blocks,
    *  which a document's read otherwise leaves out. */
   getReferences(reference: string, options: { kind?: string } = {}) {
@@ -1620,6 +1693,36 @@ export class DispatchApiClient {
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
   putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  }
+
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  it and when it last changed, or `null` for a project that names none. There is no list of
+   *  every project's daemon, so the Settings page's daemon section reads this once per project
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. A key that is not a
+   *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
+  }
+
+  /** Names the daemon a project's state is read from, and answers the row as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/legion/daemon",
+      { key: project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
+   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
@@ -1707,7 +1810,9 @@ export class DispatchApiClient {
   /** `GET /api/v1/credential-requests?approver=me`: every request the viewer may decide - the
    *  ones naming the viewer, and the ones any signed-in person may decide - as the Inbox's
    *  credential-requests section lists them, each secret request with the secrets broker's page
-   *  where it is decided, or `null` when this Dispatch has no secrets broker. */
+   *  where it is decided, or `null` when this Dispatch has no secrets broker. The pending requests
+   *  come first, then the expired ones nobody has dismissed (`state: "expired"`), which nobody can
+   *  decide any more; a row with no `state`, from an older broker, is pending. */
   getCredentialPending() {
     return this.read("/api/v1/credential-requests", {}, { approver: "me" });
   }
@@ -1751,6 +1856,22 @@ export class DispatchApiClient {
    *  those secrets and makes it ask before it gets them again. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
+  }
+
+  /** Dismiss an expired credential request as the signed-in viewer: one whose deadline passed
+   *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
+   *  the viewer as the person dismissing, and the request then leaves every list for good, a
+   *  shared one's included. The broker refuses one the viewer's list does not hold (403
+   *  `NOT_APPROVER`), one that can still be decided (409 `RECORD_PENDING`) and one that was
+   *  decided, or cancelled before its deadline (409 `RECORD_TERMINAL`); a second dismissal
+   *  answers the first one's values. */
+  async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
+    await this.post(
+      "/api/v1/credential-requests/{id}/dismiss",
+      { id: recordId },
+      undefined,
+      bounds
+    );
   }
 
   /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
@@ -1801,11 +1922,12 @@ export class DispatchApiClient {
  *  of its own sends them through it unless it is given an `upload` too. */
 export function createApiClient(
   fetchImpl?: FetchImplementation,
-  upload?: UploadImplementation
+  upload?: UploadImplementation,
+  wait: Sleep = sleep
 ): DispatchApiClient {
   return fetchImpl === undefined
-    ? new DispatchApiClient((...args) => fetch(...args), upload ?? xhrUpload())
-    : new DispatchApiClient(fetchImpl, upload);
+    ? new DispatchApiClient((...args) => fetch(...args), upload ?? xhrUpload(), wait)
+    : new DispatchApiClient(fetchImpl, upload, wait);
 }
 
 export const api = createApiClient();

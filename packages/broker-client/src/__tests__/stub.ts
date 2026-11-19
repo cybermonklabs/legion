@@ -1,8 +1,10 @@
 // packages/broker-client/src/__tests__/stub.ts
 //
-// The stub broker the renewal and environment suites trade against. The wire suite keeps a
-// recorder of its own, since what it asserts is the raw shape of a request rather than the
-// behaviour around it.
+// The stub broker the renewal and environment suites trade against, and the refusal a suite
+// reads out of a call it expects to fail. The stub issuer a person's sign-in is renewed at is
+// in `test/sign-ins.ts`, which envoy-client's suites share. The wire suite keeps a recorder of
+// its own, since what it asserts is the raw shape of a request rather than the behaviour around
+// it.
 
 /** One trade as the stub saw it. */
 export interface StubTrade {
@@ -63,4 +65,12 @@ export function accepted(accessToken: string, seconds: number): Record<string, u
     expires_in: seconds,
     credential_id: "cred-1",
   };
+}
+
+/** The error `run` rejects with, or null where it resolves. */
+export async function refusalOf(run: () => Promise<unknown>): Promise<Error | null> {
+  return await run().then(
+    () => null,
+    (error: unknown) => error as Error
+  );
 }

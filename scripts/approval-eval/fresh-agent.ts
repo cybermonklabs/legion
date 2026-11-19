@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { appendFile, copyFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parseArgs } from "node:util";
 import { labelKey, type ArmReading as RoundArm, readRound } from "./analyze";
 import type { CaseRow } from "./build-corpus";
 import {
   CannotRunError,
   type Corpus,
+  counted,
   labelsOfCase,
   listOf,
   num,
@@ -21,10 +22,11 @@ import {
   verdictOf,
   whole,
 } from "./corpus-io";
-import { labelsOf, scrubSecrets } from "./models";
+import { labelsOf, scrubSecrets, servedModelFault } from "./models";
 import { renderPrompt } from "./recipes";
 import { renderChecked } from "./render";
 import type { ReplayedDocument } from "./replay";
+import { bytesDigestOf, DigestError, executableOf } from "./reserve";
 import {
   CACHE_VERSION,
   cachePath,
@@ -45,10 +47,10 @@ import {
  * given no skill at all, over the same cases of the report slice, in one run.
  *
  * This is check C6 of the plan (dispatch://INFRA-2897): the skills carry the answer, and another
- * agent reproduces the number. The skill records what the round measured over the 250 approval
- * cases of the report slice - `many-shot-opus-5-5` 0.772 against `bare-opus-5-5` 0.656, a gain of
- * 0.116 for the retrieval recipe - and this asks whether an agent handed the skill, and nothing
- * else, beats an agent handed nothing.
+ * agent reproduces the number. The round measured, over the 250 approval cases of the report
+ * slice, `many-shot-opus-5-5` 0.772 against `bare-opus-5-5` 0.656, a gain of 0.116 for the
+ * retrieval recipe, and this asks whether an agent handed the skill, and nothing else, beats an
+ * agent handed nothing.
  *
  * **The two arms differ in the skill and in nothing else.** Each arm is the same binary, the same
  * model, the same flags and the same one message. What differs is the profile the agent starts
@@ -73,8 +75,8 @@ import {
  * **Neither shape alone answers the question, which is why both are kept.** With the file, the
  * control reads it unprompted, so the comparison measures the skill's text on top of a recipe
  * both arms run. Without it, the skill arm can read the skill but cannot run the retrieval the
- * skill records, so the comparison measures the skill's text alone against nothing. The gain
- * the skill records is retrieval over nothing, and no shape reachable from here separates that:
+ * skill describes, so the comparison measures the skill's text alone against nothing. The gain
+ * the round measured is retrieval over nothing, and no shape reachable from here separates that:
  * `fresh-agent.json` holds both shapes so a reader sees the pair and not one number.
  *
  * **One judgement per case and arm.** The round took five and read the mode; this takes one, so
@@ -86,7 +88,7 @@ import {
  * control's number is reported whatever it is.
  */
 
-/** The model both arms run on, which is the model the numbers the skill records were measured on. */
+/** The model both arms run on, which is the model the round's numbers were measured on. */
 const MODEL = "claude-opus-5-5";
 
 /** The profile name both arms use, each under its own home, so neither sees the other's state. */
@@ -155,6 +157,12 @@ const EXIT_FAILS = 1;
 /** The run could not be made at all. */
 const EXIT_CANNOT_RUN = 2;
 
+/**
+ * The run finished, and some of its answers carry the `model` fault, so it reads no verdict:
+ * neither a pass nor a fail, since another model's answer would count in either.
+ */
+const EXIT_NO_VERDICT = 3;
+
 const USAGE = `usage: bun scripts/approval-eval/fresh-agent.ts --corpus <dir> --round <dir> \\
   --out <dir> [--cases <n>] [--neighbours <with|without>] [--answers <what>] [--omp <path>] \\
   [--concurrency <n>]
@@ -178,7 +186,8 @@ Options:
   --omp <path>         The agent binary. Default ${DEFAULT_OMP}.
   --concurrency <n>    How many agent runs at once. Default ${DEFAULT_CONCURRENCY}.
 
-Exits ${EXIT_PASSES} when the check passes, ${EXIT_FAILS} when it fails, and ${EXIT_CANNOT_RUN} when it could not be run.`;
+Exits ${EXIT_PASSES} when the check passes, ${EXIT_FAILS} when it fails, ${EXIT_NO_VERDICT} when answers of the model fault (a run on
+another model than the one asked, or one that reported none) leave it no verdict, and ${EXIT_CANNOT_RUN} when it could not be run.`;
 
 /** The run cannot be made over these cases, or what it read is not what it needs. */
 export class FreshError extends CannotRunError {
@@ -238,11 +247,20 @@ export interface AnswerRow {
   arm: ArmName;
   caseId: string;
   model: string | null;
+  /**
+   * True on every row this command writes now: `model` is the model of the message the answer
+   * came in (`answerOf`), checked against `MODEL`. A row written before has no such field, and
+   * its `model` may be another message's, so `answerRowOf` reads it as the `model` fault.
+   */
+  modelChecked?: true;
   /** The labels the answer chose, and empty where none could be read. */
   chosen: string[];
   agreed: boolean;
-  /** Why no verdict was read: the agent gave nothing, or what it gave was no label. */
-  fault: "agent" | "unreadable" | null;
+  /**
+   * Why no verdict was read: the agent gave nothing, it ran on another model than `MODEL`
+   * (`servedModelFault`), so its verdict is not the measured bundle's, or what it gave was no label.
+   */
+  fault: "agent" | "model" | "unreadable" | null;
   faultDetail: string | null;
   latencyMs: number;
   at: string;
@@ -300,6 +318,13 @@ export interface FreshReport {
    * number written here would be one round's and would be printed as the next round's own.
    */
   round: RoundNumbers | null;
+  /**
+   * How many answers of the run, one per arm and case, carry the `model` fault: a verdict no
+   * record ties to `MODEL`. While any does, `verdict` says the run reads none and the command
+   * exits `EXIT_NO_VERDICT`, since counting such an answer as a non-agreement would let another
+   * model's answer pass or fail the check. A report written before this was counted has none.
+   */
+  modelFaults?: number;
   verdict: { passes: boolean; line: string };
 }
 
@@ -427,8 +452,10 @@ function oneLine(detail: string): string {
 }
 
 /**
- * The last text the agent printed and the model it says it ran on, read from its JSON event
- * stream. A later assistant message replaces an earlier one, so what is left is the answer.
+ * The last text the agent printed and the model that printed it, read from its JSON event
+ * stream. A later assistant message with text replaces an earlier one, so what is left is the
+ * answer, and the model is that same message's: a message with no text never changes it, so an
+ * answer is never read under the model of another message.
  */
 export function answerOf(stdout: string): { text: string; model: string | null } {
   let text = "";
@@ -444,8 +471,9 @@ export function answerOf(stdout: string): { text: string; model: string | null }
     const message = recordOf(recordOf(parsed)?.message);
     if (message === null || message.role !== "assistant") continue;
     const said = textOfContent(message.content);
-    if (said !== "") text = said;
-    model = stringOf(message.model) ?? model;
+    if (said === "") continue;
+    text = said;
+    model = stringOf(message.model);
   }
   return { text, model };
 }
@@ -607,8 +635,22 @@ export function verdictLineOf(paired: PairedComparison): { passes: boolean; line
 }
 
 /**
+ * Why a verdict the agent gave on `model` is not the measured one, or null where `model` is
+ * `MODEL`, by the one rule (`servedModelFault`): a run on another model, a fallback the agent
+ * took included, or one that reported none.
+ */
+function modelFaultOf(model: string | null): string | null {
+  const fault = servedModelFault(MODEL, model, true);
+  return fault === null ? null : oneLine(fault);
+}
+
+/**
  * One line of an `answers-<shape>.jsonl` read back, or null where it is no row this command
- * wrote, which is how a line that does not parse is left where it is.
+ * wrote, which is how a line that does not parse is left where it is. A row written as answered
+ * that is not `modelChecked`, as every row written before the check is, or whose model is not
+ * `MODEL`, is read as the `model` fault, its labels kept: neither a resume nor `pool-runs.ts`
+ * counts its verdict as `MODEL`'s, and a resume asks it again. Figures a run printed before
+ * that stay its own code's.
  */
 export function answerRowOf(line: string): AnswerRow | null {
   let parsed: unknown;
@@ -621,7 +663,14 @@ export function answerRowOf(line: string): AnswerRow | null {
   if (record === null) return null;
   if (typeof record.arm !== "string" || typeof record.caseId !== "string") return null;
   // The rest of the line is this command's own writing, whose shape is `AnswerRow`.
-  return record as unknown as AnswerRow;
+  const row = record as unknown as AnswerRow;
+  if (row.fault !== null) return row;
+  const unchecked =
+    row.modelChecked === true
+      ? modelFaultOf(row.model ?? null)
+      : "the row was written before the agent's model was read from its answer's own message";
+  if (unchecked === null) return row;
+  return { ...row, agreed: false, fault: "model", faultDetail: unchecked };
 }
 
 /**
@@ -658,7 +707,12 @@ export function heldAnswers(rows: readonly AnswerRow[]): Map<string, AnswerRow> 
   return held;
 }
 
-/** One arm's judgement of one case: one run of the agent, read as a verdict. */
+/**
+ * One arm's judgement of one case: one run of the agent, read as a verdict. A run that reports
+ * another model than `MODEL`, or none, is the `model` fault, its labels kept and never a
+ * verdict: a run holding one reads no verdict of the check (`runFresh`), and `--answers resume`
+ * asks that case again.
+ */
 async function askOne(
   arm: ArmName,
   one: FreshCase,
@@ -672,18 +726,25 @@ async function askOne(
     directory: one.directory,
     prompt: one.prompt,
   });
+  const wrongModel = answer.failure === null ? modelFaultOf(answer.model) : null;
   const chosen = answer.failure === null ? labelsOf(answer.text, one.labels) : [];
-  const fault = answer.failure !== null ? "agent" : chosen.length === 0 ? "unreadable" : null;
+  const fault =
+    answer.failure !== null
+      ? "agent"
+      : wrongModel !== null
+        ? "model"
+        : chosen.length === 0
+          ? "unreadable"
+          : null;
   const detail =
     answer.failure !== null
       ? oneLine(answer.failure)
-      : fault === null
-        ? null
-        : oneLine(answer.text);
+      : (wrongModel ?? (fault === null ? null : oneLine(answer.text)));
   return {
     arm,
     caseId: one.row.caseId,
     model: answer.model,
+    modelChecked: true,
     chosen,
     agreed: fault === null && labelKey(chosen) === labelKey(one.row.selected),
     fault,
@@ -776,6 +837,11 @@ export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshR
   });
   const finishedAt = deps.now();
   const paired = pairedOf(rows, plan.cases);
+  // A `model` fault is no outcome of its arm, so while one stands the pairs read no verdict.
+  const modelFaults = ARMS.flatMap((arm) => {
+    const held = byCase(rows, arm);
+    return plan.cases.map((one) => rowOfCase(held, arm, one.row.caseId));
+  }).filter((row) => row.fault === "model").length;
   // One judgement per arm and case: the tasks this run ran are the ones it asked for, and the
   // rest were read off the disk, a faulted held row having been asked again and so a task.
   const report: FreshReport = {
@@ -790,7 +856,18 @@ export async function runFresh(plan: FreshPlan, deps: FreshDeps): Promise<FreshR
     arms: ARMS.map((arm) => readingOf(arm, rows, plan.cases)),
     paired,
     round: plan.round,
-    verdict: verdictLineOf(paired),
+    modelFaults,
+    verdict:
+      modelFaults === 0
+        ? verdictLineOf(paired)
+        : {
+            passes: false,
+            line:
+              `no verdict: ${counted(modelFaults, "answer")} of the model fault (a run on ` +
+              `another model than ${MODEL}, or one that reported none) are no outcome of their ` +
+              "arm; to ask them again, run with --answers resume on a copy of --out, since a " +
+              "resume rewrites its answers and its copy of the skill",
+          },
   };
   await writeReport(plan.out, report);
   return report;
@@ -937,35 +1014,55 @@ function agreementOver(
   return { agreed: cases.filter((one) => one.agreed).length, cases: cases.length };
 }
 
+/** What the round `--round` names measured over these same cases, or why it is not read. */
+export interface RoundRead {
+  /** The pair's numbers, and null where the round holds no pair to read or a fault stops it. */
+  numbers: RoundNumbers | null;
+  /**
+   * How many judgements of the pair carry the `model` fault, as `readRound` counts them
+   * (`faultsByKind`, the last row of each judgement winning): a verdict no record ties to the
+   * arm's model, as every row of a round written before rows recorded their served model is.
+   * Any such judgement stops the numbers, since a share over it would print a measured zero, and
+   * the command says how many there are.
+   */
+  modelFaults: number;
+}
+
 /**
  * What the round `--round` names measured over these same cases: its many-shot arm on this
- * model against its bare arm, read from that round's own rows. Null where the round holds no
- * such pair of arms over these cases, in which case nothing is printed: numbers written into
- * this file would be one round's and would be printed as every later round's own.
+ * model against its bare arm, read from that round's own rows. `arms` is `readRound` over the
+ * round's rows of these cases alone, so each arm's counts are over these cases. No numbers where
+ * the round holds no such pair of arms over these cases, in which case nothing is printed:
+ * numbers written into this file would be one round's and would be printed as every later
+ * round's own. No numbers either where a judgement of that pair carries the `model` fault.
  */
-export function roundNumbersOf(
-  arms: readonly RoundArm[],
-  caseIds: readonly string[]
-): RoundNumbers | null {
+export function roundNumbersOf(arms: readonly RoundArm[], caseIds: readonly string[]): RoundRead {
   // The round names its models with the provider in front, and the agent reports the bare name.
   const onModel = arms.filter(
     (arm) => arm.endpoint === "claude" && (arm.model === MODEL || arm.model.endsWith(`/${MODEL}`))
   );
   const skill = onModel.find((arm) => arm.recipe === ROUND_SKILL_RECIPE);
   const control = onModel.find((arm) => arm.recipe === ROUND_CONTROL_RECIPE);
-  if (skill === undefined || control === undefined) return null;
+  if (skill === undefined || control === undefined) return { numbers: null, modelFaults: 0 };
+  const modelFaults = (skill.faultsByKind.model ?? 0) + (control.faultsByKind.model ?? 0);
+  if (modelFaults > 0) return { numbers: null, modelFaults };
   const wanted = new Set(caseIds);
   const skillRead = agreementOver(skill, wanted);
   const controlRead = agreementOver(control, wanted);
   // A pair read over different cases is no gain over these cases, so it is not printed as one.
-  if (skillRead.cases === 0 || skillRead.cases !== controlRead.cases) return null;
+  if (skillRead.cases === 0 || skillRead.cases !== controlRead.cases) {
+    return { numbers: null, modelFaults: 0 };
+  }
   return {
-    skillArm: skill.name,
-    skillAgreement: skillRead.agreed / skillRead.cases,
-    controlArm: control.name,
-    controlAgreement: controlRead.agreed / controlRead.cases,
-    gain: (skillRead.agreed - controlRead.agreed) / skillRead.cases,
-    cases: skillRead.cases,
+    numbers: {
+      skillArm: skill.name,
+      skillAgreement: skillRead.agreed / skillRead.cases,
+      controlArm: control.name,
+      controlAgreement: controlRead.agreed / controlRead.cases,
+      gain: (skillRead.agreed - controlRead.agreed) / skillRead.cases,
+      cases: skillRead.cases,
+    },
+    modelFaults: 0,
   };
 }
 
@@ -1011,6 +1108,28 @@ async function modelsFileOf(omp: string): Promise<string | null> {
     throw new FreshError(`${omp} config path exited ${code}: the agent cannot be run`);
   const path = join(printed.trim(), "models.yml");
   return (await Bun.file(path).exists()) ? path : null;
+}
+
+/**
+ * What a run that reads the reserve adds to its digest (`reserve.ts`) for the agent it scores,
+ * which lives outside the repository: the bytes of the executable, the version it prints, and the
+ * bytes of the models file every profile copies. `omp` is the path `readFlags` resolved, the one
+ * each case runs; a bare name `PATH` did not find is refused (`DigestError`), since the runtime
+ * could still find another executable under it. An upgrade of the agent or a change of its models
+ * is then another run, which the reserve's registration does not name.
+ */
+async function agentInputsOf(omp: string): Promise<string[]> {
+  if (!isAbsolute(omp)) {
+    throw new DigestError(`${omp} is not found on PATH, so no digest covers the agent`);
+  }
+  const child = Bun.spawn({ cmd: [omp, "--version"], stdout: "pipe", stderr: "ignore" });
+  const [printed, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  const models = await modelsFileOf(omp);
+  return [
+    `agent ${await bytesDigestOf(omp)}`,
+    `agent version ${code === 0 ? JSON.stringify(printed.trim()) : `exit ${code}`}`,
+    `agent models ${models === null ? "none" : await bytesDigestOf(models)}`,
+  ];
 }
 
 /**
@@ -1143,7 +1262,7 @@ function readFlags(argv: readonly string[]): Flags {
     cases: whole(values.cases, "--cases", DEFAULT_CASES, 1, USAGE),
     neighbours: shapeOf(values.neighbours, "--neighbours", DEFAULT_SHAPE, USAGE),
     answers: answersOf(values.answers),
-    omp: values.omp?.trim() || DEFAULT_OMP,
+    omp: executableOf(values.omp?.trim() || DEFAULT_OMP, process.env.PATH),
     concurrency: whole(values.concurrency, "--concurrency", DEFAULT_CONCURRENCY, 1, USAGE),
   };
 }
@@ -1201,14 +1320,37 @@ async function writeReport(out: string, report: FreshReport): Promise<void> {
   await writeFile(reportPath(out), `${JSON.stringify(shapes, null, 2)}\n`, "utf8");
 }
 
+/**
+ * Refuses a run into a directory whose `fresh-agent.json` keeps a report over a case this corpus
+ * does not hold: the command prints every report the file keeps, and such a case is one the
+ * reserve left out (`reserve.ts`), whose figure is a figure of INFRA-2897's next final test, or
+ * one of another corpus, which nothing here can say is not reserved.
+ */
+export function refuseReportsOutside(
+  shapes: FreshShapes,
+  corpus: ReadonlyMap<string, CaseRow>,
+  out: string
+): void {
+  for (const [shape, report] of Object.entries(shapes)) {
+    const outside = report?.caseIds.filter((caseId) => !corpus.has(caseId)).length ?? 0;
+    if (outside > 0) {
+      throw new FreshError(
+        `${reportPath(out)} keeps the ${shape} report over ${counted(outside, "case")} this ` +
+          "corpus does not hold, which the reserve may hold (reserve.ts): move that file aside"
+      );
+    }
+  }
+}
+
 /** The run as the command makes it: the real corpus, the real round and the real agent. */
 async function fresh(flags: Flags): Promise<number> {
   const log = (line: string): void => {
     process.stderr.write(`${line}\n`);
   };
-  const corpus = await readCorpus(flags.corpus);
+  const corpus = await readCorpus(flags.corpus, { inputs: () => agentInputsOf(flags.omp) });
   const out = await outDirectory(flags.out);
   await mkdir(out, { recursive: true });
+  refuseReportsOutside(await readShapes(out), corpus.byCaseId, out);
   // Before a case directory, a profile or a prompt is built: a run into a directory already
   // holding this shape's answers stops here, having paid for nothing and read nothing.
   await settleAnswers(
@@ -1220,10 +1362,24 @@ async function fresh(flags: Flags): Promise<number> {
   );
   const { rows } = await readRows(flags.round);
   const cases = await casesOf(flags, out, corpus, reportCaseIds(rows, flags.round));
-  const round = roundNumbersOf(
-    readRound(rows, corpus.byCaseId).arms,
-    cases.map((one) => one.row.caseId)
+  const caseIds = cases.map((one) => one.row.caseId);
+  const wanted = new Set(caseIds);
+  const roundRead = roundNumbersOf(
+    readRound(
+      rows.filter((row) => wanted.has(row.caseId)),
+      corpus.byCaseId
+    ).arms,
+    caseIds
   );
+  if (roundRead.modelFaults > 0) {
+    log(
+      `round: ${counted(roundRead.modelFaults, "judgement")} of ${flags.round}'s many-shot and ` +
+        "bare arms over these cases carry the model fault, so no verdict there is tied to the " +
+        "arm's model and the round's numbers are not printed; to ask them again, run " +
+        "run-round.ts on a copy of that round directory, since a resume rewrites the rows it holds"
+    );
+  }
+  const round = roundRead.numbers;
   const homes = await profilesOf(out, flags.omp);
   const report = await runFresh(
     {
@@ -1243,6 +1399,7 @@ async function fresh(flags: Flags): Promise<number> {
   );
   // The run wrote the file as it ended; this reads it back for the shape it did not make.
   console.log(reportLines(report, await readShapes(out)).join("\n"));
+  if ((report.modelFaults ?? 0) > 0) return EXIT_NO_VERDICT;
   return report.verdict.passes ? EXIT_PASSES : EXIT_FAILS;
 }
 

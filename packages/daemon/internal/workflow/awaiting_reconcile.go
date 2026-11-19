@@ -128,7 +128,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 			changed = true
 		default:
 			intake.OnCommit(ctx, func() {
-				e.log.Debug("workflow: a root that handed work to a person keeps its slot", "issue", root.Key, "why", decision.Why)
+				e.log.Debug("workflow: a root that handed work to a person starts no wait on that person", "issue", root.Key, "why", decision.Why)
 			})
 		}
 	}
@@ -261,8 +261,9 @@ type awaitDecision struct {
 
 // decideAwait is the rule for whether a root waits on a person, checked cheapest first:
 //
-//  0. a root not at admitted, lingering, out of the workflow, or one the daemon has not started,
-//     which holds no admission slot (record.CanWaitOnPerson), stays;
+//  0. a root not at admitted, lingering, out of the workflow, or one that holds no admission
+//     slot — one the daemon has not started, or one that gave its slot back to wait on another
+//     issue (record.CanWaitOnPerson) — stays;
 //  1. one whose architect handed nothing back since it was last given work (DeclaredSeq) stays;
 //  2. one with nothing still with the person (withHuman) takes in what it handed back
 //     (actTakeIn): that was answered or closed first, and the running architect has that act;
@@ -279,7 +280,9 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and has not finished with it (record.KeepsSlot), and it is read as the root's own slot row
+// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
+// the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
 // its first slot holds none, so it starts no wait however its architect's hand-back stands —
 // a re-admitted root the old architect declared on again before the linger's suspend ran is
@@ -298,10 +301,18 @@ func decideAwait(v awaitView) awaitDecision {
 	// Rule 0 is record.CanWaitOnPerson alone: it tests the phase, the linger and the workflow,
 	// and through AtWork that the issue is a tree root whose design gate has never opened, so
 	// every standing a second case here could reject it rejects already. Only what to say of a
-	// rejection is decided here, and the slot row is what divides the two: a root the daemon has
-	// never started, and one it started whose own standing no longer lets it wait.
+	// rejection is decided here, and whether the daemon started the root is what divides the
+	// two: a root it has never started, and one it started whose own standing no longer lets it
+	// wait. Two facts say it started the root: the slot row, and the mark of a row a pass took
+	// back for a wait on another issue (record.Issue.ReleasedForWaitAt, blockers.waitsOf), since
+	// such a root holds no row and was started all the same. blockers.startedIssues counts a
+	// third, an owed start (record.LineFacts.Owed), and rule 0 does not read it: this rule
+	// divides by what the record holds of the root's present standing, its row or the mark of the
+	// row it gave back, and an owed start is a start its worker still waits to be given, not a
+	// standing. A root at admitted that owes one and holds neither reads the never-started reason;
+	// the decision is actStay either way, so only the reason could differ.
 	case !record.CanWaitOnPerson(root, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
-		if !v.Slotted {
+		if !v.Slotted && root.ReleasedForWaitAt == nil {
 			return awaitDecision{Why: "the daemon has not started it, so it holds no admission slot"}
 		}
 		return awaitDecision{Why: "it is not an admitted root of a tree in the workflow whose spec its architect is still writing"}
@@ -428,11 +439,16 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 
 // owed says whether the architect has not yet taken the work it was last given, and how: a start
 // still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
+//
+// The daemon's own delivery of a relaunch's record is no work it was given (supervise.HoldsTask):
+// it names no person's decision, only the sentence of what the relaunch ended, which the
+// architect reads whether or not the root waits — entering the wait leaves the architect running.
+// So it holds neither the wait nor the telling of a person's act, which would otherwise wait
+// behind that sentence for as long as the agent's own turns kept it unread
+// (dispatch://INFRA-3276 R3).
 func owed(run record.RoleRun) (string, bool) {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
-			return "has a start still queued", true
-		}
+	if queuedStart(run) {
+		return "has a start still queued", true
 	}
 	held := run.Claim
 	switch {
@@ -441,7 +457,7 @@ func owed(run record.RoleRun) (string, bool) {
 	case slices.Contains([]supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
 		supervise.StateShimConnected, supervise.StateRegistered}, held.State):
 		return fmt.Sprintf("is still starting (%s)", held.State), true
-	case held.Pending != nil && held.Pending.ConfirmedAt.IsZero():
+	case supervise.HoldsTask(held.Pending) && held.Pending.ConfirmedAt.IsZero():
 		return "has not taken its task yet", true
 	}
 	return "", false
@@ -488,10 +504,9 @@ func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.
 }
 
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
-// an issue holds one of the cap's slots from the moment the daemon starts it until its work is
-// past its review — accepting, retro and merging hold none — or until it is done or Dispatch
-// takes it out of the workflow (record.KeepsSlot). The architect stays live to read the
-// person's answer, and the controller is told.
+// a root in awaiting_person keeps its row through that wait (record.KeepsSlot), even where it
+// waits on another issue as well (blockers.waitsOf leaves it out). The architect stays live to
+// read the person's answer, and the controller is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
 	root.Phase, root.Awaiting = phase.AwaitingPerson, &waiting
 	if err := e.store.PutIssue(ctx, tx, root); err != nil {
@@ -517,7 +532,8 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 }
 
 // tellInPlace gives the architect of a root it would have released the resume task naming the act
-// that already answered its hand-back: the root keeps its slot and its phase.
+// that already answered its hand-back. It moves nothing: the root stays in its phase, and its
+// slot row is as admission left it.
 func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, decision awaitDecision) error {
 	waiting := decision.Waiting
 	at := e.now()
@@ -534,6 +550,17 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // next wait. The members an open gate releases are not started here: each is an issue the cap
 // counts, so each takes its own place in the waiting line and starts at its own slot
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
+//
+// The resume hands the architect work it was not on, so it raises the architect's phase entry and
+// writes this task as the work of that entry (EnterArchitect), and the start carries the number
+// (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
+// survivable: the entry and this task live on the record, so a start row that reaches no claim
+// leaves the architect's claim below that entry, and the entry sweep sends it that entry's work.
+// The raise marks the task as one to send as written (record.PhaseRow.EntryVerbatim), so that work
+// is this text (SendArchitectStart): it names the answer and no kept decision, so nothing it says
+// can have been told by another start. Both callers get it — the promotion of an answered root
+// (admit's record.LineAnswered branch) and tellInPlace, which gives a live architect this task
+// where it stands.
 //
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
@@ -564,8 +591,12 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
+	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
-		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task,
+		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry,
 	}); err != nil {
 		return err
 	}

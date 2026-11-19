@@ -1,6 +1,6 @@
 // going_catalogue_test.go holds the catalogue to the tool specs it is built from and to the
 // route table it is served beside: every row a tool names is a write of that table, and every
-// write no tool names is reported for follow-up rather than failing the build
+// write no catalogue action performs is named in a committed list rather than failing the build
 // (TestTheMutatingRoutesNoToolSpecNames).
 package api
 
@@ -21,10 +21,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// goingMutatingRoutesWithNoTool is every write of the served table no dispatch tool performs,
-// which is the catalogue's gap and this tree's follow-up work: each of these is an operation the
-// bar cannot yet propose. TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a
-// write added later is named here or in goingToolRoutes and never silently missing.
+// goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
+// performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
+// operation the bar cannot yet propose. Two are not, the review routes, and their rows say why.
+// TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
+// named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
@@ -34,6 +35,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/me/asks/{id}/snooze",
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+	"DELETE /api/v1/projects/{key}/legion/daemon",
 	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/comments/{id}",
@@ -42,8 +44,14 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PATCH /api/v1/priorities/{id}",
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
 	"POST /api/v1/artifacts/{id}/rebuild",
+	// The two review routes: this one, the document header's, and the one dispatch_review
+	// performs (below). goingToolRoutes gives neither a row on purpose: a review records an
+	// approval or a changes request in a person's name, and the loop that proposes operations on
+	// Dispatch's graph must never propose one. Keep both here; never give either a row.
 	"POST /api/v1/artifacts/{id}/reviews",
 	"POST /api/v1/artifacts/{id}/versions",
+	// dispatch_review's review, kept here for the reason the document header's above is.
+	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
 	"POST /api/v1/asks/{id}/answer",
 	"POST /api/v1/asks/{id}/decline",
 	"POST /api/v1/broadcasts",
@@ -56,6 +64,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/credential-requests/machine-lookup",
 	"POST /api/v1/credential-requests/{id}/approve",
 	"POST /api/v1/credential-requests/{id}/deny",
+	"POST /api/v1/credential-requests/{id}/dismiss",
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
@@ -74,6 +83,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/signins/{id}/revoke",
 	"PUT /api/v1/asks/{id}/asked-of",
 	"PUT /api/v1/issues/{key}/design-gates",
+	"PUT /api/v1/issues/{key}/role-holders",
+	"PUT /api/v1/issues/{key}/steps/{id}",
 	"PUT /api/v1/me/agents/{session_id}/state",
 	"PUT /api/v1/me/asks/{id}/snooze",
 	"PUT /api/v1/me/documents/{id}/read",
@@ -82,6 +93,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"PUT /api/v1/projects/{key}/default-assignee",
 	"PUT /api/v1/projects/{key}/gated-steps",
+	"PUT /api/v1/projects/{key}/legion/daemon",
 	"PUT /api/v1/settings/delivery",
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}",
 }
@@ -192,8 +204,9 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 }
 
 // TestTheMutatingRoutesNoToolSpecNames: the catalogue's gap, named rather than refused. A write
-// of the served table no dispatch tool performs is an operation the bar cannot yet propose, and
-// the list is committed here so a write added later is either given a tool or added to it.
+// of the served table no catalogue action performs is an operation the bar cannot yet propose,
+// or, for the two review routes, one it must never propose, and the list is committed here so a
+// write added later is either given a tool or added to it.
 func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 	routes := (&server{}).routes()
 	performed := map[string]bool{}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -97,7 +98,14 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	claims := make(map[claim.Token]struct{})
 	launch := func(issue string, role claim.Role) claim.Token {
 		t.Helper()
-		token := launchedClaim(t, sup, root, issue, role)
+		// The root's roles keep the session named for their role, which the ask below names as its
+		// author; a child's claim of the same role registers a session of its own, since the
+		// daemon holds each session id to the first claim that recorded it.
+		session := "ses-" + string(role)
+		if issue != root {
+			session = "ses-" + issue + "-" + string(role)
+		}
+		token := launchedClaimAs(t, sup, root, issue, role, session)
 		claims[token] = struct{}{}
 		return token
 	}
@@ -306,10 +314,9 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 			t.Fatalf("the rig's issue is %q, want one still in the workflow", rig.issue.Status)
 		}
 
-		rig.w.releaseIdlePods(ctx)
-
-		if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", got)
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, the role stop and the teardown and nothing else", queued)
 		}
 		rig.drain(t)
 		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {

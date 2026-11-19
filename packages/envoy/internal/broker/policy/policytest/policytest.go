@@ -4,8 +4,15 @@ package policytest
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
+	"math/big"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 const (
@@ -36,36 +44,102 @@ func Secret(name, owner, tier, value string) secrets.LocalSecret {
 	}
 }
 
-// FixtureGitHubOwners is the github-owners tag KindSecret gives a github-app secret, in the
+// FixtureGitHubOwners is the github-owners tag TypeSecret gives a github-app secret, in the
 // canonical form ParseGitHubOwners answers.
 const FixtureGitHubOwners = "acme ada"
 
-// FixtureMaxGrant is the max-grant tag KindSecret gives a google-service-account secret
+// FixtureMaxGrant is the max-grant tag TypeSecret gives a google-service-account secret
 // (policy.TagRules refuses such a secret without a cap, and one longer than an hour).
 const FixtureMaxGrant = "1h"
 
-// KindSecret is Secret with a kind tag: a secret whose release the broker mints from value. A
-// kind that needs github-owners (policy.KindNeedsGitHubOwners) also carries them
+// TypeSecret is Secret with a type tag: a secret whose release the broker mints from value. A
+// type that needs github-owners (policy.TypeNeedsGitHubOwners) also carries them
 // (FixtureGitHubOwners), without which the policy refuses it; a test of that refusal deletes the
 // tag. A google-service-account secret carries the requesters its own rules demand — its owner
-// alone — and the max-grant its kind must set (FixtureMaxGrant), so the fixture loads for an owner
+// alone — and the max-grant its type must set (FixtureMaxGrant), so the fixture loads for an owner
 // who is a person; a test of those refusals edits the tags.
-func KindSecret(name, owner, tier, kind, value string) secrets.LocalSecret {
+func TypeSecret(name, owner, tier, secretType, value string) secrets.LocalSecret {
 	secret := Secret(name, owner, tier, value)
-	secret.Tags[policy.TagKind] = kind
-	if policy.KindNeedsGitHubOwners(kind) {
+	secret.Tags[policy.TagType] = secretType
+	if policy.TypeNeedsGitHubOwners(secretType) {
 		secret.Tags[policy.TagGitHubOwners] = FixtureGitHubOwners
 	}
-	if kind == policy.KindGoogleServiceAccount {
+	if secretType == policy.TypeGoogleServiceAccount {
 		secret.Tags[policy.TagRequesters] = owner
 		secret.Tags[policy.TagMaxGrant] = FixtureMaxGrant
 	}
 	return secret
 }
 
+// TypeValue is a value of type that secrets.ParseValue decodes, so the policy serves a TypeSecret
+// holding it: the policy reads and decodes each type secret's value (policy.Current), and refuses
+// one it cannot decode (policy.ReasonValueMalformed). A github-app value names App 123456 and a
+// private key made once for the test binary (fixtureAppKey), built at run time rather than written
+// here. No field holds a credential. It panics for a type ParseValue reads no value of, which is a
+// test bug.
+func TypeValue(secretType string) string {
+	fields := map[string]string{}
+	switch secretType {
+	case policy.TypeGitHubApp:
+		fields["app_id"] = "123456"
+		fields["private_key"] = string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(fixtureAppKey())}))
+	case policy.TypeGoogleLogin:
+		fields["type"], fields["client_id"], fields["client_secret"], fields["refresh_token"] = "authorized_user", "client", "secret", "refresh"
+	case policy.TypeGoogleServiceAccount:
+		fields["service_account"] = "robot-1@acme-deployment.iam.gserviceaccount.com"
+	case policy.TypeAzureLogin:
+		fields["tenant_id"], fields["client_id"] = "tenant", "client"
+	default:
+		panic(fmt.Sprintf("policytest.TypeValue: no value of type %q", secretType))
+	}
+	value, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	return string(value)
+}
+
+// fixtureAppKey is the GitHub App key TypeValue's github-app value holds: one for the test binary,
+// since making a 2048-bit key costs more than most tests that store one.
+var fixtureAppKey = sync.OnceValue(func() *rsa.PrivateKey {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+	return key
+})
+
+// UnsignableAppKey is a 512-bit RSA key in PEM, made at run time from two fresh 256-bit primes:
+// x509 parses it, and crypto/rsa refuses to sign with it, since Go refuses every RSA key shorter
+// than 1024 bits (crypto/rsa's minimum key size). It is the stored key a github-app value can hold
+// that parses and still cannot sign. No fixture writes the key out: rsa.GenerateKey refuses that
+// size, and a key written into the source is a key the push guard refuses.
+func UnsignableAppKey(t testing.TB) string {
+	t.Helper()
+	one := big.NewInt(1)
+	for {
+		p, err := rand.Prime(rand.Reader, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := rand.Prime(rand.Reader, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phi := new(big.Int).Mul(new(big.Int).Sub(p, one), new(big.Int).Sub(q, one))
+		d := new(big.Int).ModInverse(big.NewInt(65537), phi)
+		if p.Cmp(q) == 0 || d == nil {
+			continue
+		}
+		key := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: new(big.Int).Mul(p, q), E: 65537}, D: d, Primes: []*big.Int{p, q}}
+		key.Precompute()
+		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	}
+}
+
 // ListedSecret is Secret with a requesters tag naming requesters, beside a max-grant of
 // FixtureMaxGrant: the shape of a secret whose list says who may ask for it, with a cap short
-// enough that the kind and admin rules which demand one (policy.TagRules) are met as well. A test
+// enough that the type and admin rules which demand one (policy.TagRules) are met as well. A test
 // of a refusal those rules answer edits the tags of what this returns.
 func ListedSecret(name, owner, tier, requesters, value string) secrets.LocalSecret {
 	secret := Secret(name, owner, tier, value)
@@ -119,7 +193,26 @@ func Loader(store *secrets.Local, services ...string) policy.Loader {
 // changes. It stops reloading when t ends.
 func Current(t testing.TB, store *secrets.Local, services ...string) *policy.Current {
 	t.Helper()
-	cur, err := policy.NewCurrent(t.Context(), Loader(store, services...), time.Hour)
+	return current(t, Loader(store, services...))
+}
+
+// MeteredCurrent is Current with the policy's two metrics on registry, as cmd/broker/main.go
+// registers them: broker_policy_store_reads_total counted from the first load on
+// (policy.NewStoreReads), and broker_unservable_secrets once that load answered
+// (policy.NewUnservableSecrets).
+func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
+	t.Helper()
+	loader := Loader(store, services...)
+	loader.StoreReads = policy.NewStoreReads(registry)
+	cur := current(t, loader)
+	policy.NewUnservableSecrets(registry, cur)
+	return cur
+}
+
+// current is loader's policy as NewCurrent first loads it, reloading hourly until t ends.
+func current(t testing.TB, loader policy.Loader) *policy.Current {
+	t.Helper()
+	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
 	}

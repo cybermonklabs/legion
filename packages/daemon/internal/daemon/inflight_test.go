@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,13 +20,16 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	workershim "github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -224,7 +228,7 @@ func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error, logs *s
 // stopWithin is stopRun for a daemon startDaemonLogging started.
 func stopWithin(t *testing.T, d *daemon, logs *syncBuffer, bound time.Duration) (time.Duration, string) {
 	t.Helper()
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	return stopRun(t, d.cancel, d.done, logs, bound)
 }
@@ -487,6 +491,37 @@ func quietStop(t *testing.T, stopLog string) {
 	}
 }
 
+// drainListener is the Envoy listener a test's daemon is given when a suspension ends a live
+// process around the stop: it holds a registration of the session under test, so the clean stop
+// the suspension sends reads that registration and deletes it. The configuration's own listener
+// address has nothing behind it, and a stop sent there logs its failure at WARN.
+func drainListener(t *testing.T, cfg *config.Config) *listenerRecorder {
+	t.Helper()
+	envoy := &listenerRecorder{
+		held:    storedRegistration{clientInstanceID: "inst_suspended", lastSeen: time.Now().Add(-time.Second)},
+		settled: make(chan struct{}),
+	}
+	cfg.EnvoyURL = envoy.server(t).URL
+	return envoy
+}
+
+// stoppedSessionOf checks that, by the time run returned, envoy had answered a delete of token's
+// session and that the delete removed its registration: the daemon's stop waits for the clean
+// stops sessionStopsInFlight counts.
+func stoppedSessionOf(t *testing.T, envoy *listenerRecorder, token claim.Token, stopLog string) {
+	t.Helper()
+	select {
+	case <-envoy.settled:
+	default:
+		t.Errorf("run returned before the listener answered a delete of %s's session; the stop logged:\n%s", token, stopLog)
+		return
+	}
+	if want := "/v1/sessions/ses_" + string(token); envoy.delete.path != want || !envoy.entryRemoved {
+		t.Errorf("the listener was asked to delete %s and removed the registration: %t; want %s removed",
+			envoy.delete.path, envoy.entryRemoved, want)
+	}
+}
+
 // bootSwept waits for the liveness sweep's first verdict, which a daemon with no controller
 // registered logs at WARN once per worker boot timeout: a test that requires a quiet stop calls it
 // before the stop marks its log, so the boot's line is never read as the stop's.
@@ -510,6 +545,12 @@ func storedClaim(t *testing.T, cfg config.Config, token claim.Token) supervise.C
 	if err != nil {
 		t.Fatalf("read the claims: %v", err)
 	}
+	return storedOf(t, claims, token)
+}
+
+// storedOf is token's claim among the stored claims.
+func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervise.Claim {
+	t.Helper()
 	for _, c := range claims {
 		if c.Token == token {
 			return c
@@ -601,8 +642,11 @@ func (r *exitingSuspend) Suspend(ctx context.Context, loc runtime.Locator) error
 // whose process exits a moment later, inside the API's drain, is recorded: the operator is answered
 // and the store holds the claim suspended. Cut short at the signal, it would leave the claim stored
 // live, which the next boot finds dead and relaunches, undoing the operator's request (LEGION-650).
+// The clean stop of its session that the suspension sends in the drain reaches the listener, and
+// the stop waits for it.
 func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testing.T) {
 	cfg := testConfig(t)
+	envoy := drainListener(t, &cfg)
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	logs := &syncBuffer{}
 	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
@@ -616,7 +660,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -644,6 +688,101 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	}
 	neededNoBudget(t, stopLog)
 	quietStop(t, stopLog)
+	stoppedSessionOf(t, envoy, token, stopLog)
+}
+
+// A suspension that returned before the daemon was told to stop, its clean stop still waiting on
+// the listener's registry read when the halt ends the machines' context, still has that stop
+// land: the read is answered after the halt, the delete reaches the listener naming the stopped
+// process's client instance and the moment its stop returned, and run returns only after it. The
+// suspension here is an operator's; the one this matters for is an idle release, which the
+// workflow's outbox decides on serve's context, so a release whose runtime stop returned just
+// before the halt is in this same place, and its released claim is the one a message's wake acts
+// on. Cut short at the halt, the stop would leave the registration standing and a message to the
+// role stored with no wake raised (sessionStop.send).
+func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) {
+	cfg := testConfig(t)
+	envoy := drainListener(t, &cfg)
+	// The listener holds the stop's registry read until the test closes heldRead, after the halt.
+	// Both are set before the daemon boots, so before any request reaches the listener.
+	envoy.heldRead, envoy.arrived = make(chan struct{}), make(chan struct{})
+	rt := fake.NewRuntime()
+	o := fakeRuntime(rt, &built{})
+	// The runtime is built on the machines' context (openSupervision), which is how the test sees
+	// the halt cancel it.
+	machines := make(chan context.Context, 1)
+	build := o.runtime
+	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
+		machines <- ctx
+		return build(ctx, listener, address, tokens, repository, st, mapped)
+	}
+	logs := &syncBuffer{}
+	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))
+	supervising := <-machines
+	token := d.spawn(api.SpawnRequest{Tree: "LEGION-9", Issue: "LEGION-9", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+	readyClaim(t, d, rt, token)
+
+	asked := time.Now()
+	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil, true); status != http.StatusOK {
+		t.Fatalf("the operator's suspension = %d; body %s", status, body)
+	}
+	suspended := time.Now()
+	select {
+	case <-envoy.arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the suspension's clean stop never reached the listener; log:\n%s", logs)
+	}
+
+	d.stopped.Store(true)
+	d.transport.CloseIdleConnections()
+	mark := len(logs.String())
+	d.cancel()
+	select {
+	case <-supervising.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the halt never ended the machines' context; log:\n%s", logs.String()[mark:])
+	}
+	// A stop that waited for nothing returns well inside this; the clean stop's own budget, which
+	// the listener's held read would otherwise run out, is ten times longer.
+	returnedEarly := false
+	select {
+	case err := <-d.done:
+		returnedEarly = true
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(envoy.heldRead)
+	if !returnedEarly {
+		select {
+		case err := <-d.done:
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+		case <-time.After(stopHangGuard(stopBudget)):
+			t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopHangGuard(stopBudget), logs.String()[mark:])
+		}
+	}
+	stopLog := logs.String()[mark:]
+	if returnedEarly {
+		t.Fatalf("run returned while the listener still held the read of %s's clean stop: the stop was cut short at the halt or not waited for; the stop logged:\n%s",
+			token, stopLog)
+	}
+	if envoy.delete.requests != 1 {
+		t.Fatalf("the listener was asked %d deletes of %s's session, want one; the stop logged:\n%s", envoy.delete.requests, token, stopLog)
+	}
+	conditions := envoy.deleteConditions(t)
+	if got := conditions.Get("client_instance_id"); got != "inst_suspended" {
+		t.Errorf("the delete named client instance %q, want the one the registry answered, inst_suspended", got)
+	}
+	if moment, err := strconv.ParseInt(conditions.Get("if_not_registered_after"), 10, 64); err != nil ||
+		moment < asked.UnixMilli() || moment > suspended.UnixMilli() {
+		t.Errorf("the delete named the moment %q, want the moment the suspension's stop returned, between %d and %d",
+			conditions.Get("if_not_registered_after"), asked.UnixMilli(), suspended.UnixMilli())
+	}
+	stoppedSessionOf(t, envoy, token, stopLog)
 }
 
 // runShim runs the real `legion worker-shim` for a launch whose boot token is bootToken against the
@@ -693,6 +832,7 @@ func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, w
 // (LEGION-650).
 func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *testing.T) {
 	cfg := testConfig(t)
+	envoy := drainListener(t, &cfg)
 	rt := &exitingSuspend{Runtime: fake.NewRuntime(), stopping: make(chan claim.Token, 4), exit: make(chan struct{})}
 	rec := &built{}
 	logs := &syncBuffer{}
@@ -716,7 +856,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -748,6 +888,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 		t.Errorf("the operator's suspension was answered %d, want 200", status)
 	}
 	quietStop(t, logs.String()[mark:])
+	stoppedSessionOf(t, envoy, suspended, logs.String()[mark:])
 
 	// The next daemon, standing on the same socket: the shim's hello, then its backlog.
 	next, err := net.Listen("unix", strings.TrimPrefix(rec.address, "unix://"))
@@ -854,7 +995,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()

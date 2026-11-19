@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The session hook's jj overlay adds a `Legion-Role: <role>` trailer after `Omp-Session: <id>`,
+  from the pane's `LEGION_ROLE` when it names a Legion role or the controller, and gives a
+  `jj revert` and a `jj duplicate` both lines.

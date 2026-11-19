@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
@@ -39,11 +40,16 @@ var Scopes = []string{ScopePerson, ScopeApprove}
 // token: a person who narrows a token afterwards narrows what it may do next, and must not
 // retroactively un-approve what it approved while it held approve (docs.carryVerdict reads these
 // scopes to decide whether an answer can carry an approval).
+//
+// SessionProven says the credential itself proved Session - a broker-issued token's own session -
+// rather than the request naming it (a personal token's `?session=` or body actor). Absent means
+// Dispatch did not see the credential prove it, which is also every act recorded before the mark.
 type ActorAct struct {
-	Session   string   `json:"session,omitempty"`
-	TokenID   string   `json:"token_id,omitempty"`
-	TokenName string   `json:"token_name,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Session       string   `json:"session,omitempty"`
+	SessionProven bool     `json:"session_proven,omitempty"`
+	TokenID       string   `json:"token_id,omitempty"`
+	TokenName     string   `json:"token_name,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
 }
 
 // Holds reports whether the act was made under one scope, as Credential.Holds reports it of the
@@ -54,9 +60,9 @@ func (a *ActorAct) Holds(scope string) bool {
 	return a == nil || slices.Contains(a.Scopes, scope)
 }
 
-// Credential is the request's credential as optionalActor resolved it: the scopes it holds, and
-// the agent it names. A pointer, so Actor stays comparable with ==, which this package's callers
-// and its tests rely on.
+// Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
+// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
+// which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	Scopes []string
@@ -66,6 +72,15 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
+	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// one the secrets broker minted from a read entry, naming a service and a session and no
+	// person and no project. Dispatch serves it on the routes its read list names
+	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
+	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
+	// Scopes: those are what a route can require of a credential, and read meets no route's
+	// requirement; it narrows what this credential may call rather than widening it. False for
+	// every other credential.
+	ReadOnly bool
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -93,6 +108,18 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
+	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
+	// broker-issued token its session, and actingPerson's person. It is set by the server and
+	// never read from a request body. An actor whose ID the body named - under the shared agent
+	// token, a personal token or a service-account token, none of which proves a session -
+	// carries none, and neither does any row recorded before the mark existed, so a reader that
+	// counts only proven writers counts no claimed one. A row Dispatch derives from an earlier
+	// write carries that write's actor, and so its mark, whatever credential the request that
+	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
+	// answer it gives the open approval request name the person whose review it carries, proven
+	// when that review's credential proved them, even when the request that wrote the version
+	// proved nobody.
+	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
@@ -110,7 +137,7 @@ type Actor struct {
 // own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
 // issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
 // write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope).
+// (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	return a
@@ -133,9 +160,9 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project and Act are not compared: they say where a write came from and who it acted
-// for, which two requests of one credential differ in, so comparing them would call one
-// credential two.
+// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
+// for and whether its credential proved its id, which two requests of one credential differ in,
+// so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }
@@ -148,10 +175,11 @@ func sameActorName(left, right *string) bool {
 	return *left == *right
 }
 
-// CanonicalLogin is the stored form of a person's email: trimmed and lowercased, the form the
-// identity implementations name a person by and the people table holds.
+// CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
+// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// the people table holds.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -545,7 +573,8 @@ type Issue struct {
 	Components       IssueComponents `json:"components"`
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
-	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
+	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
+	// or not a project maps it; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
 	// nearest ancestor's, else its project's default mapping, else nil.
@@ -913,8 +942,10 @@ type WriteSuggestion struct {
 // it. LikelyDuplicate is the closest open issue of an unforced create whose near-copy score
 // reached the nudge bar but not the refusal's: a field of its own, because every released client
 // prints each TitleMatches entry as something the filer forced past. NearCopyCheck is set, to
-// why, exactly when the near-copy check before the create did not answer, so a filer knows the
-// create went in unchecked; it is absent on every other write, which runs no such check.
+// why, exactly when the near-copy check before the create made no check that could stop it: its
+// read did not answer, or it found a near copy whose refusal could not be recorded, which it then
+// names; so a filer knows the create went in unchecked. It is absent on every other write, which
+// runs no such check.
 // Related is always an array, never null.
 //
 // OtherProjects rides beside Related, never inside it: a write that asks a person a question -
@@ -981,9 +1012,69 @@ type RelatedCheckTiming struct {
 	Over300MS int  `json:"over_300ms"`
 }
 
+// NearCopyCheck is one row of near_copy_checks: one answer the near-copy gate gave an issue
+// create. Outcome is refused (the gate refused it and nothing was written: every 409
+// POSSIBLE_DUPLICATE has this row, written before the answer; so does a refusal whose row landed
+// unseen when the create let in past it then failed), forced (written past a refusal with
+// `force`), nudged (written, its closest open issue named as a likely duplicate), passed (written
+// with nothing named, forced or not) or not_made (the gate made no check that could stop the
+// create, and it went in unchecked), and Reason says why a check was not made: bound (the read ran
+// out of its bound or its request went away), failed (the read failed) or unrecorded (the read
+// found a near copy, but the row of its refusal could not be confirmed, so it refused nothing);
+// null for every other outcome. Force is whether the create asked for `force`.
+//
+// Spec is the spec as sent, held for a refused create alone, which has no issue to hold it ("" for
+// one that sent none); it is absent from a page (NearCopyChecksPage) and from every other row.
+// SpecSHA256 is the spec's sha256 in hex on every row. Issue is the issue the create wrote, null
+// for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
+// five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
+// the bars the build read them against, and BuildCommit is the legion commit it was built from,
+// null for a build nothing stamped.
+type NearCopyCheck struct {
+	ID          string                   `json:"id"`
+	CreatedAt   time.Time                `json:"created_at"`
+	Project     string                   `json:"project"`
+	ActorKind   string                   `json:"actor_kind"`
+	ActorID     string                   `json:"actor_id"`
+	Outcome     string                   `json:"outcome" enum:"refused,forced,nudged,passed,not_made"`
+	Reason      *string                  `json:"reason" enum:"bound,failed,unrecorded"`
+	Force       bool                     `json:"force"`
+	Title       string                   `json:"title"`
+	Spec        *string                  `json:"spec,omitempty"`
+	SpecSHA256  string                   `json:"spec_sha256"`
+	Parent      *string                  `json:"parent"`
+	Issue       *string                  `json:"issue"`
+	Candidates  []NearCopyCheckCandidate `json:"candidates"`
+	RefuseScore float64                  `json:"refuse_score"`
+	NudgeScore  float64                  `json:"nudge_score"`
+	BuildCommit *string                  `json:"build_commit"`
+}
+
+// NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
+// read and the title the issue held at that moment.
+type NearCopyCheckCandidate struct {
+	Key   string  `json:"key"`
+	Title string  `json:"title"`
+	Score float64 `json:"score"`
+}
+
+// NearCopyChecksPage is GET /api/v1/near-copy-checks: one project's near-copy gate answers
+// recorded within [From, To), oldest first, at most the page's limit. Project, From and To echo
+// the query, From and To null when not given. NextAfter is the id to pass as ?after= for the
+// next page, null when this page holds the last row the window selects.
+type NearCopyChecksPage struct {
+	Project   string          `json:"project"`
+	From      *time.Time      `json:"from"`
+	To        *time.Time      `json:"to"`
+	Checks    []NearCopyCheck `json:"checks"`
+	NextAfter *string         `json:"next_after"`
+}
+
 // IssueChild is a child item embedded in an issue detail response. The subtree counts
 // include the child itself, every status (icebox included); done is `status = 'done'`.
-// ActiveAt is the newest updated_at anywhere in the child's subtree.
+// ActiveAt is the newest updated_at anywhere in the child's subtree. Needs and Claim are the
+// child's own, each left out when it has none: Needs the sorted keys of the issues it waits on,
+// the elements of Issue's blocked_by, and Claim the claim holding it, in Issue's shape.
 type IssueChild struct {
 	Key           string         `json:"key"`
 	Title         string         `json:"title"`
@@ -992,6 +1083,8 @@ type IssueChild struct {
 	SubtreeTotal  int            `json:"subtree_total"`
 	ActiveAt      time.Time      `json:"active_at"`
 	ExternalLinks []ExternalLink `json:"external_links"`
+	Needs         []string       `json:"needs,omitempty"`
+	Claim         *IssueClaim    `json:"claim,omitempty"`
 }
 
 // ArchitectureTree is GET /api/v1/projects/{key}/architecture: the project's
@@ -1245,6 +1338,15 @@ const (
 	CommitUnknown     = "unknown"
 )
 
+// CurrencyCurrent and CurrencyOlder are the two words of CheckResult.Currency, the
+// compatibility field the results read answers for `dispatch` clients older than pi-envoy
+// 17.1.0. Those clients print the field beside each result and read nothing of the comparison
+// (api/results_currency.go).
+const (
+	CurrencyCurrent = "current"
+	CurrencyOlder   = "older"
+)
+
 // PassStandsYes, PassStandsNo and PassStandsUnknown answer the gate's question for one check:
 // whether a pass of it stands at what the check compared its results with.
 const (
@@ -1337,6 +1439,11 @@ type CheckResult struct {
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
+	// Currency is a compatibility field, derived from the three above only on GET
+	// /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy
+	// 17.1.0. It is left out wherever neither word is true (api/results_currency.go), and
+	// removed once no client older than pi-envoy 17.1.0 is in use.
+	Currency string `json:"currency,omitempty" enum:"current,older" description:"A compatibility field answered only by GET /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy 17.1.0, which print it beside each result and read none of commit_stands, check_words_moved and retracted; read those instead. current: commit_stands is at_basis, check_words_moved is false and no retraction stands. older: commit_stands is other_commit, or it is at_basis and check_words_moved is true. Left out otherwise (commit_stands unknown, a retracted result at its basis under the check's words now). It is removed once no client older than pi-envoy 17.1.0 is in use."`
 }
 
 // CheckResultRetraction is the record that says one stored result is wrong
@@ -1358,13 +1465,17 @@ type CheckResultRetraction struct {
 // stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
 // where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
 // `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run.
+// one result is the one derived from that run. Text is the block's words with every link and
+// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
+// content whole, links and references kept, as the reader is shown it, present only for a
+// caller that sent `Dispatch-Trees: 1`.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
 	Text            string        `json:"text"`
+	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
@@ -1421,14 +1532,16 @@ type IssueCoverage struct {
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
 // any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
-// parsing the sentence back.
+// parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
+// are: the words with no link or reference, and the block's whole content as a tree.
 type RequirementCoverage struct {
-	BlockID   string   `json:"block_id"`
-	Ref       string   `json:"ref"`
-	Text      string   `json:"text"`
-	Checks    int      `json:"checks"`
-	PlanTasks int      `json:"plan_tasks"`
-	Gaps      []string `json:"gaps"`
+	BlockID   string      `json:"block_id"`
+	Ref       string      `json:"ref"`
+	Text      string      `json:"text"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+	Checks    int         `json:"checks"`
+	PlanTasks int         `json:"plan_tasks"`
+	Gaps      []string    `json:"gaps"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
@@ -1584,8 +1697,7 @@ type AnchorPosition struct {
 	AnchorBlock *BlockPath `json:"anchor_block,omitempty"`
 	// AnchorBlockError is why AnchorBlock is absent when the document could not be read: the code
 	// the API answers that error with elsewhere (DOC_SERVICE_UNAVAILABLE, DOC_SCHEMA,
-	// DOCUMENT_UNLOADABLE, INTERNAL);
-	// empty otherwise.
+	// DOC_NEWER_CONTENT, DOCUMENT_UNLOADABLE, INTERNAL); empty otherwise.
 	AnchorBlockError string `json:"anchor_block_error,omitempty"`
 }
 
@@ -1858,9 +1970,10 @@ type AskAnsweredEventPayload struct {
 // blocked_by, external_links; for issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
-// or a reopen every login with a Replies row on one of the issue's open asks
-// (events.IssueThreadLogins), for an assignee move the assignee the issue was taken from and the
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
+// or a reopen every login with a Replies row on one of the issue's open asks, read by the
+// event's own insert, after the ask writes the transaction queued before it
+// (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
 //
@@ -1894,6 +2007,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 	}
 }
 
+// WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload
+// holds the issue row as the event leaves it, and the event's own sequence is what that row's
+// last_seq becomes when it is appended, so the append derives both from one expression
+// (events.Broker.QueueAppend) and no writer counts the events queued before its own.
+func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
+	p.LastSeq = seq
+	return p
+}
+
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
 // the edit, and what the new question text moved in the reference graph.
 type AskEditEventPayload struct {
@@ -1901,13 +2023,18 @@ type AskEditEventPayload struct {
 	ReferenceChangesPayload
 	Previous AskEditPrevious `json:"previous"`
 	EditedBy Actor           `json:"edited_by"`
-	// Quiet marks a version move of an approval request that an earlier version already moved
-	// since it was opened or last handed back (requested_version below the version it named): it
-	// changes only the version the request names, so like a human's unnamed artifact.version it
-	// wakes nobody (events.Broker.Notify) and reaches no follower (the outbox's follower routes),
-	// while the event log and the event feed carry it as they carry every event. The first move
-	// after an opening or a hand-back is not quiet, even when a thread reply left the request
-	// waiting on its agent.
+	// Quiet marks either of two version moves of an approval request: a move of a request
+	// that an earlier version already moved since it was opened or last handed back
+	// (requested_version below the version it named), which changes only the version the request
+	// names, and a settlement's move that keeps the request waiting on the human because the new
+	// version, which a settlement wrote, holds byte for byte the text of the version the request
+	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
+	// version a route writes moves the request to its agent whatever text it holds. Like a human's
+	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
+	// follower (the outbox's follower routes), while the event log and the event feed carry it as
+	// they carry every event. The first move after an opening or a hand-back is not quiet, even
+	// when a thread reply left the request waiting on its agent, unless it keeps the request
+	// waiting on the human.
 	Quiet bool `json:"quiet,omitempty"`
 }
 
@@ -1946,7 +2073,7 @@ type BlockInvalidEventPayload struct {
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
-// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.IndexAskParts) - which every read that shows
+// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.PlanAskParts) - which every read that shows
 // an ask's options carries (api.attachAskPartIDs) and no write accepts: a caller that sends an
 // option back as it read it has its id emptied (api.validateAskOptions). Absent on a write's own
 // response and while the ask's parts are not indexed yet.
@@ -2141,9 +2268,14 @@ const (
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
 // SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
+// answered_your_ask, declined_your_ask and replied_on_your_ask are for a session that owns the
+// ask: it wrote the ask or follows it (ask_followers). Any other session the same answer or
+// decline reached reads answered_an_ask or declined_an_ask.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
+	SessionAnswerRelationAnsweredAnAsk          = "answered_an_ask"
 	SessionAnswerRelationDeclinedYourAsk        = "declined_your_ask"
+	SessionAnswerRelationDeclinedAnAsk          = "declined_an_ask"
 	SessionAnswerRelationRepliedOnYourAsk       = "replied_on_your_ask"
 	SessionAnswerRelationRepliedInCommentThread = "replied_in_a_comment_thread"
 	SessionAnswerRelationCommentedOnDocument    = "commented_on_a_document"
@@ -2153,8 +2285,8 @@ const (
 	SessionAnswerRelationRepliedToYourMessage   = "replied_to_your_message"
 )
 
-// SessionAnswerAsk is the ask a session answer item answers or replies in, with the session's
-// whole question.
+// SessionAnswerAsk is the ask a session answer item answers, declines or replies in, with its
+// whole question, whoever asked it. The item's relation says whether the ask is the session's own.
 type SessionAnswerAsk struct {
 	ID       string `json:"id"`
 	Question string `json:"question"`
@@ -2164,12 +2296,13 @@ type SessionAnswerAsk struct {
 // GET /api/v1/agents/{session_id}/answers: an ask's current answer, a comment at its current
 // body, a message, or a person's decline of an ask, each (Kind, ID) once. Author is always a
 // user. Text is the person's own words in full ("" for an answer that chose options only, and for
-// a decline the person wrote no note with). DispatchWords is set on a decline alone: the words
-// Dispatch wrote for the asking agent (DeclineDispatchWords), kept apart from the person's note so
-// no reader has to cut one out of the other. Selected and Replaced are an answer's, each omitted
-// when empty or false; EditedAt is an edited comment's; Ask is set on an answer, on a decline and
-// on a reply in an ask's thread. Owner and Ref are nil for a direct message, which is on no issue
-// and has no dispatch:// address; Href is then /agents/<session>/live.
+// a decline the person wrote no note with). DispatchWords is set only on a decline of an ask the
+// session wrote or follows: the words Dispatch wrote for the asking agent (DeclineDispatchWords),
+// kept apart from the person's note so no reader has to cut one out of the other. Selected and
+// Replaced are an answer's, each omitted when empty or false; EditedAt is an edited comment's;
+// Ask is set on an answer, on a decline and on a reply in an ask's thread. Owner and Ref are nil
+// for a direct message, which is on no issue and has no dispatch:// address; Href is then
+// /agents/<session>/live.
 type SessionAnswer struct {
 	Kind          string            `json:"kind"`
 	Relation      string            `json:"relation"`
@@ -2214,6 +2347,14 @@ type AskResolution struct {
 // issue's declined asks (api), and the list of what people wrote to a session
 // (sessionanswers) - and api imports the other two, so neither can import api.
 const AskResolutionDeclined = "declined"
+
+// AskResolutionWithdrawn is the AskResolution kind an issue's close records on each open ask it
+// withdraws. Only the server writes it (the resolve route admits retracted and resolved alone), so
+// the kind alone tells a close's withdrawal: the issue's reopen restores every ask resolved so,
+// and a settlement of the closed issue's document treats none as decided, since the reopen undoes
+// it. It is a constant of this package because the close and the reopen (api) and that settlement
+// (docs) read it, and api imports docs, so docs cannot import api.
+const AskResolutionWithdrawn = "withdrawn"
 
 // DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
 // answer: the four sentences the asking agent reads to decide what to do next.
@@ -2261,6 +2402,35 @@ const DeliveryClaimLapse = time.Minute
 // DeliveryClaimLapseInterval is DeliveryClaimLapse as a Postgres interval literal in whole
 // seconds, for SQL that compares a delivery's claimed_at or created_at against now().
 var DeliveryClaimLapseInterval = fmt.Sprintf("interval '%d seconds'", int64(DeliveryClaimLapse/time.Second))
+
+// The four states a delivery attempt row and its receipt carry (migration 20261114081434),
+// which CommentDelivery.State and MessageDelivery.State document. `pending` is the row a claim
+// transaction commits before its send; `sent` and `queued` are both "the listener took it", and
+// `failed` is everything else. They differ in one thing: a sent message is with a running
+// session now, and a queued one waits in that session's own consumer until it runs again,
+// within the 72 hours the stream keeps it. Every reader that asks whether the listener took a
+// message counts the two alike - the outbox publishes no second copy of a comment
+// (outbox.mentionDeliveryQuery), a later attempt that took the comment supersedes an earlier one
+// (MentionAttemptDeliveredLaterSQL), the delivery sweep resumes neither and settles neither
+// failed, the session's answers list holds both (sessionanswers.query), and the session may
+// accept either as its own turn (api.acceptDelivery).
+const (
+	DeliveryStatePending = "pending"
+	DeliveryStateSent    = "sent"
+	DeliveryStateQueued  = "queued"
+	DeliveryStateFailed  = "failed"
+)
+
+// DeliveryTakenStatesSQL is the two states that mean the listener took the message, as the SQL
+// list an `in` test over a comment_deliveries or message_deliveries state column takes, so every
+// query that asks it reads one definition rather than each spelling the pair.
+const DeliveryTakenStatesSQL = "('" + DeliveryStateSent + "', '" + DeliveryStateQueued + "')"
+
+// DeliveryTaken reports whether state is one of the two that mean the listener took the message,
+// the Go reading of DeliveryTakenStatesSQL.
+func DeliveryTaken(state string) bool {
+	return state == DeliveryStateSent || state == DeliveryStateQueued
+}
 
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
@@ -2340,14 +2510,14 @@ func MentionAttemptStandsSQL(row string) string {
 	return `(not ` + mentionLaterAttemptSQL(row, `later.state <> 'failed'`) + `)`
 }
 
-// MentionAttemptDeliveredLaterSQL is true of the comment_deliveries row named row when a later
-// attempt of its (comment, target) was sent: that attempt handed the recipient the comment, so
-// this one is superseded and nothing may send it. Whichever of the two senders comes second
-// settles it (supersedeCommentDelivery in internal/dispatch/api), and the delivery sweep settles
-// every such attempt left pending and claim-free (settleSupersededMentions), so none stays
-// pending for good.
+// MentionAttemptDeliveredLaterSQL is true of the comment_deliveries row named row when the
+// listener took a later attempt of its (comment, target) - sent, or queued for a session that is
+// not running: that attempt handed the recipient the comment, so this one is superseded and
+// nothing may send it. Whichever of the two senders comes second settles it
+// (supersedeCommentDelivery in internal/dispatch/api), and the delivery sweep settles every such
+// attempt left pending and claim-free (settleSupersededMentions), so none stays pending for good.
 func MentionAttemptDeliveredLaterSQL(row string) string {
-	return mentionLaterAttemptSQL(row, `later.state = 'sent'`)
+	return mentionLaterAttemptSQL(row, `later.state in `+DeliveryTakenStatesSQL)
 }
 
 // MentionAttemptIsTheMentionsSQL is true of a pending attempt the delivery sweep owes, or will owe
@@ -2468,7 +2638,12 @@ type CommentDelivery struct {
 	// Duplicate reports that the stream already held this message when the attempt was sent: an
 	// earlier attempt landed, so this one is a repeat the recipient is not handed again
 	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil.
-	Duplicate    bool      `json:"duplicate"`
+	Duplicate bool `json:"duplicate"`
+	// State is "pending" before the send, then "sent" for a mention the listener handed to a
+	// running session, "queued" for one it stored for a session it knows that is not running
+	// and hands over when that session runs again, or "failed". A reader that asks whether the
+	// listener took the message counts "sent" and "queued" alike (api/envoy_resolve.go,
+	// deliveryOutcome).
 	State        string    `json:"state"`
 	Error        *string   `json:"error"`
 	ResolveError *string   `json:"resolve_error"`
@@ -2487,7 +2662,11 @@ type CommentDeliveryEventPayload struct {
 	Attempt   int     `json:"attempt"`
 	Delivery  string  `json:"delivery"`
 	SessionID *string `json:"session_id"`
-	State     string  `json:"state"`
+	// State is how the attempt settled, which the dashboard renders verbatim: "sent", "queued"
+	// or "failed" (CommentDelivery.State). A receipt carries no "pending": the sender that
+	// appends it settles the row in the statement that appends it (contracts'
+	// SettledDeliveryState, and deliveryOutcome, which never answers pending).
+	State string `json:"state"`
 	// Duplicate reports that the stream already held this message: an earlier attempt landed, so
 	// this one is a repeat the mentioned session is not handed again.
 	Duplicate bool    `json:"duplicate,omitempty"`
@@ -2728,6 +2907,19 @@ type CommentEventPayload struct {
 	// "waiting on the agent" without re-reading it. Empty when the comment does not
 	// reply to an open ask.
 	AskWaitingOn string `json:"ask_waiting_on,omitempty"`
+	// AskSessions is carried by comment.created alone, on a comment in an ask's thread: the
+	// sessions that own the ask as the comment's write leaves them, read in the comment's own
+	// transaction (api's askSessions). They are the ask's author when a session wrote it, then
+	// each other session that follows it (ask_followers), ordered by its follow time (since) and
+	// then session id, then the comment's own author when a session wrote the comment and neither
+	// of those names it, each once. Every copy of the event carries the same list, the outbox's
+	// stand-in for an event the bus refused among them (it keeps this list whole, whatever its
+	// size: outbox's standInWholeFields), so a reader that knows its own session tells from this
+	// list whether the reply is on that session's own ask, as the comment's write left the owners.
+	// [] when no session owns the ask (a person wrote it and no session follows it). Absent on
+	// every other comment event, on a comment outside an ask's thread, and on an event a server
+	// older than the field wrote.
+	AskSessions []string `json:"ask_sessions,omitzero"`
 	// ThreadRootID is the id of the head of the thread the comment joined, which is also
 	// what Comment.ReplyTo stores for it. Carried by comment.created and by the
 	// comment.answered a delivery callback appends; empty when the comment replies to an
@@ -2809,7 +3001,12 @@ type MessageDelivery struct {
 	// earlier attempt landed, so this one is a repeat the recipient is not handed again
 	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil: the envelope
 	// this send minted is the one JetStream discarded.
-	Duplicate bool      `json:"duplicate"`
+	Duplicate bool `json:"duplicate"`
+	// State is "pending" before the send, then "sent" for a message the listener handed to a
+	// running session, "queued" for one it stored for a session it knows that is not running
+	// and hands over when that session runs again, or "failed". A reader that asks whether the
+	// listener took the message counts "sent" and "queued" alike (api/envoy_resolve.go,
+	// deliveryOutcome).
 	State     string    `json:"state"`
 	Error     *string   `json:"error"`
 	ReplyID   *string   `json:"reply_id"`
@@ -2823,6 +3020,25 @@ type MessageDelivery struct {
 	// session's own user turn. At most one attempt of a message is ever accepted.
 	AcceptedAt *time.Time `json:"accepted_at"`
 	AcceptedAs *string    `json:"accepted_as"`
+}
+
+// connectedOnlyMark is the one value message_deliveries.connected_only holds beside null
+// (migration 20261114081434): the attempt's sends ask the listener for a session that is
+// running now. Null is every other attempt, and every attempt a release older than the column
+// wrote.
+const connectedOnlyMark = "connected_only"
+
+// ConnectedOnlySQL reads message_deliveries.connected_only as a bool, for a select list or a
+// returning clause over that table.
+const ConnectedOnlySQL = "(connected_only is not null)"
+
+// ConnectedOnlyColumn is the message_deliveries.connected_only value a send that asked
+// connectedOnly stores: connectedOnlyMark, or null.
+func ConnectedOnlyColumn(connectedOnly bool) *string {
+	if !connectedOnly {
+		return nil
+	}
+	return new(connectedOnlyMark)
 }
 
 // MessageEventPayload wraps a Message with the reply target's body preview (first 160
@@ -2902,7 +3118,11 @@ type MessageDeliveryEventPayload struct {
 	SessionID string `json:"session_id"`
 	Target    string `json:"target"`
 	Title     string `json:"title"`
-	State     string `json:"state"`
+	// State is how the attempt settled, which the dashboard renders verbatim: "sent", "queued"
+	// or "failed" (MessageDelivery.State). A receipt carries no "pending": the sender that
+	// appends it settles the row in the statement that appends it (contracts'
+	// SettledDeliveryState, and deliveryOutcome, which never answers pending).
+	State string `json:"state"`
 	// Duplicate reports that the stream already held this message, so the recipient gained
 	// nothing from this attempt. Absent means false.
 	Duplicate bool   `json:"duplicate,omitempty"`
@@ -2947,6 +3167,52 @@ type HandoffRecordedEventPayload struct {
 	HandoffID string `json:"handoff_id"`
 	Phase     string `json:"phase"`
 	Version   int    `json:"version"`
+}
+
+// StepRecord is one run of one step of an issue's workflow, as the Legion daemon wrote it at the
+// run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
+// lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
+// step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
+// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
+// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
+// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
+// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
+// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
+// the merge's place, and Report the handoff its ending role named, each null where the run has
+// none.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind" enum:"step,retro,merge"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Session    string     `json:"session"`
+	Model      string     `json:"model"`
+	Generation int64      `json:"generation"`
+	Attempt    int        `json:"attempt"`
+	StartedAt  *time.Time `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at"`
+	Result     string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo *int       `json:"returned_to"`
+	Report     *string    `json:"report"`
+}
+
+// StepTask is one task of an issue with every run of its steps, in the order they ran.
+type StepTask struct {
+	Task  string       `json:"task"`
+	Steps []StepRecord `json:"steps"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
+// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
+// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+type IssueSteps struct {
+	Issue string     `json:"issue"`
+	Tasks []StepTask `json:"tasks"`
 }
 
 // ReferencedBy identifies a post or artifact that mentions an artifact.
@@ -3075,10 +3341,54 @@ type GraphEdge struct {
 	SourceSeq *int64        `json:"source_seq"`
 }
 
-// GraphReferences is the read of one node's edges, newest first.
+// GraphReferences is the read of one node's edges, newest first. UnknownKinds lists the edge kinds
+// the read named that this build does not emit (a newer build's, during a release); it has no
+// edges of them.
 type GraphReferences struct {
-	Node  GraphNode   `json:"node"`
-	Edges []GraphEdge `json:"edges"`
+	Node         GraphNode   `json:"node"`
+	Edges        []GraphEdge `json:"edges"`
+	UnknownKinds []string    `json:"unknown_kinds,omitempty"`
+}
+
+// ReferenceTarget is what one reference of a batched reference read points at: Ref, the
+// reference as the request named it, Kind, the kind of node it names (a GraphNode kind), Name,
+// the words a reader is shown for the target in place of its text (refs.TargetNames), and Gone,
+// whether nothing answers to that reference now. A gone target carries no name: its node was
+// deleted, so there is nothing left to name it by. Ambiguous says why a member is gone when its
+// reference writes a short id that two or more items carry: the read answers that member gone
+// and answers every other member, where GET /api/v1/references refuses such an id with a 409.
+// TextTree is a block's whole text as the tree a reader is shown, every link and dispatch://
+// reference kept and nothing cut, where Name stops at the block's stored excerpt: a typed
+// block's is of its own content, what stands between its opening line and its closing one, read
+// by the block's kind. A document's block has the closing fence's indentation taken out of each
+// line, which a block in a list item or a footnote definition carries; a block of a comment, a
+// message or an ask, stored from the start of its line, has its opening line's indentation, up
+// to three spaces, taken off before the directive is read and up to as many columns taken off
+// each later line, as its own text's parse reads them, the indentation left on a line, and the
+// spaces or tabs after a list marker or `>`, written as spaces with each tab counted to the next
+// multiple of four from its own column. With its opening line at column 0, such a block keeps
+// every line as written; an opening line four spaces or a tab in opens no typed block, so that
+// text answers the tree of its whole stored text. A typed block in a quote answers the tree of its
+// whole stored text, its opening line included, and so does a block of a comment, a message or an
+// ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its
+// text. Only a member whose Kind is block carries one, and only for a caller that sent
+// `Dispatch-Trees: 1`.
+type ReferenceTarget struct {
+	Ref  string `json:"ref"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Gone bool   `json:"gone"`
+	// Ambiguous is true for a reference whose short id two or more items carry in the scope
+	// that the reference names. Such a member is gone, with the name "", and every other
+	// member of the read is answered. The key is left out otherwise.
+	Ambiguous bool        `json:"ambiguous,omitempty"`
+	TextTree  DisplayTree `json:"text_tree,omitempty"`
+}
+
+// ReferenceTargets is GET /api/v1/reference-targets: one member per ?ref= the request named, in
+// the request's order, a reference named twice answered twice.
+type ReferenceTargets struct {
+	Targets []ReferenceTarget `json:"targets"`
 }
 
 // BlockLink is one link from a block of one document to a block of a document: its edge kind,

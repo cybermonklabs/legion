@@ -26,7 +26,7 @@ import (
 // directory, which was minted on another owner's installation, and GitHub refused it.
 func TestTheBundleReachesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 	repos := projectRepos("cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools")
-	credential := GitHubCredential(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar"), repos,
+	credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), repos,
 		ghrepo.MustRenames(legionRename), nil, nil, quietBundleLog())
 	bundle, err := credential(context.Background(), claim.RoleImplementer, ghrepo.MustParse("sjawhar/oh-my-pi"))
 	if err != nil {

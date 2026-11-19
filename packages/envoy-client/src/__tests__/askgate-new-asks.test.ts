@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { askBlocks, type NewAsk, newAsks } from "../askgate-new-asks";
+import { askBlocks, type NewAsk, newAskCount, newAsks, openingOf } from "../askgate-new-asks";
 
 /** A row of the Dispatch server's own table of inserted markdown and the ask blocks it adds. */
 interface DecisionBlockInsert {
@@ -11,6 +11,15 @@ interface DecisionBlockInsert {
 
 // The table the server's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads, which checks
 // each row's ids against the document the server stored.
+//
+// Each row is driven through an `insert` alone, and not through a `replace` as well. The scan
+// reads a `replace`'s `with` by the same call as an insert's markdown, with the front-matter flag
+// false, so a replace run of the table would re-run the client code the insert rows already run.
+// The server's reader would pay for it: a `replace` needs a match, so every row would need a
+// seeded document whose match sits in a plain paragraph, since the server refuses blocks written
+// over a match in a heading, in a table cell, or in a typed block whose rule cannot hold them, and
+// writes them as literal text over a match in code. The scan and the server part only at those
+// match places, which no row names, so a replace run would hold nothing the insert run holds.
 const table: DecisionBlockInsert[] = JSON.parse(
   await Bun.file(
     new URL(
@@ -341,14 +350,145 @@ describe("newAsks", () => {
     ]);
   });
 
-  test("a replace's with opens no block", () => {
+  test("a replace's with opens the ask blocks it holds", () => {
     expect(
       newAsks("dispatch_doc_edit", {
         issue: "DSP-1",
         artifact: "spec",
         ops: [{ op: "replace", find: "Old", with: ":::ask{#window}\nWhich?\n:::" }],
       })
+    ).toEqual([{ kind: "block", id: "window", text: "Which?", opening: "Which?" }]);
+  });
+
+  test("a replace's with that opens no block opens none", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "Old", with: "New wording." }],
+      })
     ).toEqual([]);
+  });
+
+  // The scan cannot know where the match sits, so it reads no front matter in a `with`: a block
+  // between two `---` lines opens, where front-matter reading would hide it.
+  test("a replace's with reads no front matter", () => {
+    expect(
+      ids(
+        newAsks("dispatch_doc_edit", {
+          issue: "DSP-1",
+          artifact: "spec",
+          ops: [{ op: "replace", find: "Old", with: "---\n:::ask{#window}\nWhich?\n:::\n---" }],
+        })
+      )
+    ).toEqual(["window"]);
+  });
+
+  // The server cuts the matched item's own marker off a `with` its marker selected and parses
+  // what is left (replacementMarkdown), so the gate scans that reading too: measured against this
+  // repository's server on 2026-11-11, a `with` of "- :::ask{#q urgency=\"med\"}\nShould we ship
+  // it?\n:::" over the item `- a` selected by its marker is applied and opens the ask with the
+  // question. Read as sent, the ask opens inside the list item and holds no text at all, so the
+  // rules model would match on nothing.
+  test("a replace's with opening with a list marker opens the ask block under it, with its question", () => {
+    const block = ':::ask{#q urgency="med"}\nShould we ship it?\n:::';
+    const asked = newAsks("dispatch_doc_edit", {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [{ op: "replace", find: "a", with: `- ${block}` }],
+    });
+
+    expect(asked).toEqual([
+      { kind: "block", id: "q", text: "Should we ship it?", opening: "Should we ship it?" },
+    ]);
+    // The markdown the server parses, through an `insert`, opens the very same ask.
+    expect(asked).toEqual(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "insert", after: "end", markdown: block }],
+      })
+    );
+  });
+
+  // The server cuts a leading `[x] ` or `[ ] ` over a task item's text as well, so the box opens
+  // the same ask the markdown under it opens. Measured on 2026-11-11, a `with` of "[x] :::ask{#q
+  // urgency=\"med\"}\nQ?\n:::" over an unticked task item is refused (a task item whose first
+  // paragraph is empty cannot hold another block after it), so this reading opens nothing there
+  // and the gate over-reports it, which is the side it fails to.
+  test("a replace's with opening with a task checkbox opens the ask block under it, with its question", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: '[x] :::ask{#q urgency="med"}\nQ?\n:::' }],
+      })
+    ).toEqual([{ kind: "block", id: "q", text: "Q?", opening: "Q?" }]);
+  });
+
+  test("a replace's with opening with a list marker and no block opens none", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- the item rewritten\n- a point beside it" }],
+      })
+    ).toEqual([]);
+  });
+
+  // Two readings of one `with` can open one id with two different questions, and the server
+  // writes into the ask whichever one it parses. The client cannot know which that is, so it
+  // reports both: holding the marker-stripped reading back, which is the one the server parses
+  // here, would ask a person words the rules model never read.
+  test("a replace's with whose readings differ opens the ask of each reading", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [
+          { op: "replace", find: "a", with: "- :::ask{#q}\n  Benign?\n    :::\n  Evil?\n  :::" },
+        ],
+      })
+    ).toEqual([
+      { kind: "block", id: "q", text: "Benign?", opening: "Benign?" },
+      { kind: "block", id: "q", text: "Benign?\n    :::\n  Evil?", opening: "Benign? ::: Evil?" },
+    ]);
+  });
+
+  // An ask block with no id has nothing but its text to pair its readings on, so the reading
+  // that opens it empty inside the list item is dropped beside the one that holds the question,
+  // rather than counted as a second ask.
+  test("a replace's with holding an id-less ask block opens that one ask", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{}\nQ?\n:::" }],
+      })
+    ).toEqual([{ kind: "block", text: "Q?", opening: "Q?" }]);
+  });
+
+  // The server refuses an empty ask: `validateEditedAskBlocks` answers `ask block "…" has an
+  // empty question`, and `finishBatch` runs it over every edit batch. The gate reports it all
+  // the same, because what it owes the rules model is every ask the server might write, and a
+  // write the server refuses costs the model one reading and hides nothing. Where some reading
+  // carries words the empty one is dropped beside them, the words being what the model matches
+  // on; where every reading opens an empty ask and nothing else, this is all there is to report.
+  test("a replace's with whose every reading opens an empty ask opens it", () => {
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{#q}\n:::" }],
+      })
+    ).toEqual([{ kind: "block", id: "q", text: "", opening: "" }]);
+    expect(
+      newAsks("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{}\n:::" }],
+      })
+    ).toEqual([{ kind: "block", text: "", opening: "" }]);
   });
 
   test("a new issue's spec opens each ask block in it", () => {
@@ -420,4 +560,70 @@ describe("newAsks", () => {
       expect(newAsks(tool, input)).toEqual([]);
     });
   }
+});
+
+describe("newAskCount", () => {
+  // Two questions whose first 60 code points match, so their `opening`s are the same.
+  const shared = "Which deployment window should the billing service release take";
+  const friday = `${shared}, the Friday one?`;
+  const monday = `${shared}, the Monday one?`;
+
+  test("two distinct id-less asks in one insert whose openings match count two", () => {
+    const input = {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [
+        {
+          op: "insert",
+          after: "end",
+          markdown: `:::ask{}\n${friday}\n:::\n\n:::ask{}\n${monday}\n:::`,
+        },
+      ],
+    };
+    const asked = newAsks("dispatch_doc_edit", input);
+    expect(asked.map((ask) => ask.text)).toEqual([friday, monday]);
+    expect(asked.map((ask) => ask.opening)).toEqual([openingOf(shared), openingOf(shared)]);
+    expect(newAskCount("dispatch_doc_edit", input)).toBe(2);
+  });
+
+  // `newAsks` reports two entries for this `with`, one for each reading the server might parse,
+  // and the server parses one of them: each reading opens one ask, so the write carries one.
+  test("a replace's with whose two readings each open one ask counts one", () => {
+    const input = {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [
+        {
+          op: "replace",
+          find: "- item",
+          with: "- :::ask{#q}\n  Benign?\n    :::\n  Evil?\n  :::",
+        },
+      ],
+    };
+    expect(newAsks("dispatch_doc_edit", input)).toHaveLength(2);
+    expect(newAskCount("dispatch_doc_edit", input)).toBe(1);
+  });
+
+  test("a replace's with holding an id-less ask block counts one", () => {
+    expect(
+      newAskCount("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{}\nQ?\n:::" }],
+      })
+    ).toBe(1);
+  });
+
+  test("two replaces each opening one ask count two", () => {
+    expect(
+      newAskCount("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [
+          { op: "replace", find: "- a", with: `- :::ask{}\n${friday}\n:::` },
+          { op: "replace", find: "- b", with: `- :::ask{}\n${monday}\n:::` },
+        ],
+      })
+    ).toBe(2);
+  });
 });

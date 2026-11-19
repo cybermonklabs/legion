@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // consumerRegistrationIn is consumerRegistration with a directory: the body a session in consumer
@@ -22,12 +23,12 @@ import (
 // now only if the row moved with it.
 func consumerRegistrationIn(t *testing.T, sessionID, epoch, dir string, topics ...string) string {
 	t.Helper()
-	body, err := json.Marshal(subscribeBody{
+	body, err := json.Marshal(listenerwire.SubscribeRequest{
 		SessionID:      sessionID,
 		Dir:            dir,
 		Topics:         append([]string{}, topics...),
 		SelfSubscribed: true,
-		Delivery:       &subscribeDelivery{Consumer: true, Epoch: epoch},
+		Delivery:       &listenerwire.SubscribeDelivery{Consumer: true, Epoch: epoch},
 	})
 	if err != nil {
 		t.Fatalf("encode the registration of %s in %s: %v", sessionID, dir, err)
@@ -50,7 +51,7 @@ func captureLaneForwards(t *testing.T, url, sessionID string) <-chan contracts.E
 	t.Helper()
 	conn := testnats.Connect(t, url)
 	t.Cleanup(conn.Close)
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	forwards := make(chan contracts.Envelope, 16)
 	if _, err := conn.Subscribe(agent, func(msg *natsgo.Msg) {
 		var item contracts.Envelope
@@ -134,7 +135,7 @@ func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThrough
 
 	run := id.New()
 	sessionID := "ses_current_registration_" + run
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	const firstDir, secondDir = "/work/first-registration", "/work/second-registration"
 	followed := "notifications.dispatch.issue.INFRA-889-" + run + ".>"
 	comment := "notifications.dispatch.issue.INFRA-889-" + run + ".comment"

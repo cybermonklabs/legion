@@ -10,7 +10,9 @@
 // (nothingToEmbed) is settled with no vector and no model call instead. The coverage pass
 // (coverage.go) adds what no trigger saw - items written before the triggers existed or with them
 // off - and, once the configured embedder has answered, drops vectors another model or place
-// made, so the server keeps meaning search's coverage itself.
+// made, so the server keeps meaning search's coverage itself. Every server process runs both, but
+// only a process whose embedder has the one active identity (active.go) embeds or drops anything,
+// so two processes configured with different embedders do not undo each other's work.
 package embedqueue
 
 import (
@@ -311,7 +313,10 @@ type pendingRow struct {
 // committed: it is done, so a full batch of them keeps scan draining. Every poller drives the
 // queue through this one function; scanPending's claim is what lets the pollers of two
 // envoy-dispatch processes run safely at once, each claiming a different set of pending rows
-// rather than racing to embed the same ones twice.
+// rather than racing to embed the same ones twice. A process whose embedder's identity is not
+// the active one (embedderActive) claims, settles, embeds and reserves nothing, and reports
+// nothing done: the rows are the active identity's process's to embed, and a vector this one made
+// would be another identity's, which that process's coverage pass drops.
 //
 // A throttled whole-batch failure never counts toward any row's dead-letter threshold, however
 // many times it recurs: it is infrastructure (the provider is rate-limiting this account), never
@@ -333,6 +338,9 @@ type pendingRow struct {
 // came back: handleGroupFailure checks for it before confirmSoloFailure or bisectSplit ever run,
 // and retries the whole group instead.
 func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
+	if active, _, err := deps.embedderActive(ctx); err != nil || !active {
+		return 0, 0, false, false, err
+	}
 	rows, settled, err := scanPending(ctx, deps)
 	if err != nil {
 		return 0, 0, false, false, err
@@ -653,6 +661,14 @@ func reserveBackgroundTokens(ctx context.Context, deps Deps, texts []string, ren
 // background work on it can pass the deployment's quota; the 429s that follow are throttles,
 // which the queue retries without counting them against any row. That is accepted.
 //
+// Two processes may reserve with different ceilings: two builds whose places set different
+// limits, during the release that changes them. Each statement refills at most its own ceiling's
+// rate and caps at its own ceiling, so the row never refills faster than the larger ceiling, and
+// each process waits out its debt at its own rate, never faster than the larger one: together they
+// take no more than one process with the larger ceiling would, the larger ceiling a minute once
+// the row is in debt. Only a process whose embedder's identity is active reserves at all
+// (ProcessBatch, Cover).
+//
 // chunkForBudget already keeps one reservation's own tokens at or under ceilingPerMinute, but the
 // wait can still run past renewClaimInterval when other debt was already on the row (another
 // process's, or this one's own earlier groups) - renewal is woken (renew) at every
@@ -702,11 +718,25 @@ func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal,
 // by meaning, so it needs no vector, and a model service may refuse it outright (Azure AI
 // Foundry's deployment answers HTTP 500 to an empty input, which bisection would confirm as the
 // row's own failure and dead-letter). The queue settles its row with no model call
-// (scanPending, settleDeadNothingToEmbed), and the coverage pass and report leave the item out
-// (searchableItems).
+// (scanPending, settleDeadNothingToEmbed), and the coverage pass (issueItems) and the report
+// (somethingToEmbed, its negation) leave the item out.
 func nothingToEmbed(expr string) string {
-	return "(" + expr + " !~ '[^[:space:]]')"
+	return "(" + expr + " !~ " + somethingToEmbedPattern + ")"
 }
+
+// somethingToEmbed renders nothingToEmbed's negation over expr: a text holding a character other
+// than white space, an item the coverage report counts. It is written as `~` rather than as `not`
+// nothingToEmbed, and with no parentheses (`~` binds tighter than and, or and not), because the
+// report repeats it inside the predicates of the two indexes it reads the window kinds from
+// (windowEmbedded, windowUnembedded) in the very words their migrations wrote, and in its test of
+// an issue's text.
+func somethingToEmbed(expr string) string {
+	return expr + " ~ " + somethingToEmbedPattern
+}
+
+// somethingToEmbedPattern is the one pattern nothingToEmbed and somethingToEmbed test a text
+// against: a character that is not white space.
+const somethingToEmbedPattern = `'[^[:space:]]'`
 
 // settledNothingToEmbed is the SET clause that settles a row whose text has nothing to embed, as
 // commitEmbeddings would commit it but with no vector: embedded at its current text
