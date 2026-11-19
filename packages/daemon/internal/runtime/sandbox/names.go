@@ -32,10 +32,12 @@ import (
 // launcher role's process finds its own launcher token projection, memory-backed private directory
 // (where its launcher writes each generation's boot token and launch credentials), state directory,
 // gh bundle and agent-secrets key directory. The controller's pod mounts them there in its one
-// container. An issue pod's one container runs every workflow role, so it mounts each role's under
-// RolesDir (roleDir) instead, and each role's namespace (`legion launcher role-init`) covers
-// RolesDir and binds its own back at these paths, all but the launcher token, which no role's
-// process sees. GHConfigDir is the role's gh bundle root (LEGION_GH_OWNERS_DIR): the read-only
+// container, unless the session database names a writer audience (controllerPod.launcherContainer).
+// An issue pod's one container runs every workflow role, so it mounts each role's under RolesDir
+// (roleDir) instead, and so does the controller's pod for its one role under a writer audience
+// (rolesDirLayout). Each role's namespace (`legion launcher role-init`) covers RolesDir and binds
+// its own back at these paths, all but the launcher token, which no role's process sees.
+// GHConfigDir is the role's gh bundle root (LEGION_GH_OWNERS_DIR): the read-only
 // projection of its role Secret's gh files, one directory per entry of the role's gh bundle
 // (GitHubHostsKey(dir) as <dir>/ghconfig.HostsFile, GitHubConfigKey(dir) as
 // <dir>/ghconfig.ConfigFile, where a dir is a GitHub owner account, a bundle of this daemon
@@ -76,11 +78,12 @@ const (
 )
 
 // RolesDir is where an issue pod's one container mounts every workflow role's own volumes, one
-// directory per role (roleDir), and the role homes volume at RoleHomesDir. `legion launcher
-// --roles-dir` reads each role's launcher token there, and `legion launcher role-init` covers the
-// whole directory inside the role's namespaces and binds the role's own gh, private, state and
-// agent-secrets directories back at GHConfigDir, LauncherPrivateDir, StateDir and
-// AgentSecretsKeyDir, and makes the role's home overlay, temporary directories and own config
+// directory per role (roleDir), and the role homes volume at RoleHomesDir, as the controller's pod
+// does for the controller where the session database names a writer audience (rolesDirLayout).
+// `legion launcher --roles-dir` reads each role's launcher token there, and `legion launcher
+// role-init` covers the whole directory inside the role's namespaces and binds the role's own gh,
+// private, state and agent-secrets directories back at GHConfigDir, LauncherPrivateDir, StateDir
+// and AgentSecretsKeyDir, and makes the role's home overlay, temporary directories and own config
 // home under its directory of RoleHomesDir. The names under it are internal/launcher's layout
 // (launcher.RoleGHDir and its siblings), which both sides read.
 const (
@@ -106,6 +109,14 @@ const (
 	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
 	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
 	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
+	// SessionWriterDir is where a pod whose session database names a writer audience
+	// (ompsessions.Database.WriterAudience) mounts, read-only, the projected ServiceAccount token
+	// of that audience (sessionWriterTokenVolume), at launcher.SessionWriterTokenFile in it: the
+	// file the launcher reads under its roles directory and gives to its session proxy alone,
+	// which exchanges it to impersonate the session database's service account. It is under
+	// RolesDir, which every role's namespace covers, so no role's process reads the token: a role
+	// that could would write every session of the project's session database.
+	SessionWriterDir = RolesDir + "/" + launcher.SessionWriterDirName
 	// HomeMountsDir is where an issue pod's roles container mounts every volume that belongs at
 	// or under the image's home (homeMountsView), and where `legion launcher role-init` finds
 	// each to bind it back at its own path under the role's home overlay.
@@ -116,13 +127,15 @@ const (
 	RoleProbeDir = launcher.FixedRoot + "/role-probe"
 )
 
-// roleDir is role's own directory of an issue pod's one container, under RolesDir: its launcher
-// token and gh projections of its role Secret, read-only, and its memory-backed private, state and
-// agent-secrets key directories, the last only in a pod enrolled with the secrets broker, each one
-// volume's mount at that name of launcher's layout.
+// roleDir is role's own directory of a pod's one container that runs the launcher's roles-dir
+// form (rolesDirLayout), under RolesDir: its launcher token and gh projections of its role Secret,
+// read-only, and its memory-backed private, state and agent-secrets key directories, the last only
+// in a pod enrolled with the secrets broker, each one volume's mount at that name of launcher's
+// layout.
 func roleDir(role claim.Role) string { return RolesDir + "/" + string(role) }
 
-// homeMountsView is mounts as an issue pod's roles container carries them: every mount at or
+// homeMountsView is mounts as a container that runs the launcher's roles-dir form carries them (an
+// issue pod's roles container, and the controller's under a writer audience): every mount at or
 // under the image's home (podHome) at the same path relative to HomeMountsDir instead
 // (containerHomePath), so the home itself carries no mount, and every other mount as it is.
 // `legion launcher role-init` binds each back at its own path under the role's home overlay.

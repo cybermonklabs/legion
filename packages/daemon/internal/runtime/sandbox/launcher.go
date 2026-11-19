@@ -807,6 +807,14 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // same thing: the AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR an agent reads to decide it holds a
 // broker are set from this one decision too (mainEnvironment, enrollsIn), so such a role reports
 // a resource it cannot reach rather than a secrets problem it does not have.
+//
+// An Oh My Pi start names the agent's executable apart from the argv (AgentExecutable): the first
+// word of the agent's own argv (agentArgv), the executable the shim's child runs once any start
+// wrapper has exec'd it. The argv itself cannot say it, since the wrapper above makes the child's
+// first word /bin/sh. A launcher whose session database names a writer audience knows the
+// generation's Oh My Pi process by that executable, and admits it alone of the role's processes to
+// the generation's session socket (internal/launcher's sessionPeer). A Claude Code start names
+// none: its agent opens no session socket of its own.
 func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	dir := generationDir(l.spec.Generation)
 	shim := []string{r.tools.Legion, "worker-shim", connectFlag, r.streamURL, "--boot-token-file", dir + "/" + bootTokenKey, "--pod-safety", "--stop-grace", r.terminationGrace.String()}
@@ -838,13 +846,18 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		claudeDir = claudeConfigDir(l.spec.Role)
 		files[claudeMCPFile] = l.claude.mcp
 	}
+	agent := l.agentArgv(r.agent)
 	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
-		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
-	return shimwire.LauncherStart{
+		agent, installLockWait(r.bootTimeout, r.registrationIntervals))
+	start := shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
 		ResumeFile: l.spec.ResumeSessionFile,
 	}
+	if !l.runsClaude() {
+		start.AgentExecutable = agent[0]
+	}
+	return start
 }
 
 // checkStartFrame refuses command, the start l's role would be sent, when the frame that carries
