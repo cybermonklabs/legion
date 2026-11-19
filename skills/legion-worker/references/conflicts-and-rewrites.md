@@ -1,88 +1,30 @@
 # Conflicts, retargets, fingerprints, and a wrong pushed commit
 
-Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, the
-controller asks you to resolve a conflict, the change needs something only the base has, the pull
-request is retargeted to a new base, you compare two heads after such a merge, or a commit you
-already pushed is wrong.
-Every path it cites is in cybermonklabs/legion.
+Read it when GitHub reports the pull request `CONFLICTING`, the controller asks you to resolve a conflict, the change needs something only the base has, the pull request is retargeted, you compare two heads after a forward merge, or a commit you pushed is wrong.
 
 ## Reintegrating the base
 
-- **Merge the base forward only on a real conflict, a need only the base meets, a retarget, or a
-  parent's last round, and never with `jj rebase`.**
-  The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the controller asks
-  because of a conflict, the architect's backward move names a parent's last round,
-  the change needs something that exists only on the base (a fix for its
-  only red check, or a sentence it must change), or after the pull request is retargeted to a new
-  base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
-  merge is a new head, reruns CI and can void a review. A single failed CI job is re-run on its
-  own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward merge, build the branch and
-  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge can change a
-  function's signature under the branch's own callers. Before you race another tree's pull request on
-  shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
-  merge once, after it. A forward merge that leaves the branch's diff unchanged is a
-  confirmation, not a new round (see *The unchanged-diff check* below). The check compares the
-  pull request's own lines file by file: a changed file sends the head through the tester again,
-  and your comment names it. Before merging, record
-  the fingerprint at the current tip; after pushing the merged branch, record it at the new
-  tip; post one PR comment (Legion footer):
-  `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`.
-  The fingerprint answers one question only: whether the branch's own diff changed. It cannot
-  show an instance the merge brought in from the base, so before you push the merge search its
-  head for the class of every finding of every earlier review round and record each search
-  beside the fingerprints.
-  In a parent's last round, end that comment with `parent's last round: full test round`, the line
-  the tester reads for a full round (`skill://legion-architect/references/acceptance.md`,
-  "The last round").
-  On the tmux runtime, where issue workspaces are still jj workspaces of one shared clone,
-  `jj undo`, `jj abandon` and `jj op restore` rewrite the shared operation log, so a mistake there
-  is recovered forward (`jj -R "$LEGION_WORKSPACE" new`, or `jj -R "$LEGION_WORKSPACE" restore
-  <paths>` of files). In that shared repository jj always rebases every descendant of any commit it
-  rewrites — a revset naming the root of your own chain and rewriting it in place also rewrites
-  whatever another tree has stacked on that root, whichever selector chose it (`-s`, `-b`, and
-  `-r` all rewrite descendants; `-r` only re-parents them to fill the hole, which is worse).
-  Resolve the conflict with a forward merge instead of a rewrite — merge the branch's own
-  bookmark with the destination in one new commit, so nothing existing is rewritten and nothing
-  built on your prior commits, in this tree or another, ever moves. `base` is the pull request's
-  base branch (the repository's default branch unless the pull request is stacked), read as a jj
-  string literal: jj parses a bare bookmark name as an expression, and a name pasted between
-  quotes can close them itself (`release"@origin|"stable` would select `release` and `stable`), so
-  the revset is built from the serialized name alone:
+The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
-  ```bash
-  base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-    jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
-  ```
+Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
 
-  `<message>` is written in the repository's own commit convention, read from the repository
-  itself: its commit-message check (a commitlint configuration or the workflow that lints
-  commits) where it has one, else its recent commits on the base. Where it uses Conventional
-  Commits, that is a listed type and the merge in words, for example
-  `chore(<scope>): merge <base> into <branch>`. Where neither shows a convention, it is the
-  merge in words alone, for example `Merge <base> into <branch>`. Never a fixed prefix of the
-  skill's own: a check that lints every commit of the pull request refuses a type its list does
-  not hold, and `merge` is in no Conventional Commits list.
+1. Record the fingerprint (below) at the current tip.
+2. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
-  Merge from the bookmark, never from `@`: a `jj split` leaves `@` an empty, undescribed
-  commit above the described one the bookmark already names, and `jj git push` refuses to push
-  any commit without a description — merging from `@` drags that undescribed commit into the
-  ancestry and the push fails (`Won't push commit … since it has no description`); the bookmark
-  is always on a described, already-pushed commit. If the merge conflicts, resolve it in that
-  one commit — edit the markers directly; there is nothing to squash, since the merge is the
-  only new commit. Then `jj -R "$LEGION_WORKSPACE" new` to move off it, and push it (*Every role
-  pushes its own commits* in `skill://legion-worker`; a merge is a code push like any other): the
-  merge descends from both the bookmark's old position and the destination, so it is a genuine
-  fast-forward.
-- **After a retarget.** Retargeting a pull request to a new base does not re-run Tests. Read
-  `base` again and merge the bookmark onto it in one command
-  (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
-  ordinary way, a genuine fast-forward, so the new head runs Tests
-  against the new merge result, and cite that run in the PR body.
+   ```bash
+   base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
+     jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
+   ```
+
+   Write `<message>` in the repository's own commit convention (its commit-lint configuration, else its recent commits on the base), such as `chore(<scope>): merge <base> into <branch>`, or `Merge <base> into <branch>` where none shows. `@` after a split is an empty commit with no description, which `jj git push` refuses.
+3. Resolve any conflict in that one commit, then `jj -R "$LEGION_WORKSPACE" new` to move off it.
+4. The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base, so before you push, search the merge head for the class of every finding of every earlier review round.
+5. Push the merge as any code push, build the branch, and record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict.
+6. Record the fingerprint at the new tip and post one PR comment with the Legion footer: `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`, with each class search beside it. In a parent's last round, end it with `parent's last round: full test round`.
+
+An equal fingerprint makes the merge a confirmation, not a new round; a changed one sends the head through the tester again. After a retarget, do the same merge onto the new base, and cite the new head's run in the PR body. Recover a jj mistake forward (`jj new`, `jj restore <paths>`), never with `jj undo`, `jj abandon` or `jj op restore`, which rewrite the shared operation log.
 
 ## The unchanged-diff check
-
-The fingerprint every role compares after a forward merge (every flag and the fileset
-verified on jj 0.45.1):
 
 ```bash
 base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
@@ -92,46 +34,12 @@ fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point
   | sed -e '/^@@/d' -e '/^index /d' | sha256sum) && echo "$fingerprint"
 ```
 
-- `<head-sha>` is a full commit SHA; a jj commit id is the git SHA GitHub shows.
-- `fork_point(${base}@origin | <head-sha>)` is the base the branch was cut from *at that head*:
-  the old base for the head before the merge, the new base for the merge head, so one command serves
-  both sides. `base` is the pull request's base branch as a jj string literal, as in the merge
-  above.
-- A head the merge replaced is still addressable by its SHA in the shared workspace. The check
-  prints a fingerprint only when every step of it succeeded: the base read, the fetch and the
-  diff (`pipefail` keeps the diff's failure through `sed` and `sha256sum`, which would otherwise
-  hash empty input to `e3b0c442…`). A nonzero exit or no printed fingerprint (a failed read of the
-  base, or a SHA the workspace cannot resolve) counts as a changed diff — never as unchanged.
-- `--context 0` drops context lines; the `sed` drops `@@` hunk headers (line positions move
-  on a merge) and `index` lines (blob ids move when the base's copy of a file changed). What
-  is left is exactly the added and removed lines per file.
-- The single fileset `'~(.legion | docs/solutions)'` leaves out `.legion/`, where handoffs lived
-  before they moved to Dispatch and which nothing writes or reads now, so nobody reviews a path
-  there, and retro's learnings:
-  paths the merge gate lets through above an approval
-  (`skill://legion-worker/references/merge-gate.md`), which change
-  between one role's verified head and the next without changing the product. This is what lets
-  each role compare against *its own* last verified head instead of trusting another role's
-  numbers. It must be one expression: jj unions positional filesets, so two separate
-  `'~.legion' '~docs/solutions'` arguments select every file and exclude nothing. Where
-  `.legion/` is gone, jj warns `No matching entries for paths: .legion` on stderr; the hash is
-  unaffected.
-
-Where each role gets its two heads: the implementer — the tip before and after its own forward merge;
-the tester — the commit its latest results name and the new head; the reviewer — the head its last
-submitted review read, which that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head (*The reviewer* in `skill://legion-worker/references/merge-gate.md` gives the read, what stands for a footer that names no head, and the measurement)
-and the new head; the merger never computes a fingerprint — it merges the head it read, and no
-Legion check compares that head with the approved one.
-
-The fingerprint is not the whole check: a file the merge adds only moves the hash, exactly as an ordinary round of work does.
-So beside it, compare the *set* of files the pull request changes against its base, before and after the merge (`gh pr diff <n> --name-only`, or `jj diff --stat` at each of the two heads), and explain every path that appears or disappears.
-Remove a path that belongs to an already-merged pull request.
+- `<head-sha>` is a full commit SHA; a head the merge replaced still resolves by its SHA.
+- A nonzero exit or no printed fingerprint counts as changed, never as unchanged.
+- The fileset must stay one expression: jj unions positional filesets, so `'~.legion' '~docs/solutions'` excludes nothing.
+- Your two heads: the implementer, its tip before and after the merge; the tester, the commit its latest results name and the new head; the reviewer, the head its last submitted review's Legion footer names (never that review's `commit_id`, which GitHub moves) and the new head. The merger computes none.
+- Beside the hash, compare the set of files the pull request changes before and after (`gh pr diff <n> --name-only`), explain each path that appears or goes, and remove a path that belongs to an already-merged pull request.
 
 ## A wrong pushed commit
 
-A commit you pushed is never rewritten: no `jj squash --into` it, no new description of it, no
-backwards bookmark move and no force push. A rewrite moves every commit built on it, another
-tree's branch included, and leaves a review, a CI run or a link that names a commit GitHub no
-longer holds. Answer a wrong pushed commit with a follow-up commit on top, and a wrong commit
-message with a line in the pull request body. A base frozen for others to stack on takes its fixes
-the same way, and the PR body's `Chain` line records what is frozen.
+Never rewrite a pushed commit: no `jj squash --into` it, no new description, no backward bookmark move, no force push. A rewrite moves every commit built on it and leaves reviews, CI runs and links naming a commit GitHub no longer holds. Answer a wrong commit with a follow-up commit on top, and a wrong message with a line in the PR body. A base frozen for others to stack on takes its fixes the same way; the body's `Chain` line records it.
