@@ -120,6 +120,16 @@ export async function ompRoot(
 }
 
 /**
+ * How long an omp the harness starts gets for its startup, from its spawn to the Envoy entry's
+ * registration with the listener: the host's own cost, which grows with the machine's load and is
+ * no step of any case. Measured on a 288-CPU box: 3.5 to 4.1 s at a 1-minute load of 450 to 600,
+ * 2.5 to 2.9 s of it loading the extensions; in a run beside a heavier load the same startup was
+ * still loading them at 53 s and still creating the session at 74 s. A wait that spans a startup
+ * gets this from the spawn, and a case that starts an omp is given this beyond its own steps.
+ */
+export const OMP_STARTUP_MS = 150_000;
+
+/**
  * How long an omp the harness started, with every process of its group, gets to be gone once it
  * is asked to end: its stdin closed (`Rpc.end`) or SIGTERM (a teardown). Measured on a loaded
  * machine (a 1-minute load of 356 to 524 on 288 CPUs): omp exited 150 to 660 ms after its stdin
@@ -1294,6 +1304,10 @@ export async function runLegionPane(
    */
   const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
     let settled = Promise.withResolvers<void>();
+    const registered = () =>
+      requests.filter((request) => request.path === "/v1/interests/subscribe").length;
+    const registeredBefore = registered();
+    const spawnedAt = Date.now();
     const rpc = spawnRpc(
       binary,
       {
@@ -1340,6 +1354,19 @@ export async function runLegionPane(
       },
       cleanup
     );
+    // The startup is the host's own cost, and it grows with the machine's load (OMP_STARTUP_MS):
+    // it ends here with the Envoy entry's registration with the listener, and the prompts go out
+    // after it, so each wait below is the run's alone and a startup that never ends fails naming
+    // itself, not at the case's own timeout. A polled wait: a request reaching the stand-in sends
+    // no event a case can await.
+    while (registered() === registeredBefore) {
+      if (Date.now() - spawnedAt > OMP_STARTUP_MS) {
+        throw new Error(
+          `the pane's omp did not register with the Envoy listener within ${OMP_STARTUP_MS} ms of its spawn`
+        );
+      }
+      await Promise.race([Bun.sleep(100), rpc.closed]);
+    }
     for (const prompt of prompts) {
       settled = Promise.withResolvers<void>();
       lastAnsweredAt = Date.now();

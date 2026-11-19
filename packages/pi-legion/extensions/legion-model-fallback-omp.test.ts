@@ -10,6 +10,7 @@ import {
   cleanupHook,
   type LegionPane,
   messageStream,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   type Refusal,
   type Request,
@@ -244,7 +245,7 @@ test.skipIf(skip)(
     // And the session does come back, once the wait is over.
     expect(pane.returnedAt(dueAt)).toBeDefined();
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );
 
 test.skipIf(skip)(
@@ -294,7 +295,7 @@ test.skipIf(skip)(
     expect(pane.returnedAt(dueAt)).toBeDefined();
     expect(pane.models().slice(2)).not.toContain("middle-model");
   },
-  240_000
+  OMP_STARTUP_MS + 240_000
 );
 
 test.skipIf(skip)(
@@ -314,7 +315,7 @@ test.skipIf(skip)(
     // plugin's own walk moved the session to.
     expect(userText(pane.turns()[1] as Request)).toContain("Carry on.");
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );
 
 test.skipIf(skip)(
@@ -345,7 +346,7 @@ test.skipIf(skip)(
     // The return clears the arming and leaves the doubling where it stands.
     expect(states.at(-1)).toEqual({ levels: { [STRONG]: 1 } });
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );
 
 test.skipIf(skip)(
@@ -391,7 +392,7 @@ test.skipIf(skip)(
     expect(returned).toBeDefined();
     expect((returned ?? 0) - (secondRefusal ?? 0)).toBeGreaterThanOrEqual(2 * COOLDOWN_MS);
   },
-  240_000
+  OMP_STARTUP_MS + 240_000
 );
 
 test.skipIf(skip)(
@@ -443,7 +444,7 @@ test.skipIf(skip)(
     expect(returned).toBeDefined();
     expect((returned ?? 0) - (secondRefusal ?? 0)).toBeLessThan(2 * COOLDOWN_MS);
   },
-  240_000
+  OMP_STARTUP_MS + 240_000
 );
 
 test.skipIf(skip)(
@@ -513,5 +514,6 @@ test.skipIf(skip)(
     ).toEqual([]);
     expect(resumedStates.at(-1)?.arming).toBeUndefined();
   },
-  300_000
+  // Two lives, each with a startup of its own.
+  2 * OMP_STARTUP_MS + 300_000
 );

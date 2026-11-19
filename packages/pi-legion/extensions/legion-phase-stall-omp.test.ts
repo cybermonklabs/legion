@@ -8,6 +8,7 @@ import {
   cleanupHook,
   type LegionPane,
   type LegionPaneOptions,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   type Reply,
   type Request,
@@ -416,7 +417,7 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "closed", count: 0 });
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -463,7 +464,7 @@ test.skipIf(skip)(
     expect(pane.publishes()).toHaveLength(1);
     expect(pane.completions()).toHaveLength(1);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -544,7 +545,7 @@ test.skipIf(skip)(
     expect(entries.at(-1)).toMatchObject({ state: "closed", count: 0 });
     expect(pane.completions()).toHaveLength(1);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -607,7 +608,7 @@ test.skipIf(skip)(
     expect(pane.turns()).toHaveLength(7);
     expect(pane.completions()).toHaveLength(1);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -641,7 +642,7 @@ test.skipIf(skip)(
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2]);
     expect(pane.publishes()).toEqual([]);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 /** The daemon's state with STALL-2 moved past implementing: the reviewer works it now, so no
@@ -678,7 +679,7 @@ test.skipIf(skip)(
     // Nothing was put in front of the worker, so nothing was counted.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0]);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -714,7 +715,7 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1]);
     expect(entries.at(-1)).toMatchObject({ state: "open", count: 1 });
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 // The run-end ask nudge (extensions/envoy.ts) is a hidden side-turn self-check whose
@@ -754,7 +755,7 @@ test.skipIf(skip)(
     const asks = pane.requests.filter((request) => request.path === "/api/v1/asks/open");
     expect(asks).toHaveLength(2);
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );
 
 test.skipIf(skip)(
@@ -789,7 +790,7 @@ test.skipIf(skip)(
     const asks = pane.requests.filter((request) => request.path === "/api/v1/asks/open");
     expect(asks).toHaveLength(2);
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );
 
 // Background work is on for every role, so a worker can end its turn with a job of its own
@@ -832,5 +833,5 @@ test.skipIf(skip)(
     expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
     expect(pane.completions()).toHaveLength(0);
   },
-  180_000
+  OMP_STARTUP_MS + 180_000
 );

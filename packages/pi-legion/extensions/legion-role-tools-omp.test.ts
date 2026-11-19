@@ -6,6 +6,7 @@ import {
   call,
   cleanupHook,
   type LegionPane,
+  OMP_STARTUP_MS,
   ompNatsGuard,
   type Reply,
   runLegionPane,
@@ -148,7 +149,7 @@ test.skipIf(skip)(
     // A cgroup line: `hierarchy:controllers:path`, under either cgroup version.
     expect(cgroup?.text).toMatch(/^\d+:.*:/m);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -157,7 +158,7 @@ test.skipIf(skip)(
     const pane = await toolsPane(setup(), { role: "reviewer", root: false }, SCRATCH_TURNS);
     await expectEverySucceeded(pane, 4);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );
 
 test.skipIf(skip)(
@@ -166,5 +167,5 @@ test.skipIf(skip)(
     const pane = await toolsPane(setup(), { role: "merger", root: false }, SCRATCH_TURNS);
     await expectEverySucceeded(pane, 4);
   },
-  120_000
+  OMP_STARTUP_MS + 120_000
 );

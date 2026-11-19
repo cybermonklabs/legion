@@ -9,6 +9,7 @@ import {
   cleanupHook,
   isSummarization,
   messageStream,
+  OMP_STARTUP_MS,
   ompRoot,
   type Request,
   sendRelayFrame,
@@ -46,10 +47,15 @@ function setup(): { readonly binary: string; readonly nats: string } {
   return { binary: omp, nats: natsUrl };
 }
 
-/** How long a case waits for one thing the session owes it before failing on it. The shared
+/** How long a case waits for one thing the session owes it before failing on it, once the
+ *  session has started; the startup itself gets the harness's OMP_STARTUP_MS. The shared
  *  `beforeAll` takes it too: bun's own 5 s per hook is less than a connection to the NATS server
  *  takes on a loaded machine. */
 const DEADLINE_MS = 30_000;
+
+/** A case's own timeout: a session's startup, which the case may be the one to pay, and its
+ *  steps. */
+const CASE_TIMEOUT_MS = OMP_STARTUP_MS + 120_000;
 
 // The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
 // such method. Checked once, before any case spends a binary's startup on a connection that
@@ -170,13 +176,14 @@ interface SurfaceSession {
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
+/** Polls `probe` until it returns a value, failing on `what` at `deadline` (DEADLINE_MS from now
+ *  unless a caller names one) or when omp exits. */
 async function until<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
-  closed: { readonly error?: unknown }
+  closed: { readonly error?: unknown },
+  deadline = Date.now() + DEADLINE_MS
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
   for (;;) {
     if (closed.error !== undefined) throw closed.error;
     const value = await probe();
@@ -278,6 +285,7 @@ async function startSession(
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
+  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -304,6 +312,9 @@ async function startSession(
     closed.error = error;
   });
 
+  // The registration ends the session's startup, which is the host's own cost and grows with the
+  // machine's load, so this wait runs from the spawn under OMP_STARTUP_MS and every wait after it
+  // under DEADLINE_MS.
   const sid = await until(
     "the session's registration with the listener",
     () => {
@@ -311,7 +322,8 @@ async function startSession(
       const id = subscribe?.body.session_id;
       return typeof id === "string" && id !== "" ? id : undefined;
     },
-    closed
+    closed,
+    Math.max(Date.now() + DEADLINE_MS, spawnedAt + OMP_STARTUP_MS)
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
@@ -664,7 +676,7 @@ test.skipIf(skip)(
     expect(trailing.tokens).toBeGreaterThan(reading.tokens);
     expect(trailing.tokens).toBeLessThan(200_000);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // The next message after the interval publishes the next frame, and the figures reach the viewer
@@ -702,7 +714,7 @@ test.skipIf(skip)(
     if (message === undefined) throw new Error("no message frame came before the context frame");
     expect(frame.at - message.at).toBeLessThan(200);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A view that opens or wakes draws its ring from the replay, so the newest figures ride in its
@@ -723,7 +735,7 @@ test.skipIf(skip)(
     expect(frame.contextWindow).toBe(200_000);
     expect(frame.tokens).toBe(live.tokens);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A compaction is the one moment the figures fall, and a ring left at the old reading would tell a
@@ -773,7 +785,7 @@ test.skipIf(skip)(
     expect(after.contextWindow).toBe(200_000);
     expect(after.tokens).not.toBe(beforeCompaction.tokens);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 /** The shell session, booted once: the `ENVOY_SHELL_COMMAND_LIMIT_MS` the check names, and a
@@ -839,7 +851,7 @@ test.skipIf(skip)(
     expect(published).not.toContain("printf hi\n\n```\nhi\n```");
     expect(conversation(turn.request)).not.toContain(SHELL_HEADING);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A person's `!command` is the session's own to run: the host is never handed the line, the live
@@ -886,7 +898,7 @@ test.skipIf(skip)(
       )
     ).toHaveLength(1);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // The person's line is theirs as they sent it: the space after the mark is in every answer,
@@ -905,7 +917,7 @@ test.skipIf(skip)(
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("! printf hi\n\n```\nhi\n```");
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // The command runs where the session runs: `SessionContext.cwd`, not the test's directory.
@@ -918,7 +930,7 @@ test.skipIf(skip)(
       `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // The command runs under the host's own shell configuration, which on the real session is read
@@ -933,7 +945,7 @@ test.skipIf(skip)(
       `${command}\n\n\`\`\`\n1|1|true|not a tty\n\`\`\``
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // That environment is the host's own for a child shell, not the binary's whole process
@@ -965,7 +977,7 @@ test.skipIf(skip)(
       `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // No login shell: a login shell reads the profile of the HOME it runs with, and this session's
@@ -988,7 +1000,7 @@ test.skipIf(skip)(
       `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // An Aside is the person's turn too, so it takes the same path and is answered the same way.
@@ -1007,7 +1019,7 @@ test.skipIf(skip)(
     expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\n```\naside\n```");
     expect(session.turns.length).toBe(turnsBefore);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // Every `!` message is answered, one whose command printed nothing included: silence is an answer
@@ -1021,7 +1033,7 @@ test.skipIf(skip)(
       "!true\n\nThe command printed nothing."
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // Dispatch cannot store U+0000 and refuses a whole reply holding one (400 NUL_CHARACTER), so a
@@ -1039,7 +1051,7 @@ test.skipIf(skip)(
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe("!printf 'a\\0b'\n\n```\nab\n```");
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 test.skipIf(skip)(
@@ -1054,7 +1066,7 @@ test.skipIf(skip)(
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe(answer);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A command that would run for ten minutes is stopped at the session's limit, and the answer says
@@ -1073,7 +1085,7 @@ test.skipIf(skip)(
       `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // One command runs for a session at a time: a second is answered naming the first rather than
@@ -1091,7 +1103,7 @@ test.skipIf(skip)(
       `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A command that prints without end must not fill the bus, the person's page or the model's
@@ -1112,7 +1124,7 @@ test.skipIf(skip)(
     expect(conversation(request)).toContain("a".repeat(SHELL_OUTPUT_MAX));
     expect(conversation(request)).not.toContain("a".repeat(SHELL_OUTPUT_MAX + 1));
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // The mark is one `!`, and the rest is the command whatever it starts with.
@@ -1130,7 +1142,7 @@ test.skipIf(skip)(
     const request = await probe(session);
     expect(conversation(request)).toContain("The command ended with exit status 127.");
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A BTW is a side question the model answers, never a line the session runs.
@@ -1149,7 +1161,7 @@ test.skipIf(skip)(
     ).not.toContain("!printf hi\n\n```\nhi\n```");
     await session.settled();
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A broadcast is no person's turn at all: it keeps its card, and the session runs nothing.
@@ -1178,7 +1190,7 @@ test.skipIf(skip)(
       )
     ).toBe(false);
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
 
 // A `!command` runs on its own promise, never inside the queued delivery task (D11): a command
@@ -1209,5 +1221,5 @@ test.skipIf(skip)(
       "```\nreleased\n```"
     );
   },
-  120_000
+  CASE_TIMEOUT_MS
 );
