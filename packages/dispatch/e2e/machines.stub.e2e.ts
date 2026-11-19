@@ -44,7 +44,7 @@ import { stubbed } from "./stub/stub-test";
 const CLUSTER_HOST = "cluster-pool";
 const SHARED_NAME_HOST = "legion-infra";
 const UNDRAWN_HOST = "example-host-split";
-const REPEATED_HOST = "sami-twoservers";
+const REPEATED_HOST = "sand-twoservers";
 
 /** The four-pane window above with its lower right pane split in two: the layout the session in
  *  the new pane `%7` reports, which the window is not drawn from while a fresher registration

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"golang.org/x/sys/unix"
 )
 
@@ -375,7 +376,7 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 		if unreached := ghStoppedByItsBound(ctx, err, printed, slug); unreached != nil {
 			return "", unreached
 		}
-		return "", err
+		return "", procgroup.Said(err, printed)
 	}
 	if limited := rateLimitFrom(printed); limited != nil {
 		return "", limited
@@ -411,7 +412,7 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 		stderr: &stderr,
 	})
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
 	}
 	return graphQLAnswer(status, printed, stderr.String(), slug)
 }
@@ -623,7 +624,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 		env:     []string{"HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"},
 	})
 	if err != nil {
-		return "", err
+		return "", procgroup.Said(err, printed)
 	}
 	if status != 0 {
 		masked := maskPath(slug)
