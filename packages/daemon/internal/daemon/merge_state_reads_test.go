@@ -267,7 +267,10 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 			t.Cleanup(cancel)
 			go rig.w.readMergeStates(ctx)
 
-			first := time.Now().UTC().Truncate(time.Microsecond)
+			// The row's attempts run on a clock an hour behind the runtime's, so each UNKNOWN they
+			// apply is a read older than the one the follow makes on the runtime's own clock: the
+			// workflow drops a read older than the one the record holds (workflow's mergeability).
+			first := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 			rig.firstRead(t, first)
 			at := first.Add(time.Minute)
 			var lastAttempt time.Time

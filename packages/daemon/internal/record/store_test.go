@@ -370,10 +370,11 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		MergeState:      MergeStateClean,
 		ConflictingHead: "a0b1c2",
 		// The first conflicting read still waiting for its second and the ask to merge forward,
-		// each a jsonb column of its own, read back with every field and time as written.
+		// each a jsonb column of its own, read back with every field and time as written, the
+		// merge forwards that landed before the ask among them.
 		ConflictRead: &ConflictRead{Head: "b1c2d3", Base: "main", At: updatedAt.Add(2 * time.Minute)},
 		MergeForward: &MergeForward{Head: "a0b1c2", Base: "main", Phase: phase.Accepting, Why: ConflictCheckNotGreen,
-			AskedAt: updatedAt.Add(-time.Hour), Landed: "b1c2d3", ReviewAsked: true},
+			AskedAt: updatedAt.Add(-time.Hour), Landed: "b1c2d3", ReviewAsked: true, Earlier: []LandedMergeForward{{Head: "8e7d6c", Landed: "9f8e7d"}}},
 		// The moment of the last read that answered is read back as it was written, so the column
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,6 +33,13 @@ import (
 // exception is an ask made in implementing, which covers implementing only: an implementer that
 // completes at that head without the merge leaves the issue's next phase to ask again, with its
 // hold and its notice.
+//
+// The ask replaces the one the record holds, and keeps what that one kept of the merge forwards
+// that landed before it in the same stretch of work (record.MergeForward.Earlier), with that ask
+// itself added once it landed: when the head a merge left conflicts in its turn and is merged
+// forward again, a completion at the head the first merge replaced is still refused
+// (mergedForwardRefusal). That holds for an ask of a new head and for the same head asked again
+// on a phase entry alike.
 //
 // The roles are addressed as every role message of the daemon is (addressRoles), each once, and
 // a pull request that is not open, an issue in no phase of record.MergeForwardPhases and a tree
@@ -73,7 +81,15 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 			return err
 		}
 	}
-	pr.MergeForward = &record.MergeForward{Head: pr.HeadSHA, Base: pr.Base, Phase: at, Why: why, AskedAt: e.now()}
+	next := &record.MergeForward{Head: pr.HeadSHA, Base: pr.Base, Phase: at, Why: why, AskedAt: e.now()}
+	if before := pr.MergeForward; before != nil {
+		next.Earlier = before.Earlier
+		if before.Landed != "" {
+			// Clipped, so the append writes a new array: a copy of the pull request shares the old one.
+			next.Earlier = append(slices.Clip(before.Earlier), record.LandedMergeForward{Head: before.Head, Landed: before.Landed})
+		}
+	}
+	pr.MergeForward = next
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return err
 	}
@@ -205,26 +221,29 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 
 // mergedForwardRefusal is the completion fence of a merge forward (dispatch://INFRA-4374 R1): a
 // completion of testing, reviewing or retro whose commit is the head a merge forward was asked of,
-// once that merge landed (record.MergeForward.Landed) and the pull request stands at another head,
-// reports work on code the issue no longer stands on, and is refused with
-// HANDOFF_HEAD_MERGED_FORWARD before anything is recorded (handoff). The refusal names both heads
-// and tells the role to read what the merge changed and complete again at the head the pull
-// request stands at now; a phase that ends with a handoff record is told to write it again, since
-// a completion naming the record it already named is the one the route answers as received
-// (api/handoff.go). The fence is the merge forward's alone, not every push's: a completion at the
-// current head, at a head no merge forward replaced, or of any other phase passes it. It answers
-// false where it does not refuse.
+// once that merge landed and the pull request stands at another head, reports work on code the
+// issue no longer stands on, and is refused with HANDOFF_HEAD_MERGED_FORWARD before anything is
+// recorded (handoff). The merge forward is the record's landed ask (record.MergeForward.Landed)
+// or any that landed before it in the same stretch of work (record.MergeForward.Earlier,
+// mergedForwardOf), so a head the first merge replaced stays fenced after the head that merge
+// left conflicts in its turn and is merged forward again. The refusal names the head that merge
+// replaced, the head it left and the head the pull request stands at now, and tells the role to
+// read what the merge changed and complete again at that head; a phase that ends with a handoff
+// record is told to write it again, since a completion naming the record it already named is the
+// one the route answers as received (api/handoff.go). The fence is the merge forward's alone, not
+// every push's: a completion at the current head, at a head no merge forward replaced, or of any
+// other phase passes it. It answers false where it does not refuse.
 func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Phase, commit string, pr *record.PullRequest) (intake.Result, bool) {
 	switch reported {
 	case phase.Testing, phase.Reviewing, phase.Retro:
 	default:
 		return intake.Result{}, false
 	}
-	if pr == nil || pr.MergeForward == nil {
+	if pr == nil || pr.MergeForward == nil || commit == pr.HeadSHA {
 		return intake.Result{}, false
 	}
-	asked := pr.MergeForward
-	if asked.Landed == "" || commit != asked.Head || commit == pr.HeadSHA {
+	replaced, ok := mergedForwardOf(pr.MergeForward, commit)
+	if !ok {
 		return intake.Result{}, false
 	}
 	again := "complete again at that head"
@@ -233,20 +252,39 @@ func mergedForwardRefusal(issue record.Issue, role claim.Role, reported phase.Ph
 			issue.Key, word)
 	}
 	return refused("HANDOFF_HEAD_MERGED_FORWARD", fmt.Sprintf("the %s's completion of phase %s of %s is at head %s, and the merge of %s forward replaced that head: pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
-		role, reported, issue.Key, asked.Head, asked.Base, pr.Number, pr.HeadSHA, asked.Landed, pr.HeadSHA, again)), true
+		role, reported, issue.Key, replaced.Head, pr.MergeForward.Base, pr.Number, pr.HeadSHA, replaced.Landed, pr.HeadSHA, again)), true
+}
+
+// mergedForwardOf is the merge forward of the record's stretch of work that replaced commit: the
+// ask the record holds, when it landed and commit is its head, or else the newest of the merge
+// forwards that landed before it (record.MergeForward.Earlier) whose head commit is. It answers
+// false where no merge forward the record keeps replaced commit.
+func mergedForwardOf(asked *record.MergeForward, commit string) (record.LandedMergeForward, bool) {
+	if asked.Landed != "" && asked.Head == commit {
+		return record.LandedMergeForward{Head: asked.Head, Landed: asked.Landed}, true
+	}
+	for i := len(asked.Earlier) - 1; i >= 0; i-- {
+		if asked.Earlier[i].Head == commit {
+			return asked.Earlier[i], true
+		}
+	}
+	return record.LandedMergeForward{}, false
 }
 
 // conflictConfirmDone releases a first conflicting read that no second read confirmed or
 // released (intake.ConflictConfirmDone): the second read's row (record.ConflictConfirm) read
 // GitHub's UNKNOWN up to its last attempt, or no read of it succeeded (Unread). The first read is
-// cleared while the record still holds it for the fact's head, so the next read that finds the head
-// conflicting starts the two reads again (mergeability), and the release is logged with both reads
-// as a MERGEABLE release is. A record that holds no first read of that head - a later read already
-// confirmed or released it, or the head moved and a read of the new head made one of its own - is
+// cleared while the record still holds the row's own, of the fact's head and made at its
+// FirstReadAt, so the next read that finds the head conflicting starts the two reads again
+// (mergeability), and the release is logged with both reads as a MERGEABLE release is. A record
+// that holds no first read of that head and time - a later read already confirmed or released
+// it, the head moved and a read of the new head made one of its own, or a MERGEABLE read released
+// it and a later CONFLICTING read of the same head made a newer one, whose own row reads it - is
 // left as it is. It acts on nothing and moves nothing.
 func (e *Engine) conflictConfirmDone(ctx context.Context, tx pgx.Tx, fact intake.ConflictConfirmDone) (intake.Result, error) {
 	pr, err := e.store.PullRequest(ctx, tx, fact.Issue)
-	if err != nil || pr == nil || pr.Number != fact.Number || pr.ConflictRead == nil || pr.ConflictRead.Head != fact.Head {
+	if err != nil || pr == nil || pr.Number != fact.Number || pr.ConflictRead == nil || pr.ConflictRead.Head != fact.Head ||
+		!pr.ConflictRead.At.Equal(fact.FirstReadAt) {
 		return intake.Result{}, err
 	}
 	first := *pr.ConflictRead

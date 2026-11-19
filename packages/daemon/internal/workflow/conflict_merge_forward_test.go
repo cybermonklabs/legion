@@ -95,16 +95,19 @@ func mergeForwardMessages(t *testing.T, pool *pgxpool.Pool) []record.MergeForwar
 }
 
 // conflictConfirms is the due time of every second read of a conflict the outbox holds, in the
-// order written, each of them a read of #42 at conflictHead.
+// order written, each of them a read of #42 at conflictHead due a minute after the first read it
+// carries (record.ConflictConfirm.FirstReadAt).
 func conflictConfirms(t *testing.T, pool *pgxpool.Pool) []time.Time {
 	t.Helper()
-	for _, row := range queuedRows(t, pool) {
-		if read, ok := row.payload.(record.ConflictConfirm); ok && read != (record.ConflictConfirm{Number: 42, Head: conflictHead}) {
-			t.Fatalf("a second read reads %+v, want #42 at %s", read, conflictHead)
-		}
-	}
 	due := []time.Time{}
 	for _, row := range issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindConflictConfirm)) {
+		payload, err := record.DecodeOutboxPayload(record.OutboxRow{ID: row.id, Kind: record.OutboxKindConflictConfirm, Payload: row.payload})
+		if err != nil {
+			t.Fatalf("decode the second read %d: %v", row.id, err)
+		}
+		if read := payload.(record.ConflictConfirm); read.Number != 42 || read.Head != conflictHead || !row.nextAt.Equal(read.FirstReadAt.Add(conflictConfirmWait)) {
+			t.Fatalf("a second read due at %s reads %+v, want #42 at %s, due a minute after the first read it carries", row.nextAt, read, conflictHead)
+		}
 		due = append(due, row.nextAt)
 	}
 	return due
@@ -248,7 +251,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 	t.Run("the second read's row ending on unknown releases the first read", func(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
 		firstRead(t, pool)
-		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ConflictConfirmDone{Issue: "LEGION-208", Number: 42, Head: conflictHead})
+		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ConflictConfirmDone{Issue: "LEGION-208", Number: 42, Head: conflictHead, FirstReadAt: firstConflictRead})
 		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != "" {
 			t.Fatalf("after the second read ended the record holds first read %+v and %q conflicting, want neither", pr.ConflictRead, pr.ConflictingHead)
 		}

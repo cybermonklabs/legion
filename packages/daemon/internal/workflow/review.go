@@ -109,8 +109,9 @@ const conflictConfirmWait = time.Minute
 // never by commit: GitHub's base.sha does not name the base it computed against, and a conflict
 // with a newer base is still a conflict. A MERGEABLE read releases the first read and logs both
 // reads. An UNKNOWN read leaves it as it is, and the second read's own row releases it once its
-// last attempt still answers UNKNOWN (conflictConfirmDone). After a release, the next CONFLICTING
-// read is a first read again.
+// last attempt still answers UNKNOWN, while the first read is still the one the row was queued for
+// (conflictConfirmDone, record.ConflictConfirm.FirstReadAt). After a release, the next CONFLICTING
+// read is a first read again, with a row of its own.
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
@@ -137,6 +138,15 @@ const conflictConfirmWait = time.Minute
 // push is itself a fact that asks for a read of the head it left (askMergeState). The read time
 // goes with it: a stamp is never recorded against a head the record has already left, since it
 // would say that head's state was read when it was another head's that was.
+//
+// A read GitHub answered before the read the record holds of its head
+// (record.PullRequest.StateReadAt) is dropped whole as well, and logged: nothing is written,
+// nothing decided and no round asked again. The readers of the pull request run apart, and the
+// per-issue read dates its answer before it follows the head under the fact lock (daemon's
+// readIssuePullRequest), so a MERGEABLE answer made before a push to the base can be applied after
+// the CONFLICTING answer of a read made since. Applied, it would release that conflict's first
+// read, and the record would say mergeable while GitHub says CONFLICTING. A fact that carries no
+// read time is never dropped for its time.
 //
 // The read time the fact carries (intake.PullRequestMergeability.ReadAt) is what
 // record.PullRequest.StateReadAt is written from, and it is the one thing a read that confirms
@@ -165,6 +175,12 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
 		return intake.Result{}, nil
 	}
+	if !fact.ReadAt.IsZero() && fact.ReadAt.Before(pr.StateReadAt) {
+		e.logOnCommit(ctx, "workflow: GitHub's merge state answered before the read the record holds; the read is dropped",
+			"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "readAt", fact.ReadAt, "stateReadAt", pr.StateReadAt,
+			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
+		return intake.Result{}, nil
+	}
 	base := pr.Base
 	if fact.Base != "" {
 		base = fact.Base
@@ -188,7 +204,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			}
 		default:
 			first = &record.ConflictRead{Head: pr.HeadSHA, Base: base, At: readAt}
-			if err := e.enqueueAt(ctx, tx, pr.Issue, record.ConflictConfirm{Number: pr.Number, Head: pr.HeadSHA}, readAt.Add(conflictConfirmWait)); err != nil {
+			if err := e.enqueueAt(ctx, tx, pr.Issue, record.ConflictConfirm{Number: pr.Number, Head: pr.HeadSHA, FirstReadAt: readAt}, readAt.Add(conflictConfirmWait)); err != nil {
 				return intake.Result{}, err
 			}
 			e.logOnCommit(ctx, "workflow: a conflict read waits for a second read",

@@ -887,10 +887,15 @@ type PullRequest struct {
 	// Who stamps it: both readers of the pull request, the per-issue read (daemon's
 	// readIssuePullRequest) and the merge-state ladder (daemon's readMergeState), each through the
 	// mergeability fact (workflow's mergeability). An answer about a head the record has moved past
-	// is dropped with its time. A read that only confirms what is recorded moves the stamp exactly
-	// as one that changes something does: it is the age of the knowledge, not of the last change to
-	// it, and that is what tells a head read a minute ago from one nothing has read for a day. No
-	// webhook stamps it, and a fact with no read time behind it writes none and erases none.
+	// is dropped with its time, and so is an answer read before the one the record holds: the
+	// readers run apart, and the per-issue read dates its answer before it waits on the fact lock,
+	// so an older answer can be applied after a newer one, and it would put back what GitHub has
+	// answered otherwise since. So the stamp is the moment of the newest read the record holds of
+	// its head. A read that only confirms what is recorded moves the stamp exactly as one that
+	// changes something does: it is the age of the knowledge, not of the last change to it, and
+	// that is what tells a head read a minute ago from one nothing has read for a day. No webhook
+	// stamps it, and a fact with no read time behind it writes none, erases none and is never
+	// dropped for its time.
 	//
 	// What clears it, always with MergeState and Mergeability: any fact that moves the head
 	// (classify's advance: a synchronize, a reopen or a close at another head), because the stamp
@@ -940,13 +945,18 @@ type PullRequest struct {
 	// the confirmation, which hands the conflict to ConflictingHead and the act on it (R0). An
 	// UNKNOWN read leaves it as it is, as it leaves ConflictingHead; when the conflict_confirm
 	// row's last read still answers UNKNOWN, the fact that row applies
-	// (intake.ConflictConfirmDone) clears it. After any of these clears the next CONFLICTING read
-	// is a first read again.
+	// (intake.ConflictConfirmDone) clears it, but only while it is that row's first read, of the
+	// row's head and made at the row's time (ConflictConfirm.FirstReadAt): a row of a first read
+	// already released leaves a newer first read of the same head standing. After any of these
+	// clears the next CONFLICTING read is a first read again. A read made before the one the record
+	// holds (StateReadAt above) neither writes, confirms nor clears it: it is dropped whole with its
+	// time, as one about a head the record has moved past is, so a MERGEABLE answer read before the
+	// first read and applied after it leaves the first read standing.
 	//
 	// Who reads it: mergeability, to tell a confirming read from a first one; the conflict_confirm
 	// row's executor in internal/daemon, which finishes without a read once the record no longer
-	// holds a first read of the row's head; and the log line of the read that releases it, which
-	// names both reads.
+	// holds the row's first read, of its head and made at its time; and the log line of the read
+	// that releases it, which names both reads.
 	//
 	// It is GitHub's answer about a head and a base, as ConflictingHead is, not the issue's run's,
 	// so a new generation keeps it (Store.ClearGeneration). It is no part of a head run's
@@ -958,20 +968,26 @@ type PullRequest struct {
 	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
 	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
 	// than a phase start: it names the head and the base branch of the conflict, the phase the
-	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new
-	// head arrives, that head (MergeForward.Landed).
+	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new head
+	// arrives, that head (MergeForward.Landed). It also keeps every merge forward that landed
+	// before it in the same stretch of work (MergeForward.Earlier).
 	//
 	// Who writes it: Engine.mergeForward, in the transaction that queues the merge_forward rows,
 	// and pullRequestSynchronized, which sets Landed on the first head that moves off
-	// MergeForward.Head and ReviewAsked when that landing asks the reviewer to read the merge.
+	// MergeForward.Head and ReviewAsked when that landing asks the reviewer to read the merge. An
+	// ask that replaces the one the record holds - of a new head whose conflict was confirmed, or
+	// of the same head asked again on a phase entry - carries that ask's Earlier, and the ask
+	// itself, its head and the head that landed, once it landed.
 	// What clears it: any transition into implementing, the issue leaving the workflow, and a new
-	// generation (Store.ClearGeneration), since it is an ask of the run before.
+	// generation (Store.ClearGeneration), since it is an ask of the run before. That ends the
+	// stretch of work, Earlier with it.
 	//
 	// Who reads it: Engine.mergeForward, which asks once for each head, so a later confirmed
 	// conflict or a transition at the head it names sends nothing (an ask made in implementing
 	// covers implementing only); the merge_forward row's executor in internal/daemon, which
 	// finishes undelivered once the record's ask no longer names the row's head; Engine.handoff,
-	// which refuses a completion at MergeForward.Head once the record's head has moved off it
+	// which refuses a completion at MergeForward.Head once the record's head has moved off it, or
+	// at the head of any merge forward of Earlier the record's head is not
 	// (HANDOFF_HEAD_MERGED_FORWARD); and the merger's start task, which waits for the reviewer's
 	// approval of the landed head when the reviewer was asked to read it.
 	//
@@ -1004,16 +1020,30 @@ type ConflictRead struct {
 // stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
 // until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review. It is stored as the jsonb of
-// pull_requests.merge_forward (migration 20261119003157), null for nil.
+// it does when the issue stands past review. Earlier is every merge forward that landed before
+// this ask in the same stretch of work, oldest first: a later ask replaces the one the record
+// holds, so when the head a merge left conflicts in its turn and is merged forward again, Earlier
+// is what still names the head the first merge replaced (PullRequest.MergeForward says how long
+// the stretch lasts). It is stored as the jsonb of pull_requests.merge_forward (migration
+// 20261119003157), null for nil; the jsonb takes Earlier with no migration of its own, and leaves
+// it out while it is empty.
 type MergeForward struct {
-	Head        string      `json:"head"`
-	Base        string      `json:"base"`
-	Phase       phase.Phase `json:"phase"`
-	Why         ConflictWhy `json:"why"`
-	AskedAt     time.Time   `json:"askedAt"`
-	Landed      string      `json:"landed,omitempty"`
-	ReviewAsked bool        `json:"reviewAsked,omitempty"`
+	Head        string               `json:"head"`
+	Base        string               `json:"base"`
+	Phase       phase.Phase          `json:"phase"`
+	Why         ConflictWhy          `json:"why"`
+	AskedAt     time.Time            `json:"askedAt"`
+	Landed      string               `json:"landed,omitempty"`
+	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
+	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+}
+
+// LandedMergeForward is a merge forward that landed before the ask the record holds
+// (MergeForward.Earlier): Head is the head it was asked of, the one its merge replaced, and
+// Landed the head the merge left.
+type LandedMergeForward struct {
+	Head   string `json:"head"`
+	Landed string `json:"landed"`
 }
 
 // ConflictWhy is one of the reasons R0 acts on a confirmed conflict for (dispatch://INFRA-4374

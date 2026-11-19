@@ -309,7 +309,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 				}
 			}}},
 		"ConflictConfirmDone": {{name: "a second read that answers no state releases the first and keeps the step", arrange: conflictReadOfAwaiting,
-			source: "outbox", fact: intake.ConflictConfirmDone{Issue: awaiting, Number: 5, Head: "head-5"}, keeps: awaiting,
+			source: "outbox", fact: intake.ConflictConfirmDone{Issue: awaiting, Number: 5, Head: "head-5", FirstReadAt: awaitingFirstRead}, keeps: awaiting,
 			then: func(t *testing.T, pr record.PullRequest) {
 				if pr.ConflictRead != nil || pr.MergeForward != nil {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)

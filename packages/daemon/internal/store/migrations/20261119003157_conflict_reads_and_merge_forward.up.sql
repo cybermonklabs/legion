@@ -43,8 +43,9 @@ delete from outbox where kind = 'phase_ended';
 -- branch and the time of that read. pull_requests.merge_forward is record.PullRequest.MergeForward:
 -- the daemon's ask that the implementer merge the base forward onto a head whose conflict was
 -- confirmed, with that head and base, the phase the issue stays in, why the daemon acted, when it
--- asked, the first head that landed after the ask, and whether the reviewer was asked to read the
--- merge. Both are nullable jsonb, null where the record holds none, which is every row the table
+-- asked, the first head that landed after the ask, whether the reviewer was asked to read the
+-- merge, and each merge forward that landed before it while the issue stayed out of implementing.
+-- Both are nullable jsonb, null where the record holds none, which is every row the table
 -- holds now: no release before this one read a conflict twice or asked for a merge forward, so
 -- nothing fills them. A new generation clears merge_forward, an ask of the run before, and keeps
 -- conflict_read, GitHub's answer about the head and the base (record's clearGeneration).

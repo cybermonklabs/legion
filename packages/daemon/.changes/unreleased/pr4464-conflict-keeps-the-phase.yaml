@@ -14,8 +14,9 @@ body: |-
     workspace and push, the tester, the reviewer or the merger holding the phase is told to stop
     writing the workspace and then the new head, the architect gets one `checks-red` notice naming
     the phase the issue stays in, and past review the reviewer is asked to read the merge and
-    approve the new head. A completion that names the head the merge replaced is refused
-    `HANDOFF_HEAD_MERGED_FORWARD`. The daemon also reads the merge state on a head push of an issue
+    approve the new head. A completion that names a head a merge forward replaced is refused
+    `HANDOFF_HEAD_MERGED_FORWARD`, also once the new head conflicts and is merged forward in its
+    turn. The daemon also reads the merge state on a head push of an issue
     in `implementing` through `merging` and on a base push for each issue in `testing` through
     `merging`, and reads again with a wait that doubles to ten minutes after a ladder whose reads
     all answered `unknown` or a second read whose attempts answered no state; a start read that

@@ -1535,11 +1535,15 @@ branch, or the daemon could not read the base's rules. Its log says which: `work
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
 merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
-required contexts and the green ones, and `workflow: merge forward asked` with the reason. A merge
+required contexts and the green ones, and `workflow: merge forward asked` with the reason. A read
+GitHub answered before the newest read the record holds of the same head is dropped whole, with
+`workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
+so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
 forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and then the new head,
-and `workflow: the merge forward landed` names both heads. A completion that names the replaced
-head is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is made again at the new
+and `workflow: the merge forward landed` names both heads. A completion that names a head a merge
+forward replaced, the head an earlier merge forward replaced included, is refused
+`HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is made again at the new
 head. Past review the reviewer is asked to read the merge and approve the new head. A red check
 sends nothing back from anywhere.
 

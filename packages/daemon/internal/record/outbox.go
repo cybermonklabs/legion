@@ -1392,14 +1392,24 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 // the mergeability fact every read of the pull request applies. An UNKNOWN answer is read again,
 // a bounded number of times; when the last read still answers UNKNOWN, or no read succeeded, the
 // row applies the fact that releases the first read (intake.ConflictConfirmDone). Number is the
-// pull request, and Head the head the first read found conflicting.
+// pull request, Head the head the first read found conflicting, and FirstReadAt when that first
+// read was made (PullRequest.ConflictRead.At).
+//
+// A first read a MERGEABLE read released and a later CONFLICTING read of the same head made again
+// is a new first read with a row of its own, so the head alone does not say which first read a row
+// is the second read of: FirstReadAt does. Its executor finishes without a read once the record's
+// first read was made at another time, and the fact its last attempt applies carries the time
+// (intake.ConflictConfirmDone.FirstReadAt), so a row of a released first read can neither read for
+// nor release the newer one. Both this payload and pull_requests.conflict_read are jsonb, where
+// Go's time is kept to the nanosecond, so the two times compare equal for the same read.
 //
 // It is a durable row rather than a timer held in memory for the reason MergeQueueRead is: a
 // restart between the two reads loses nothing, since the first read's fact is acknowledged once
 // its transaction commits.
 type ConflictConfirm struct {
-	Number int    `json:"number"`
-	Head   string `json:"head"`
+	Number      int       `json:"number"`
+	Head        string    `json:"head"`
+	FirstReadAt time.Time `json:"firstReadAt"`
 }
 
 func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
@@ -2021,6 +2031,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case ConflictConfirm:
 		if value.Number < 1 || value.Head == "" {
 			return fmt.Errorf("a conflict confirm names the pull request it reads again and the head the first read found conflicting; it names #%d at %q", value.Number, value.Head)
+		}
+		if value.FirstReadAt.IsZero() {
+			return fmt.Errorf("a conflict confirm names when the first read it reads again was made; its read of #%d at %q names no time", value.Number, value.Head)
 		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {

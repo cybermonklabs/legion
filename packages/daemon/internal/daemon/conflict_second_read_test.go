@@ -473,6 +473,85 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 	}
 }
 
+// A second read's row is the second read of its own first read alone (record.ConflictConfirm's
+// FirstReadAt, dispatch://INFRA-4374 R2). Its first attempt reads GitHub's UNKNOWN and waits to
+// read again; meanwhile a MERGEABLE read releases its first read, and a CONFLICTING read of the
+// same head after that is a newer first read, with a row of its own. The released first read's
+// row then reads nothing and leaves the newer first read standing: neither the read it would make
+// nor the release its last attempt applies is about that first read. The newer first read's own
+// row reads GitHub a minute after it, and GitHub's CONFLICTING then confirms the conflict.
+func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(t *testing.T) {
+	// The reads are timed below the microsecond, as the daemon's clock times them: the row and the
+	// record keep a first read's time in jsonb, whole, so the newer first read's own row still
+	// finds the record holding its first read.
+	first := time.Now().UTC().Truncate(time.Microsecond).Add(789 * time.Nanosecond)
+	rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
+		if read == 1 {
+			return unknownPull
+		}
+		return conflictingPull
+	})
+	rig.firstRead(t, first)
+	at := first.Add(time.Minute)
+	if ran := runSecondReads(t, rig.runner, at); ran != 1 {
+		t.Fatalf("%d second reads ran a minute after the first read, want one", ran)
+	}
+	if _, attempts, found := secondReadRow(t, rig.pool); !found || attempts != 1 {
+		t.Fatalf("after GitHub answered unknown the row is queued %t after %d attempts, want it waiting to read again after one", found, attempts)
+	}
+
+	applyFact(t, rig.pool, "github", "mergeable-read", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main",
+		HeadSHA: "code", Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean, ReadAt: at.Add(time.Second)}, rig.w.handlers...)
+	newer := at.Add(2 * time.Second)
+	applyFact(t, rig.pool, "github", "newer-first-read", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main",
+		HeadSHA: "code", Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: newer,
+		Rules: &record.BaseRules{Required: []string{"lint"}}}, rig.w.handlers...)
+	if _, pr := capturePhase(t, rig.pool); pr.ConflictRead == nil || pr.ConflictRead.Head != "code" || !pr.ConflictRead.At.Equal(newer) {
+		t.Fatalf("after the release and a new CONFLICTING read the first read is %+v, want the newer one of code, made at %s", pr.ConflictRead, newer)
+	}
+	if rows := outboxRowsOfKind(t, rig.pool, "CAPTURE-1", record.OutboxKindConflictConfirm); rows != 2 {
+		t.Fatalf("the outbox holds %d second reads, want the released first read's and the newer one's", rows)
+	}
+
+	// Only the released first read's row is due: the newer one's is due a minute after it.
+	if ran := runSecondReads(t, rig.runner, at.Add(time.Minute)); ran != 1 {
+		t.Fatalf("%d second reads ran, want the released first read's alone", ran)
+	}
+	if got := rig.reads.Load(); got != 1 {
+		t.Fatalf("GitHub was read %d times, want only the released first read's first attempt", got)
+	}
+	skipped := rig.lines(t, secondReadSkipped)
+	if len(skipped) != 1 || !strings.Contains(fmt.Sprint(skipped[0]["why"]), "the first read the record holds was made at") {
+		t.Fatalf("the row logged %v, want one line naming the newer first read the record holds", skipped)
+	}
+	_, pr := capturePhase(t, rig.pool)
+	if pr.ConflictRead == nil || pr.ConflictRead.Head != "code" || !pr.ConflictRead.At.Equal(newer) || pr.ConflictingHead != "" || pr.MergeForward != nil {
+		t.Fatalf("after the released first read's row the first read is %+v, %q is held conflicting and the merge forward is %+v; want the newer first read standing and nothing acted on",
+			pr.ConflictRead, pr.ConflictingHead, pr.MergeForward)
+	}
+	if due, attempts, found := secondReadRow(t, rig.pool); !found || attempts != 0 || due.Sub(newer.Add(time.Minute)).Abs() >= time.Microsecond {
+		t.Fatalf("the outbox holds a second read queued %t, due %s after %d attempts; want the newer first read's alone, due a minute after it", found, due, attempts)
+	}
+	if rows := outboxRowsOfKind(t, rig.pool, "CAPTURE-1", record.OutboxKindConflictConfirm); rows != 1 {
+		t.Fatalf("the outbox holds %d second reads, want the newer first read's alone", rows)
+	}
+
+	if ran := runSecondReads(t, rig.runner, newer.Add(time.Minute)); ran != 1 {
+		t.Fatalf("%d second reads ran a minute after the newer first read, want its own", ran)
+	}
+	_, pr = capturePhase(t, rig.pool)
+	if pr.ConflictingHead != "code" || pr.ConflictRead != nil {
+		t.Fatalf("the record holds %q conflicting with first read %+v, want the conflict of code confirmed", pr.ConflictingHead, pr.ConflictRead)
+	}
+	if asked := pr.MergeForward; asked == nil || asked.Head != "code" || asked.Why != classify.ConflictCheckNotGreen || asked.Phase != phase.Testing {
+		t.Fatalf("the record holds merge forward %+v, want one asked of code in testing for %s: lint is required and green nowhere",
+			asked, classify.ConflictCheckNotGreen)
+	}
+	if got := rig.reads.Load(); got != 2 {
+		t.Fatalf("GitHub was read %d times, want the released first read's one attempt and the newer first read's second read", got)
+	}
+}
+
 // recordCapture writes CAPTURE-1's pull request record as change leaves it, as no fact would: the
 // state a test reads a row against.
 func recordCapture(t *testing.T, pool *store.Pool, change func(*record.PullRequest)) {

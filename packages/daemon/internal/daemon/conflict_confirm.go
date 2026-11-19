@@ -23,20 +23,22 @@ import (
 //
 // Each attempt first reads the issue and its pull request record in one transaction
 // (issueRecord), and finishes the row without reading GitHub, with one line naming why, once the
-// pull request is not open at the row's head or the record holds no first read of that head
-// (conflictReadLeft): a later read already confirmed or released it, or a new head left it behind,
-// and a second read of it would decide nothing. Otherwise it reads the pull request once, bounded
-// by issueRead as the per-issue read bounds its own, and applies GitHub's answer through
-// applyMergeability, under an event id that names the row and the attempt, so a row run again
-// after its finish was lost applies no answer twice; it logs one line for the attempt with what it
-// came to. A failed read, or GitHub's UNKNOWN (`mergeable: null`, its job still running), is read
-// again after the runtime's wait, or after GitHub's Retry-After when that is longer
-// (readAgainAfter), up to mergeStateLadderReads attempts in all, as the merge-queue read reads its
-// pull request (mergeQueueRead). The bound is on attempts, each making at most one read. When the
-// last attempt's read failed or still answered UNKNOWN, the row applies intake.ConflictConfirmDone
-// (Unread for a failed read), which releases the first read so that the next read that finds the
-// head conflicting starts the two reads again, and then hands the head to the runtime's
-// merge-state reader to follow as it follows a climb that ended on `unknown`
+// pull request is not open at the row's head or the record no longer holds the row's first read,
+// of that head and made at the row's FirstReadAt (conflictReadLeft): a later read already
+// confirmed or released it, a new head left it behind, or it was released and a later read of the
+// same head made a newer first read with a row of its own, and a second read of it would decide
+// nothing. Otherwise it reads the pull request once, bounded by issueRead as the per-issue read
+// bounds its own, and applies GitHub's answer through applyMergeability, under an event id that
+// names the row and the attempt, so a row run again after its finish was lost applies no answer
+// twice; it logs one line for the attempt with what it came to. A failed read, or GitHub's
+// UNKNOWN (`mergeable: null`, its job still running), is read again after the runtime's wait, or
+// after GitHub's Retry-After when that is longer (readAgainAfter), up to mergeStateLadderReads
+// attempts in all, as the merge-queue read reads its pull request (mergeQueueRead). The bound is
+// on attempts, each making at most one read. When the last attempt's read failed or still
+// answered UNKNOWN, the row applies intake.ConflictConfirmDone (Unread for a failed read), naming
+// the first read by its head and its time, which releases that first read so that the next read
+// that finds the head conflicting starts the two reads again, and then hands the head to the
+// runtime's merge-state reader to follow as it follows a climb that ended on `unknown`
 // (queueMergeStateFollow, followMergeState, dispatch://INFRA-4374 R4). Without those reads the
 // record would read whatever the last attempt left for as long as GitHub takes, and nothing would
 // read the head again until its next event. A last read that failed starts them too, since the
@@ -91,7 +93,7 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 		r.log.Info("outbox conflict confirm: GitHub answered unknown at the last attempt; the first read is released and the merge state reads follow the head", attributes...)
 	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("conflict-confirm-done:%s:%d", row.Issue, row.ID),
-		intake.ConflictConfirmDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {
+		intake.ConflictConfirmDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, FirstReadAt: payload.FirstReadAt, Unread: failed != nil}, r.handlers...); err != nil {
 		return fmt.Errorf("apply the end of the second read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 	}
 	r.queueMergeStateFollow(row.Issue, payload.Head)
@@ -116,8 +118,9 @@ func (r *outbox) readAgainAfter(failed error) time.Duration {
 }
 
 // conflictReadLeft says why the second read of payload's head reads nothing, "" while it reads: the
-// record holds the issue and its pull request payload.Number, open at payload.Head, with a first
-// conflicting read of that head (record.PullRequest.ConflictRead).
+// record holds the issue and its pull request payload.Number, open at payload.Head, with the first
+// conflicting read the row was queued for (record.PullRequest.ConflictRead), of that head and made
+// at payload.FirstReadAt. Both times come back from jsonb as they were written, to the nanosecond.
 func conflictReadLeft(issue *record.Issue, pr *record.PullRequest, payload record.ConflictConfirm) string {
 	switch {
 	case issue == nil:
@@ -134,6 +137,9 @@ func conflictReadLeft(issue *record.Issue, pr *record.PullRequest, payload recor
 		return "a later read confirmed or released the first read"
 	case pr.ConflictRead.Head != payload.Head:
 		return fmt.Sprintf("the first read the record holds is of head %s", pr.ConflictRead.Head)
+	case !pr.ConflictRead.At.Equal(payload.FirstReadAt):
+		return fmt.Sprintf("the first read the record holds was made at %s, not at %s, the first read this row reads again",
+			pr.ConflictRead.At.UTC().Format(time.RFC3339Nano), payload.FirstReadAt.UTC().Format(time.RFC3339Nano))
 	}
 	return ""
 }
