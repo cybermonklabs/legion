@@ -70,7 +70,8 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 // waiting behind that handshake. The read that makes the open answers its caller at its own bound
 // (within); an open still waiting then goes on to ctx's end or the JetStream MaxWait, holding
 // nothing. Two reads that both find a handle missing each open one, and the first to finish keeps
-// its handle; an open is one read of the bucket's stream and leaves nothing behind.
+// its handle; an open reads the bucket's stream (two STREAM.INFO requests, the legacy handle's and
+// the jetstream handle's) and leaves nothing behind.
 func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()

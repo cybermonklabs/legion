@@ -57,12 +57,13 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 
 	conn := client.Connection()
 	hold.HoldReconnect(t)
-	// The read's own bound, inside the answer wait. The second caller tries for b.mu from 200 ms
-	// into it, by when the read is waiting on its open, until 300 ms before it ends.
+	// The read's own bound, inside the answer wait. From 200 ms into it, by when the read is
+	// waiting on its open, the second caller must take b.mu within 150 ms: a b.mu that is held at
+	// all while the open waits fails it, however short the hold.
 	const (
 		readWait    = time.Second
 		secondAfter = 200 * time.Millisecond
-		secondFor   = 500 * time.Millisecond
+		secondFor   = 150 * time.Millisecond
 	)
 	answers := testnats.AnswersWhileHeld(t, "a read of the role's claim, and a second caller of b.mu,",
 		func() error {

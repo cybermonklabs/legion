@@ -1582,10 +1582,15 @@ The messages in their handlers get until the stop's deadline
 — `intakeStopBudget`, 15 s after `Run`'s context ends, armed when it ends
 — to finish and be acknowledged; the handlers still running then are given up, their GitHub calls cancelled, and their messages negatively acknowledged.
 Only then does it negatively acknowledge the held messages, so NATS redelivers them at once to the next holder, which can then not start a pull request's or run's next message while this process still works on the one before it.
-Every one of those answers, a given-up handler's and a held message's alike, is withheld once the hold's loss deadline has passed (`intakeDelivery.handBack`), as the head-write hand-back above is:
+No call the stop makes to NATS keeps it waiting longer than `stopCallWait` (100 ms), since nats.go holds its connection lock through a reconnect's dial and handshake: a drain, an unsubscribe or an acknowledgement NATS has not taken by then goes on without the stop (`stopCall`).
+Every one of those answers, a given-up handler's and a held message's alike, passes one rule (`intakeDelivery.handBack`).
+It is withheld while the drain has not answered, for good when NATS did not take the drain in time or took it with the link down, and when NATS does not answer within `stopCallWait` that the connection is connected:
+nothing then says when the server has the subscription's interest gone, and a hand-back would wait for the reconnect.
+It is withheld too once the hold's loss deadline has passed, as the head-write hand-back above is:
 from that moment the durable the answer names may be one a take-over has recreated, where it would move the new holder's pending entry for that message and have it delivered a second time.
 A holder whose stop runs on past the lapse — one frozen and resumed, one whose handler was given up a margin after the deadline — therefore publishes nothing, and the take-over's recreate at the ack floor hands those messages to the new holder once.
-Last it waits for the drain to end, cut short by that deadline, and the run loop releases the durable's hold, so a standby takes it over at once rather than at the hold's lapse.
+A message withheld for either reason stays outstanding, and the take-over's recreate at the ack floor hands it to the next holder once, or the durable redelivers it after its ack wait.
+Last it waits for a drain it began to end, cut short by that deadline, and the run loop releases the durable's hold, so a standby takes it over at once rather than at the hold's lapse.
 A take-over under way when the context ends — a standby's poll
 — spends the same deadline rather than starting one of its own:
 its own bounds (`takeOverFinishWithin`, 10 s, and the hold's deadline) end it inside that budget, and no attempt starts once the context has ended.

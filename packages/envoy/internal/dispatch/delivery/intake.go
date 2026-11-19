@@ -357,7 +357,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			redeliverAfter(msg, headWriteRedeliverAfter)
 			return
 		}
-		acknowledge(msg)
+		d.acknowledge(msg)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()

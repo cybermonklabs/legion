@@ -101,11 +101,10 @@ type RequestOptions struct {
 // WindowUntil returns a Sender whose sends all go out on one connection, or not at all. Its first
 // send waits, within publishAcknowledgementTimeout, for the client to have a connection, and pins
 // the window to it. Every later send checks that connection first and answers ErrUnavailable at
-// once, without sending, once the client has had a connection event since the pin - a disconnect,
-// a reconnect, a close or a replacement (ConnectionChanged) - so a window does not go on sending
-// across a connection it saw fail. That check reads no state of nats.go's and takes no lock, so a
-// send never waits on it for a reconnect's handshake, during which nats.go holds its connection
-// lock.
+// once, without sending, once it has been lost or has reconnected since (window.current), so a
+// window does not go on sending across a connection it saw fail. That check holds no lock across a
+// read of nats.go's state, which a reconnect's handshake and a write to a slow socket hold, and
+// reads that state only after a connection event, within eventReadWait.
 //
 // A window keeps no order of its own between its sends. Its answers come back in whatever order
 // the server and the stream give them, and a JetStream publish NATS did not acknowledge may still
@@ -149,15 +148,19 @@ type window struct {
 	// deadline, when not nil, is the moment the window's sends stop writing (WindowUntil).
 	deadline func() time.Time
 
-	// pinning guards conn, js and changed while the first send pins them (pin); they never change
-	// after it. It is held only to read and to set them: the wait for a connection is made with it
-	// released.
+	// pinning guards conn, js, reconnects, changed and lost. conn, js and reconnects are set once,
+	// by the first send (pinFirst); changed and lost by the check (current). It is held only to read
+	// and to set them: no wait for a connection and no read of nats.go's state is made under it.
 	pinning sync.Mutex
 	conn    *nats.Conn
 	js      nats.JetStreamContext
-	// changed is the client's connection-event channel (ConnectionChanged) as it was taken before
-	// the pinned connection was read connected, so it is closed by any connection event since.
+	// reconnects is nats.go's reconnect count of conn when the window pinned it.
+	reconnects uint64
+	// changed is the client's connection-event channel (ConnectionChanged) as taken before conn was
+	// last read current, so it is closed by any connection event since that read.
 	changed <-chan struct{}
+	// lost is set once the check has found conn lost or reconnected, which it stays.
+	lost bool
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -211,11 +214,12 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 // client to have one, and at every later one answers ErrUnavailable once that connection is no
 // longer current (current).
 //
-// It holds pinning only to read and to set the pin. The first send's wait for a connection is made
-// with it released, and ends at wait whatever nats.go is doing (Bounded): nats.go holds its
-// connection lock through a reconnect's dial and handshake, which ensureConnWithContext's read of
-// the connection waits for. The check of a pinned connection reads the client's connection events
-// alone, so no send of the window waits for a handshake, nor behind another send that does.
+// It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
+// read of the connection, are made with it released and end at wait whatever nats.go is doing
+// (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake, which
+// those reads wait for. The check of a pinned connection waits for that lock at most eventReadWait,
+// with pinning released too, so no send of the window waits for a handshake, nor behind another
+// send that does.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
 	pinned := w.changed != nil
@@ -232,17 +236,18 @@ func (w *window) pin(wait time.Duration) error {
 }
 
 // pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to it unless another send pinned it first. The client's connection-event channel is
-// taken before the connection is read connected, so an event after that read closes it; an event
-// during the wait itself, such as the reconnect a send made during an outage waits for, has the
-// connection read again under a channel taken afresh.
+// the window to it, with nats.go's reconnect count of it, unless another send pinned it first. The
+// client's connection-event channel is taken before the connection is read connected, so an event
+// after that read closes it; an event during the wait, such as the reconnect a send made during an
+// outage waits for, has the connection read again under a channel taken afresh.
 func (w *window) pinFirst(wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	type connection struct {
-		conn    *nats.Conn
-		js      nats.JetStreamContext
-		changed <-chan struct{}
+		conn       *nats.Conn
+		js         nats.JetStreamContext
+		reconnects uint64
+		changed    <-chan struct{}
 	}
 	got, _, err := Bounded(ctx, func() (connection, error) {
 		for {
@@ -250,14 +255,15 @@ func (w *window) pinFirst(wait time.Duration) error {
 			if err := w.client.ensureConnWithContext(ctx); err != nil {
 				return connection{}, err
 			}
+			w.client.mu.Lock()
+			pinned := connection{conn: w.client.Conn, js: w.client.js, changed: changed}
+			w.client.mu.Unlock()
+			pinned.reconnects = pinned.conn.Stats().Reconnects
 			select {
 			case <-changed:
 				continue
 			default:
 			}
-			w.client.mu.Lock()
-			pinned := connection{conn: w.client.Conn, js: w.client.js, changed: changed}
-			w.client.mu.Unlock()
 			return pinned, nil
 		}
 	})
@@ -267,7 +273,7 @@ func (w *window) pinFirst(wait time.Duration) error {
 	w.pinning.Lock()
 	defer w.pinning.Unlock()
 	if w.changed == nil {
-		w.conn, w.js, w.changed = got.conn, got.js, got.changed
+		w.conn, w.js, w.reconnects, w.changed = got.conn, got.js, got.reconnects, got.changed
 	}
 	return nil
 }
@@ -300,18 +306,60 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// current reports whether the window's connection is still the one it pinned, connected as it was:
-// no connection event has reached the client since the pin (ConnectionChanged). The client hears of
-// a disconnect from nats.go's callback, which can come after nats.go has marked the connection
-// down; a send checked in that moment writes, and nats.go refuses the write (unsent), as it does a
-// send whose connection drops between the check and the write.
+// eventReadWait is how long the check of a pinned window (current) waits to read nats.go's state of
+// its connection after a connection event. nats.go takes its connection lock for that read, and
+// holds that lock through a reconnect attempt's dial and handshake (v1.53.1 doReconnect,
+// nats.go:3458-3485): a read kept waiting longer finds the connection in a reconnect, which is
+// what a connection event usually is, and reads it lost.
+const eventReadWait = 100 * time.Millisecond
+
+// current reports whether the window's connection is still the one it pinned, connected and not
+// reconnected since. While no connection event has reached the client since the connection was
+// last read current (ConnectionChanged), it is, and nothing of nats.go's is read: a write to a slow
+// socket that holds nats.go's connection lock on a healthy connection changes nothing here. After an
+// event, nats.go's state is read, with pinning released and within eventReadWait (Bounded): the
+// connection is current while it is connected and its reconnect count is the one pinned, which
+// is how a window pinned just before the client heard of a reconnect that had already landed - a
+// reconnect nats.go marks connected before its callback goroutine reports it - stays pinned. A read
+// kept waiting past eventReadWait, a connection not connected or one that reconnected is lost, and
+// stays lost. The client hears of a disconnect from nats.go's callback, which can come after
+// nats.go has marked the connection down; a send checked in that moment writes, and nats.go refuses
+// the write (unsent), as it does a send whose connection drops between the check and the write.
 func (w *window) current() bool {
-	select {
-	case <-w.changed:
+	w.pinning.Lock()
+	conn, reconnects, changed, lost := w.conn, w.reconnects, w.changed, w.lost
+	w.pinning.Unlock()
+	if lost {
 		return false
+	}
+	select {
+	case <-changed:
 	default:
 		return true
 	}
+	// The next channel is taken before the read, so an event after it closes the channel the next
+	// check reads. It is taken inside the bound too: the client's lock it takes is held by a caller
+	// of Connected while nats.go's lock keeps that caller waiting.
+	type reading struct {
+		up   bool
+		next <-chan struct{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), eventReadWait)
+	defer cancel()
+	read, answered, _ := Bounded(ctx, func() (reading, error) {
+		next := w.client.ConnectionChanged()
+		return reading{up: conn.IsConnected() && conn.Stats().Reconnects == reconnects, next: next}, nil
+	})
+	w.pinning.Lock()
+	defer w.pinning.Unlock()
+	if !answered || !read.up {
+		w.lost = true
+		return false
+	}
+	if w.changed == changed {
+		w.changed = read.next
+	}
+	return !w.lost
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as

@@ -176,28 +176,51 @@ func lockFree(conn *natsgo.Conn) bool {
 	}
 }
 
-// AnswersWhileHeld runs each call at once, each on a goroutine of its own, and returns their
-// answers in order. It fails the test, naming what, when any call has not answered within
-// HeldHandshakeAnswerWait of the start. A call that waits out a held handshake answers when the
-// attempt ends, after the test has failed.
+// AnswersWhileHeld is AnswersWithin with HeldHandshakeAnswerWait.
 func AnswersWhileHeld(t testing.TB, what string, calls ...func() error) []error {
+	t.Helper()
+	return AnswersWithin(t, HeldHandshakeAnswerWait, what, calls...)
+}
+
+// AnswersWithin runs each call at once, each on a goroutine of its own, and returns their answers in
+// order. It fails the test, naming what, when any call has not answered within within of the start.
+// A call that waits out a held handshake answers when the attempt ends, after the test has failed.
+func AnswersWithin(t testing.TB, within time.Duration, what string, calls ...func() error) []error {
 	t.Helper()
 	answers := make([]chan error, len(calls))
 	for i, call := range calls {
 		answers[i] = make(chan error, 1)
 		go func() { answers[i] <- call() }()
 	}
-	deadline := time.NewTimer(HeldHandshakeAnswerWait)
+	deadline := time.NewTimer(within)
 	defer deadline.Stop()
 	got := make([]error, len(calls))
 	for i, answer := range answers {
 		select {
 		case got[i] = <-answer:
 		case <-deadline.C:
-			t.Fatalf("%s %d of %d gave no answer within %s while nats.go's lock was held: it waited for the lock", what, i+1, len(calls), HeldHandshakeAnswerWait)
+			t.Fatalf("%s %d of %d gave no answer within %s while nats.go's lock was held: it waited for the lock", what, i+1, len(calls), within)
 		}
 	}
 	return got
+}
+
+// AwaitLockFree waits until nats.go lets conn's connection lock go, failing the test after 30 s.
+// With every reconnect's handshake held (HoldReconnect), that is the end of an attempt, when nats.go
+// reads the connection as reconnecting and waits between attempts (ReconnectWait, 1 s for a bus
+// client) with its lock free.
+func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
+	read := make(chan struct{})
+	go func() {
+		conn.Status()
+		close(read)
+	}()
+	select {
+	case <-read:
+	case <-time.After(30 * time.Second):
+		t.Fatal("nats.go still held its connection lock 30 s on: no attempt's handshake ended")
+	}
 }
 
 // serve relays each connection the proxy makes to the hold until the hold's listener closes.
