@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The script reads its name check in this locale whatever the caller's is: under C.UTF-8,
+# [a-zA-Z] admits the ASCII letters alone and ${#name} counts code points. Under en_US.UTF-8 the
+# range admits accented letters too, so a name of 40 "é", 80 bytes, passed a check of 63.
+export LC_ALL=C.UTF-8
 
 if (($# < 1 || $# > 2)); then
   printf 'usage: %s <dump-file> [database-name]\n' "$0" >&2
@@ -26,7 +30,6 @@ else
   database_name="dispatch_copy_${basename//[^a-z0-9]/_}"
 fi
 
-# characters: ASCII alone, the test below admits [a-zA-Z0-9_] only.
 if [[ ! "$database_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || ((${#database_name} > 63)); then
   printf 'database name must be a PostgreSQL identifier no longer than 63 characters: %s\n' "$database_name" >&2
   exit 2
