@@ -156,6 +156,12 @@ on:
           check-omp-offline.test.sh and what it tests.
         type: string
         required: true
+      source_scan_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.source_scan_test:
+          source_scan.test.sh and what it tests.
+        type: string
+        required: true
       check_daemon_api_contract_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_daemon_api_contract_test:
@@ -427,6 +433,10 @@ jobs:
       - name: Test the Oh My Pi offline check
         if: inputs.changes-result != 'success' || inputs.check_omp_offline_test == 'true'
         run: .github/scripts/check-omp-offline.test.sh
+
+      - name: Test the source reading the two offline checks share
+        if: inputs.changes-result != 'success' || inputs.source_scan_test == 'true'
+        run: .github/scripts/source_scan.test.sh
 
       - name: Test the daemon API contract number check
         if: inputs.changes-result != 'success' || inputs.check_daemon_api_contract_test == 'true'

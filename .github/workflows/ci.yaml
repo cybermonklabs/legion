@@ -359,6 +359,7 @@ jobs:
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_go_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_go_offline_test }}
       check_omp_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_omp_offline_test }}
+      source_scan_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.source_scan_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
@@ -1515,11 +1516,22 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-go-offline.test.sh'
               - '.github/scripts/check-go-offline.sh'
+              - '.github/scripts/source_scan.py'
             check_omp_offline_test: &check_omp_offline_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-omp-offline.test.sh'
+              - '.github/scripts/check-omp-offline.sh'
+              - '.github/scripts/source_scan.py'
+            source_scan_test: &source_scan_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/source_scan.test.sh'
+              - '.github/scripts/source_scan.py'
+              # Its last two cases run both checks over a tree of its own, through the module.
+              - '.github/scripts/check-go-offline.sh'
               - '.github/scripts/check-omp-offline.sh'
             check_daemon_api_contract_test: &check_daemon_api_contract_test
               - *ci_router
@@ -1763,6 +1775,7 @@ jobs:
               - *check_fireevent_reasons_test
               - *check_go_offline_test
               - *check_omp_offline_test
+              - *source_scan_test
               - *check_daemon_api_contract_test
               - *check_release_credentials_test
               - *repo_paths_test
@@ -4994,6 +5007,7 @@ jobs:
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_go_offline_test: ${{ needs.changes.outputs.check_go_offline_test }}
       check_omp_offline_test: ${{ needs.changes.outputs.check_omp_offline_test }}
+      source_scan_test: ${{ needs.changes.outputs.source_scan_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}

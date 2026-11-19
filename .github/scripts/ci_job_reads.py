@@ -2122,10 +2122,18 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_go_offline_test", "Test the Go module fetch check", f"{SCRIPTS}/check-go-offline.test.sh", [
         (f"{SCRIPTS}/check-go-offline.sh", "the script under test"),
+        (f"{SCRIPTS}/source_scan.py", "the script imports it from its own directory to read every source file"),
     ]),
     harness("check_omp_offline_test", "Test the Oh My Pi offline check",
             f"{SCRIPTS}/check-omp-offline.test.sh", [
         (f"{SCRIPTS}/check-omp-offline.sh", "the script under test"),
+        (f"{SCRIPTS}/source_scan.py", "the script imports it from its own directory to read every source file"),
+    ]),
+    harness("source_scan_test", "Test the source reading the two offline checks share",
+            f"{SCRIPTS}/source_scan.test.sh", [
+        (f"{SCRIPTS}/source_scan.py", "the module under test, symlinked in by source_scan.test.sh"),
+        (f"{SCRIPTS}/check-go-offline.sh", "source_scan.test.sh's last two cases run it over a tree of their own"),
+        (f"{SCRIPTS}/check-omp-offline.sh", "source_scan.test.sh's last two cases run it over a tree of their own"),
     ]),
     harness("check_daemon_api_contract_test", "Test the daemon API contract number check",
             f"{SCRIPTS}/check-daemon-api-contract.test.sh", [

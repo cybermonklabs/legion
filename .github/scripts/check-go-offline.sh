@@ -40,7 +40,9 @@
 #        (ci.yaml and every local workflow it calls, whose jobs ci-ok judges), so no file a
 #        required job runs can wave its sites through at once.
 #    Files under a directory named testdata, node_modules, dist, .git or .jj are not read: they
-#    are a test's inputs, and the test that runs one is itself a site.
+#    are a test's inputs, and the test that runs one is itself a site. Which file is source, in
+#    which language, and how each language is read without its comments and string text, is
+#    .github/scripts/source_scan.py's, which check-omp-offline.sh reads files with too.
 #
 # 2. Every job that runs a test built through testbuild fetches, in a step before, what that build
 #    needs. packages/daemon's testbuild.EnvoyBinary builds envoy commands while a test runs, with
@@ -65,24 +67,35 @@
 # CI runs it in ci.yaml's lint job.
 set -euo pipefail
 
+# The shared reading of source files (source_scan.py) sits beside this script's own file, which a
+# test may link into a tree of its own: PYTHONPATH names that directory, and the scan reads the
+# tree this script stands in. PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__.
+scripts=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 cd "$(dirname "$0")/../.."
 
-python3 <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
 import os
 import re
-import shlex
 import sys
 from pathlib import Path
 
 import yaml
 
-SKIP_DIRS = {"testdata", "node_modules", "dist", ".git", ".jj"}
+import source_scan as scan
+
 SUBCOMMANDS = r"(?:build|run|list|install|get|mod|test|vet|env|generate|work|version)"
-TEST_FILE = re.compile(r"(_test\.go|\.(test|spec)\.[cm]?[jt]sx?|\.test\.sh|_test\.py)$|(^|/)test_[^/]+\.py$")
 REASON = re.compile(r"\bgo-offline:\s*\S")
 FILE_REASON = re.compile(r"\bgo-offline-file:\s*\S")
-WINDOW_ABOVE = 5
 FILE_REASON_LINES = 40
+# The string literals that stay code: the words a go command is spelled with, and a string that is
+# a go command itself (`"go build ..."`). Every other string's text is blanked.
+GO_WORDS = {"go", "-C", "bin"} | set(SUBCOMMANDS[3:-1].split("|"))
+GO_COMMAND_TEXT = re.compile(r"go\s+" + SUBCOMMANDS + r"\b")
+
+
+def go_literal(value):
+    return value in GO_WORDS or bool(GO_COMMAND_TEXT.match(value))
+
 
 SITE = {
     "go": re.compile(
@@ -106,203 +119,12 @@ OFFLINE = {
     "ts": (re.compile(r"GOPROXY\s*:\s*[\"'`]off[\"'`]|GOPROXY=off"), 6),
     "py": (re.compile(r"[\"']GOPROXY[\"']\s*:\s*[\"']off[\"']|GOPROXY=off"), 4),
 }
-COMMENT = {
-    "go": re.compile(r"^\s*(//|/\*|\*)"),
-    "ts": re.compile(r"^\s*(//|/\*|\*|\{/\*)"),
-    "py": re.compile(r"^\s*#"),
-    "sh": re.compile(r"^\s*#"),
-}
-HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][\w]*)\2")
-
-
-def language(path: str):
-    if path.endswith(".go"):
-        return "go"
-    if re.search(r"\.(ts|tsx|js|mjs|cjs)$", path):
-        return "ts"
-    if path.endswith(".py"):
-        return "py"
-    if path.endswith((".sh", ".bash")):
-        return "sh"
-    return None
-
-
-def sources():
-    for directory, dirs, files in os.walk("."):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
-        for name in sorted(files):
-            path = os.path.join(directory, name)[2:]
-            lang = language(path)
-            if lang and os.path.isfile(path) and not os.path.islink(path):
-                yield path, lang
-
-
-def blank(s):
-    return re.sub(r"[^\n]", " ", s)
-
-
-def c_like_code(text, lang):
-    """Go or TypeScript with its comments blanked, and in Go its raw strings too. A quoted
-    string stays: "go" as a command is one, and nothing else here reads strings as code."""
-    out, i, n = [], 0, len(text)
-    while i < n:
-        if text.startswith("//", i):
-            j = text.find("\n", i)
-            j = n if j < 0 else j
-            out.append(blank(text[i:j]))
-            i = j
-        elif text.startswith("/*", i):
-            j = text.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(blank(text[i:j]))
-            i = j
-        elif text[i] in "\"'" or (text[i] == "`" and lang == "ts"):
-            q, j = text[i], i + 1
-            while j < n and text[j] != q and not (text[j] == "\n" and q != "`"):
-                j += 2 if text[j] == "\\" else 1
-            j = min(j + 1, n)
-            out.append(text[i:j])
-            i = j
-        elif text[i] == "`":
-            j = text.find("`", i + 1)
-            j = n if j < 0 else j + 1
-            out.append(blank(text[i:j]))
-            i = j
-        else:
-            out.append(text[i])
-            i += 1
-    return "".join(out).split("\n")
-
-
-def python_code(text):
-    """Python with comments and the text of every string blanked, but for a string that is "go"
-    itself or a go command (`"go build ..."`), which is what a site is made of."""
-    out, i, n = [], 0, len(text)
-    while i < n:
-        c = text[i]
-        if c == "#":
-            j = text.find("\n", i)
-            j = n if j < 0 else j
-            out.append(blank(text[i:j]))
-            i = j
-        elif text.startswith(('"""', "'''"), i):
-            q = text[i:i + 3]
-            j = text.find(q, i + 3)
-            j = n if j < 0 else j + 3
-            out.append(blank(text[i:j]))
-            i = j
-        elif c in "\"'":
-            j = i + 1
-            while j < n and text[j] != c and text[j] != "\n":
-                j += 2 if text[j] == "\\" else 1
-            j = min(j + 1, n)
-            literal = text[i:j]
-            body = literal[1:-1]
-            keep = body == "go" or re.match(r"go\s+" + SUBCOMMANDS + r"\b", body)
-            out.append(literal if keep else c + " " * max(len(literal) - 2, 0) + c)
-            i = j
-        else:
-            out.append(c)
-            i += 1
-    return "".join(out).split("\n")
-
-
-def shell_code(text):
-    """Shell with the text of quoted strings, comments and heredoc bodies blanked. A $(...)
-    inside double quotes is code, and a double-quoted path ending /go becomes the word go."""
-    lines, out, stack, heredocs = text.split("\n"), [], [], []
-    for line in lines:
-        if heredocs:
-            strip, word = heredocs[0]
-            if (line.strip() if strip else line) == word:
-                heredocs.pop(0)
-            out.append(blank(line))
-            continue
-        code, i, n, starts = [], 0, len(line), []
-        while i < n:
-            c = line[i]
-            state = stack[-1] if stack else "code"
-            if state in ("sq", "ansi"):
-                if state == "ansi" and c == "\\":
-                    code.extend("  "[:n - i])
-                    i += 2
-                    continue
-                if c == "'":
-                    stack.pop()
-                    code.append(" ")
-                else:
-                    code.append(" ")
-                i += 1
-                continue
-            if state == "dq":
-                if c == "\\":
-                    code.extend("  "[:n - i])
-                    i += 2
-                    continue
-                if c == '"':
-                    stack.pop()
-                    if starts:
-                        start, raw_start = starts.pop()
-                        if re.fullmatch(r'"[^"\s]*/go', line[raw_start:i]):
-                            code[start:] = list("go" + " " * (len(code) - start - 2))
-                    code.append(" ")
-                    i += 1
-                    continue
-                if line.startswith("$(", i):
-                    stack.append("sub")
-                    code.extend("$(")
-                    i += 2
-                    continue
-                code.append(" ")
-                i += 1
-                continue
-            # code, or a $(...) inside double quotes
-            if c == "\\":
-                code.extend(line[i:i + 2])
-                i += 2
-                continue
-            if line.startswith("$'", i):
-                stack.append("ansi")
-                code.extend("  ")
-                i += 2
-                continue
-            if c == "'":
-                stack.append("sq")
-                code.append(" ")
-                i += 1
-                continue
-            if c == '"':
-                stack.append("dq")
-                starts.append((len(code), i))
-                code.append(" ")
-                i += 1
-                continue
-            if c == "#" and (i == 0 or line[i - 1] in " \t;&|("):
-                code.extend(" " * (n - i))
-                break
-            if c == ")" and state == "sub":
-                stack.pop()
-            if line.startswith("$(", i):
-                stack.append("sub")
-                code.extend("$(")
-                i += 2
-                continue
-            code.append(c)
-            i += 1
-        rendered = "".join(code)
-        out.append(rendered)
-        for doc in HEREDOC.finditer(line):
-            if doc.start() < len(rendered) and rendered[doc.start()] == "<":
-                heredocs.append((doc.group(1) == "-", doc.group(3)))
-    return out
 
 
 def code_lines(text, lang):
     if lang == "sh":
-        return shell_code(text)
-    if lang == "py":
-        return python_code(text)
-    return c_like_code(text, lang)
+        return scan.shell_code(text)
+    return scan.code(text, lang, go_literal)
 
 
 def sites_of(raw, code, lang):
@@ -314,11 +136,7 @@ def sites_of(raw, code, lang):
         if not SITE[lang].search(line):
             continue
         if lang == "sh":
-            logical, j = raw[index], index
-            while logical.rstrip().endswith("\\") and j + 1 < len(raw):
-                j += 1
-                logical += "\n" + raw[j]
-            found.append((index, exported or "GOPROXY=off" in logical))
+            found.append((index, exported or "GOPROXY=off" in scan.continued(raw, index)))
             continue
         offline, after = OFFLINE[lang]
         # The site's line and the next `after` lines of code after it, comments passed over.
@@ -328,9 +146,7 @@ def sites_of(raw, code, lang):
 
 
 def reasoned(raw, index, lang):
-    if REASON.search(raw[index]):
-        return True
-    return any(COMMENT[lang].match(l) and REASON.search(l) for l in raw[max(0, index - WINDOW_ABOVE):index])
+    return scan.reasoned(raw, lang, REASON, [index])
 
 
 def required_workflows():
@@ -357,21 +173,20 @@ read = dict.fromkeys(("go", "ts", "py", "sh"), 0)
 offline_count = reason_count = file_reason_count = 0
 workflows = required_workflows()
 if not workflows:
-    print("UNKNOWN: no .github/workflows/ci.yaml here, so no workflow is known to be required", file=sys.stderr)
-    sys.exit(2)
-for path, lang in sources():
+    scan.unknown("no .github/workflows/ci.yaml here, so no workflow is known to be required")
+for path, lang in scan.sources():
     read[lang] += 1
-    text = Path(path).read_text(errors="replace")
+    text = scan.read(path)
     if "go" not in text:
         continue
     raw = text.split("\n")
     found = sites_of(raw, code_lines(text, lang), lang)
     if not found:
         continue
-    file_reason = any(COMMENT[lang].match(l) and FILE_REASON.search(l) for l in raw[:FILE_REASON_LINES])
+    file_reason = any(scan.COMMENT[lang].match(l) and FILE_REASON.search(l) for l in raw[:FILE_REASON_LINES])
     if file_reason:
         refusal = ""
-        if TEST_FILE.search(path):
+        if scan.is_test_file(path):
             refusal = "it is a test file"
         elif named_by(path, workflows):
             refusal = "a required workflow names it (" + ", ".join(named_by(path, workflows)) + ")"
@@ -393,20 +208,19 @@ for path, lang in sources():
 
 blind = [lang for lang, n in read.items() if n == 0]
 if blind:
-    print(f"UNKNOWN: read no {', '.join(blind)} file under {os.getcwd()}, so their go commands are unseen", file=sys.stderr)
-    sys.exit(2)
+    scan.unknown(f"read no {', '.join(blind)} file under {os.getcwd()}, so their go commands are unseen")
 
 # --- 2. The jobs that run a test built through testbuild fetch its commands first.
 TESTBUILD = "packages/daemon/internal/testbuild/testbuild.go"
 ENVOY_BINARY = re.compile(r'\btestbuild\.EnvoyBinary\(\s*\w+\s*,\s*"([^"]+)"\s*\)')
-SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "$(", "`"}
+SEPARATORS = scan.SHELL_SEPARATORS
 COMMAND_PREFIXES = {"if", "then", "do", "else", "elif", "while", "until", "!", "{", "time", "exec", "command", "env"}
 built, users = set(), set()
 for directory, dirs, files in os.walk("packages/daemon"):
-    dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+    dirs[:] = [d for d in dirs if d not in scan.SKIP_DIRS]
     for name in files:
         if name.endswith("_test.go"):
-            calls = ENVOY_BINARY.findall(Path(directory, name).read_text(errors="replace"))
+            calls = ENVOY_BINARY.findall(scan.read(os.path.join(directory, name)))
             if calls:
                 built.update(calls)
                 users.add(os.path.normpath(directory))
@@ -420,23 +234,13 @@ def repo_path(raw_path, base="."):
     return os.path.normpath(os.path.join(base, raw_path))
 
 
-def words(raw_line):
-    try:
-        lexer = shlex.shlex(raw_line, posix=True, punctuation_chars=";&|()")
-        lexer.whitespace_split = True
-        lexer.commenters = "#"
-        return list(lexer)
-    except ValueError:
-        return raw_line.split()
-
-
 def go_tests(raw_line, workdir):
     """The (module directory, package arguments, listed) of each go test of a line that runs
     tests: a -c build that is not to /dev/null runs them later, a -list runs none. The module is
     the directory a `-C DIR` names, before `test` or right after it, else the one a `cd DIR` at a
     command position earlier on the line moved to (until the end of the ( ) group it is in), else
     the step's."""
-    tokens, found = words(raw_line), []
+    tokens, found = scan.shell_words(raw_line), []
     here, groups, command = workdir, [], True
     for k, token in enumerate(tokens):
         if token in ("(", "$("):
@@ -475,7 +279,7 @@ def scripts_of(raw_line, workdir):
     after ;, &&, ||, |, ( or $(: `. file`, `source file`, `bash file`, `sh file`, or a path
     ending .sh. A word that is only an argument names a file the line reads, not one it runs.
     A $VAR in a path matches any name there."""
-    tokens, named, command = words(raw_line), [], True
+    tokens, named, command = scan.shell_words(raw_line), [], True
     for k, token in enumerate(tokens):
         if token in SEPARATORS:
             command = True
@@ -500,7 +304,7 @@ def scripts_of(raw_line, workdir):
 
 
 def runs_testbuild_tests(text, workdir, seen):
-    code = shell_code(text)
+    code = scan.shell_code(text)
     for raw_line, code_line in zip(text.split("\n"), code):
         if not code_line.strip():
             continue
@@ -518,16 +322,16 @@ def runs_testbuild_tests(text, workdir, seen):
             if script in seen:
                 continue
             seen.add(script)
-            if runs_testbuild_tests(Path(script).read_text(errors="replace"), ".", seen):
+            if runs_testbuild_tests(scan.read(script), ".", seen):
                 return True
     return False
 
 
 def fetches(text, workdir):
-    for raw_line, code_line in zip(text.split("\n"), shell_code(text)):
+    for raw_line, code_line in zip(text.split("\n"), scan.shell_code(text)):
         if "go-fetch.sh" not in code_line:
             continue
-        tokens = words(raw_line)
+        tokens = scan.shell_words(raw_line)
         for k, token in enumerate(tokens):
             if token.endswith("go-fetch.sh") and tokens[k + 1:k + 2] == ["deps"] and len(tokens) > k + 2:
                 packages = set()
@@ -543,9 +347,8 @@ def fetches(text, workdir):
 jobs_checked = 0
 if os.path.isfile(TESTBUILD):
     if not users:
-        print(f"UNKNOWN: {TESTBUILD} exists and no daemon test calls testbuild.EnvoyBinary with a "
-              "command, so the jobs that run one are unseen", file=sys.stderr)
-        sys.exit(2)
+        scan.unknown(f"{TESTBUILD} exists and no daemon test calls testbuild.EnvoyBinary with a command, so the "
+                     "jobs that run one are unseen")
     for workflow in sorted(Path(".github/workflows").glob("*.y*ml")):
         document = yaml.safe_load(workflow.read_text()) or {}
         default_dir = ((document.get("defaults") or {}).get("run") or {}).get("working-directory", ".")
@@ -573,23 +376,17 @@ if os.path.isfile(TESTBUILD):
     # A tree where tests call testbuild and no step of any workflow runs them is one whose steps
     # this reading cannot follow (a go test, cd or script it does not see), not a clean one.
     if jobs_checked == 0:
-        print(f"UNKNOWN: {', '.join(sorted(users))} call testbuild.EnvoyBinary and no step of any workflow was "
-              "seen to run their tests, so the jobs that run one are unseen", file=sys.stderr)
-        sys.exit(2)
+        scan.unknown(f"{', '.join(sorted(users))} call testbuild.EnvoyBinary and no step of any workflow was seen "
+                     "to run their tests, so the jobs that run one are unseen")
 
 total = sum(counts.values())
 summary = (f"{total} go commands of {sum(read.values())} files read (Go {counts['go']}, TypeScript {counts['ts']}, "
            f"Python {counts['py']}, shell {counts['sh']})")
 if errors:
-    print(f"{len(errors)} problems over the {summary}:", file=sys.stderr)
-    for path, line, message in errors:
-        print(f"::error file={path},line={line}::{path}:{line}: {message}")
-        print(f"  {path}:{line}: {message}", file=sys.stderr)
-    print("\nA test fetches no module while it runs. Run the go command with GOPROXY=off and fetch what it needs "
-          "in a step before the tests (.github/scripts/go-fetch.sh deps DIR PACKAGE...), or, where it reads no "
-          "module or runs in no test of a required job, say so beside it in a `go-offline: <why>` comment.",
-          file=sys.stderr)
-    sys.exit(1)
+    scan.refuse(errors, summary, "A test fetches no module while it runs. Run the go command with GOPROXY=off and "
+                "fetch what it needs in a step before the tests (.github/scripts/go-fetch.sh deps DIR PACKAGE...), "
+                "or, where it reads no module or runs in no test of a required job, say so beside it in a "
+                "`go-offline: <why>` comment.")
 print(f"every one of the {summary} runs with GOPROXY=off ({offline_count}), carries a reason ({reason_count}) or "
       f"is in a file whose reason covers it ({file_reason_count}); each of the {jobs_checked} steps that run "
       f"testbuild's tests comes after its fetch")

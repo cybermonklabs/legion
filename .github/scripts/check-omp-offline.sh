@@ -33,7 +33,9 @@
 # A start of either language also passes with a reason: a comment holding `omp-offline: <why>` on
 # its line or within the 5 lines above it, saying why the run reaches no network or why the
 # program is not Oh My Pi, for a reader to judge. Comments and the text of string literals are not
-# read as code, so a fixture or a message that spells a start starts nothing here.
+# read as code, so a fixture or a message that spells a start starts nothing here. Which file is
+# source, in which language, and how each is read without its comments and string text, is
+# .github/scripts/source_scan.py's, which check-go-offline.sh reads files with too.
 #
 # The helpers are held to the rule too: testbin's OMPOffline and the TypeScript ompOffline each
 # name HTTPS_PROXY, and OMPEnviron and ompEnv, where they exist, each call theirs. A helper that
@@ -51,25 +53,24 @@
 # CI runs it in ci.yaml's lint job.
 set -euo pipefail
 
+# The shared reading of source files (source_scan.py) sits beside this script's own file, which a
+# test may link into a tree of its own: PYTHONPATH names that directory, and the scan reads the
+# tree this script stands in. PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__.
+scripts=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 cd "$(dirname "$0")/../.."
 
-python3 <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$scripts" python3 <<'PY'
 import os
 import re
 import sys
-from pathlib import Path
 
-SKIP_DIRS = {"testdata", "node_modules", "dist", ".git", ".jj"}
+import source_scan as scan
+
 DOOR_NAME = "LEGION_TEST_OMP"
 # String literals that stay code: the variable a door reads, and the binary's own name.
 KEPT_LITERALS = {DOOR_NAME, "omp"}
 REASON = re.compile(r"\bomp-offline:\s*\S")
-WINDOW_ABOVE = 5
 TS_AFTER = 6
-COMMENT = {"go": re.compile(r"^\s*(//|/\*|\*)"), "ts": re.compile(r"^\s*(//|/\*|\*|\{/\*)")}
-REGEX_AFTER = set("(,=:[!&|?{};+-*%<>~^")
-REGEX_KEYWORDS = {"return", "typeof", "case", "do", "else", "in", "of", "void", "yield", "await", "delete", "new",
-                  "throw"}
 
 GO_DOOR = re.compile(r"\btestbin\.OMP\(")
 GO_GETENV = re.compile(r"\bos\.(?:Getenv|LookupEnv)\(\s*(\"" + DOOR_NAME + r"\"|\w+)\s*\)")
@@ -87,125 +88,19 @@ TS_COMMAND = re.compile(r"(?:omp|binary)!?|[\"'`]omp[\"'`]")
 TS_HELPER = re.compile(r"(?<![\w$])(?<![\w$)\]]\.)(?:ompOffline|ompEnv)\s*\(")
 
 
-def language(path):
-    if path.endswith(".go"):
-        return "go"
-    if re.search(r"\.[cm]?[jt]sx?$", path) and not path.endswith(".d.ts"):
-        return "ts"
-    return None
-
-
 def test_code(path, lang):
+    """A test file by its name, or a file of a Go testbin package or of a TypeScript test or tests
+    directory."""
     directories = path.split("/")[:-1]
     if lang == "go":
-        return path.endswith("_test.go") or "testbin" in directories
-    return bool(re.search(r"\.(test|spec)\.[cm]?[jt]sx?$", path)) or any(d in ("test", "tests") for d in directories)
-
-
-def sources():
-    for directory, dirs, files in os.walk("."):
-        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
-        for name in sorted(files):
-            path = os.path.join(directory, name)[2:]
-            lang = language(path)
-            if lang and os.path.isfile(path) and not os.path.islink(path):
-                yield path, lang
-
-
-def blank(s):
-    return re.sub(r"[^\n]", " ", s)
+        return scan.is_test_file(path) or "testbin" in directories
+    return scan.is_test_file(path) or any(d in ("test", "tests") for d in directories)
 
 
 def code_of(text, lang):
-    """The text with its comments and the text of its string literals blanked, line for line. A
-    literal that is exactly LEGION_TEST_OMP or omp stays, since a door and a start are made of one.
-    In TypeScript the ${...} of a template literal stays code, and a regular-expression literal is
-    blanked, so that a quote or a backtick inside one opens no string."""
-    out, i, n = [], 0, len(text)
-    templates = []  # TypeScript: per open template literal, the brace depth inside its ${...}, None in its text
-    last, word = "\n", ""
-    while i < n:
-        c = text[i]
-        if templates and templates[-1] is None:
-            if c == "\\":
-                out.append(blank(text[i:i + 2]))
-                i += 2
-            elif c == "`":
-                templates.pop()
-                out.append(c)
-                last, word, i = "`", "", i + 1
-            elif text.startswith("${", i):
-                templates[-1] = 0
-                out.append("${")
-                last, word, i = "{", "", i + 2
-            else:
-                out.append(blank(c))
-                i += 1
-            continue
-        if text.startswith("//", i):
-            j = text.find("\n", i)
-            j = n if j < 0 else j
-            out.append(blank(text[i:j]))
-            i = j
-            continue
-        if text.startswith("/*", i):
-            j = text.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(blank(text[i:j]))
-            i = j
-            continue
-        if c in "\"'" or (c == "`" and lang == "go"):
-            j = i + 1
-            while j < n and text[j] != c and (c == "`" or text[j] != "\n"):
-                j += 2 if text[j] == "\\" and c != "`" else 1
-            j = min(j + 1, n)
-            literal = text[i:j]
-            out.append(literal if literal[1:-1] in KEPT_LITERALS else blank(literal))
-            last, word, i = c, "", j
-            continue
-        if c == "`":
-            templates.append(None)
-            out.append(c)
-            last, word, i = c, "", i + 1
-            continue
-        if lang == "ts" and c == "/" and (last in REGEX_AFTER or last == "\n" or word in REGEX_KEYWORDS):
-            j, in_class = i + 1, False
-            while j < n and text[j] != "\n":
-                if text[j] == "\\":
-                    j += 2
-                    continue
-                if text[j] == "[":
-                    in_class = True
-                elif text[j] == "]":
-                    in_class = False
-                elif text[j] == "/" and not in_class:
-                    break
-                j += 1
-            if j < n and text[j] == "/":
-                j += 1
-                while j < n and text[j].isalpha():
-                    j += 1
-                out.append(blank(text[i:j]))
-                last, word, i = "/", "", j
-                continue
-        if templates and c == "{":
-            templates[-1] += 1
-        elif templates and c == "}":
-            if templates[-1] == 0:
-                templates[-1] = None
-                out.append(c)
-                last, word, i = c, "", i + 1
-                continue
-            templates[-1] -= 1
-        out.append(c)
-        if not c.isspace():
-            if c.isalnum() or c in "_$":
-                word = word + c if (last.isalnum() or last in "_$") else c
-            else:
-                word = ""
-            last = c
-        i += 1
-    return "".join(out).split("\n")
+    """The text's lines with its comments and the text of its string literals blanked, but for a
+    literal that is exactly LEGION_TEST_OMP or omp, since a door and a start are made of one."""
+    return scan.code(text, lang, KEPT_LITERALS.__contains__)
 
 
 def function_spans(code, opener):
@@ -227,15 +122,11 @@ def function_spans(code, opener):
     return holder, spans
 
 
-def line_of(text, offset):
-    return text.count("\n", 0, offset)
+line_of = scan.line_of
 
 
 def reasoned(raw, lang, *lines):
-    first = min(lines)
-    if any(REASON.search(raw[k]) for k in lines):
-        return True
-    return any(COMMENT[lang].match(l) and REASON.search(l) for l in raw[max(0, first - WINDOW_ABOVE):first])
+    return scan.reasoned(raw, lang, REASON, lines)
 
 
 GO_FUNC = re.compile(r"func\b")
@@ -246,9 +137,11 @@ GO_MAYBE = re.compile(r"testbin\.OMP\(|" + DOOR_NAME + r"|exec\.Command|os\.(?:G
 TS_MAYBE = re.compile(r"\b(?:spawn|spawnSync|execFile|execFileSync|execa|execaSync)\s*\(|\$`|function omp")
 
 go_files, ts_files, door_consts = [], [], {}
-for path, lang in sources():
+for path, lang in scan.sources():
+    if lang not in ("go", "ts"):
+        continue
     if lang == "go":
-        text = Path(path).read_text(errors="replace")
+        text = scan.read(path)
         if DOOR_NAME in text:
             for name in GO_CONST.findall("\n".join(code_of(text, "go"))):
                 door_consts.setdefault(os.path.dirname(path), set()).add(name)
@@ -262,7 +155,7 @@ testbin_dirs, harnesses = set(), set()
 go_helper_defs, ts_helper_defs = {}, {}
 
 for path in go_files:
-    raw_text = Path(path).read_text(errors="replace")
+    raw_text = scan.read(path)
     directory = os.path.dirname(path)
     in_testbin = os.path.basename(directory) == "testbin"
     if in_testbin:
@@ -298,7 +191,7 @@ for path in go_files:
                                             f"testbin.OMPEnviron, and gives no omp-offline reason: {raw[index].strip()}"))
 
 for path in ts_files:
-    raw_text = Path(path).read_text(errors="replace")
+    raw_text = scan.read(path)
     if os.path.basename(path) == "omp-harness.ts":
         harnesses.add(path)
     if not TS_MAYBE.search(raw_text):
@@ -339,17 +232,14 @@ for path in ts_files:
 
 blind = [name for name, files in (("Go", go_files), ("TypeScript", ts_files)) if not files]
 if blind:
-    print(f"UNKNOWN: read no {' and no '.join(blind)} test file under {os.getcwd()}, so their starts of Oh My Pi "
-          "are unseen", file=sys.stderr)
-    sys.exit(2)
+    scan.unknown(f"read no {' and no '.join(blind)} test file under {os.getcwd()}, so their starts of Oh My Pi are "
+                 "unseen")
 if testbin_dirs and starts["go"] == 0:
-    print(f"UNKNOWN: {', '.join(sorted(testbin_dirs))} exists and no Go test starts Oh My Pi, so the reading "
-          "that finds the starts sees none", file=sys.stderr)
-    sys.exit(2)
+    scan.unknown(f"{', '.join(sorted(testbin_dirs))} exists and no Go test starts Oh My Pi, so the reading that "
+                 "finds the starts sees none")
 if harnesses and starts["ts"] == 0:
-    print(f"UNKNOWN: {', '.join(sorted(harnesses))} exists and no TypeScript test starts Oh My Pi, so the reading "
-          "that finds the starts sees none", file=sys.stderr)
-    sys.exit(2)
+    scan.unknown(f"{', '.join(sorted(harnesses))} exists and no TypeScript test starts Oh My Pi, so the reading "
+                 "that finds the starts sees none")
 
 # The helpers themselves: each names the proxy, and each environment helper calls its own.
 for kind, present, defs, offline, environ, call in (
@@ -367,14 +257,9 @@ for kind, present, defs, offline, environ, call in (
 total = starts["go"] + starts["ts"]
 summary = f"{total} starts of Oh My Pi in {len(go_files) + len(ts_files)} test files read (Go {starts['go']}, TypeScript {starts['ts']})"
 if errors:
-    print(f"{len(errors)} problems over the {summary}:", file=sys.stderr)
-    for path, line, message in errors:
-        print(f"::error file={path},line={line}::{path}:{line}: {message}")
-        print(f"  {path}:{line}: {message}", file=sys.stderr)
-    print("\nA test's Oh My Pi reaches no network. Run it under testbin.OMPEnviron's environment or with "
-          "testbin.OMPOffline's entry (Go), or with ompOffline's from @legion/pi-shared/test/omp-offline "
-          "(TypeScript), or, where the run reaches nothing or the program is not Oh My Pi, say so beside it in "
-          "an `omp-offline: <why>` comment.", file=sys.stderr)
-    sys.exit(1)
+    scan.refuse(errors, summary, "A test's Oh My Pi reaches no network. Run it under testbin.OMPEnviron's "
+                "environment or with testbin.OMPOffline's entry (Go), or with ompOffline's from "
+                "@legion/pi-shared/test/omp-offline (TypeScript), or, where the run reaches nothing or the program "
+                "is not Oh My Pi, say so beside it in an `omp-offline: <why>` comment.")
 print(f"every one of the {summary} runs under its language's offline helper ({helped}) or carries a reason ({reasons})")
 PY
