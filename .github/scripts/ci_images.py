@@ -105,13 +105,13 @@ def row_tag(kind: str, source: str, digest: str) -> str:
     copies: the upstream repository's last path element, then the upstream tag when the row
     names one, then the first eight hex characters of the digest. For a row this repository
     builds: the stem of the Dockerfile that builds it, which is its name without the
-    .Dockerfile suffix, then those same eight characters.
+    .Dockerfile suffix, then those same eight hex characters.
 
     The rule is here and not in its gate because the build writes the tag and the gate holds the
     row to it: .github/workflows/browser-image.yaml tags what it pushed with what this returns,
     and check-ci-images.sh refuses a row whose tag is not what this returns, so a second copy of
-    the rule would be a tag the build writes and the gate refuses. The eight characters are what
-    keep one tag on one digest."""
+    the rule would be a tag the build writes and the gate refuses. The eight hex characters are
+    what keep one tag on one digest."""
     short = digest.partition(":")[2][:8]
     if kind == BUILT:
         # A repository path, so PurePosixPath and not Path: the separator is the one the row is

@@ -838,8 +838,8 @@ for row in readable:
         gives = "upstream" if kind == UPSTREAM else "Dockerfile"
         problems.append(
             f"{CI_IMAGES}:{line}: tag {tag} is not {wanted}, the tag this row's {gives} and "
-            f"digest give it. The last eight characters are what keeps one tag on one digest. A "
-            f"tag without them is a tag another digest of the same image can take, and the copy "
+            f"digest give it. The last eight hex characters are what keeps one tag on one digest. "
+            f"A tag without them is a tag another digest of the same image can take, and the copy "
             f"that takes it moves the tag off the digest consumers pin. The rest names the image "
             f"a reader of the package sees. Name this row {wanted}."
         )

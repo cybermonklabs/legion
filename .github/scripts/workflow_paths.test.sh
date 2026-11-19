@@ -106,14 +106,14 @@ check "and part of one" "$(matches 'docker/*.yaml' 'docker/compose.yaml')"
 check "but stays inside it" "$(is "$(matches 'packages/*' 'packages/app/src')" false)"
 check "even with the rest of the pattern behind it" \
   "$(is "$(matches 'docker/*.yaml' 'docker/base/compose.yaml')" false)"
-check "? is one character inside a segment" "$(matches 'package.jso?' 'package.json')"
+check "? is one code point inside a segment" "$(matches 'package.jso?' 'package.json')"
 check "not zero" "$(is "$(matches 'package.jso?' 'package.jso')" false)"
 check "and not a /" "$(is "$(matches 'docker?Dockerfile' 'docker/Dockerfile')" false)"
 check "a pattern matches a path whole, not its head" \
   "$(is "$(matches 'packages/app' 'packages/app/src/index.ts')" false)"
 
 echo "case: a [...] class is the regex's, and an unclosed [ is a literal"
-check "a class matches one character of itself" "$(matches 'v[0-9].yaml' 'v2.yaml')"
+check "a class matches one code point of itself" "$(matches 'v[0-9].yaml' 'v2.yaml')"
 check "and only one" "$(is "$(matches 'v[0-9].yaml' 'v12.yaml')" false)"
 check "an unclosed [ is the character itself" "$(matches 'docker/a[b' 'docker/a[b')"
 
