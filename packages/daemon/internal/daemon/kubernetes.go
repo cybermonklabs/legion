@@ -510,6 +510,18 @@ func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (
 
 func (b brokerEnroller) Revoke(ctx context.Context, id string) error { return b.client.Revoke(ctx, id) }
 
+func (b brokerEnroller) Carried(ctx context.Context, sessionIDs []string) ([]supervise.CarriedEnrollment, error) {
+	carried, err := b.client.Carried(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]supervise.CarriedEnrollment, len(carried))
+	for i, c := range carried {
+		out[i] = supervise.CarriedEnrollment(c)
+	}
+	return out, nil
+}
+
 // providerSecretKeys are provider_keys as the runtime takes them: each variable Oh My Pi reads,
 // to the key of the providers Secret that holds it; nil when the file names none.
 func providerSecretKeys(keys []config.ProviderKey) map[string]string {

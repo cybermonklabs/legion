@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    The daemon API fixtures are at contract 171: the controller pod's `launcher_hello_ack` carries
+    `kernelKills` too, and its launcher takes `--microvm` and the metadata flags. The state's
+    settings are unchanged.
+custom:
+    Issue: pr4485

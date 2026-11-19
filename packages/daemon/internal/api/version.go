@@ -2383,7 +2383,7 @@ package api
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
 //
-// 168: dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
+// 167: dispatch://INFRA-3531 -- the memory guard in the launcher of the project controller's pod,
 // which moves the two launcher shapes contract 144 added. The daemon's answer to the hello of that
 // pod's launcher, `shimwire.LauncherHelloAck`, now carries `memoryGuard` too, from a block of its
 // own, `runtime.kubernetes.memory_guard.controller_pod`, beside `issue_pods` (sandbox's
@@ -2418,18 +2418,20 @@ package api
 // keeps every member of both: an issue pod's acknowledgement carries `memoryGuard` and
 // `volumeTrim`, and the controller pod's `memoryGuard` alone, since that pod's launcher runs no
 // trimmer.
-// (This change took 155 before #3519 merged, and takes 168 at the forward merge of 2026-11-19
-// that brings main in at a573bac20ad2, whose 160 is the entry right above. A reading of
-// `const DaemonAPIVersion` at the head of each of the 236 open pull requests of this repository,
-// made on 2026-11-19, gave above main's 160: 161 (#4173, #4180, #4193 and #4259), 162 (#2230 and
-// #3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432) and 167 (#4030, #4485, #4488 and
-// #4493), so 168 was the lowest free number above main's 160 at that reading. That is a reading
-// and never the rule: read main's own number and every open head again at the next forward merge
-// rather than from this line, as
+// (This change took 155 before #3519 merged, and 168 at the forward merge of 2026-11-19 that
+// brings main in at a573bac20ad2, whose 160 is the entry right above. It takes 167 at the forward
+// merge of 2026-11-19 that brings main in at e5e4900fe7, which still declares 160: a reading of
+// `const DaemonAPIVersion` at the head of each of the 232 open pull requests of this repository,
+// made on 2026-11-19 after 11:00Z, gave above main's 160: 161 (#4173, #4180, #4193 and #4259), 162
+// (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 168 (#2230, #3659, #3993, #4175 and
+// #4488, besides this change), 169 (#3831, #4065, #4485 and #4493) and 170 (#4030), so 167 was the
+// lowest free number above main's 160 at that reading. That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 169: dispatch://INFRA-4567 -- the project controller's pod in the project's sandbox, which moves
+// 171: dispatch://INFRA-4567 -- the project controller's pod in the project's sandbox, which moves
 // the launcher wire. Where `runtime.kubernetes.sandbox.type` is `microvm`, the daemon renders the
 // controller's pod as it renders a microVM issue pod (sandbox's prepare and
 // SandboxConfig.Controller; `canary_issues` never moves it), and that pod's launcher command
@@ -2448,17 +2450,17 @@ package api
 // a `kernel` report and of a `kernel-protected` one with a note of its own for each (workflow's
 // controllerKernelKillNote and controllerKernelProtectedKillNote), under the same event id
 // `memory-guard-kill:<guard>:<sequence>` and as the same controller notice kind,
-// `memory-guard-kill`. So entry 151's "on no controller pod's" and entry 168's "The controller's
+// `memory-guard-kill`. So entry 151's "on no controller pod's" and entry 167's "The controller's
 // pod is never a microVM's (151)" no longer hold from this contract: a microVM controller pod's
 // launcher runs the guest watch and never the guard, and every controller pod's acknowledgement
-// carries `kernelKills`. A gVisor project's controller pod is the pod 168 renders, byte for byte;
+// carries `kernelKills`. A gVisor project's controller pod is the pod 167 renders, byte for byte;
 // its launcher ignores `kernelKills` and sends its guard's reports where the answer carried
-// `memoryGuard`, as 168's does. The state's settings block is unchanged.
+// `memoryGuard`, as 167's does. The state's settings block is unchanged.
 //
 // The skew is safe in both directions. A single-role launcher of an earlier image refuses the
 // metadata flags (its validateMetadata needed `--roles-dir`), one built before 151 refuses
 // `--microvm` as an unknown flag, and one of 151 or later takes `--microvm` alone and runs no
-// guest watch: 168's runs the gVisor guard in its place, since its runsGuest needed
+// guest watch: 167's runs the gVisor guard in its place, since its runsGuest needed
 // `--roles-dir`, and 151's runs no memory watch in that form. So a daemon of this release must
 // never render those flags into a controller pod whose image predates them, and it never does:
 // the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`), as it
@@ -2466,20 +2468,21 @@ package api
 // `kernelKills`, so its launcher drops each report of a process the pod's kernel stopped, with a
 // line of its own, and the controller is told nothing. That daemon records the controller's
 // gVisor shape alone, so its next launch that installs nothing rebuilds the controller in gVisor,
-// for the recorded shape's `sandbox` member or for the pod's image, and 168's launch that installs
+// for the recorded shape's `sandbox` member or for the pod's image, and 167's launch that installs
 // its plugin pair does so too where the pod is on another image (podImageDrift). The rollback:
 // docs/kubernetes.md, "Rolling back" in "Pods in microVMs", says the controller returns to gVisor
 // at that launch, and that suspending and resuming its claim does it at once.
-// (This change took 167 against the base's 155, and takes 169 at the forward merge of 2026-11-19
-// that brings legion/INFRA-3531 in at 4d6665d5d593, whose 168, cybermonklabs/legion#4273's, is
-// the entry right above. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
-// open pull request of this repository that changes this file, made between
-// 2026-11-19T09:29:14Z and 09:32:28Z, gave above main's 160: 161 (#4173, #4180, #4193 and
-// #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#3831, #4030,
-// #4493 and this change's own earlier number), 168 (#2230, #3659, #4273 and #4488), and no head
-// declared a number above 168, so 169 was the lowest free number above the base's at that
-// reading. That is a reading and never the rule: read the base's own number and every open head
-// again at the next forward merge rather than from this line, as
+// (This change took 167 against the base's 155, and 169 at the forward merge of 2026-11-19 that
+// brought legion/INFRA-3531 in at 4d6665d5d593, whose number was 168. It takes 171 at the forward
+// merge of 2026-11-19 that brings legion/INFRA-3531 in at 41d4f45b156d, whose 167,
+// cybermonklabs/legion#4273's, is the entry right above. A reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request of this repository that changes this file, made
+// between 2026-11-19T11:30:22Z and 11:33:44Z, gave above main's 160: 161 (#4180, #4193 and
+// #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#4273), 168
+// (#3659, #3993, #4175 and #4488), 169 (#3831, #4065, #4493 and this change's own earlier
+// number) and 170 (#2230, #4030, #4173 and #4495), so 171 was the lowest free number above the
+// base's at that reading. That is a reading and never the rule: read the base's own number and
+// every open head again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 169
+const DaemonAPIVersion = 171

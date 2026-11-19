@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    The daemon API fixtures are at contract 167, and the state's settings carry
+    `runtime.kubernetes.memory_guard.controller_pod` beside `issue_pods`.
+time: 2026-11-17T05:04:10Z
+custom:
+    Issue: pr4273

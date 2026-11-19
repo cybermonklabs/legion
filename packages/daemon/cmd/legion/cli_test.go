@@ -52,7 +52,7 @@ var legionCommands = [][]string{
 	{"restart"},
 	{"claims"}, {"claims", "spawn"}, {"claims", "deliver"}, {"claims", "suspend"}, {"claims", "resume"},
 	{"claims", "stop"}, {"claims", "retry"}, {"claims", "compact"}, {"claims", "forget-session"},
-	{"claims", "close"}, {"claims", "list"},
+	{"claims", "release-names"}, {"claims", "close"}, {"claims", "list"},
 	{"sessions"}, {"sessions", "import"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},

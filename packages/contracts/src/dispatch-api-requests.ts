@@ -137,8 +137,9 @@ export const sleep: Sleep = (ms, signal) => {
   return promise;
 };
 
-/** `ms` jittered by ±25 %: a wait of `NO_ROUTE_RETRY_DELAYS_MS`, as a client waits it. */
-function jitteredDelay(ms: number): number {
+/** `ms` jittered by ±25 %: a wait of `NO_ROUTE_RETRY_DELAYS_MS`, as a client waits it
+ *  (`retryNoRoute`, and the Dispatch write client's own loop). */
+export function jitteredDelay(ms: number): number {
   return ms * (0.75 + Math.random() * 0.5);
 }
 

@@ -16,16 +16,16 @@ import (
 
 // movedTo enrols the session name again as the box it moved to does: a runtime id of its own, a
 // key of its own, and the same session name under the same principal, which is the whole of what
-// the carry follows. The credential is a second one of the same holder — the same person for a
-// session, the same Kubernetes service for a pod — because a new box is a new key and so a
-// credential of its own.
+// the carry follows. A session's credential is a second one of the same person, because a new box
+// is a new key and so a credential of its own; a pod's is its daemon's login (daemonLogin), which
+// answers the same credential at every call, since the broker keeps one live login per account.
 func movedTo(t *testing.T, svc *Service, issuer *oidctest.Issuer, key *oidctest.Key, kind, session, runtime string) (Credential, Enrollment) {
 	t.Helper()
 	in := Enrollment{Kind: kind, RuntimeID: runtime, Thumbprint: "tp-" + runtime, SessionID: str(session)}
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox-"+runtime)
 	if kind == "pod" {
-		cred = mintCredential(t, svc, nil, str("legion-daemon"), "cluster")
-		in.PodToken = mintPodToken(t, issuer, key, "system:serviceaccount:legion:worker", runtime)
+		cred = daemonLogin(t, svc)
+		in.PodToken = mintPodToken(t, issuer, key, carryPodAccount, runtime)
 	}
 	enr, err := svc.Create(context.Background(), cred, in)
 	if err != nil {
@@ -133,9 +133,11 @@ func withheldNames(t *testing.T, svc *Service, id uuid.UUID) []string {
 
 // TestAnEnrollmentRecordsThePrincipalItsCallerProved is the other half of the pair a grant
 // follows. The principal is read from what the caller has already proved and from nothing it
-// states: a pod's own projected token, the operator its credential carries, or the Google
-// account its credential's subject names. An enrollment that states no session records none,
-// because a principal with no name beside it is no pair.
+// states: a pod's own projected token paired with the account its daemon's token login proved,
+// the operator its credential carries, or the Google account its credential's subject names. A
+// pod enrolled under a login that proved no account records none, because nothing says which
+// launcher enrolled it, and so does an enrollment that states no session, because a principal
+// with no name beside it is no pair.
 func TestAnEnrollmentRecordsThePrincipalItsCallerProved(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
@@ -150,11 +152,18 @@ func TestAnEnrollmentRecordsThePrincipalItsCallerProved(t *testing.T) {
 		want string
 	}{
 		{
-			name: "a pod belongs to the service account its token proved",
-			cred: mintCredential(t, svc, nil, str("legion-daemon"), "cluster"),
+			name: "a pod's grants follow its token's service account and its daemon's login",
+			cred: daemonLogin(t, svc),
 			in: Enrollment{Kind: "pod", RuntimeID: "pod-uid-1", Thumbprint: "tp-pod", SessionID: str("implementer-g1"),
-				PodToken: mintPodToken(t, issuer, key, "system:serviceaccount:legion:worker", "pod-uid-1")},
-			want: "account:system:serviceaccount:legion:worker",
+				PodToken: mintPodToken(t, issuer, key, carryPodAccount, "pod-uid-1")},
+			want: "account:system:serviceaccount:legion:worker launched-by account:system:serviceaccount:legion:legion-daemon",
+		},
+		{
+			name: "a pod enrolled under a login that proved no account belongs to nobody",
+			cred: mintCredential(t, svc, nil, str("legion-daemon"), "cluster"),
+			in: Enrollment{Kind: "pod", RuntimeID: "pod-uid-2", Thumbprint: "tp-pod-2", SessionID: str("implementer-g2"),
+				PodToken: mintPodToken(t, issuer, key, carryPodAccount, "pod-uid-2")},
+			want: "",
 		},
 		{
 			name: "a session under a credential carrying an operator belongs to that person",
@@ -423,9 +432,9 @@ func TestAnAdoptedPredecessorIsNoLongerDormantSoTheCarrySweepTakesNothing(t *tes
 		t.Fatalf("Revoke: %v", err)
 	}
 	_, moved := movedTo(t, svc, issuer, key, "session", session, session+"-2")
-	// A carry window of 0 is the sweep's floor: it ends every dormant enrollment it finds, so
-	// what it does not end here is not a row whose window is still running.
-	ended, err := svc.EndCarried(ctx, 0)
+	// A carry window of 0 (the Service's Carry unset) is the sweep's floor: it ends every dormant
+	// enrollment it finds, so what it does not end here is not a row whose window is still running.
+	ended, err := svc.EndCarried(ctx)
 	if err != nil {
 		t.Fatalf("EndCarried: %v", err)
 	}

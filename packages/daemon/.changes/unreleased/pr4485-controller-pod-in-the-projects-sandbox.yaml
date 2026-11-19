@@ -11,6 +11,6 @@ body: |-
     `/var/run/legion/workload-identity`. A change of `type` moves the controller's pod at its next
     launch that installs nothing, and `legion claims suspend` then `legion claims resume` of its
     claim moves it at once. Where the type is `gvisor`, the controller's pod is the pod it was.
-    Repository cache pods and the image probe stay in gVisor. Daemon API contract 169.
+    Repository cache pods and the image probe stay in gVisor. Daemon API contract 171.
 custom:
     Issue: pr4485
