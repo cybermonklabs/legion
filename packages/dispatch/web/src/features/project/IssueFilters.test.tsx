@@ -246,7 +246,7 @@ test("a search restored from ?q= narrows the list before anyone types", async ()
   }
 });
 
-test("the search filter writes at most SEARCH_QUERY_MAX characters into the page URL", async () => {
+test("the search filter writes at most SEARCH_QUERY_MAX UTF-16 code units into the page URL", async () => {
   const user = userEvent.setup();
   const { getMyState, listIssues, view } = renderStrip([
     issue({ key: "CORE-1", title: "Guidance" }),
