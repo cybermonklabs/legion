@@ -23,6 +23,11 @@ var ptraceScopeFile = "/proc/sys/kernel/yama/ptrace_scope"
 // (sessionPeer). A test points it at a fake /proc.
 var peerProc = "/proc"
 
+// launcherExecutable is the launcher's own executable, which a role's shim runs (roleShim), as
+// /proc/self/exe names it. A test that runs its role's shim from a copy of its binary, outside
+// the /tmp that role-init covers, answers that copy instead.
+var launcherExecutable = func() (string, error) { return os.Readlink("/proc/self/exe") }
+
 // requireTraceScope refuses a generation that would use the session writer token unless Yama's
 // ptrace_scope (ptraceScopeFile) reads an integer of 1 or more. The session peer check admits the
 // agent's own process and no descendant of it. That holds only while no descendant can act as the
@@ -108,7 +113,7 @@ func newSessionPeer(m *manager, command shimwire.LauncherStart, env []string) (*
 	if err != nil {
 		return nil, fmt.Errorf("resolve the agent's executable: %v", err)
 	}
-	shim, err := os.Readlink("/proc/self/exe")
+	shim, err := launcherExecutable()
 	if err != nil {
 		return nil, fmt.Errorf("read the launcher's own executable, which a role's shim runs: %v", err)
 	}

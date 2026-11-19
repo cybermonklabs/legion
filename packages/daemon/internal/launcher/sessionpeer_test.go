@@ -419,6 +419,28 @@ func testExecutable(t *testing.T) string {
 	return self
 }
 
+// roleExecutable is a copy of the test binary in dir, which is outside /tmp, and the launcher's
+// own executable until the test ends (launcherExecutable). A role generation's shim and agent
+// stand-ins run this copy: `go test` builds the binary under /tmp where TMPDIR is unset, as on
+// GitHub's runners, and role-init binds the role's own temporary directory over /tmp, so the
+// role could not start the binary at that path. The shim rule (roleShim) then knows the shim by
+// the copy, as it knows a pod's shim by the launcher's own binary.
+func roleExecutable(t *testing.T, dir string) string {
+	t.Helper()
+	body, err := os.ReadFile(testExecutable(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := filepath.Join(dir, "launcher.test")
+	if err := os.WriteFile(copied, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := launcherExecutable
+	launcherExecutable = func() (string, error) { return copied, nil }
+	t.Cleanup(func() { launcherExecutable = previous })
+	return copied
+}
+
 // The launcher's own connections through a writer generation's socket are admitted: the resume
 // lookup (resumable) and a Claude Code keeper connect from the launcher's process, before any
 // process of the generation runs. Each reaches the session table through the fake dialer, and
@@ -780,8 +802,8 @@ func startPeerGeneration(t *testing.T) *peerGeneration {
 	t.Helper()
 	requireRoleNamespaces(t)
 	useTraceScope(t, "1\n")
-	exe := testExecutable(t)
 	scratch := namespaceScratch(t)
+	exe := roleExecutable(t, scratch)
 	home, homeMounts := filepath.Join(scratch, "home"), filepath.Join(scratch, "home-mounts")
 	// The fixed root is where the role finds its socket, so it is short, as the image's
 	// /var/run/legion is.
