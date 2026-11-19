@@ -368,3 +368,33 @@ func TestGoogleAccountMintErrorNamesNoUserPartOfTheAudience(t *testing.T) {
 		}
 	}
 }
+
+// TestGoogleAccountMetadataReadErrorNamesNoUserPartOfTheAudience: a reader with no service account
+// reads this machine's own token from the metadata server, and the error of a read that fails names
+// the audience through redact.URL, in its own words and in internal/googleidentity's, whose call
+// URL carries the audience in its query. The control is the same refusal for an audience with no
+// user part, which the error names whole. The user part's values are made for this test.
+func TestGoogleAccountMetadataReadErrorNamesNoUserPartOfTheAudience(t *testing.T) {
+	const (
+		user     = "made-up-audience-user"
+		password = "not-a-secret-audience-7c1d"
+	)
+	stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) })
+	for _, audience := range []string{"https://" + user + ":" + password + "@broker.test", metadataAudience} {
+		token, err := brokertoken.NewGoogleAccount(audience).Read()
+		if token != "" || err == nil {
+			t.Fatalf("Read for %q = %q, %v; want no token and an error", redact.URL(audience), token, err)
+		}
+		text := err.Error()
+		want := "brokertoken: read this machine's Google identity token for " + redact.URL(audience) + ": "
+		if !strings.HasPrefix(text, want) || !strings.Contains(text, "answered HTTP 403") {
+			t.Errorf("the error %q does not open with %q and carry the 403", text, want)
+		}
+		if strings.Contains(text, user) || strings.Contains(text, password) {
+			t.Errorf("the error %q names part of the audience's user part", text)
+		}
+		if audience == metadataAudience && !strings.Contains(text, metadataAudience) {
+			t.Errorf("control: the error %q does not name the audience %s, which has no user part", text, metadataAudience)
+		}
+	}
+}

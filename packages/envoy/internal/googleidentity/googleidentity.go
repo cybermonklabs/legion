@@ -56,46 +56,43 @@ const (
 // that bound that it has none, whichever read asked.
 var client = &http.Client{Transport: &http.Transport{DialContext: (&net.Dialer{Timeout: ProbeTimeout}).DialContext}}
 
-// tokenURL is the identity-token URL for audience, honouring MetadataHostVar.
-func tokenURL(audience string) (string, error) {
+// Token asks the metadata server for this machine's identity token for audience. format=full is
+// required: without it Google mints a token carrying no google.compute_engine claims, which names
+// no project, zone or instance, so an exchange entry pinned to either refuses it. Every error
+// names the identity path it asked and the audience, each through redact.URL, and never the
+// token. The audience is a setting that can hold a URL with a user part
+// (ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, BROKER_JUDGE_MODEL_AUDIENCE), and the URL the call asks
+// carries it in its query, so neither that URL nor the transport's error, which repeats it, is
+// printed: the transport's error is named by its class (redact.Cause).
+func Token(ctx context.Context, audience string) (string, error) {
 	base, err := metadataURL(identityPath)
 	if err != nil {
 		return "", err
 	}
-	return base + "?audience=" + url.QueryEscape(audience) + "&format=full", nil
-}
-
-// Token asks the metadata server for this machine's identity token for audience. format=full is
-// required: without it Google mints a token carrying no google.compute_engine claims, which names
-// no project, zone or instance, so an exchange entry pinned to either refuses it. Every error
-// names the URL it asked and never the token.
-func Token(ctx context.Context, audience string) (string, error) {
-	callURL, err := tokenURL(audience)
-	if err != nil {
-		return "", err
-	}
+	callURL := base + "?audience=" + url.QueryEscape(audience) + "&format=full"
+	asked := redact.URL(base) + " for the audience " + redact.URL(audience)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callURL, nil)
 	if err != nil {
-		return "", fmt.Errorf("ask the metadata server at %s: %w", callURL, err)
+		return "", fmt.Errorf("ask the metadata server at %s: %w", asked, redact.Cause(err, base))
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("the metadata server at %s could not be reached (%s names its host): %w", callURL, MetadataHostVar, err)
+		return "", fmt.Errorf("the metadata server at %s could not be reached (%s names its host): %w", asked, MetadataHostVar, redact.Cause(err, base))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", fmt.Errorf("read the metadata server's answer from %s: %w", callURL, err)
+		return "", fmt.Errorf("read the metadata server's answer from %s: %w", asked, redact.Cause(err, base))
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", fmt.Errorf("the metadata server at %s answered HTTP %d", callURL, resp.StatusCode)
+		return "", fmt.Errorf("the metadata server at %s answered HTTP %d", asked, resp.StatusCode)
 	}
 	token := strings.TrimSpace(string(body))
 	if token == "" {
-		return "", fmt.Errorf("the metadata server at %s answered an empty identity token", callURL)
+		return "", fmt.Errorf("the metadata server at %s answered an empty identity token", asked)
 	}
 	return token, nil
 }

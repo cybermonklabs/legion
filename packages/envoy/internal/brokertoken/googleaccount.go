@@ -84,8 +84,8 @@ const (
 type GoogleAccount struct {
 	// Audience is the 'aud' the token is minted for: the broker's own audience, as the broker's
 	// verifier of its callers' Google tokens requires it (BROKER_GOOGLE_OIDC_AUDIENCE), or the
-	// model gateway's, for the broker's judge (BROKER_JUDGE_MODEL_AUDIENCE). A mint's error names
-	// it through redact.URL: the setting can hold a URL with a user part, which no error prints.
+	// model gateway's, for the broker's judge (BROKER_JUDGE_MODEL_AUDIENCE). Every error names it
+	// through redact.URL: the setting can hold a URL with a user part, which no error prints.
 	Audience string
 	// ServiceAccount is the email of the service account whose identity token Read mints at
 	// generateIdToken, and empty for this machine's own, read from the metadata server's identity
@@ -182,7 +182,7 @@ func (g *GoogleAccount) read() (string, error) {
 	}
 	token, err := googleidentity.Token(context.Background(), g.Audience)
 	if err != nil {
-		return "", fmt.Errorf("brokertoken: read this machine's Google identity token for %s: %w", g.Audience, err)
+		return "", fmt.Errorf("brokertoken: read this machine's Google identity token for %s: %w", redact.URL(g.Audience), err)
 	}
 	return token, nil
 }

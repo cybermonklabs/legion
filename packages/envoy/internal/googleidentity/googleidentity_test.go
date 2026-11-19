@@ -10,11 +10,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -134,6 +136,53 @@ func TestTokenNamesTheHostItCouldNotReach(t *testing.T) {
 	_, err := Token(context.Background(), "example-audience")
 	if err == nil || !strings.Contains(err.Error(), MetadataHostVar) {
 		t.Fatalf("Token's error = %v, want one naming %s", err, MetadataHostVar)
+	}
+}
+
+// TestTokenNamesNoUserPartOfTheAudience: the audience is a setting that can hold a URL with a user
+// part, and the URL Token asks carries it in its query, so each refusal names the audience and the
+// identity path through redact.URL and prints no part of the user part: the server that answers a
+// status, and the one that answers nothing, whose transport error repeats the URL it asked. The
+// control is each refusal for an audience with no user part, which names it whole, so the error
+// line is reached. The user part's values are made for this test.
+func TestTokenNamesNoUserPartOfTheAudience(t *testing.T) {
+	const (
+		user     = "made-up-audience-user"
+		password = "not-a-secret-audience-3a9f"
+		clean    = "https://broker.example"
+	)
+	for _, refusal := range []struct {
+		name string
+		host func(t *testing.T) string
+	}{
+		{
+			name: "a status that is not a success",
+			host: func(t *testing.T) string {
+				stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusForbidden) })
+				return os.Getenv(MetadataHostVar)
+			},
+		},
+		{name: "nothing listening", host: func(*testing.T) string { return "127.0.0.1:1" }},
+	} {
+		for _, audience := range []string{"https://" + user + ":" + password + "@broker.example", clean} {
+			t.Run(refusal.name+", "+redact.URL(audience), func(t *testing.T) {
+				t.Setenv(MetadataHostVar, refusal.host(t))
+				token, err := Token(context.Background(), audience)
+				if token != "" || err == nil {
+					t.Fatalf("Token = %q, %v; want no token and a refusal", token, err)
+				}
+				text := err.Error()
+				if strings.Contains(text, user) || strings.Contains(text, password) {
+					t.Errorf("the refusal %q names part of the audience's user part", text)
+				}
+				if !strings.Contains(text, "for the audience "+redact.URL(audience)) {
+					t.Errorf("the refusal %q does not name the audience as %q", text, redact.URL(audience))
+				}
+				if audience == clean && !strings.Contains(text, clean) {
+					t.Errorf("control: the refusal %q does not name the audience %s, which has no user part", text, clean)
+				}
+			})
+		}
 	}
 }
 
