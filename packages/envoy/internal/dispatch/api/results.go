@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"math"
 	"net/http"
@@ -1026,10 +1025,10 @@ func holdsLink(word string) bool {
 // lineWords is the rule a pull-request body line keeps the words of a text by: the reading a
 // recorded result's line carries (checkResultLine) and the check's words a CI result's line
 // carries (ciVerdictLine). The line is written into a pull request unchanged, and a pull request
-// can be public, so it drops every word that holds a link (holdsLink), a private host
-// (privateHost, tailnetHost), this Dispatch's own host, or an issue key of a project this
-// Dispatch holds. No line is stored: each is written when the record, its dry run or the results
-// read answers it, by the projects Dispatch holds then.
+// can be public, so it keeps only a plain word (plainWord), and drops every word that holds a link
+// (holdsLink), a private host (privateHost, tailnetHost), this Dispatch's own host, or an issue key
+// of a project this Dispatch holds. No line is stored: each is written when the record, its dry run
+// or the results read answers it, by the projects Dispatch holds then.
 type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
@@ -1037,63 +1036,53 @@ type lineWords struct {
 	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
 	// without its scheme is dropped too; "" for a Dispatch configured with no URL.
 	host string
+	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
+	// sets, and which a test widens by one rune to show its property can fail.
+	punctuation string
+}
+
+// plainPunctuation is the punctuation a word of a pull-request body line may hold besides
+// letters and digits (unicode.IsLetter, unicode.IsDigit); a word holding any other rune is dropped
+// whole (plainWord).
+// Runes: . , ; : ! ? ' " - ( ) /
+// None of these opens markup GitHub renders inside a line, and every rune outside them can: `*`,
+// `_` and `~` emphasis (`_X_` at a word's edge hides where a key ends), the backtick, `<` and `>`
+// for HTML tags and comments, `[` and `]` for links, `\` for escapes, `&` for character
+// references, `$` for math, `@` and `#` for mentions and references, and every Unicode dash,
+// quotation mark, invisible or look-alike character, which can split, join or forge a key or a
+// host where a word is read alone. Allowing these few and nothing else closes the class instead of
+// listing its members; the cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b`
+// or `it’s` leaves the line, while the record keeps the whole reading.
+const plainPunctuation = `.,;:!?'"-()/`
+
+// plainWord reports whether every rune of word is a visible letter, a digit or one of
+// punctuation. A letter that is a default-ignorable code point, such as the Hangul fillers
+// U+115F, U+1160, U+3164 and U+FFA0, which render as nothing, is no plain letter: it could sit
+// inside a key unseen.
+func plainWord(word, punctuation string) bool {
+	for _, r := range word {
+		letter := unicode.IsLetter(r) &&
+			!unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector, unicode.Cf)
+		if !letter && !unicode.IsDigit(r) && !strings.ContainsRune(punctuation, r) {
+			return false
+		}
+	}
+	return true
 }
 
 // privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
 // read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
 // host, a DNS label then `.ts.net` with no letter or digit after it. privateHost also takes a host
-// that ends in `.internal`, a sentence's full stop or a bracket after it included, which the script
-// does not refuse: the script guards the whole repository, where names such as
-// metadata.google.internal and host.docker.internal are well known and not private, while the line
-// is pasted into public text with no reader in between, so it is stricter on purpose. The line
-// drops every word holding one, written without a scheme too, and the script's reserved example
-// hosts with them, since no line needs a host.
+// that ends in `.internal` with no letter or digit after it (a full stop, a bracket or a hyphen
+// included), which the script does not refuse: the script guards the whole repository, where
+// names such as metadata.google.internal and host.docker.internal are well known and not private,
+// while the line is pasted into public text with no reader in between, so it is stricter on
+// purpose. The line drops every word holding one, written without a scheme too, and the script's
+// reserved example hosts with them, since no line needs a host.
 var (
-	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]-]|$)`)
+	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
-
-// markdownEscape is a Markdown backslash escape, a backslash before an ASCII punctuation
-// character, which the pull request renders as the character alone, and markdownDelimiters the
-// emphasis, strikethrough and code delimiters, which it renders as nothing.
-var (
-	markdownEscape     = regexp.MustCompile("\\\\([!-/:-@\\[-`{-~])")
-	markdownDelimiters = strings.NewReplacer("*", "", "_", "", "~", "", "`", "")
-)
-
-// readerWord is word as a reader of the rendered pull request reads it, which the line judges
-// beside the word as written: HTML character references decoded, Markdown backslash escapes and
-// the emphasis, strikethrough and code delimiters (`*`, `_`, `~` and the backtick) taken out, then
-// NFKC, every invisible character taken out (a format character, unicode.Cf, such as the
-// zero-width space and the soft hyphen, a variation selector, and every other default-ignorable
-// code point, such as the combining grapheme joiner and the Hangul fillers), and every dash
-// (unicode.Pd) and the minus sign read as `-`. So `ACME‑12` with a non-breaking hyphen,
-// `ACME\-12`, `ACME&#45;12` and `**ACME**-12` read as `ACME-12`. A word holding markup is
-// dropped before this reading is made (holdsMarkup). The line prints the word as written, never
-// this reading.
-func readerWord(word string) string {
-	word = html.UnescapeString(word)
-	word = markdownEscape.ReplaceAllString(word, "$1")
-	word = markdownDelimiters.Replace(word)
-	return strings.Map(func(r rune) rune {
-		switch {
-		case unicode.In(r, unicode.Cf, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point):
-			return -1
-		case unicode.Is(unicode.Pd, r), r == '\u2212':
-			return '-'
-		}
-		return r
-	}, norm.NFKC.String(word))
-}
-
-// holdsMarkup reports whether a word holds `<`, `>` or `](`, with which an HTML tag or comment, or
-// a Markdown inline link, opens or closes in it. Such markup can split a word or join two words
-// once the pull request renders it (`[ACME](#)-12`, `ACME<!-- x -->-12` both show `ACME-12`), and
-// one word read alone cannot say what the rendering shows, so the line drops every such word. A
-// plain `a->b` or `Vec<u8>` is dropped with them: the price of no markup reaching the line.
-func holdsMarkup(word string) bool {
-	return strings.ContainsAny(word, "<>") || strings.Contains(word, "](")
-}
 
 // readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
 func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
@@ -1119,7 +1108,7 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 // number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
 // drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
 func lineWordsFor(keys []string, serverURL string) lineWords {
-	var words lineWords
+	words := lineWords{punctuation: plainPunctuation}
 	if parsed, err := url.Parse(serverURL); err == nil {
 		words.host = strings.ToLower(parsed.Hostname())
 	}
@@ -1135,11 +1124,11 @@ func lineWordsFor(keys []string, serverURL string) lineWords {
 	return words
 }
 
-// drops reports whether the line leaves word out: when it holds markup (holdsMarkup), or when the
-// word as written, or as a reader of the rendered pull request reads it (readerWord), holds what
-// the line never carries.
+// drops reports whether the line leaves word out: when it is not a plain word (plainWord), or
+// when the word as written, or as NFKC reads it (fullwidth and mathematical letters as their
+// plain forms), holds what the line never carries.
 func (w lineWords) drops(word string) bool {
-	return holdsMarkup(word) || w.holds(word) || w.holds(readerWord(word))
+	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
 }
 
 // holds reports whether word holds a link, a private host, this Dispatch's own host or an issue
@@ -1222,7 +1211,7 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 	}
 	reading := words.keepThrough(result.Observed, checkResultReadingRunes)
 	if reading == "" {
-		return line + " The reading holds only links, hosts, issue keys and markup, which this line leaves out."
+		return line + " The reading holds only words this line leaves out."
 	}
 	return line + " " + words.cut(reading)
 }

@@ -1,10 +1,16 @@
 package api
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // lineIssueKeys are the issue keys the tests below write into a reading or a check's words, each
@@ -83,7 +89,7 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 		{
 			name:     "a reading of nothing but issue keys and links",
 			observed: "RESK-1 dispatch://RESK-1/spec ACME-2",
-			want:     "The reading holds only links, hosts, issue keys and markup, which this line leaves out.",
+			want:     "The reading holds only words this line leaves out.",
 		},
 		{
 			name:     "a Tailscale MagicDNS host written without a scheme",
@@ -126,10 +132,9 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 			want:     "All 40 cases passed on the second run.",
 		},
 		{
-			name:     "dashes and invisible characters in words that name no project stay",
+			name:     "a Unicode dash drops a word whole, one that names no project too",
 			observed: "UTF\u20118 output and pages 3\u20134 match.",
-			want:     "UTF\u20118 output and pages 3\u20134 match.",
-			control:  true,
+			want:     "output and pages match.",
 		},
 		{
 			name:     "an issue key behind Markdown and HTML escapes",
@@ -137,20 +142,19 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 			want:     "and passed; matched.",
 		},
 		{
-			name:     "escaped words that name no project stay",
+			name:     "an escape drops a word whole, one that names no project too",
 			observed: "UTF\\-8 and \\*bold\\* stay.",
-			want:     "UTF\\-8 and \\*bold\\* stay.",
-			control:  true,
+			want:     "and stay.",
 		},
 		{
 			name:     "a cut that would leave an issue key",
-			observed: strings.Repeat("=", 73) + "ACME-12xyz tail words",
+			observed: strings.Repeat("/", 73) + "ACME-12xyz tail words",
 			want:     "…",
 		},
 		{
 			name:     "a cut inside a word that names no project",
-			observed: strings.Repeat("=", 73) + "abcdefgh tail words",
-			want:     strings.Repeat("=", 73) + "abcdefg…",
+			observed: strings.Repeat("/", 73) + "abcdefgh tail words",
+			want:     strings.Repeat("/", 73) + "abcdefg…",
 			control:  true,
 		},
 		{
@@ -175,14 +179,34 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 			want:     "x and y read.",
 		},
 		{
-			name:     "a plain arrow and angle brackets drop too, the cost of dropping markup",
-			observed: "a->b and Vec<u8> both compile.",
-			want:     "and both compile.",
+			name:     "a plain arrow, angle brackets and dollar signs drop too, the cost of dropping markup",
+			observed: "a->b and Vec<u8> compile; $PATH and $100 too.",
+			want:     "and compile; and too.",
 		},
 		{
-			name:     "brackets and parentheses that open no link stay",
+			name:     "a host ending in .internal before a hyphen",
+			observed: "Read vm-1.c.proj-1.internal--then it ran on box.internal-hosted pods.",
+			want:     "Read it ran on pods.",
+		},
+		{
+			name:     "an issue key or a host rebuilt by GitHub's math",
+			observed: "$\\text{AC}\\text{ME-12}$ ACME-$12$ $ACME$-12 passed; read $\\text{vm-1}.\\text{internal}$ then.",
+			want:     "passed; read then.",
+		},
+		{
+			name:     "an issue key behind a reference link",
+			observed: "[ACME][1]-12 and [ACME][]-12 passed.",
+			want:     "and passed.",
+		},
+		{
+			name:     "a bracket drops a word, a parenthesis does not",
 			observed: "Lists [1, 2] and f(x) stay.",
-			want:     "Lists [1, 2] and f(x) stay.",
+			want:     "Lists and f(x) stay.",
+		},
+		{
+			name:     "plain words and plain punctuation stay",
+			observed: "Plain words, f(x), a/b; it's \"quoted\": done? yes!",
+			want:     "Plain words, f(x), a/b; it's \"quoted\": done? yes!",
 			control:  true,
 		},
 		{
@@ -191,10 +215,9 @@ func TestThePullRequestLineDropsIssueKeysAndLinksFromTheReading(t *testing.T) {
 			want:     "Ran and again.",
 		},
 		{
-			name:     "invisible characters in a word that names no project stay",
+			name:     "an invisible character drops a word whole, one that names no project too",
 			observed: "UTF\u034f-8 and x\ufe0f stay.",
-			want:     "UTF\u034f-8 and x\ufe0f stay.",
-			control:  true,
+			want:     "and stay.",
 		},
 		{
 			name:     "a public host written without a scheme stays",
@@ -405,5 +428,83 @@ func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 			}
 			requireNoPrivateReference(t, whole)
 		})
+	}
+}
+
+// keptKeyFormingWords is every word the rule keeps of those built around the issue key ACME-12
+// with one rune that is neither a letter, a digit nor plain punctuation (and no blank, which ends
+// a word): that rune at the key's start, in its middle and at its end, and beside a plain
+// punctuation rune, each rune beside the next one of the set in turn. Each kept word is named by
+// its rune.
+func keptKeyFormingWords(words lineWords) []string {
+	const key = "ACME-12"
+	punctuation := []rune(plainPunctuation)
+	var kept []string
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !utf8.ValidRune(r) || unicode.IsSpace(r) || plainWord(string(r), plainPunctuation) {
+			continue
+		}
+		s, p := string(r), string(punctuation[int(r)%len(punctuation)])
+		for _, form := range []string{s + key, key[:4] + s + key[4:], key + s, key + p + s, s + p + key} {
+			if !words.drops(form) {
+				kept = append(kept, fmt.Sprintf("U+%04X in %q", r, form))
+			}
+		}
+	}
+	return kept
+}
+
+// Every rune outside the plain set drops a word built around an issue key, wherever it stands in
+// the word, so no rune can split, join, hide or forge a key. The control lets one rune, the
+// zero-width space, back into the set: the property then fails, and names that rune.
+func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
+	words := lineWordsFor([]string{"ACME"}, testServerURL)
+	if kept := keptKeyFormingWords(words); len(kept) != 0 {
+		t.Fatalf("the rule keeps %d key-forming words, the first %v", len(kept), kept[:min(len(kept), 5)])
+	}
+	widened := words
+	widened.punctuation += "\u200b"
+	kept := keptKeyFormingWords(widened)
+	if len(kept) == 0 {
+		t.Fatalf("with U+200B let back in the property still holds: it cannot fail")
+	}
+	for _, word := range kept {
+		if !strings.HasPrefix(word, "U+200B ") {
+			t.Fatalf("with U+200B let back in the property fails on %s, which names another rune", word)
+		}
+	}
+	t.Logf("control: with U+200B let back in, the property fails on %v", kept)
+}
+
+// plainPunctuation's doc comment lists its runes on a line of their own, and that list is the set.
+func TestThePlainPunctuationIsWhatItsDocCommentLists(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "results.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse results.go: %v", err)
+	}
+	var doc string
+	ast.Inspect(file, func(node ast.Node) bool {
+		if decl, ok := node.(*ast.GenDecl); ok && decl.Tok == token.CONST {
+			for _, spec := range decl.Specs {
+				if value, ok := spec.(*ast.ValueSpec); ok && slices.ContainsFunc(value.Names, func(name *ast.Ident) bool {
+					return name.Name == "plainPunctuation"
+				}) {
+					doc = decl.Doc.Text()
+				}
+			}
+		}
+		return true
+	})
+	var listed string
+	for line := range strings.Lines(doc) {
+		if rest, found := strings.CutPrefix(line, "Runes: "); found {
+			listed = strings.Join(strings.Fields(rest), "")
+		}
+	}
+	if listed == "" {
+		t.Fatalf("plainPunctuation's doc comment lists no runes on a line opening `Runes: `: %q", doc)
+	}
+	if listed != plainPunctuation {
+		t.Fatalf("the doc comment lists %q, the set is %q", listed, plainPunctuation)
 	}
 }
