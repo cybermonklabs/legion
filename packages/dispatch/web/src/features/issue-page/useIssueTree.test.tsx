@@ -1444,7 +1444,9 @@ test("a project document's event refreshes the names reads naming that document,
 // A page can cite a document before it exists: the names read answers that address with nothing
 // until the document is created, and the creation is what gives the address words. So a
 // document's creation refreshes the names reads that cite it, of an issue and of a project, and
-// leaves a read naming another owner alone.
+// leaves a read naming another owner alone. Its payload carries the document's slug, so a project
+// document's creation leaves a read naming another document of the project alone too,
+// `roadmap-md-2` among them.
 test("an artifact.created event refreshes the names read that cites that document", () => {
   const citesPlan = [[`dispatch://${KEY}/artifact/${PLAN}`]];
   expect(
@@ -1461,7 +1463,12 @@ test("an artifact.created event refreshes the names read that cites that documen
         { artifact: roadmap },
         { artifact_id: roadmap.id, issue_key: null }
       ),
-      [...citesRoadmap, ["dispatch://ACME/artifact/roadmap-md"], [`dispatch://${KEY}`]]
+      [
+        ...citesRoadmap,
+        ["dispatch://ACME/artifact/roadmap-md"],
+        ["dispatch://CORE/artifact/roadmap-md-2"],
+        [`dispatch://${KEY}`],
+      ]
     )
   ).toEqual(citesRoadmap);
 });
