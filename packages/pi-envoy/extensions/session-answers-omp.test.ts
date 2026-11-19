@@ -34,14 +34,10 @@ import {
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
-/** What the stand-in's answers route does: list `items` (after `delayMs`, at once when unset),
- *  accept and never answer, or answer as a Dispatch build older than the route does. */
+/** What the stand-in's answers route does: list `items`, accept and never answer, or answer as a
+ *  Dispatch build older than the route does. */
 type Route =
-  | {
-      readonly kind: "list";
-      readonly items: readonly SessionAnswer[];
-      readonly delayMs?: number;
-    }
+  | { readonly kind: "list"; readonly items: readonly SessionAnswer[] }
   | { readonly kind: "hang" }
   | { readonly kind: "missing" };
 
@@ -87,7 +83,8 @@ const DELIVERER = `export default function deliverer(pi) {
 }
 `;
 
-/** A request the stand-in served, with when it arrived (`performance.now()`). */
+/** A request the stand-in served, with when it reached the stand-in (`performance.now()`), before
+ *  its body was read (`serveStandin`'s `arrivedAt`). */
 interface Seen extends Request {
   readonly at: number;
 }
@@ -282,8 +279,8 @@ async function runSession(
   // A /btw step has settled once the stand-in serves its side turn: omp answers the RPC command
   // before it sends the side turn's request.
   let sideTurnServed = Promise.withResolvers<void>();
-  const { base } = serveStandin(cleanup, async (url, body) => {
-    const request: Seen = { path: url.pathname, body, at: performance.now() };
+  const { base } = serveStandin(cleanup, async (url, body, at) => {
+    const request: Seen = { path: url.pathname, body, at };
     seen.push(request);
     if (url.pathname === "/anthropic/v1/messages") {
       answered += 1;
@@ -318,9 +315,6 @@ async function runSession(
           { status: 404 }
         );
       }
-      // A slow Dispatch answers after a real delay: the case times the request against the read's
-      // own deadline, a platform timer inside the binary's process.
-      if (current.delayMs !== undefined) await Bun.sleep(current.delayMs);
       return Response.json({
         session_id: decodeURIComponent(answers[1] ?? ""),
         since: new Date(Date.now() - 72 * 60 * MINUTE).toISOString(),
@@ -702,8 +696,9 @@ test.skipIf(skipped)(
   "(f) an answers route that never answers holds no request for a second, by the median of three readings: turn 1, turn 2 after a good read, and a subagent's first request",
   async () => {
     const deadline = `Dispatch did not answer within ${SESSION_ANSWERS_DEADLINE_MS} ms`;
-    /** One reading: the gap between the answers request a Messages request waited on and the
-     *  request itself. */
+    /** One reading: from the answers request a Messages request waited on reaching the stand-in
+     *  to that request reaching it, each stamped before its body was read (`Seen`), so the time
+     *  the stand-in takes to read the Messages request's body is not in it. */
     const waitOf = (session: { readonly seen: Seen[] }, request: Seen): number =>
       request.at - answersBefore(session.seen, request).at;
     /** Three fresh readings of one case and their median against the bound, with every reading
@@ -1147,13 +1142,16 @@ test.skipIf(skipped)(
 // Two copies of this extension (a checkout's and an installed one, say) each run their own
 // `context` handler on one request. When the first reads an empty list it appends nothing, so the
 // second must still see that the request was decided, or it reads Dispatch again and the request
-// waits on both reads.
+// waits on both reads. The case counts the answers requests, not the request's time: a bound on
+// that time measured the box's load as well. The route answers at once, far inside the read's
+// deadline, so the one read is the one Dispatch answered: an empty list puts no line on the
+// request, where a read that waited the deadline out would put the failure line there.
 test.skipIf(skipped)(
-  "(l) two copies and an empty list: one answers request, and the request waits under a second",
+  "(l) two copies and an empty list: one answers request, and no line on the request",
   async () => {
     const session = await runSession(
       binary(),
-      [{ route: { kind: "list", items: [], delayMs: 600 } }, { prompt: "First question." }],
+      [{ route: { kind: "list", items: [] } }, { prompt: "First question." }],
       { twoCopies: true, warm: true }
     );
 
@@ -1163,9 +1161,6 @@ test.skipIf(skipped)(
     if (first === undefined) throw new Error("no turn 1");
     expect(rest).toEqual([]);
     expect(session.answers).toHaveLength(1);
-    const ms = first.at - (session.answers[0] as Seen).at;
-    console.log(`(l) the Messages request came ${ms.toFixed(0)} ms after the answers request`);
-    expect(ms).toBeLessThan(1_000);
     expect(carriesList(first)).toBe(false);
   },
   180_000
