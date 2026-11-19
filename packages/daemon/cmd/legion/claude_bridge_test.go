@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,12 +176,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	}
 	defer stdout.Close()
 	// A port nothing listens on, so the report's post fails at its dial.
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	daemon := closed.Addr().String()
-	_ = closed.Close()
+	const daemon = "127.0.0.1:1"
 	bootToken := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
 		t.Fatal(err)

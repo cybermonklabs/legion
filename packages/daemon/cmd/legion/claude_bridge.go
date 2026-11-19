@@ -19,12 +19,11 @@ const claudeBridgeUsage = "usage: legion claude-bridge -- <claude argv…>"
 // newClaudeBridgeCommand is `legion claude-bridge`, which `legion worker-shim` runs in Oh My Pi's
 // place for a phase worker whose role runs on Claude Code (`worker_backends`): Oh My Pi's RPC
 // frames on its stdin and stdout, Claude Code's stream-json to the `claude -p` after `--`
-// (internal/claudebridge). Its own lines and Claude Code's stderr go to stderr, which the pane
-// shows: its own lines and its refusals through the URL rule (claudebridge.Run's log,
-// printRefusal), Claude Code's stderr as Claude Code writes it, since stderr is handed to it as
-// the file it is. Its exit status is Claude Code's. SIGHUP ends it as SIGTERM does: every process
-// of a tmux pane gets it when the pane or its server goes, and the bridge's shutdown is what ends
-// Claude Code and removes its inbox.
+// (internal/claudebridge). Its own lines and refusals go to stderr, which the pane shows, through
+// the URL rule (claudebridge.Run's log, printRefusal); Claude Code's stderr goes there as Claude
+// Code writes it, since stderr is handed to it as the file it is. Its exit status is Claude Code's.
+// SIGHUP ends it as SIGTERM does: every process of a tmux pane gets it when the pane or its server
+// goes, and the bridge's shutdown is what ends Claude Code and removes its inbox.
 func newClaudeBridgeCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "claude-bridge -- <claude argv…>",

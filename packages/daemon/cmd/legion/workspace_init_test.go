@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"maps"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1054,12 +1053,7 @@ func killProcessesRunning(t *testing.T, path string) []string {
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	v := newIssueVolume(t)
 	// A port nothing listens on, so every ask of the cache fails at its dial.
-	closed, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cache := closed.Addr().String()
-	_ = closed.Close()
+	const cache = "127.0.0.1:1"
 	v.setenv(t)
 	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
 	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken))

@@ -348,7 +348,7 @@ func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
 
 	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
 		PlanRating: new(4), PlanReason: new("The plan fit\x00 the work.")}), http.StatusBadRequest,
-		"invalid request body: planReason holds a NUL character (U+0000) at character 13, which the daemon API refuses rather than store it as U+FFFD")
+		"invalid request body: "+nulError("planReason", 13))
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusal = %#v, want none applied", got)
 	}

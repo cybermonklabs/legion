@@ -92,7 +92,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 		if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 			// Run's error names itself (`launcher: …`), so it is written as it is, through the
 			// URL rule.
-			fmt.Fprintln(redact.Writer(stderr), err)
+			fmt.Fprintln(stderr, redact.URLCredentials(err.Error()))
 			return 1
 		}
 		return 0

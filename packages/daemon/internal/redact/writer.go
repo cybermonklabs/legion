@@ -15,9 +15,10 @@ var separator = []byte("://")
 // child the null device for one) reads Writer's answer the same way; and Writer of a writer
 // Writer made is that writer.
 //
-// Write answers len(p) once w has taken the text, however much the rule removed from it: io.Copy
-// and log.Logger take a shorter count for a failed write (io.ErrShortWrite). When w fails, Write
-// answers 0 and w's error.
+// A write the rule changed answers len(p) once w has taken the text, however much the rule removed
+// from it: io.Copy and log.Logger take a shorter count for a failed write (io.ErrShortWrite). When
+// w fails it, Write answers 0 and w's error. A write the rule leaves as it is reaches w as it is,
+// and Write answers w's own count and error.
 //
 // Each write is taken as a whole, and a URL is found only inside one write. Go's log.Logger and
 // each fmt.Fprint* call write one record in one call, and the launcher's role log writes each line

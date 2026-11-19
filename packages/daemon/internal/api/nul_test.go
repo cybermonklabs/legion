@@ -289,17 +289,9 @@ func TestHandoffCompleteFactBelowTheAPIStoresASummaryWithNULAsReplacementCharact
 	handoff := tester.writeHandoff("test", 1)
 	const want = "tests pass\uFFFD at the head"
 
-	// The fact and its key as the completion route builds them (handoff.go): the run the claim
-	// serves, and the key's tree generation and generation 1, as LEGION-208 is seeded, and pass 0,
-	// since no implementer's row raised it.
 	fact := intake.HandoffComplete{Generation: c.ServingRun(), Issue: "LEGION-208", Role: claim.RoleTester, Claim: tester.token,
-		Summary: "tests pass\x00 at the head", Verdict: "pass", Commit: headSHA, HandoffRecord: handoff, HandoffVersion: 1,
-		MustRate: c.PluginContract >= PlanRatingContract}
-	eventID := fmt.Sprintf("handoff:LEGION-208:1:1:%d:%s:%s:0:%s:pass", c.ServingRun(), claim.RoleTester, phase.Testing, handoff)
-	result, err := intake.ApplyFact(h.ctx, h.store.Pool(), "api", eventID, fact, engine)
-	if err != nil || result.Refusal != nil || result.Duplicate {
-		t.Fatalf("apply the tester's completion = %+v, %v; want it taken", result, err)
-	}
+		Summary: "tests pass\x00 at the head", Verdict: "pass", Commit: headSHA, HandoffRecord: handoff, HandoffVersion: 1}
+	applyEntryFact(t, h, engine, "complete", fact)
 
 	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); row == nil || row.Summary != want {
 		t.Fatalf("the tester's row = %+v, want its summary stored as %q", row, want)
@@ -349,7 +341,7 @@ func TestDeliverRefusesATaskWithNULThatTheMachineStoresAsReplacementCharacter(t 
 // so the operator's listing and the prompt the agent is sent before any restart read it too; the
 // deliver route answers a body holding a NUL with its decoder's 400, so the same delivery is handed
 // to the claim's machine below the API. A claim that keeps the request's own text hands the agent,
-// and the operator's answer, a NUL the store never shows.
+// and the operator's listing, a NUL the store never shows.
 func TestADeliveredTaskWithNULReachesTheAgentAsItIsStored(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleTester)

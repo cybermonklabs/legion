@@ -7,11 +7,11 @@
 // review body, an ask's note) keeps its links whole, query included (`?plain=1#L10`, `?pr=M`), so
 // the store's own rule (internal/store/storetext.Text) does not apply this one.
 //
-// The daemon's own log takes the rule in its handler (HandlerOptions). The log of each process the
-// legion binary runs in a pod — `legion worker-shim`, `legion claude-bridge`, `legion launcher`
-// and `legion workspace-init` — takes it whole, through Writer: such a log mixes a far side's
-// error with what an agent wrote (a tool call's summary), and a link of an agent's that loses its
-// query in the pod's log keeps it everywhere else.
+// The daemon's own log takes the rule in its handler (HandlerOptions). The log of the worker's own
+// processes, in a tmux pane or a pod (`legion worker-shim`, `legion claude-bridge`), and of a
+// pod's own (`legion launcher`, `legion workspace-init`) takes it whole, through Writer: such a
+// log mixes a far side's error with what an agent wrote (a tool call's summary), and a link of an
+// agent's that loses its query in that log keeps it everywhere else.
 package redact
 
 import (
