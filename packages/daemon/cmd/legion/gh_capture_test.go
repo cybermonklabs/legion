@@ -150,6 +150,28 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		return 0, string(out)
 	}
 	run := func(env []string, name string, args ...string) (int, string) { return runIn(home, env, name, args...) }
+	// sentWith checks that r, a request what sent, went to GitHub, api.github.com or github.com,
+	// with owner's token: gh's `token` header, or, for git (git), the Basic credential the helper
+	// answers. It says whether r carried that token, and reads no target owner of r's. A git
+	// request with no credential, which git sends before GitHub asks it for one, carries none and
+	// fails nothing.
+	sentWith := func(what string, r capturedRequest, owner string, git bool) bool {
+		t.Helper()
+		want := "token " + tokens[owner]
+		if git {
+			want = "Basic " + base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens[owner]))
+		}
+		switch {
+		case r.host != "api.github.com" && r.host != "github.com":
+			t.Errorf("%s sent %s%s with %q, to a host that is not GitHub's", what, r.host, r.path, r.auth)
+		case git && r.auth == "":
+		case r.auth != want:
+			t.Errorf("%s sent %s%s (target owner %q) with %q, want %s's %q", what, r.host, r.path, r.owner, r.auth, owner, want)
+		default:
+			return true
+		}
+		return false
+	}
 	wantSent := func(what, owner string, git bool) {
 		t.Helper()
 		requests := proxy.take()
@@ -157,20 +179,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			t.Errorf("%s sent GitHub nothing", what)
 			return
 		}
-		want := "token " + tokens[owner]
-		if git {
-			want = "Basic " + base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens[owner]))
-		}
 		for _, r := range requests {
-			if r.host != "api.github.com" && r.host != "github.com" {
-				t.Errorf("%s sent %s%s with %q, to a host that is not GitHub's", what, r.host, r.path, r.auth)
-				continue
-			}
-			if git && r.auth == "" {
-				continue
-			}
-			if r.auth != want || (r.owner != "" && r.owner != owner) {
-				t.Errorf("%s sent %s%s (target owner %q) with %q, want %s's %q", what, r.host, r.path, r.owner, r.auth, owner, want)
+			if sentWith(what, r, owner, git) && r.owner != "" && r.owner != owner {
+				t.Errorf("%s sent %s%s, whose target owner is %q, with %s's token", what, r.host, r.path, r.owner, owner)
 			}
 		}
 	}
@@ -718,7 +729,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{[]string{"GH_CONFIG_DIR=" + ghconfig.Dir(root, "sjawhar")}, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "sjawhar", "octocat"},
 	} {
 		what := "legion gh " + strings.Join(tc.args, " ")
-		code, out := runIn(home, slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		code, out := run(slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
 		requests := proxy.take()
 		if len(requests) == 0 {
 			t.Errorf("%s = exit %d, %q, and sent GitHub nothing; want its requests sent with %s's token", what, code, out, tc.owner)
@@ -726,21 +737,19 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		}
 		reached := false
 		for _, r := range requests {
-			if r.auth != "token "+tokens[tc.owner] {
-				t.Errorf("%s sent %s%s (target owner %q) with %q, want %s's token", what, r.host, r.path, r.owner, r.auth, tc.owner)
-			}
+			sentWith(what, r, tc.owner, false)
 			reached = reached || r.owner == tc.reach || r.path == tc.reach
 		}
 		if !reached {
 			t.Errorf("%s sent %+v, and none of it to %s", what, requests, tc.reach)
 		}
 	}
-	// Every other call naming octocat is refused with main's text, exit 2, and sends nothing, under
-	// the same check: a write, a GraphQL mutation or subscription, a query gh would read from a
-	// file or fill a placeholder in after `legion gh` read it — {branch}, in a checkout whose
-	// branch is named `mutation` — a read naming octocat beside sjawhar, whom the bundle serves,
-	// and a read in a clone of octocat's repository, whose remote names it (beside the rows above,
-	// `pr list` there).
+	// Every other call naming octocat is refused with the OwnerNotServedError refusal, exit 2, and
+	// sends nothing, under the same check: a write, a GraphQL mutation or subscription, a query gh
+	// would read from a file or fill a placeholder in after `legion gh` read it — {branch}, in a
+	// checkout whose branch is named `mutation` — a read naming octocat beside sjawhar, whom the
+	// bundle serves, and a read in a clone of octocat's repository, whose remote names it (beside
+	// the rows above, `pr list` there).
 	queryFile := filepath.Join(home, "query.graphql")
 	if err := os.WriteFile(queryFile, []byte(`mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), 0o600); err != nil {
 		t.Fatal(err)

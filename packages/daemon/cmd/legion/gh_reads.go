@@ -166,8 +166,7 @@ func ghAPIReadValue(option, value string) bool {
 	case "-X", "--method":
 		return value == "GET"
 	case "-H", "--header":
-		name, _, _ := strings.Cut(value, ":")
-		return !ghMethodOverrideHeaders[strings.ToLower(strings.TrimSpace(name))]
+		return !ghMethodOverrideHeaders[ghHeaderName(value)]
 	}
 	return true
 }
@@ -176,6 +175,14 @@ func ghAPIReadValue(option, value string) bool {
 // request's method in place of the one it was sent with. This cannot know that GitHub reads none
 // of them, so a call that sets one is guarded whole.
 var ghMethodOverrideHeaders = map[string]bool{"x-http-method-override": true, "x-http-method": true, "x-method-override": true}
+
+// ghHeaderName is the name of the request header value sets, as gh's -H/--header takes one,
+// `<name>:<value>`: the text before the first colon, trimmed and lowercased, as
+// ghMethodOverrideHeaders names a header.
+func ghHeaderName(value string) string {
+	name, _, _ := strings.Cut(value, ":")
+	return strings.ToLower(strings.TrimSpace(name))
+}
 
 // ghReadOptions are a read grammar's options from two lists of spellings, each separated by
 // spaces: values, the options that take a value, which are true, and switches, the options that
@@ -226,6 +233,11 @@ func ghWritesNothing(argv, path []string) bool {
 	return listed && ghReadGrammar(argv[len(path):], options, false)
 }
 
+// ghGraphQLReadOptions are the options a `gh api graphql` query may be given (ghGraphQLQueryRead),
+// each spelling keyed as ghReadOptions keys one: -f/--raw-field, -F/--field, -H/--header, -q/--jq
+// and -t/--template, each taking a value, and the switches --paginate and --slurp.
+var ghGraphQLReadOptions = ghReadOptions("-f --raw-field -F --field -H --header -q --jq -t --template", "--paginate --slurp")
+
 // ghGraphQLQueryRead says whether argv, a call as typed, is a query of GitHub's GraphQL API that
 // writes nothing, which R4 of dispatch://INFRA-3399 lets run with GH_CONFIG_DIR's directory where
 // it names only owners the bundle holds no directory for, as it lets a call ghWritesNothing admits
@@ -259,12 +271,12 @@ func ghGraphQLQueryRead(argv []string) bool {
 	query, queries := "", 0
 	for i := 2; i < len(argv); i++ {
 		option := argv[i]
-		switch option {
-		case "--paginate", "--slurp":
-			continue
-		case "-f", "--raw-field", "-F", "--field", "-H", "--header", "-q", "--jq", "-t", "--template":
-		default:
+		takesValue, named := ghGraphQLReadOptions[option]
+		if !named {
 			return false
+		}
+		if !takesValue {
+			continue
 		}
 		if i++; i == len(argv) {
 			return false
@@ -283,8 +295,7 @@ func ghGraphQLQueryRead(argv []string) bool {
 				return false
 			}
 		case "-H", "--header":
-			name, _, _ := strings.Cut(value, ":")
-			if name = strings.ToLower(strings.TrimSpace(name)); ghMethodOverrideHeaders[name] || name == "content-length" {
+			if name := ghHeaderName(value); ghMethodOverrideHeaders[name] || name == "content-length" {
 				return false
 			}
 		}

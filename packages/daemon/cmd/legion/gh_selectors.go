@@ -702,17 +702,17 @@ func markedOrigin(remotes []ghRemote) (fetch int, ok bool) {
 
 // fromWorkingDirectory collects the owner and the repository of the github.com repositories the
 // working directory's git remotes name (remotes), from which gh takes the repository of a command
-// it resolves none for. Every line is read first, and one this cannot read is refused; a working
-// directory that is no git repository names none. Where the command honours gh's default marker
-// (honoursMarker) and that marker makes origin's repository gh's own (markedOrigin), origin's
-// fetch line alone counts, before anything is routed, so an upstream whose owner has no gh
-// directory is never routed. Otherwise every line counts, since gh may act on any: the first of
-// its sorted remotes, an `upstream` before an `origin`, the repository a marker names, or, for
-// repo set-default, every remote's network. So a workspace whose remotes name two owners names
-// two, as one whose remotes name two repositories of one owner names two repositories, and so no
-// one repository. Each is routed as every selector is (dir), so remotes whose repositories two
-// directories answer for are refused. Every line that counts and names a github.com repository
-// sets readRemote, whether or not add keeps its entry.
+// it resolves none for. Every line is read, whether or not it counts, and the first one this
+// cannot read is refused; a working directory that is no git repository names none. Where the
+// command honours gh's default marker (honoursMarker) and that marker makes origin's repository
+// gh's own (markedOrigin), origin's fetch line alone counts, before anything is routed, so an
+// upstream whose owner has no gh directory is never routed. Otherwise every line counts, since gh
+// may act on any: the first of its sorted remotes, an `upstream` before an `origin`, the
+// repository a marker names, or, for repo set-default, every remote's network. So a workspace
+// whose remotes name two owners names two, as one whose remotes name two repositories of one
+// owner names two repositories, and so no one repository. Each is routed as every selector is
+// (dir), so remotes whose repositories two directories answer for are refused. Every line that
+// counts and names a github.com repository sets readRemote, whether or not add keeps its entry.
 func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error), honoursMarker bool) error {
 	advice := "name the repository with -R <owner>/<repo>"
 	if s.api {
@@ -722,18 +722,16 @@ func (s *selectors) fromWorkingDirectory(remotes func() ([]ghRemote, error), hon
 	if err != nil {
 		return fmt.Errorf("cannot tell which repository the command targets: the working directory's git remotes, from which gh takes the command's own repository, cannot be read (%v), so it sends no token; %s", err, advice)
 	}
-	for _, remote := range listed {
-		if _, _, why := remote.repository(); why != "" {
+	fetch, marked := 0, false
+	if honoursMarker {
+		fetch, marked = markedOrigin(listed)
+	}
+	for i, remote := range listed {
+		owner, repo, why := remote.repository()
+		if why != "" {
 			return fmt.Errorf("cannot tell which repository the command targets: the working directory's %s %s, so it sends no token; %s", remote.what(), why, advice)
 		}
-	}
-	if honoursMarker {
-		if fetch, ok := markedOrigin(listed); ok {
-			listed = listed[fetch : fetch+1]
-		}
-	}
-	for _, remote := range listed {
-		if owner, repo, _ := remote.repository(); owner != "" {
+		if owner != "" && (!marked || i == fetch) {
 			s.readRemote = true
 			s.add(owner, ghconfig.RepositoryName(repo), "the working directory's "+remote.what())
 		}
