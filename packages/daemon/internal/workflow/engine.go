@@ -867,6 +867,11 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// A completion at the head a merge forward replaced reports code the pull request no longer
+	// stands on, and is refused before anything of it is recorded (mergedForwardRefusal).
+	if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
+		return refusal, nil
+	}
 	if word, _, ok := phase.Handoff(reported); ok {
 		// A phase with a handoff ends with a Dispatch handoff record, which the route read back
 		// and held to this issue, the phase's word, the reported version and the claim's session:
@@ -1643,6 +1648,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
+		return err
+	}
+	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
+	// it, and a move at a head held in a confirmed conflict asks for it where the phase entered
+	// needs a head that merges. It comes after the start, so the worker of the phase entered is
+	// started before the hold that tells it to wait for the merge.
+	if err := e.mergeForwardOnEntry(ctx, tx, issue, from); err != nil {
 		return err
 	}
 	if mergedAlready {

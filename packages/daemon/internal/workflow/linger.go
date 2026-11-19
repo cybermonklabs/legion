@@ -62,12 +62,20 @@ import (
 // are ordered by Dispatch rank (record.Waiting). The write is made whatever the record in hand
 // says, because that copy may have been read before the release wrote the mark, and a departure
 // is rare enough that one statement costs nothing.
+//
+// Nor does its pull request keep a merge forward (clearMergeForward): the ask, its landing and
+// the review it asked for are of the run that is leaving, and a run that comes back asks about a
+// conflict afresh. This is the one place an issue leaves the workflow, so it is the one clear of
+// a departure.
 func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: issue left the workflow", "issue", issue.Key, "tree", issue.Tree, "status", status)
 	if err := e.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
 		return fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
 	}
 	if err := e.untellUnresumedChanges(ctx, tx, issue); err != nil {
+		return err
+	}
+	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {

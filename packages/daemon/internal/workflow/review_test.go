@@ -267,7 +267,7 @@ func TestAnApprovalOnABlockedHeadNamesTheStateAndEveryCheckGitHubReported(t *tes
 	if len(told) != 1 || told[0].Reason != want {
 		t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 	}
-	for _, phrase := range []string{"GitHub reports that head blocked", `"unit tests" succeeded`, "reads no ruleset", "absent here rather than named as missing"} {
+	for _, phrase := range []string{"GitHub reports that head blocked", `"unit tests" succeeded`, "reads the base's rules only on a conflicting read", "absent here rather than named as missing"} {
 		if !strings.Contains(told[0].Reason, phrase) {
 			t.Fatalf("the notice reads %q, want it to name %q", told[0].Reason, phrase)
 		}
@@ -458,8 +458,10 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 	}{
 		// A push whose new head has not arrived leaves the round waiting on that head, not on
 		// GitHub: the approval of the head the push replaced stands for nothing until the move is
-		// known, so nothing is read.
-		{name: "a push to the branch", fact: push, want: false},
+		// known. The push moves the head all the same, and a head move of an issue in implementing
+		// through merging is read for a conflict with the base (classify.MergeStateReadOwed,
+		// dispatch://INFRA-4374 R0), so it is read for.
+		{name: "a push to the branch", fact: push, want: true},
 		{name: "the head arriving", fact: intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 			HeadSHA: headTwo, Before: headOne, Sender: testReviewApp}, approved: headTwo, want: true},
 		{name: "a synchronize that moves nothing", fact: intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,

@@ -998,6 +998,14 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
+//
+// A merger started in merging at the head a merge forward landed past the review, while the
+// review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
+// to merge that head only once the reviewer's approval of it is on the pull request: the daemon
+// records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
+// merger's task is built at retro's completion, the one move into merging, and at the retry of a
+// held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
+// the record holds.
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -1012,6 +1020,10 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
+	}
+	if issue.Phase == phase.Merging && pr != nil && mergeForwardReviewOwed(*pr) {
+		text += fmt.Sprintf(" Head %s is the merge of %s forward that landed after the review, and the reviewer is asked to read it: merge head %s only once the reviewer's approval of it is on the pull request.",
+			pr.HeadSHA, pr.MergeForward.Base, pr.HeadSHA)
 	}
 	if reason != "" {
 		text += " Reason: " + reason + "."

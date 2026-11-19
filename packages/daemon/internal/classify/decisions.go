@@ -1167,8 +1167,9 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // pull request's head: the issue is in reviewing, its pull request is open, its reviewer's review
 // approved the head the pull request now stands at (ApprovalStands, which is the whole of that
 // test: a review of another head approves nothing, and a push on its way takes an approval of this
-// head back), and the merge state the record holds for that head is not one the issue may advance
-// on (record.MergeState.Mergeable), the unread state among them.
+// head back), the merge state the record holds for that head is not one the issue may advance on
+// (record.MergeState.Mergeable), the unread state among them, and the record does not hold that
+// head in a confirmed conflict with its base (ConflictRound).
 //
 // Two readers ask it, and they must answer alike, which is the whole reason the rule is here
 // rather than in either of them: the engine asks it to decide whether this round is one the
@@ -1184,7 +1185,15 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // waiting on GitHub's next answer about the same head: the state a head is in changes under it, a
 // base push clearing `behind` and a required check that runs clearing `blocked`, and a read is the
 // only thing that would ever say so. What tells those apart is read by the caller that needs them
-// apart (ChecksConcludedOnHead), never here.
+// apart (ChecksConcludedOnHead), never here. A head GitHub answered `dirty` for while its first
+// conflicting read waits for the second (record.PullRequest.ConflictRead) waits the same way: the
+// second read decides whether the conflict stands (dispatch://INFRA-4374 R2).
+//
+// It does not hold for a head the record holds in a confirmed conflict: that approval ends the
+// round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
+// head will change until the implementer merges the base forward, and the issue's move into
+// accepting is what asks for that merge (dispatch://INFRA-4374 R0, ConflictMergeNext). Read here,
+// the state build shows no mergeWait for the round the engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1197,7 +1206,62 @@ func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *re
 		return false
 	}
 	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&
-		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable()
+		ApprovalStands(*pr, reviewer.Decision.Head) && !pr.MergeState.Mergeable() && !ConflictRound(*pr)
+}
+
+// MergeStateFact is the kind of fact that asks whether GitHub's merge state is read for a pull
+// request (MergeStateReadOwed). Workflow's askMergeState names it from the fact it applied, and
+// workflow's basePush names MergeStateFactBasePush for each pull request its walk recorded the
+// push on.
+type MergeStateFact int
+
+const (
+	// MergeStateFactOther is a fact that moves neither the head nor the base: a review, a CI
+	// settlement.
+	MergeStateFactOther MergeStateFact = iota
+	// MergeStateFactHeadMove is a fact that moves the pull request's head or opens it at one: the
+	// pull request opened or reopened, a synchronize, a push to its branch.
+	MergeStateFactHeadMove
+	// MergeStateFactBasePush is a push to the base branch the pull request sits on.
+	MergeStateFactBasePush
+)
+
+// MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
+// request (workflow's askMergeStateFor, which queues the ladder behind daemon's readMergeState):
+// whether a fact of kind fact asks for it. roundWaits is the engine's own account of the issue's
+// review round (workflow's reviewRound, round.waitsOnMergeState). Each of three reasons asks, and
+// one is enough:
+//
+//   - The review round waits on GitHub's answer about the head (roundWaits), whatever the fact: an
+//     approval stands on a head GitHub has answered nothing for, or a state it would not merge
+//     from (RoundWaitsOnMergeState), or a head whose first conflicting read waits for its second.
+//   - The fact moves the head, and the issue stands in implementing, testing, reviewing,
+//     accepting, retro or merging (dispatch://INFRA-4374 R0). GitHub runs no checks on a head that
+//     conflicts with its base, so without a read a conflicting push stands with no CI and nobody is
+//     told; the read that finds the head CONFLICTING is the first of the two reads that confirm a
+//     conflict (R2).
+//   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
+//     or merging. GitHub sends no event of the pull request while it computes whether the head
+//     still merges into the moved base. Past the review the merge is next (ConflictMergeNext), so
+//     a conflict there is acted on at once (R0). In testing and reviewing the record otherwise
+//     keeps the state the read before the push left: a record read `blocked` while GitHub answered
+//     DIRTY, because no read followed the base push (INFRA-4315, dispatch://INFRA-4374/spec#b-r4).
+//     A base push reads nothing for an issue in implementing or before it: there the
+//     implementer's next push is read, by the reason above.
+//
+// Every other fact asks nothing, and so does a head move or a base push of an issue outside those
+// phases. It is the one statement of the gate, so the reasons cannot drift apart between the
+// facts that ask (askMergeState) and the walk of a base push (basePush).
+func MergeStateReadOwed(issue record.Issue, roundWaits bool, fact MergeStateFact) bool {
+	switch {
+	case roundWaits:
+		return true
+	case fact == MergeStateFactHeadMove:
+		return record.StandsIn(issue, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+	case fact == MergeStateFactBasePush:
+		return record.StandsIn(issue, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+	}
+	return false
 }
 
 // The reasons R0 acts on a confirmed conflict for (ConflictNeedsMerge), in the words the daemon

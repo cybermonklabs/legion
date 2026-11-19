@@ -18,10 +18,11 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but two: the row is written from eleven places — a pull request opened, reopened,
+// it but two: the row is written from thirteen places — a pull request opened, reopened,
 // synchronized, pushed to, closed or merged, a CI settlement, a mergeability read and the end of
-// its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward) — and a
-// write site added later would otherwise have to remember the mark. Routing them through
+// its second read (conflictConfirmDone), a review, a merge forward's ask (mergeForward), its
+// landing (mergeForwardLanded) and its clearing (clearMergeForward) — and a write site added
+// later would otherwise have to remember the mark. Routing them through
 // one function is what makes forgetting it hard rather than easy.
 //
 // The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
@@ -106,9 +107,11 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 // (record.PullRequest.ConflictRead) and the merge forward the daemon asked for (MergeForward). A
 // read that writes or releases the first read writes GitHub's verdict with it, which is named
 // above whenever it changed, and the confirmation writes the head the daemon holds conflicting,
-// which is named too; the ask is the daemon's own act on a conflict it already recorded, and the
-// end of a second read that decided nothing (workflow's conflictConfirmDone) is a note the daemon
-// leaves itself, as clearing BaseMoved is.
+// which is named too; the ask is the daemon's own act on a conflict it already recorded, its
+// landing rides on the synchronize that moved the head, which is named above, its clearing on a
+// move of the issue or its leave, each a movement of its own, and the end of a second read that
+// decided nothing (workflow's conflictConfirmDone) is a note the daemon leaves itself, as
+// clearing BaseMoved is.
 //
 // A field added to record.PullRequest later is not news to this test until it is named here. The
 // direction that costs something is this one — an unnamed field that is news leaves a tree
@@ -227,6 +230,11 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 // record never held waits for it. Late, it records that alone, and moves and sets nothing else. In
 // implementing a head that arrives once the implementer has completed is the pull request its
 // completion waited for.
+//
+// A head that moves off the one a merge forward was asked of is that merge landing, in whatever
+// phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
+// head as the merge's, and the phase's worker and, past the review, the reviewer are told. It is
+// recorded before the phase's own handling below, which goes on as it would for any move.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
@@ -262,6 +270,11 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	if moved {
+		if err := e.mergeForwardLanded(ctx, tx, *issue, pr); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	switch issue.Phase {
 	case phase.Reviewing:
