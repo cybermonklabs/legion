@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A push to a public repository of an owner that the project's gh bundle holds no directory for
+  no longer fails in the leak guard's setup. The guard reads the destination's visibility through
+  `legion gh`, which refuses such an owner. When `legion gh` gives exactly that refusal to the
+  guard's REST read (exit 2, and the one line
+  `legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`
+  for the repository's owner), the guard reads the visibility with the unauthenticated
+  `git ls-remote` that it already uses for a spent rate limit and for a failed connection. Only
+  exit 0, which lists the repository's refs, reads as public. Every other outcome, a private
+  repository's 401 included, refuses the write as a setup error that names both reads. Every other
+  refusal of `legion gh` refuses the write as before, the refusal of a configured rename whose new
+  owner has no directory included. The shared check's own visibility read of such a repository
+  follows the same rule.
+time: 2026-11-19T00:46:10Z
+custom:
+  Issue: pr4459
