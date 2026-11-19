@@ -1,14 +1,15 @@
 // Package pgsetting is how a program reads a Postgres connection string a person configured (a
 // DATABASE_URL, the broker's BROKER_DATABASE_URL, the daemon's DSN, a tool's -pg) before it opens
 // the database the string names. Such a string may carry a user and a password, and pgx prints
-// parts of it: its parse error masks the password and quotes the rest, the user among it, and its
-// connect error names the user and the database in front of what failed. And a user part written
-// with a raw @ or / is read by pgx in part as the host or the database, and a URL pgx does not take
-// for one is read as keyword=value text. So each opener reads its string here: one whose user part
-// pgx reads apart, or a URL pgx would not read as one, is refused (Refuse), one pgx cannot parse is
-// refused too, each named by its length and the cause the check found (redact.Refusal), and a
-// failed connect names no user and no database (ConnectFailure). A reader that also parses the
-// string with net/url refuses what net/url reads apart first (URLParserReadsApart).
+// parts of it: its parse error masks the password and quotes the rest, the user among it, its
+// connect error names the user and the database in front of what failed, and a server that refuses
+// the sign-in names the user in its own answer. And a user part written with a raw @ or / is read
+// by pgx in part as the host or the database, and a URL pgx does not take for one is read as
+// keyword=value text. So each opener reads its string here: one whose user part pgx reads apart, or
+// a URL pgx would not read as one, is refused (Refuse), one pgx cannot parse is refused too, each
+// named by its length and the cause the check found (redact.Refusal), and a failed connect names no
+// user and no database, and a server's answer by its SQLSTATE alone (ConnectFailure). A reader that
+// also parses the string with net/url refuses what net/url reads apart first (URLParserReadsApart).
 package pgsetting
 
 import (
@@ -162,21 +163,69 @@ func splitURL(raw string) (authority, afterPath string, ok bool) {
 	return authority, afterPath, true
 }
 
-// connectFailure is a pgconn.ConnectError as a message may print it: what failed at each host the
-// connection tried, without the user and the database pgx names in front of it, since a URL's user
-// part can be a token written where the user stands. It unwraps to the ConnectError, so errors.As
-// still finds it.
-type connectFailure struct{ connect *pgconn.ConnectError }
+// connectFailure is err, an error that holds a pgconn.ConnectError, as a message may print it: the
+// words of each wrapper over the ConnectError as they are, and the ConnectError as what failed at
+// each host the connection tried, without the user and the database pgx names in front of it, since
+// a URL's user part can be a token written where the user stands, and with each answer a server
+// gave named by its severity and SQLSTATE alone, since the server's own words name the user too
+// (`password authentication failed for user "..."`, `role "..." does not exist`). It unwraps to
+// err, so errors.Is and errors.As still find what err holds, the ConnectError and the server's
+// *pgconn.PgError under it among them.
+type connectFailure struct{ err error }
 
-func (c connectFailure) Error() string { return "failed to connect: " + c.connect.Unwrap().Error() }
-func (c connectFailure) Unwrap() error { return c.connect }
+func (c connectFailure) Error() string {
+	return rewritten(c.err, func(connect *pgconn.ConnectError) string {
+		return "failed to connect: " + rewritten(connect.Unwrap(), func(server *pgconn.PgError) string {
+			return server.Severity + " (SQLSTATE " + server.Code + ")"
+		})
+	})
+}
+func (c connectFailure) Unwrap() error { return c.err }
 
-// ConnectFailure is err with a pgconn.ConnectError in it written without the user and the database
-// pgx names in front of it, and err itself otherwise.
+// ConnectFailure is err, when it holds a pgconn.ConnectError at any depth, written with that error
+// named without the user and the database pgx names in front of it and without the words of any
+// server's answer under it (connectFailure), and err itself otherwise. A caller may wrap an error
+// with it wherever a connect can have failed under it: the words around the failure stay.
 func ConnectFailure(err error) error {
 	var connect *pgconn.ConnectError
 	if errors.As(err, &connect) {
-		return connectFailure{connect}
+		return connectFailure{err}
 	}
 	return err
+}
+
+// rewritten is err's text with each error of type T in it, at any depth, written as name writes
+// it. An error that holds none prints as it is, and so does the text of a wrapper in front of what
+// it wraps, fmt.Errorf's %w and pgconn's own wrappers alike (the address and host a connect
+// dialled, what failed there); a wrapper whose text does not end with the text it wraps prints
+// only what it wraps, and one that wraps several (errors.Join, one per host a connect tried) prints
+// each on a line of its own, as errors.Join does.
+func rewritten[T error](err error, name func(T) string) string {
+	if found, ok := err.(T); ok {
+		return name(found)
+	}
+	var found T
+	if !errors.As(err, &found) {
+		return err.Error()
+	}
+	switch wrapper := err.(type) {
+	case interface{ Unwrap() []error }:
+		var each []string
+		for _, inner := range wrapper.Unwrap() {
+			if inner != nil {
+				each = append(each, rewritten(inner, name))
+			}
+		}
+		return strings.Join(each, "\n")
+	case interface{ Unwrap() error }:
+		if inner := wrapper.Unwrap(); inner != nil && errors.As(inner, new(T)) {
+			own, ok := strings.CutSuffix(err.Error(), inner.Error())
+			if !ok {
+				own = ""
+			}
+			return own + rewritten(inner, name)
+		}
+	}
+	// Found through err's own As method rather than in what err wraps: named alone.
+	return name(found)
 }
