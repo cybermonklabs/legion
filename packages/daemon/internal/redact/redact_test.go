@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"math/rand/v2"
 	"net/url"
 	"reflect"
@@ -251,45 +250,26 @@ func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	}
 }
 
-// The rule's time grows as its text's length does. A line of "a://" repeated is the rule as first
-// written at its worst (urlCredentialsQuadratic searched to the line's end again for each "://"):
-// on a line 16 times as long, a rule linear in the length takes about 16 times as long, and that
-// one took about 256 times. The bound is 64. Measured with the rule as first written, through
-// timeLines at a quarter of these lengths (16 KiB and 256 KiB, the same ratio, since one run of it
-// on 1 MiB takes about 15 minutes): 252 ms and 56.5 s, 224.5 times. This rule took 16 to 35 times.
+// The rule's time grows as its text's length does, not as its square. A line of "a://" repeated
+// is the rule as first written at its worst (urlCredentialsQuadratic searched to the line's end
+// again for each "://"): on 1 MiB of it, a rule linear in the length returns in tens of
+// milliseconds, and that one took about 15 minutes. The run is held to a deadline of 30 s, far
+// from both, rather than to a ratio of the times of two lengths: a machine under load moves such
+// a ratio for a correct rule as well, and a quadratic rule would run past go test's 10-minute
+// timeout before any ratio was read, where the deadline fails it in 30 s.
 func TestURLCredentialsTakesTimeLinearInTheTextsLength(t *testing.T) {
-	shortTook, longTook := timeLines(t, 64<<10, 1<<20, 64)
-	if longTook >= 64*shortTook {
-		t.Fatalf("64 KiB of a:// took %v, 1 MiB %v: %.1f times, want under 64", shortTook, longTook, float64(longTook)/float64(shortTook))
-	}
-	t.Logf("64 KiB took %v, 1 MiB %v: %.1f times", shortTook, longTook, float64(longTook)/float64(shortTook))
-}
-
-// timeLines is the time URLCredentials takes on a line of "a://" repeated to short bytes and on
-// one repeated to long bytes, each the least of five runs, so that a slow moment of the machine
-// decides nothing. The long line's runs stop at the first under bound times the short line's.
-func timeLines(t *testing.T, short, long, bound int) (shortTook, longTook time.Duration) {
-	t.Helper()
-	shortLine, longLine := strings.Repeat("a://", short/4), strings.Repeat("a://", long/4)
-	if got := URLCredentials(shortLine); got != shortLine {
-		t.Fatalf("URLCredentials changed a line of a:// repeated, which has no credential, to one of %d bytes", len(got))
-	}
-	const runs = 5
-	took := func(text string) time.Duration {
-		start := time.Now()
-		URLCredentials(text)
-		return time.Since(start)
-	}
-	shortTook, longTook = time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
-	for range runs {
-		shortTook = min(shortTook, took(shortLine))
-	}
-	for range runs {
-		if longTook = min(longTook, took(longLine)); longTook < time.Duration(bound)*shortTook {
-			break
+	const deadline = 30 * time.Second
+	line := strings.Repeat("a://", (1<<20)/len("a://"))
+	done := make(chan string, 1)
+	go func() { done <- URLCredentials(line) }()
+	select {
+	case got := <-done:
+		if got != line {
+			t.Fatalf("URLCredentials changed a line of a:// repeated, which holds no credential, to one of %d bytes", len(got))
 		}
+	case <-time.After(deadline):
+		t.Fatalf("URLCredentials of 1 MiB of a:// did not return within %v; a rule linear in the length takes tens of milliseconds", deadline)
 	}
-	return shortTook, longTook
 }
 
 // stringer is a fmt.Stringer that is no error, as a *url.URL is.

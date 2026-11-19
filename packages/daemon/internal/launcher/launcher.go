@@ -1156,10 +1156,11 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // launcher's lines for a role and each generation of its child are written through writers of
 // their own, and none is ever joined to another's unfinished line. stdout and stderr are the
 // container's behind the URL rule (newManagers): each line reaches them in one write, so the rule
-// reads it whole, a child's lines among them however its pipe was read. A line longer than
-// maxLogLine reaches them in writes of their own, each cut just after a byte that ends a URL for
-// the rule (logLineCut), so the rule reads each URL of it whole too; only a run of maxLogLine
-// bytes with no such byte, which one URL can be, is cut inside it.
+// reads it whole, a child's lines among them however its pipe was read. A line of which
+// maxLogLine bytes are held with no newline reaches them in writes of their own, each cut just
+// after a byte that ends a URL for the rule (logLineCut), so the rule reads each URL of it whole
+// too; only a run of maxLogLine bytes with no such byte after its first, which one URL can be, is
+// cut inside it.
 type roleLog struct {
 	mu             sync.Mutex
 	stdout, stderr io.Writer
@@ -1230,8 +1231,8 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 }
 
-// emit writes one line behind the role's prefix, ending a line Write cut short of its newline
-// itself.
+// emit writes one line behind the role's prefix. It ends itself a line that holds no newline of
+// its own: a run Write cut at logLineCut, or the unfinished line flush writes out.
 func (w *prefixWriter) emit(line []byte, cut bool) {
 	w.line = append(append(w.line[:0], w.prefix...), line...)
 	if cut {
@@ -1241,31 +1242,19 @@ func (w *prefixWriter) emit(line []byte, cut bool) {
 }
 
 // logLineCut is where prefixWriter cuts run, a line's first maxLogLine bytes with no newline in
-// them: just after its last byte that ends a URL for the URL rule (urlEndByte). Each URL of the
-// part before the cut then ends inside it, and each of the rest starts after it, so the rule of
-// the container's log reads each whole, in one write, and removes from the two writes what it
-// would remove from the line whole. A run whose only such byte is its first, or that holds none,
-// is cut at its end. The search reads back from the run's end to the cut, and the bytes it read
-// past hold no such byte, so a line's cuts read each of its bytes twice at most.
+// them: just after its last byte that ends a URL for the URL rule (redact.EndsURLByte). Each URL
+// of the part before the cut then ends inside it, and each of the rest starts after it, so the
+// rule of the container's log reads each whole, in one write, and removes from the two writes what
+// it would remove from the line whole. A run whose only such byte is its first, or that holds
+// none, is cut at its end. The search reads back from the run's end to the cut, and the bytes it
+// read past hold no such byte, so a line's cuts read each of its bytes twice at most.
 func logLineCut(run []byte) int {
 	for i := len(run) - 1; i > 0; i-- {
-		if urlEndByte(run[i]) {
+		if redact.EndsURLByte(run[i]) {
 			return i + 1
 		}
 	}
 	return len(run)
-}
-
-// urlEndByte reports whether c is a byte that ends a URL for the URL rule
-// (redact.URLCredentials): the ASCII part of the runes the rule ends one at, white space, `"`,
-// `'`, "`", "<" and ">". None of them is part of a longer UTF-8 sequence, so a cut after one never
-// splits a rune.
-func urlEndByte(c byte) bool {
-	switch c {
-	case ' ', '\t', '\n', '\v', '\f', '\r', '"', '\'', '`', '<', '>':
-		return true
-	}
-	return false
 }
 
 // flush writes the unfinished line the writer holds, behind its prefix and ended as a line of its

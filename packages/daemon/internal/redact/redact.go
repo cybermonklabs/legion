@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // URLCredentials is text with the query and the userinfo of every URL written in it removed.
@@ -147,13 +148,25 @@ func schemeEndsAt(text string, sep int) bool {
 	return letter
 }
 
-// endsURL reports whether r ends a URL: a white-space character, `"`, `'`, "`", "<" or ">".
+// endsURL reports whether r ends a URL: a white-space character, `"`, `'`, "`", "<" or ">". A rune
+// below utf8.RuneSelf is the byte EndsURLByte reads: of those runes, unicode.IsSpace holds for the
+// ASCII white space EndsURLByte names and for no other.
 func endsURL(r rune) bool {
-	switch r {
-	case '"', '\'', '`', '<', '>':
-		return true
+	if r < utf8.RuneSelf {
+		return EndsURLByte(byte(r))
 	}
 	return unicode.IsSpace(r)
+}
+
+// EndsURLByte reports whether c is a byte that ends a URL for URLCredentials: an ASCII white-space
+// character, `"`, `'`, "`", "<" or ">". None of them is part of a longer UTF-8 sequence, so a cut
+// just after one never splits a rune.
+func EndsURLByte(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\v', '\f', '\r', '"', '\'', '`', '<', '>':
+		return true
+	}
+	return false
 }
 
 // orLen is i, or n when i is -1 (not found).

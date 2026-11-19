@@ -24,10 +24,10 @@ var separator = []byte("://")
 // each fmt.Fprint* call write one record in one call, and the launcher's role log writes each line
 // in one call and cuts a line longer than 64 KiB only just after a byte that ends a URL, so none of
 // them splits a URL across two writes, and the rule covers everything they write; only a run of
-// 64 KiB with no such byte, which one URL can be, is cut inside it. It does not cover what a child
-// process writes straight to a file descriptor it was given (exec.Cmd hands a child an *os.File as
-// that file, never through a writer), nor a writer that exec's copy of a child's pipe feeds
-// directly, whose reads can cut a URL in two.
+// 64 KiB with no such byte after its first, which one URL can be, is cut inside it. It does not
+// cover what a child process writes straight to a file descriptor it was given (exec.Cmd hands a
+// child an *os.File as that file, never through a writer), nor a writer that exec's copy of a
+// child's pipe feeds directly, whose reads can cut a URL in two.
 func Writer(w io.Writer) io.Writer {
 	switch w := w.(type) {
 	case nil:

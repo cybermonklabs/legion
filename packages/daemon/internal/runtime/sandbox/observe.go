@@ -527,7 +527,10 @@ func initContainerStatus(pod *corev1.Pod, name string) *corev1.ContainerStatus {
 // logTail is a container's last log lines, or why they could not be read: a detail's quote never
 // changes its verdict, so the read is bounded whole (call), in time and in bytes off the API
 // (readLog). A read the bound stopped ends on the last whole line it took, and the quote says it
-// is not the container's newest lines (logBoundNote).
+// is not the container's newest lines (logBoundNote). A read whose first line began inside a long
+// line the kubelet split into partial entries keeps that line as it reads it, so a URL cut there
+// before its userinfo keeps that userinfo, which the URL rule a death cause is kept under
+// (storetext.FarSideText) cannot find.
 func (r *Runtime) logTail(ctx context.Context, pod, container string) string {
 	text, _, _, bounded, err := r.readLog(ctx, pod, container, logTailLines, logTailBytes, logTailReadBytes)
 	if err != nil {
