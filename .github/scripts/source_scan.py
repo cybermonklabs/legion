@@ -427,6 +427,26 @@ class Call:
         return self.callee.rsplit(".", 1)[-1]
 
 
+class Function:
+    """A function in a Source: the name it is declared or bound with (None for a literal no name is
+    bound to), the token it starts at (`func`, `function`, `async`, its name or its parameters), the
+    parenthesis that opens its parameters, the token range of each parameter's name (None for one
+    that is no plain name), and its body as a token range: inside its braces, or a TypeScript
+    arrow's expression."""
+
+    __slots__ = ("name", "at", "open", "params", "body")
+
+    def __init__(self, name, at, open_, params, body):
+        self.name, self.at, self.open, self.params, self.body = name, at, open_, params, body
+
+    def __repr__(self):
+        return f"Function({self.name}, {self.at})"
+
+
+# TypeScript: a word before a method's name in a class or an object literal.
+_TS_MODIFIERS = {"async", "static", "public", "private", "protected", "readonly", "override", "get", "set", "abstract"}
+
+
 class Source:
     """A Go or TypeScript file read as tokens, its comments left out: each bracket's partner, each
     token's line, its calls and their arguments across lines, its assignments, and the value the
@@ -451,6 +471,7 @@ class Source:
                     self.partner[stack[k]], self.partner[i] = i, stack[k]
                     del stack[k:]
         self._calls = self._call_spans = self._assignments = self._bindings = self._regions = None
+        self._functions = self._function_at = None
 
     # Positions.
     def line(self, i):
@@ -744,11 +765,11 @@ class Source:
             return ("set", key, value if b - a == 1 else None)
         return UNKNOWN
 
-    def go_cmd_env(self, call):
-        """The environment elements of the *exec.Cmd that a call of exec.Command makes: the
-        variable it is assigned to, then the last `X.Env = ...` of that variable after it in the
-        same declaration, before the variable is assigned again. None when no Env is set (the
-        command inherits the environment)."""
+    def go_cmd_envs(self, call):
+        """The *exec.Cmd that a call of exec.Command makes, and how its environment is set: the
+        variable it is assigned to, and the rhs range of each `X.Env = ...` of that variable after
+        it in the same declaration, in order, before the variable is assigned again; (None, []) when
+        the call is assigned to no variable."""
         target = None
         for lhs, rhs, k in self.assignments():
             for index, (ra, rb) in enumerate(rhs):
@@ -757,19 +778,27 @@ class Source:
             if target:
                 break
         if not target:
-            return None
+            return None, []
         low, high = self.region(call.at)
-        env = None
+        sets = []
         for lhs, rhs, k in self.assignments():
             if k <= call.close or not low <= k < high:
                 continue
             names = [self.name(a, b) for a, b in lhs]
             if target in names:
                 break
-            for index, name in enumerate(names):
-                if name == f"{target}.Env" and index < len(rhs):
-                    # A nil Env is the process's own; `X.Env = append(X.Env, ...)` extends the last.
-                    env = self.env_elements(*rhs[index], known={name: env if env is not None else [INHERIT]})
+            sets += [rhs[index] for index, name in enumerate(names) if name == f"{target}.Env" and index < len(rhs)]
+        return target, sets
+
+    def go_cmd_env(self, call):
+        """The environment elements of the *exec.Cmd that a call of exec.Command makes: the last
+        `X.Env = ...` go_cmd_envs finds. None when no Env is set (the command inherits the
+        environment)."""
+        target, sets = self.go_cmd_envs(call)
+        env = None
+        for a, b in sets:
+            # A nil Env is the process's own; `X.Env = append(X.Env, ...)` extends the last.
+            env = self.env_elements(a, b, known={f"{target}.Env": env if env is not None else [INHERIT]})
         return env
 
     def ts_options_env(self, call, first):
@@ -793,6 +822,269 @@ class Source:
                 if self.punct(pa + 1, ":"):
                     return self.env_elements(pa + 2, pb)
         return None
+
+    # Functions, and where a name gets its value.
+    def functions(self):
+        """Every function: in Go each `func` declaration, method and literal; in TypeScript each
+        `function`, arrow and method of a class or an object literal. A literal's name is the one an
+        assignment or an object key binds it to."""
+        if self._functions is not None:
+            return self._functions
+        out = self._go_functions() if self.lang == "go" else self._ts_functions()
+        names = {}
+        for lhs, rhs, _ in self.assignments():
+            if len(lhs) == len(rhs):
+                for (la, lb), (ra, _rb) in zip(lhs, rhs):
+                    name = self.name(la, lb)
+                    if name and "." not in name:
+                        names.setdefault(ra, name)
+        for fn in out:
+            if fn.name is None:
+                fn.name = names.get(fn.at)
+            if fn.name is None and fn.at >= 2 and self.punct(fn.at - 1, ":") and self.tokens[fn.at - 2].kind in (
+                    "ident", "string") and (fn.at < 3 or self.tokens[fn.at - 3].value in ("{", ",")):
+                fn.name = self.tokens[fn.at - 2].value  # { key: (...) => ... }
+        self._functions = out
+        return out
+
+    def _params(self, open_, close):
+        """The name of each parameter between a function's parentheses, a TypeScript type's own
+        commas (`Record<string, string>`) left inside it."""
+        out, parts = [], self.split(open_ + 1, close)
+        if self.lang == "ts":
+            merged, angle = [], 0
+            for a, b in parts:
+                if angle > 0:
+                    merged[-1] = (merged[-1][0], b)
+                else:
+                    merged.append((a, b))
+                for k in range(a, b):
+                    if self.punct(k, "<"):
+                        angle += 1
+                    elif self.punct(k, ">") and not self.punct(k - 1, "="):
+                        angle -= 1
+            parts = merged
+        for a, b in parts:
+            while a < b and (self.punct(a, "...") or self.tokens[a].value in _TS_MODIFIERS - {"async", "get", "set"}):
+                a += 1
+            out.append((a, a + 1) if a < b and self.tokens[a].kind == "ident" else None)
+        return out
+
+    def _go_functions(self):
+        tokens, n, out = self.tokens, len(self.tokens), []
+        for i, t in enumerate(tokens):
+            if t.kind != "ident" or t.value != "func":
+                continue
+            j, name = i + 1, None
+            if j < n and tokens[j].kind == "ident":
+                name, j = tokens[j].value, j + 1
+            elif self.punct(j, "(") and j in self.partner:
+                after = self.partner[j] + 1
+                if after + 1 < n and tokens[after].kind == "ident" and tokens[after].value != "func" \
+                        and (self.punct(after + 1, "(") or self.punct(after + 1, "[")):
+                    name, j = tokens[after].value, after + 1  # a method: func (r *T) Name(
+            if self.punct(j, "[") and j in self.partner:  # type parameters
+                j = self.partner[j] + 1
+            if not (self.punct(j, "(") and j in self.partner):
+                continue
+            close = self.partner[j]
+            k = close + 1
+            while k < n:  # the result types, then the body's brace; a func type has none
+                tk = tokens[k]
+                if tk.kind == "punct" and tk.value in ("(", "[") and k in self.partner:
+                    k = self.partner[k] + 1
+                    continue
+                if tk.kind == "punct" and tk.value == "{" and k in self.partner:
+                    if tokens[k - 1].kind == "ident" and tokens[k - 1].value in ("struct", "interface"):
+                        k = self.partner[k] + 1
+                        continue
+                    out.append(Function(name, i, j, self._params(j, close), (k + 1, self.partner[k])))
+                    break
+                if (tk.kind == "punct" and tk.value in (";", ")", "]", "}", ",", "=")) or self._breaks(k):
+                    break
+                k += 1
+        return out
+
+    def _ts_block(self, k):
+        """The body (inside its braces) of a TypeScript function whose parameters close before k:
+        an optional `: Type`, then `{`; else None."""
+        n, tokens = len(self.tokens), self.tokens
+        if self.punct(k, ":"):
+            k, angle, typed = k + 1, 0, False
+            while k < n:
+                tk = tokens[k]
+                if tk.kind == "punct":
+                    if tk.value in ("(", "[") and k in self.partner:
+                        k, typed = self.partner[k] + 1, True
+                        continue
+                    if tk.value == "{" and k in self.partner and (angle > 0 or not typed):
+                        k, typed = self.partner[k] + 1, True  # an object type
+                        continue
+                    if tk.value == "<":
+                        angle += 1
+                    elif tk.value == ">" and not self.punct(k - 1, "="):
+                        angle -= 1
+                    elif tk.value == "{" and angle <= 0:
+                        break
+                    elif tk.value in (";", ",", ")", "}", "=") and angle <= 0 and not (
+                            tk.value == "=" and self.punct(k + 1, ">")):
+                        return None
+                typed = True
+                k += 1
+        if self.punct(k, "{") and k in self.partner:
+            return (k + 1, self.partner[k])
+        return None
+
+    def _ts_functions(self):
+        tokens, n, out = self.tokens, len(self.tokens), []
+        keywords = _KEYWORDS["ts"]
+        for i, t in enumerate(tokens):
+            start = i - 1 if i and tokens[i - 1].value == "async" and tokens[i - 1].kind == "ident" else i
+            if t.kind == "ident" and t.value == "function":
+                j, name = i + 1, None
+                if self.punct(j, "*"):
+                    j += 1
+                if j < n and tokens[j].kind == "ident":
+                    name, j = tokens[j].value, j + 1
+                if self.punct(j, "<"):  # type parameters
+                    while j < n and not self.punct(j, "("):
+                        j += 1
+                if self.punct(j, "(") and j in self.partner:
+                    body = self._ts_block(self.partner[j] + 1)
+                    if body:
+                        out.append(Function(name, start, j, self._params(j, self.partner[j]), body))
+            elif t.kind == "punct" and t.value == "=" and self.punct(i + 1, ">") and tokens[i + 1].start == t.end:
+                k, open_, params = i - 1, None, []
+                if self.punct(k, ")") and k in self.partner:
+                    open_ = self.partner[k]
+                elif k >= 0 and tokens[k].kind == "ident" and not self.punct(k - 1, ":"):
+                    open_, params = k, [(k, k + 1)]  # x => ...
+                else:  # (x): T => ...
+                    m = k
+                    while m > 0 and i - m < 40 and not (self.punct(m, ")") and self.punct(m + 1, ":")):
+                        if self.punct(m, ";") or self.punct(m, "{") or self.punct(m, "}"):
+                            break
+                        m -= 1
+                    if self.punct(m, ")") and self.punct(m + 1, ":") and m in self.partner:
+                        k = m
+                        open_ = self.partner[m]
+                if open_ is None:
+                    continue
+                if not params:
+                    params = self._params(open_, k)
+                at = open_ - 1 if open_ and tokens[open_ - 1].value == "async" and tokens[open_ - 1].kind == "ident" \
+                    else open_
+                after = i + 2
+                if self.punct(after, "{") and after in self.partner:
+                    body = (after + 1, self.partner[after])
+                else:
+                    body = (after, self.expression_end(after))
+                out.append(Function(None, at, open_, params, body))
+            elif t.kind == "ident" and t.value not in keywords and self.punct(i + 1, "(") and i + 1 in self.partner:
+                before = tokens[i - 1] if i else None
+                if before is not None and not (before.kind == "punct" and before.value in ("{", "}", ";", ",")
+                                               or before.kind == "ident" and before.value in _TS_MODIFIERS
+                                               or before.kind == "punct" and before.value == "*"):
+                    continue
+                close = self.partner[i + 1]
+                body = self._ts_block(close + 1)
+                if body:  # a method: name(params) { ... }
+                    at = i - 1 if before is not None and before.kind == "ident" and before.value in _TS_MODIFIERS else i
+                    out.append(Function(t.value, at, i + 1, self._params(i + 1, close), body))
+        return out
+
+    def function_at(self, i):
+        """The innermost function whose body holds token i, else None."""
+        if self._function_at is None:
+            held = [None] * len(self.tokens)
+            for fn in sorted(self.functions(), key=lambda f: f.body[0] - f.body[1]):
+                for k in range(fn.body[0], min(fn.body[1], len(held))):
+                    held[k] = fn
+            self._function_at = held
+        return self._function_at[i] if 0 <= i < len(self._function_at) else None
+
+    def resolve(self, name, at):
+        """Where a plain name used at token `at` gets its value, scope by scope out from there: in
+        the function that holds `at`, every assignment of it made in that function's own body (not a
+        function inside it) before `at`, ("bound", [rhs ranges]); else, when that function takes it
+        as a parameter, ("param", (function, index)); else the same of each function around it; else
+        the assignments of it outside every function, before `at` or, failing that, anywhere in the
+        file (a package's var or const, a module's binding); else None."""
+        bindings = self.bindings().get(name, ())
+        fn, limit = self.function_at(at), at
+        while fn is not None:
+            found = [rhs for k, rhs in bindings if fn.body[0] <= k and rhs[1] <= limit and self.function_at(k) is fn]
+            if found:
+                return "bound", found
+            for index, param in enumerate(fn.params):
+                if param and self.tokens[param[0]].value == name:
+                    return "param", (fn, index)
+            fn, limit = self.function_at(fn.at), fn.at
+        outside = [(k, rhs) for k, rhs in bindings if self.function_at(k) is None]
+        found = [rhs for k, rhs in outside if rhs[1] <= limit] or [rhs for k, rhs in outside]
+        return ("bound", found) if found else None
+
+    def call_sites(self, fn):
+        """The calls of a function in this file by its name, its own definition left out."""
+        if not fn.name:
+            return []
+        return [call for call in self.calls() if call.name == fn.name and call.open != fn.open and not call.tagged]
+
+    def chain_end(self, call):
+        """The token after a call and each `.name(...)` or `.name` chained to it."""
+        k = call.close + 1
+        while self.punct(k, ".") and k + 1 < len(self.tokens) and self.tokens[k + 1].kind == "ident":
+            k += 2
+            if self.punct(k, "(") and k in self.partner:
+                k = self.partner[k] + 1
+        return k
+
+    def split_op(self, a, b, op):
+        """The ranges between each top-level two-character operator op (`??`, `||`, `&&`) in [a, b)."""
+        out, start, i = [], a, a
+        while i < b:
+            t = self.tokens[i]
+            if t.kind == "punct" and t.value in ("(", "[", "{") and i in self.partner:
+                i = self.partner[i] + 1
+                continue
+            if i + 1 < b and self.punct(i, op[0]) and self.punct(i + 1, op[1]) and t.end == self.tokens[i + 1].start:
+                out.append((start, i))
+                start = i + 2
+                i += 2
+                continue
+            i += 1
+        out.append((start, b))
+        return out
+
+    def array_elements(self, a, b, depth=0):
+        """The element ranges of an array literal, or of the one a name is bound to, else None."""
+        if b - a > 1 and self.lang == "ts" and self.punct(b - 1, "!"):
+            b -= 1
+        if self.punct(a, "[") and self.partner.get(a) == b - 1:
+            return self.split(a + 1, b - 1)
+        name = self.name(a, b)
+        if name and depth < 4:
+            bound = self.bound(name, a)
+            if bound:
+                return self.array_elements(*bound, depth + 1)
+        return None
+
+    def ts_spawn_argv(self, call):
+        """The argv of a TypeScript call that starts a program, and the index of the argument its
+        options are in: Bun.spawn's argv array (or `{ cmd: [...] }`, whose options are that object),
+        else node's command and the args array after it. (None, 1) for a call with no arguments."""
+        if not call.args:
+            return None, 1
+        argv, options = self.array_elements(*call.args[0]), 1
+        if argv is None and self.punct(call.args[0][0], "{"):
+            a, b = call.args[0]
+            for pa, pb in self.split(a + 1, b - 1):
+                if self.tokens[pa].value == "cmd" and self.punct(pa + 1, ":"):
+                    argv, options = self.array_elements(pa + 2, pb), 0
+        if argv is None:
+            rest = self.array_elements(*call.args[1]) if len(call.args) > 1 else None
+            argv, options = [call.args[0]] + (rest or []), 2 if rest is not None else 1
+        return argv, options
 
 
 # --- Reading Python statements --------------------------------------------------------------------

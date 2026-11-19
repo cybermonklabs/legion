@@ -302,6 +302,127 @@ check "five lines above" "$(is "$(printf '// why: above\n1\n2\n3\n4\nrun()\n' | 
 check "six lines above is too far" "$(is "$(printf '// why: above\n1\n2\n3\n4\n5\nrun()\n' | reasoned go 6)" false)"
 check "a line above that is no comment does not count" "$(is "$(printf 'x := "why: here"\nrun()\n' | reasoned go 1)" false)"
 
+# The token index of the nth token of a value on a 1-based line, and a resolve result as text; for
+# the rows below, which src_of runs.
+RESOLVING='def at(line, value, nth=0):
+    return [i for i, t in enumerate(src.tokens) if src.line(i) + 1 == line and t.value == value][nth]
+def show(found):
+    if found is None:
+        return "none"
+    if found[0] == "bound":
+        return "bound " + " | ".join(src.text_of_tokens(*r) for r in found[1])
+    return f"param {found[1][0].name} {found[1][1]}"
+'
+
+echo "case: Go: each func, method and literal, a literal by the name it is bound to, and its parameters"
+out=$(src_of go 'for f in src.functions():
+    print(f.name, src.line(f.at) + 1, ",".join(src.tokens[p[0]].value for p in f.params if p) or "-",
+          src.tokens[f.body[0]].value, src.line(f.body[1]) + 1)' <<'EOF'
+package x
+
+func f(t *testing.T, a, b string) (string, error) {
+	read := func(env []string) bool {
+		return len(env) > 0
+	}
+	return "", nil
+}
+
+func (r *rig) binary() string { return r.omp }
+
+var hook func(int) int
+EOF
+)
+check "the declaration, the literal by its name, the method; a func type is none" \
+  "$(is "$out" "$(printf '%s\n' 'f 3 t,a,b read 8' 'read 4 env return 6' 'binary 10 - return 10')")"
+
+echo "case: TypeScript: a function, an arrow by its name, a method and an object key's arrow, past a return type"
+out=$(src_of ts 'for f in src.functions():
+    print(f.name, src.line(f.at) + 1, ",".join(src.tokens[p[0]].value for p in f.params if p) or "-",
+          src.tokens[f.body[0]].value)' <<'EOF'
+export async function spawnRpc(binary: string, ...rest: string[]): Promise<{ ok: boolean }> {
+  return run(binary);
+}
+const pinned = (): string => process.env.LEGION_TEST_OMP ?? "omp";
+const runner = {
+  start(env: Record<string, string>) {
+    return env;
+  },
+  stop: async (code: number) => {
+    return code;
+  },
+};
+EOF
+)
+check "each, with its parameters and its body's first token" \
+  "$(is "$out" "$(printf '%s\n' 'spawnRpc 1 binary,rest return' 'pinned 4 - process' 'start 6 env return' 'stop 9 code return')")"
+
+echo "case: Go: a name's value scope by scope, a parameter, the package's var, and each call of a literal"
+out=$(src_of go "$RESOLVING"'print(show(src.resolve("env", at(8, "env"))))
+print(show(src.resolve("env", at(11, "env"))))
+print(show(src.resolve("env", at(6, "env", 1))))
+print(show(src.resolve("level", at(11, "level"))))
+print(show(src.resolve("other", at(11, "use"))))
+run = next(f for f in src.functions() if f.name == "run")
+print([src.line(c.at) + 1 for c in src.call_sites(run)], src.function_at(at(8, "use")).name)' <<'EOF'
+package x
+
+var level = "package"
+
+func f(env []string) {
+	env = append(env, "A=1")
+	run := func(env []string) {
+		use(env)
+	}
+	run(env)
+	use(env, level)
+	other := 1
+	use(other)
+}
+EOF
+)
+check "the literal's parameter, f's own assignment, f's parameter inside that assignment, the var, nothing yet" \
+  "$(is "$out" "$(printf '%s\n' 'param run 0' 'bound append(env, "A=1")' 'param f 0' 'bound "package"' 'none' '[10] run')")"
+
+echo "case: Go: the Env assignments of the Cmd a call makes, until its variable is assigned again"
+out=$(src_of go 'for c in [c for c in src.calls() if c.callee == "exec.Command"]:
+    target, sets = src.go_cmd_envs(c)
+    print(target, [src.text_of_tokens(*r) for r in sets])' <<'EOF'
+package x
+
+func f() {
+	cmd := exec.Command("omp")
+	cmd.Env = base
+	cmd.Env = append(cmd.Env, "X=1")
+	cmd = exec.Command("other")
+	cmd.Env = later
+	exec.Command("third").Run()
+}
+EOF
+)
+check "each set of the first, the one of the second, none of an unassigned call" \
+  "$(is "$out" "$(printf '%s\n' "cmd ['base', 'append(cmd.Env, \"X=1\")']" "cmd ['later']" "None []")")"
+
+echo "case: TypeScript: a spawn's argv and where its options are, a call's chain, and a two-character operator"
+out=$(src_of ts "$RESOLVING"'for c in src.calls():
+    if c.name == "spawn":
+        argv, options = src.ts_spawn_argv(c)
+        print(" ".join(src.text_of_tokens(*r) for r in argv), options)
+    if c.tagged:
+        print(src.text_of_tokens(c.at, src.chain_end(c)))
+a, b = at(6, "a"), at(6, ";")
+print([src.text_of_tokens(*r) for r in src.split_op(a, b, "??")], [src.text_of_tokens(*r) for r in src.split_op(a, b, "||")])' \
+  <<'EOF'
+const argv = [omp, "models"];
+Bun.spawn(argv, { env });
+Bun.spawn({ cmd: ["git", "status"], cwd });
+spawn("omp", ["models"], { env });
+await $`omp models`.env({ A: "b" }).quiet();
+const value = a ?? b || c;
+EOF
+)
+check "an argv by its name, cmd:, node's command and args; the chain; each operator's parts" \
+  "$(is "$out" "$(printf '%s\n' 'omp "models" 1' '"git" "status" 0' '"omp" "models" 2' '$`omp models`.env({ A: "b" }).quiet()' "['a', 'b || c'] ['a ?? b', 'c']")")"
+
 # --- One row both checks read through this module ---------------------------------------------------
 
 # both <name>: a tree holding both checks and this module, a ci.yaml, a file of each language the
