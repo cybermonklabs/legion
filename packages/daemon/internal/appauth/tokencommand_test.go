@@ -270,7 +270,7 @@ func TestTokenModeACommandASignalEndedFailsNamingTheSignal(t *testing.T) {
 	tokens := tokenModeManager(github.serve(t), broker, &now, &bytes.Buffer{})
 	t.Setenv("FAKE_BROKER_KILLED", "1")
 
-	_, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("sjawhar/legion"))
+	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
 
 	var transient *TransientError
 	if err == nil || errors.As(err, &transient) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (signal: killed): broker: dying") {
