@@ -1,5 +1,6 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
+import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import {
   focusManager,
   onlineManager,
@@ -3949,9 +3950,13 @@ test("a row a filter hides keeps its draft and comes back as the reader left it"
     await type(user, field, "Half a thought");
     const search = within(region).getByRole("searchbox", { name: "Search agents" });
 
+    // The box's title counts what is written against the bound as it is written.
+    expect(search).toHaveAttribute("title", `0 of at most ${SEARCH_QUERY_MAX}`);
     await type(user, search, "REVIEWER");
+    expect(search).toHaveAttribute("title", `8 of at most ${SEARCH_QUERY_MAX}`);
     expectKeptHidden(region, "Planner");
     await user.clear(search);
+    expect(search).toHaveAttribute("title", `0 of at most ${SEARCH_QUERY_MAX}`);
 
     expect(card(region, "Planner")).toBe(planner);
     expect(within(planner).getByRole("button", { name: "Planner" })).toHaveAttribute(
