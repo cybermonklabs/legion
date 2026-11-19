@@ -53,7 +53,7 @@ func TestEveryRolesOhMyPiHasAsyncAndAutoBackgroundOnInAPodAndInAPane(t *testing.
 	read := func(t *testing.T, key string, env []string) bool {
 		t.Helper()
 		cmd := exec.Command(omp, "config", "get", key, "--json")
-		cmd.Dir, cmd.Env = work, env
+		cmd.Dir, cmd.Env = work, append(env[:len(env):len(env)], testbin.OMPOffline(t))
 		out, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("omp config get %s: %v", key, err)

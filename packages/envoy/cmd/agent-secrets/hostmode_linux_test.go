@@ -206,6 +206,8 @@ func TestRegisterSessionIDInsideAnUnregisteredOmpAttachesTheOmpTree(t *testing.T
 	if err := os.Symlink(self, launcher); err != nil {
 		t.Fatal(err)
 	}
+	// omp-offline: launcher is this test binary under the name omp, the session launcher's name
+	// the helper checks; it runs TestRegisterLauncherHelper, and no Oh My Pi.
 	cmd := exec.Command(launcher, "-test.run", "^TestRegisterLauncherHelper$")
 	cmd.Env = append(os.Environ(),
 		"AGENT_SECRETS_LAUNCHER_HELPER=1",
