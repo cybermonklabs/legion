@@ -100,18 +100,18 @@ func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 // was), carrying every identity field the run's start and end carry, the agent its start named
 // among them, so the write makes the record where neither has landed yet, and the rating and its
 // reason. It carries no moment and no result, which are the end's. Dispatch sets each field once,
-// so the end and the rating merge in either order. A record key that is no issue key writes nothing
-// (recordsSteps).
+// so the end and the rating merge in either order. The retro's step comes from stepAt, which every
+// writer of a step's record takes, so a record key that is no issue key writes nothing.
 func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating record.PlanRating) error {
-	place, role, typ, _ := stepOf(phase.Retro)
-	if !recordsSteps(issue) {
+	step, recorded := stepAt(issue, phase.Retro)
+	if !recorded {
 		return nil
 	}
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
+	write := stepWrite(issue, step.place, step.role, step.typ, start.Agent, start.Starts)
 	write.PlanRating = &rating
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
