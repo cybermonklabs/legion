@@ -122,9 +122,9 @@ func (s *Store) CancelPodBackstopsOf(ctx context.Context, project, issue string)
 }
 
 // TakePodWake takes one wake outside any fact transaction, for the wakes the outbox takes: a
-// notice or a phase-ended message that found the role it is for released. Inside a fact's
-// transaction the workflow takes its four through PodRecords.TakePodWake, which is where taking
-// a wake is written out.
+// notice, a hook prompt, a merge-queue removal or a merge forward's message that found the role it
+// is for released. Inside a fact's transaction the workflow takes its four through
+// PodRecords.TakePodWake, which is where taking a wake is written out.
 //
 // project is the project token the claim-keyed tables hold, as it is for every other
 // project-keyed method of this file: the daemon derives it once at boot (claim.ProjectToken,

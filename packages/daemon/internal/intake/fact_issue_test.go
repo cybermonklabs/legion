@@ -20,6 +20,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DispatchClaim":           DispatchClaim{Key: issue},
 		"Handover":                Handover{Issue: issue},
 		"MergeQueueReadDone":      MergeQueueReadDone{Issue: issue},
+		"ConflictConfirmDone":     ConflictConfirmDone{Issue: issue},
 		"PullRequestMissing":      PullRequestMissing{Issue: issue},
 		"HandoffComplete":         HandoffComplete{Issue: issue},
 		"BackwardMove":            BackwardMove{Issue: issue},

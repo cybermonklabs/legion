@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -49,6 +50,15 @@ func loggedLines(t *testing.T, logs, text string) []map[string]any {
 		lines = append(lines, fields)
 	}
 	return lines
+}
+
+// loggedMessages is every line of the daemon's JSON log whose message starts with msg, decoded.
+func loggedMessages(t *testing.T, logs, msg string) []map[string]any {
+	t.Helper()
+	return slices.DeleteFunc(loggedLines(t, logs, msg), func(entry map[string]any) bool {
+		text, _ := entry["msg"].(string)
+		return !strings.HasPrefix(text, msg)
+	})
 }
 
 // recordControllerSession registers session as the project's controller in the store before the
