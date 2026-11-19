@@ -24,9 +24,9 @@ func TestClusteredNatsHubListenerProbesReadLivezAndMetricsNeverHealthz(t *testin
 
 	read := 0
 	for _, probe := range []struct{ name, route string }{
-		{"startupProbe", "http://127.0.0.1:9020/metrics"},
-		{"livenessProbe", "http://127.0.0.1:9020/livez"},
-		{"readinessProbe", "http://127.0.0.1:9020/livez"},
+		{"startupProbe", listenerLoopback + "/metrics"},
+		{"livenessProbe", listenerLoopback + "/livez"},
+		{"readinessProbe", listenerLoopback + "/livez"},
 	} {
 		rendered, ok := listener[probe.name]
 		require.True(t, ok, "%s is rendered", probe.name)

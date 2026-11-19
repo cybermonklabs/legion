@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,9 +16,9 @@ import (
 )
 
 // hubStartupProbe is the exec command of the startup probe of the session listener's pod that
-// gcp:ClusteredNatsHub renders, read out of that pod's golden in listenerPodGoldens, and the path
-// that names the golden from the repository root, for a failure read in CI. The command is a
-// shell's -c of one script, which is what the rendering is required to hold.
+// gcp:ClusteredNatsHub renders, read out of that pod's golden in listenerPodGoldens as a
+// listenerPod, and the path that names the golden from the repository root, for a failure read in
+// CI. The command is a shell's -c of one script, which is what the rendering is required to hold.
 func hubStartupProbe(t *testing.T) ([]string, string) {
 	t.Helper()
 	var command []string
@@ -30,28 +29,7 @@ func hubStartupProbe(t *testing.T) ([]string, string) {
 		}
 		found++
 		path = golden.path
-		raw, err := os.ReadFile(golden.read)
-		if err != nil {
-			t.Fatalf("read %s, the pod gcp:ClusteredNatsHub renders for this command: %v", path, err)
-		}
-		var pod struct {
-			Spec *struct {
-				Containers []struct {
-					Name         string `json:"name"`
-					StartupProbe *struct {
-						Exec *struct {
-							Command []string `json:"command"`
-						} `json:"exec"`
-					} `json:"startupProbe"`
-				} `json:"containers"`
-			} `json:"spec"`
-		}
-		if err := json.Unmarshal(raw, &pod); err != nil {
-			t.Fatalf("parse %s as the pod JSON it records: %v", path, err)
-		}
-		if pod.Spec == nil {
-			t.Fatalf("%s carries no spec", path)
-		}
+		pod := readListenerPod(t, golden.read, path)
 		for _, c := range pod.Spec.Containers {
 			if c.Name != golden.container {
 				continue

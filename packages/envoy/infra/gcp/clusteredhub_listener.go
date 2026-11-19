@@ -39,13 +39,14 @@ const (
 	// lane's drain and the NATS drain) are hard, and the process exits after them. So the margin
 	// covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
 	// container's teardown and a late tick on a loaded node, and not a listener that runs over
-	// its own budget. A hung pod holds its durable for the whole grace, so the relation that
-	// matters is the replacement pod's time to Ready, its /v1 open plus up to one period of its
-	// startup probe (clusteredHubListenerPod), plus this grace, under the 135 s bind deadline at
-	// which a starting listener gives up waiting for the durable this one holds
-	// (packages/envoy/cmd/listener/durable.go): at 40 s the start allowance is 95 s. A
-	// longer grace costs nothing on a normal stop, because the kubelet proceeds as soon as the
-	// container exits.
+	// its own budget. A hung pod holds its durable for the whole grace. The replacement gives up
+	// waiting for it at the listener's 135 s bind deadline (durableBindDeadline in
+	// packages/envoy/cmd/listener/durable.go), which counts from the replacement's /v1 open, since
+	// the listener starts the bind right after it. So what has to fit under that deadline is the
+	// replacement's startup probe's lag behind that open (clusteredHubListenerStartupProbe) plus
+	// this grace: at 40 s the lag may be up to 95 s, and the probe's 10 s period keeps it at most
+	// 10 s. A longer grace costs nothing on a normal stop, because the kubelet proceeds as soon as
+	// the container exits.
 	clusteredHubListenerGraceSeconds = clusteredHubListenerPreStopSeconds + clusteredHubListenerShutdownSeconds + 7
 
 	// The listener pod's seed volume and where its container mounts it: its NATS seed from the
@@ -117,9 +118,9 @@ func clusteredHubListenerName(release string) string {
 // "# TYPE" line. With -f curl prints nothing for an HTTP error, and a pipeline's status is its
 // last command's, grep's, in a POSIX shell without pipefail, which dash, the listener image's
 // /bin/sh, is; TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample runs the rendered
-// script under /bin/sh. --max-time 5 makes curl give up inside the probe's 6 s timeout. 60
-// failures 10 s apart give /v1 ten minutes to open, after which the kubelet restarts the
-// container.
+// script under the package's test shell (shellCommand: /bin/sh, or the shell ENVOY_TEST_SHELL
+// names). --max-time 5 makes curl give up inside the probe's 6 s timeout. 60 failures 10 s apart
+// give /v1 ten minutes to open, after which the kubelet restarts the container.
 func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
 	script := "curl -fsS --max-time 5 http://127.0.0.1:" + strconv.Itoa(port) + "/metrics | grep -q '^" + clusteredHubListenerServedGauge + " '"
 	return &corev1.ProbeArgs{

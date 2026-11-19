@@ -218,8 +218,9 @@ func TestClusteredNatsHubListenerProbes(t *testing.T) {
 // grace period, and kills what is still running at its end: the 5 s hook, which holds the pod
 // open while its removal from its Service's endpoints reaches every node's proxy, and the 28 s
 // stop both fit in 40 s. The grace is also under the bind deadline a starting listener waits the
-// durable out for, which is necessary and not sufficient: what has to hold is the new pod's time
-// to Ready, its /v1 open plus up to one startup probe period, plus this grace.
+// durable out for, which is necessary and not sufficient: that deadline counts from the new pod's
+// /v1 open, right after which its listener starts the bind, so what has to fit under it is the new
+// pod's startup probe's lag behind that open, at most one 10 s period, plus this grace.
 func TestClusteredNatsHubListenerStopFitsItsGrace(t *testing.T) {
 	template := deploymentPodTemplate(t, runClusteredHub(t, clusteredArgs()), clusteredListenerName)
 	grace := template["spec"].(map[string]any)["terminationGracePeriodSeconds"].(float64)

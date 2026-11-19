@@ -355,11 +355,11 @@ listener a delivery lease, the second copy waits the listener's bind deadline
 (`durableBindDeadline`, 135 seconds) for the durable the first copy holds, then exits, and is
 restarted over and over. The rolling update's surge is the one window where two copies exist, and
 with `maxUnavailable: 0` and `maxSurge: 1` it is longer than the old pod's stop: the new pod's
-listener contends for the durable from the moment its container starts, and the old pod is sent
-SIGTERM only once the new pod is Ready. The window is therefore the new pod's time to Ready, its
-`/v1` open plus up to one 10-second period of its startup probe (below), plus the old pod's 33
-seconds, its 5-second preStop wait and its 28-second stop, and what has to hold it is the new
-pod's own 135-second bind deadline, counted from its own start. A new pod that never becomes
+listener contends for the durable from the moment its `/v1` opens, right after which it starts
+its bind, and the old pod is sent SIGTERM only once the new pod is Ready. The contention therefore
+lasts the startup probe's lag behind that open, at most one 10-second period (below), plus the old
+pod's 33 seconds, its 5-second preStop wait and its 28-second stop, and what has to hold it is the
+new pod's own 135-second bind deadline, counted from its `/v1` open. A new pod that never becomes
 Ready leaves the old one serving while the new one restarts on its bind deadline.
 
 Three more objects carry that pod:
@@ -441,11 +441,11 @@ the listener's own stop of 28 seconds are 33 seconds together, inside the pod's 
 40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
 kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
 and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
-A hung pod holds its durable for the whole grace. The replacement's time to Ready is its `/v1`
-open, after cache warm-ups of up to 30 seconds each (`WaitForCacheReady` in
-`cmd/listener/main.go`), plus up to one 10-second period of the startup probe, and that time plus
-the old pod's stop after it has to stay under the 135-second bind deadline (`durableBindDeadline`
-in `cmd/listener/durable.go`). At a grace of 40 seconds the start allowance is 95 seconds.
+A hung pod holds its durable for the whole grace. The replacement's 135-second bind deadline
+(`durableBindDeadline` in `cmd/listener/durable.go`) counts from its `/v1` open, right after
+which the listener starts the bind, so what has to stay under it is the startup probe's lag
+behind that open plus the old pod's stop. At a grace of 40 seconds that lag may be up to 95
+seconds, and the probe's 10-second period keeps it at most 10.
 
 One pod has one cost: while that pod is unready or restarting, the listener's port 9020 refuses
 connections, the Tailscale Service's included. Port 4222 stays up through it, which is what the
