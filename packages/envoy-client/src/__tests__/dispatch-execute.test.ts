@@ -4784,7 +4784,8 @@ describe("executeDispatchTool", () => {
   });
 
   // A credential that lists projects is told the list (KF4), and the deprecated project is not
-  // printed beside it: the list is what the credential may use.
+  // printed beside it: the list is what the credential may use. The list is the agent shape's: a
+  // person at a browser lists none, so a person's answer prints none.
   test("dispatch_whoami prints the projects a credential lists in place of its project", async () => {
     const whoami = async (body: Record<string, unknown>) =>
       executeDispatchTool({
@@ -4815,8 +4816,8 @@ describe("executeDispatchTool", () => {
     expect(one.text).not.toContain("may write project");
 
     const person = await whoami({ kind: "user", login: "alice", projects: ["OPS"], scopes: [] });
-    expect(person.details).toMatchObject({ projects: ["OPS"] });
-    expect(person.text).toContain("It may use project OPS and no other.");
+    expect(person.details).not.toHaveProperty("projects");
+    expect(person.text).not.toContain("It may use");
 
     const none = await whoami({ ...agent, project: null });
     expect(none.details).toEqual({

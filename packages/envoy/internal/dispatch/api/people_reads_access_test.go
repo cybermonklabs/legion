@@ -156,6 +156,99 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 	}
 }
 
+// listedRoster is privateRoster's two sessions of PRIV as a listener answers them once it names
+// each session's projects (K6): session-both, S3, registered with a token that lists PRIV and PUB,
+// and session-priv, S2, with one that lists PRIV. Both acted in PRIV (seedSessionWork), so
+// SessionClause passes neither to a viewer that does not see PRIV.
+const listedRoster = `[
+	{"session_id":"session-both","title":"Both","capabilities":["btw","steer"],"projects":["PRIV","PUB"],"last_seen":400},
+	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"projects":["PRIV"],"last_seen":300}
+]`
+
+// TestAFilteredAgentRowNamesNoProject (K6): GET /api/v1/agents passes a roster row when the
+// projects the listener names for its session meet what the caller sees, or when SessionClause
+// passes on its id, and serves none of that list. alice, who sees PUB and not PRIV, reads S3's row,
+// whose token lists PUB, and no row of S2, whose token lists PRIV alone; no byte of her answer has
+// a projects key or names PRIV. bob, on PRIV's list, reads both rows, neither with a projects key.
+//
+// Control: drop agentResponse's own Projects field (plan C's t-c-28); the embedded session's list
+// is served, alice's S3 row names PRIV, and the test fails naming it.
+func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
+	listener, _ := newBroadcastListener(t, listedRoster)
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
+	seedSessionWork(t, seed)
+	for _, test := range []struct {
+		caller privateCaller
+		want   []string
+	}{
+		{callerAlice, []string{sessionOfBoth}},
+		{callerBob, []string{sessionOfBoth, sessionOfPrivate}},
+	} {
+		response := seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+		got := []string{}
+		for _, row := range decodeBody[[]map[string]json.RawMessage](t, response) {
+			var session string
+			_ = json.Unmarshal(row["session_id"], &session)
+			got = append(got, session)
+			if projects, named := row["projects"]; named {
+				t.Errorf("%s: the row of %s carries projects %s, want no projects key", test.caller, session, projects)
+			}
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: GET /api/v1/agents = %v, want %v", test.caller, got, test.want)
+		}
+		if test.caller == callerAlice && strings.Contains(response.Body.String(), seedPrivate) {
+			t.Errorf("alice's GET /api/v1/agents names PRIV, a project she does not see: %s", response.Body.String())
+		}
+	}
+}
+
+// TestCIRepairPassesGoToAnOpenViewerOnly (check c-ci-passes-open): GET /api/v1/ci-reconcile/passes
+// reads the whole deployment. A pass covers repositories of many projects and names no issue, so it
+// has no project to hold a viewer to: an open viewer reads every pass, and every other viewer is
+// refused the route. alice and carol read the same three passes, the one whose cursor rests in a
+// repository the mapping of the old repository rule names for PRIV included; bob and carol's token
+// that lists PRIV are 403 DEPLOYMENT_READ_REFUSED.
+//
+// Control: answer the passes to every viewer (the route's class without deployment); bob then
+// reads a pass, and the test fails naming it.
+func TestCIRepairPassesGoToAnOpenViewerOnly(t *testing.T) {
+	seed := seedPrivateProject(t)
+	if _, err := seed.database.Pool.Exec(t.Context(), `
+		insert into repo_projects (repo, project, created_by) values ('acme/priv', 'PRIV', '{"kind":"user","id":"operator"}')
+	`); err != nil {
+		t.Fatalf("map acme/priv to PRIV: %v", err)
+	}
+	instance := seedServerProcess(t, seed.database, 0)
+	for index, repo := range []string{"acme/pub", "acme/priv", "acme/other"} {
+		id := endedCIPass(t, seed.database, instance, time.Duration(index+1)*time.Hour, "complete")
+		if _, err := seed.database.Pool.Exec(t.Context(), `update ci_reconcile_passes set cursor_repository = $2 where id = $1`, id, repo); err != nil {
+			t.Fatalf("leave pass %d in %s: %v", id, repo, err)
+		}
+	}
+
+	const route = "/api/v1/ci-reconcile/passes"
+	every := seed.mustRequest(t, callerCarol, http.MethodGet, route, nil, http.StatusOK)
+	got := []string{}
+	for _, pass := range decodeBody[[]ciPassView](t, every) {
+		if pass.Cursor != nil {
+			got = append(got, pass.Cursor.Repository)
+		}
+	}
+	if want := []string{"acme/pub", "acme/priv", "acme/other"}; !slices.Equal(got, want) {
+		t.Fatalf("carol reads passes left in %v, want %v, newest first", got, want)
+	}
+	if alice := seed.request(t, callerAlice, http.MethodGet, route, nil); alice.Code != http.StatusOK || alice.Body.String() != every.Body.String() {
+		t.Errorf("alice, an open viewer, reads GET %s = %d %s, want carol's answer: %s", route, alice.Code, alice.Body.String(), every.Body.String())
+	}
+	for _, caller := range []privateCaller{callerBob, callerCarolPrivToken} {
+		refused := seed.request(t, caller, http.MethodGet, route, nil)
+		if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"DEPLOYMENT_READ_REFUSED"`) {
+			t.Errorf("%s reads GET %s = %d %s, want 403 DEPLOYMENT_READ_REFUSED", caller, route, refused.Code, refused.Body.String())
+		}
+	}
+}
+
 // TestASessionsLastActivityCountsOnlyWhatTheCallerSees: an agent row's last_activity is the newest
 // event of the session among the events the caller sees. session-both acts on PRIV and then, last,
 // on PUB: bob sees it through PRIV but sees none of PUB's events, so his row for it is its ask on
@@ -246,25 +339,22 @@ func TestALastActivityCountsTheConversationItsReaderReads(t *testing.T) {
 }
 
 // TestEachReaderIsToldTheUnfetchableCountOfWhatItSees: the live hub counts, for each reader, the
-// pull requests that can no longer be fetched in the repositories that reader sees, in its
-// snapshot and in the freshness frame a later mark sends it, never another reader's count. The
-// server's own reader sees both repositories; an open reader that sees no project sees only the one
-// no project maps.
+// pull requests that can no longer be fetched that the reader is shown, in its snapshot and in the
+// freshness frame a later mark sends it, never another reader's count. The server's own reader is
+// shown both; an open reader that sees no project is shown only the one that names no issue, and
+// not the one whose issue is HID's.
 func TestEachReaderIsToldTheUnfetchableCountOfWhatItSees(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HID")
-	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
-		map[string]any{"project": "HID"}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map acme/hidden to HID: %d %s", response.Code, response.Body.String())
-	}
+	key := issueIn(t, rig.handler, "alice", "HID")
 	merged := rig.clock.Now().Add(-3 * time.Hour)
 	upsertPR(t, rig.database, hubPR(1, merged))
 	hidden := hubPR(2, merged)
-	hidden.Repo, hidden.URL = "acme/hidden", "https://github.com/acme/hidden/pull/2"
+	hidden.IssueKey = &key
 	upsertPR(t, rig.database, hidden)
-	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/hidden", 2, "the pull request is gone"); err != nil {
-		t.Fatalf("mark acme/hidden#2 unfetchable: %v", err)
+	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/widgets", 2, "the pull request is gone"); err != nil {
+		t.Fatalf("mark acme/widgets#2 unfetchable: %v", err)
 	}
 
 	readers := []struct {
@@ -312,11 +402,9 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HID")
-	if response := dispatchRequest(t, rig.handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
-		map[string]any{"project": "HID"}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map acme/hidden to HID: %d %s", response.Code, response.Body.String())
-	}
+	issue := issueIn(t, rig.handler, "alice", "HID")
 	hidden := hubPR(2, rig.clock.Now().Add(-3*time.Hour))
+	hidden.IssueKey = &issue
 	hidden.Repo, hidden.URL = "acme/hidden", "https://github.com/acme/hidden/pull/2"
 	upsertPR(t, rig.database, hidden)
 	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/hidden", 2, "the pull request is gone"); err != nil {
@@ -351,23 +439,17 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 	}
 }
 
-// TestADeploymentReadCountsOnlyTheProjectsTheCallerSees: the reads of the whole deployment that an
-// open viewer still makes, GET /api/v1/priorities, the delivery timeline and measures and GET
-// /api/v1/ci-reconcile/passes, count and list only the work of the projects the caller sees. A
-// pull request or a pass of a repository mapped to PRIV is not there for alice, the shared token
-// or carol's token that lists no project, and one of a repository no project maps stays for each
-// of them. A restricted member or a credential that lists projects makes none of these reads
-// (DEPLOYMENT_READ_REFUSED, routes_table.go), so only open viewers are asked.
+// TestADeploymentReadCountsOnlyTheProjectsTheCallerSees: GET /api/v1/priorities, a read of the whole
+// deployment that an open viewer still makes, counts only the work of the projects the caller sees:
+// PRIV's work is not counted for alice, the shared token or carol's token that lists no project. A
+// restricted member or a credential that lists projects makes no such read (DEPLOYMENT_READ_REFUSED,
+// readClasses), so only open viewers are asked. The delivery reads have their own rule and test
+// (TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees), and so do the CI reconcile passes
+// (TestCIRepairPassesGoToAnOpenViewerOnly).
 func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 	seed := seedPrivateProject(t)
-	ctx := context.Background()
-	for repo, project := range map[string]string{"acme/pub": seedPublic, "acme/priv": seedPrivate} {
-		seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/settings/repo-projects/"+repo,
-			map[string]any{"project": project}, http.StatusOK)
-	}
-
-	// The priorities: one priority each project's work advances, and each project's seed issue
-	// in flight under no priority.
+	// One priority each project's work advances, and each project's seed issue in flight under no
+	// priority.
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/priorities", map[string]any{"id": "ship-it", "title": "Ship it"}, http.StatusCreated)
 	for _, project := range []string{seedPublic, seedPrivate} {
 		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -375,44 +457,6 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 		}, http.StatusCreated)
 		seed.mustRequest(t, callerCarol, http.MethodPatch, "/api/v1/issues/"+seed.issue[project],
 			map[string]any{"status": "in_progress"}, http.StatusOK)
-		// An open P0 nobody claims, which the measures list.
-		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": project, "title": "Unowned P0 of " + project, "priority": 0, "force": true,
-		}, http.StatusCreated)
-	}
-
-	// The delivery timeline's settings and pull requests, as the intake stores them.
-	if _, err := delivery.PutSettings(ctx, seed.database.Pool, delivery.DeliverySettings{
-		DeployRepo: "acme/deploy", DeployWorkflowPath: ".github/workflows/deploy.yml",
-		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
-		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("write the delivery settings: %v", err)
-	}
-	merged := time.Now().UTC().Add(-time.Hour)
-	opened := merged.Add(-time.Hour)
-	for number, repo := range map[int]string{1: "acme/pub", 2: "acme/priv", 3: "acme/other"} {
-		if err := delivery.UpsertPullRequest(ctx, seed.database.Pool, delivery.DeliveryPullRequest{
-			Repo: repo, Number: number, Title: "change of " + repo, Author: "octocat",
-			URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), CreatedAt: &opened, MergedAt: &merged,
-		}); err != nil {
-			t.Fatalf("store %s#%d: %v", repo, number, err)
-		}
-	}
-	// Two of them can no longer be fetched from GitHub, as the intake marks one.
-	for number, repo := range map[int]string{2: "acme/priv", 3: "acme/other"} {
-		if err := delivery.MarkPullRequestUnfetchable(ctx, seed.database.Pool, repo, number, "the pull request is gone"); err != nil {
-			t.Fatalf("mark %s#%d unfetchable: %v", repo, number, err)
-		}
-	}
-
-	// Three ended passes, each leaving its cursor in another repository, as a pass writes its row.
-	instance := seedServerProcess(t, seed.database, 0)
-	for index, repo := range []string{"acme/pub", "acme/priv", "acme/other"} {
-		id := endedCIPass(t, seed.database, instance, time.Duration(index+1)*time.Hour, "complete")
-		if _, err := seed.database.Pool.Exec(ctx, `update ci_reconcile_passes set cursor_repository = $2 where id = $1`, id, repo); err != nil {
-			t.Fatalf("leave pass %d in %s: %v", id, repo, err)
-		}
 	}
 
 	for _, test := range []struct {
@@ -426,21 +470,12 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 		{callerSharedToken, false},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
-			wantPRs := []string{"acme/other#3", "acme/pub#1"}
-			wantPasses := []string{"acme/other", "acme/pub"}
-			wantUnowned := []string{seedPublic}
 			wantByProject := []string{seedPublic}
 			wantAdvancing := 1
-			wantUnfetchable := 1
 			if test.sees {
-				wantPRs = []string{"acme/other#3", "acme/priv#2", "acme/pub#1"}
-				wantPasses = []string{"acme/other", "acme/priv", "acme/pub"}
-				wantUnowned = []string{seedPrivate, seedPublic}
 				wantByProject = []string{seedPrivate, seedPublic}
 				wantAdvancing = 2
-				wantUnfetchable = 2
 			}
-
 			priorities := decodeBody[model.Priorities](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/priorities", nil, http.StatusOK))
 			advancing := -1
 			for _, row := range priorities.Priorities {
@@ -456,44 +491,6 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 			}
 			if got := slices.Sorted(maps.Keys(priorities.WorkUnderNoPriority.ByProject)); !slices.Equal(got, wantByProject) {
 				t.Errorf("%s: the work under no priority is counted in %v, want %v", test.caller, got, wantByProject)
-			}
-
-			timeline := decodeBody[deliveryTimelineWithMeasures](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/delivery/timeline", nil, http.StatusOK))
-			gotPRs := []string{}
-			for _, pr := range timeline.PRs {
-				gotPRs = append(gotPRs, pr.ID)
-			}
-			slices.Sort(gotPRs)
-			if !slices.Equal(gotPRs, wantPRs) {
-				t.Errorf("%s: the delivery timeline lists %v, want %v", test.caller, gotPRs, wantPRs)
-			}
-			if got := timeline.Freshness.UnfetchableCount; got != wantUnfetchable {
-				t.Errorf("%s: the delivery timeline counts %d pull requests that can no longer be fetched, want %d", test.caller, got, wantUnfetchable)
-			}
-			measured := decodeBody[deliveryMeasuresResponse](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/delivery/measures", nil, http.StatusOK))
-			gotUnowned := []string{}
-			for _, issue := range measured.UnownedP0 {
-				project, _, _ := strings.Cut(issue.Key, "-")
-				gotUnowned = append(gotUnowned, project)
-			}
-			slices.Sort(gotUnowned)
-			if !slices.Equal(gotUnowned, wantUnowned) {
-				t.Errorf("%s: the measures list unowned P0 issues of %v, want %v", test.caller, gotUnowned, wantUnowned)
-			}
-			if got := measured.Freshness.UnfetchableCount; got != wantUnfetchable {
-				t.Errorf("%s: the measures count %d pull requests that can no longer be fetched, want %d", test.caller, got, wantUnfetchable)
-			}
-
-			passes := decodeBody[[]ciPassView](t, seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/ci-reconcile/passes", nil, http.StatusOK))
-			gotPasses := []string{}
-			for _, pass := range passes {
-				if pass.Cursor != nil {
-					gotPasses = append(gotPasses, pass.Cursor.Repository)
-				}
-			}
-			slices.Sort(gotPasses)
-			if !slices.Equal(gotPasses, wantPasses) {
-				t.Errorf("%s: GET /api/v1/ci-reconcile/passes answers passes left in %v, want %v", test.caller, gotPasses, wantPasses)
 			}
 		})
 	}
@@ -611,11 +608,12 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 }
 
 // TestWhoamiAnswersAPersonalTokensProjects (KF4): GET /api/v1/whoami answers projects, sorted,
-// whenever the credential lists projects, a person's own dsp_ token included, in the person shape
-// as in the agent shape; and project, deprecated, as the one key of a one-key list and null for
-// any other list. The control is byte for byte: a credential that lists nothing answers exactly
-// what it answered before the list existed, and a broker token scoped to one project, whose
-// credential lists that project (brokerTokenActor), answers it in both fields.
+// whenever the credential lists projects, a person's own dsp_ token included, in the agent shape;
+// and project, deprecated, as the one key of a one-key list and null for any other list. The person
+// shape is a browser's cookie's, which lists nothing, so it carries no list. The control is byte for
+// byte: a credential that lists nothing answers exactly what it answered before the list existed,
+// and a broker token scoped to one project, whose credential lists that project
+// (brokerTokenActor), answers it in both fields.
 func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	carol := seedCarol
 	project := seedPublic
@@ -638,9 +636,9 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 		{"a broker token scoped to one project",
 			newWhoamiAgent(model.Actor{Kind: "session", ID: "ses_x", Credential: &model.Credential{Session: "ses_x", Projects: []string{project}}}, "", []string{}),
 			`{"kind":"agent","owner":null,"projects":["PUB"],"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
-		{"a person whose credential lists two projects",
+		{"a person shape, whatever its credential lists",
 			newWhoamiUser(model.Actor{Kind: "user", ID: carol, Credential: &model.Credential{Projects: both}}, "", []string{}),
-			`{"kind":"user","login":"carol@example.com","projects":["PRIV","PUB"],"scopes":[]}`},
+			`{"kind":"user","login":"carol@example.com","scopes":[]}`},
 		{"a person at a browser", newWhoamiUser(model.BrowserActor(seedAlice), "", whoamiScopes(model.BrowserActor(seedAlice).Credential)),
 			`{"kind":"user","login":"alice","scopes":["person","approve"]}`},
 	} {
