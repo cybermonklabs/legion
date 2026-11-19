@@ -795,9 +795,20 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // deterministic because every time they record is one their own fact named. It is what
 // record.PullRequest.StateReadAt is written from, and a confirming read moves it exactly as a read
 // that changes something does, since it is the age of the knowledge and not the age of the last
-// change to it. A fact minted by anything that did not read GitHub - every test that states a
-// verdict rather than reading one - leaves it zero, and the engine then writes no stamp and erases
-// none.
+// change to it. A read whose ReadAt is before the stamp the record holds is dropped whole, as one
+// of another head is: GitHub answered the recorded read later, so the older answer can be one it
+// has since changed. A fact minted by anything that did not read GitHub - every test that states
+// a verdict rather than reading one - leaves it zero, and the engine then writes no stamp, erases
+// none and drops nothing for it.
+//
+// Rules is what the daemon read of the base branch's rules for its required status checks
+// (record.BaseRules), which a confirmed conflict is decided on (workflow's mergeability,
+// classify.ConflictNeedsMerge). It is set only on a read whose Mergeable is
+// record.MergeabilityConflicting, since a head that merges cleanly needs no decision of that kind,
+// and nil on every other read; the reader that fills it is the daemon's, which reads the base's
+// rulesets and its classic protection beside the pull request. A CONFLICTING read that carries
+// none is a read whose rules the daemon does not know, and it is decided as rules it could not
+// read are.
 type PullRequestMergeability struct {
 	Repo       string
 	Number     int
@@ -806,6 +817,7 @@ type PullRequestMergeability struct {
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
 	ReadAt     time.Time
+	Rules      *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
@@ -859,6 +871,26 @@ type MergeQueueReadDone struct {
 }
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
+// finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
+// pull request Number of Issue at the row's last attempt, or, with Unread, no read of it
+// succeeded, so no second read confirmed the first read's conflict at Head, made at FirstReadAt
+// (record.ConflictConfirm.FirstReadAt), and none released it. The workflow then clears the first
+// read while the record still holds that one, of Head and made at FirstReadAt (workflow's
+// conflictConfirmDone), so the next read that finds the head conflicting is a first read again. A
+// first read of Head made at another time is one a later read made after this row's was released,
+// with a row of its own, and it is left standing. A CONFLICTING or MERGEABLE answer applies
+// PullRequestMergeability instead, as every read of the pull request does.
+type ConflictConfirmDone struct {
+	Issue       string
+	Number      int
+	Head        string
+	FirstReadAt time.Time
+	Unread      bool
+}
+
+func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true }
 
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue

@@ -750,7 +750,7 @@ func TestThePerIssueReadLooksUpARepositoryOnlyARecordNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := w.readIssuePullRequest(ctx, "LEGION-951"); err != nil {
+	if _, err := w.readIssuePullRequest(ctx, "LEGION-951"); err != nil {
 		t.Fatal(err)
 	}
 	asked := *mu.Load()

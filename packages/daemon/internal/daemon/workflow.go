@@ -273,16 +273,24 @@ type workflowRuntime struct {
 	// readHandedOff has not read the pull request of yet, which is what makes a second completion
 	// of the same issue, while the first is still queued, one read rather than two.
 	handedOff *wakeSet[string]
-	// mergeStates is each issue a fact left waiting on GitHub's merge state (queueMergeState,
-	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
-	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
-	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
-	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
-	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
+	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
+	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
+	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
+	// testing through merging), each the start read found GitHub still computing
+	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
+	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
+	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
+	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
+	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
+	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
+	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
+	// long the outbox's merge-queue read and second conflict read wait before they read again
+	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
+	// shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
-	mergeStateRunning map[string]bool
+	mergeStateQueued  map[string]string
+	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
 }
 
@@ -476,7 +484,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]bool{},
+		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
@@ -1336,10 +1344,14 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
 // supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
 // the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
-// lanes reserve from was built before either of them (run). The outbox's merge-queue read reads
-// GitHub through this runtime's own read of a pull request and waits this runtime's wait between
-// failed reads (readPullRequest, mergeStateWait), both set before the records' wake can reach the
-// outbox (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
+// lanes reserve from was built before either of them (run). The outbox's two reads of one pull
+// request, the merge-queue read and the second read of a conflicting head, read GitHub through
+// this runtime's own read of a pull request, apply its answer as every read of this runtime does,
+// the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
+// read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
+// attempt read no answer hands the head to this runtime's merge-state reader to follow
+// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
 // which also drops that repository (podEndsOn).
@@ -1349,11 +1361,8 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
-	w.outbox.readPullRequest = func(ctx context.Context, pr record.PullRequest) (githubPullRequest, error) {
-		_, pull, err := w.readPullRequest(ctx, pr)
-		return pull, err
-	}
-	w.outbox.mergeStateWait = w.mergeStateWait
+	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
+	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
