@@ -1642,10 +1642,8 @@ jobs:
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # :2432 imports the table to derive the plain step's -run lists, and :2876-2911 holds
-              # the guide's slow-suite list to the jobs the full-ci label gates.
+              # :2432 imports the table to derive the plain step's -run lists.
               - '.github/scripts/ci_job_reads.py'
-              - 'AGENTS.md'
               # It runs the darwin vet step's own run text over a module with a negated tag.
               - '.github/workflows/ci-job-typecheck.yaml'
             check_ts_filters_test: &check_ts_filters_test
