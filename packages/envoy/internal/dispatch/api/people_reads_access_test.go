@@ -219,36 +219,46 @@ const newSessionsRoster = `[
 // token), session-new-priv, whose listener names PRIV alone, and lists session-new-pub, whose
 // listener names PUB, and session-new-none, whose listener names no project. carol, who sees PRIV,
 // lists all three; bob and carol's token that lists PRIV list session-new-priv alone; alice's token
-// that lists PRIV, which sees no project, lists none.
+// that lists PRIV, which sees no project, lists none. A process that asks the listener on every read
+// (DISPATCH_TEST_ROSTER_UNCACHED) answers the same: it stores each answer it reads, since the
+// listener record the clause reads is that stored answer.
 //
-// Control: the clause before its listener-record arms (access.SessionClause passing every session
-// with no pair to an open viewer); alice then lists session-new-priv, and the test fails naming it.
+// Controls: the clause before its listener-record arms (access.SessionClause passing every session
+// with no pair to an open viewer), under which alice lists session-new-priv; and the uncached read
+// storing nothing, under which alice, in that mode, lists no session-new-none.
 func TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee(t *testing.T) {
-	listener, _ := newBroadcastListener(t, newSessionsRoster)
-	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
-	public := []string{"session-new-pub", "session-new-none"}
-	for _, test := range []struct {
-		caller privateCaller
-		want   []string
-	}{
-		{callerAlice, public},
-		{callerCarolToken, public},
-		{callerSharedToken, public},
-		{callerCarol, []string{"session-new-priv", "session-new-pub", "session-new-none"}},
-		{callerBob, []string{"session-new-priv"}},
-		{callerCarolPrivToken, []string{"session-new-priv"}},
-		{callerAlicePrivToken, []string{}},
-	} {
-		response := seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
-		got := []string{}
-		for _, row := range decodeBody[[]struct {
-			SessionID string `json:"session_id"`
-		}](t, response) {
-			got = append(got, row.SessionID)
-		}
-		if !slices.Equal(got, test.want) {
-			t.Errorf("%s: GET /api/v1/agents = %v, want %v", test.caller, got, test.want)
-		}
+	for _, mode := range []struct {
+		name     string
+		uncached bool
+	}{{"the stored listener answer", false}, {"DISPATCH_TEST_ROSTER_UNCACHED", true}} {
+		t.Run(mode.name, func(t *testing.T) {
+			listener, _ := newBroadcastListener(t, newSessionsRoster)
+			seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, rosterUncached: mode.uncached})
+			public := []string{"session-new-pub", "session-new-none"}
+			for _, test := range []struct {
+				caller privateCaller
+				want   []string
+			}{
+				{callerAlice, public},
+				{callerCarolToken, public},
+				{callerSharedToken, public},
+				{callerCarol, []string{"session-new-priv", "session-new-pub", "session-new-none"}},
+				{callerBob, []string{"session-new-priv"}},
+				{callerCarolPrivToken, []string{"session-new-priv"}},
+				{callerAlicePrivToken, []string{}},
+			} {
+				response := seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+				got := []string{}
+				for _, row := range decodeBody[[]struct {
+					SessionID string `json:"session_id"`
+				}](t, response) {
+					got = append(got, row.SessionID)
+				}
+				if !slices.Equal(got, test.want) {
+					t.Errorf("%s: GET /api/v1/agents = %v, want %v", test.caller, got, test.want)
+				}
+			}
+		})
 	}
 }
 

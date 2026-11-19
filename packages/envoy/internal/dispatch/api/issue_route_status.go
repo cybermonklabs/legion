@@ -193,9 +193,18 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 		return routeRoster{reason: model.RouteReasonUnreachable}, nil
 	}
 	if s.deps.ListenerRosterUncached {
-		// An end-to-end test process: every read asks the listener itself, with no stored answer,
-		// no shared fetch and nothing kept.
-		return s.listRouteRoster(ctx), nil
+		// An end-to-end test process: every read asks the listener itself, with no shared fetch,
+		// and answers what that call answered. It still stores the answer, as a fetch does, because
+		// the session rule reads each session's listener record from the stored row
+		// (access.SessionClause): a process that stored none would judge every session with no
+		// history as one the listener does not list.
+		var sent time.Time
+		if err := s.deps.Store.Pool.QueryRow(ctx, `select now()`).Scan(&sent); err != nil {
+			return routeRoster{}, fmt.Errorf("read the database's clock: %w", err)
+		}
+		roster := s.listRouteRoster(ctx)
+		s.storeRouteRoster(ctx, sent, roster)
+		return roster, nil
 	}
 	roster, fresh, now, seen, err := s.storedRouteRoster(ctx)
 	if err != nil {
