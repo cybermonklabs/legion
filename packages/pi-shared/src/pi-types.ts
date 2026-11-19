@@ -24,7 +24,7 @@ export interface HostModel {
  * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
  * suppression the host's own turn recovery reads before it picks a fallback, by the entry's own
  * selector and by the key of the model it resolves to (`isRetryFallbackEntrySuppressed`,
- * `session/turn-recovery.ts:2189-2194` at the pinned tag), so an extension stepping down the same
+ * `session/turn-recovery.ts:2183-2188` at the pinned tag), so an extension stepping down the same
  * chain can skip what the host skips. Each is a method of the live registry, which reads private
  * state of its own, so a caller calls it on the registry rather than handing it over detached. */
 export interface HostModelRegistry {
