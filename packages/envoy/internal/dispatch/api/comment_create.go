@@ -107,6 +107,9 @@ type commentThreadTarget struct {
 	// AskMoved says the ask is an approval request a version moved past the one its agent last
 	// handed to the human (approvalMoved): it waits on its agent whatever a reply's turn says.
 	AskMoved bool
+	// AskAuthorSession is the session that wrote the thread's ask, nil when a person wrote it
+	// or the thread is no ask's (describeAsk).
+	AskAuthorSession *string
 	// ReplyBlock is the block of the comment reply_to named that the reply answers, nil when it
 	// names none: that comment's, not the thread head's that ReplyTo then holds.
 	ReplyBlock *namedBlock
@@ -390,16 +393,46 @@ func (s *server) describeAsk(
 ) (commentThreadTarget, error) {
 	target := commentThreadTarget{AskID: askID}
 	err := tx.QueryRow(ctx, `
-		select a.question, a.state, `+approvalMoved+`
+		select a.question, a.state, `+approvalMoved+`,
+		       case when a.author->>'kind' = 'session' then a.author->>'id' end
 		from asks a
 		where a.id = $1
 		  and a.issue_key is not distinct from $2
 		  and a.artifact_id is not distinct from $3
-	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved)
+	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved, &target.AskAuthorSession)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
 	}
 	return target, err
+}
+
+// askSessions is what a comment.created in askID's thread says about whose ask it is
+// (model.CommentEventPayload.AskSessions), as the comment's write leaves them: author, the
+// session that wrote the ask when one did (describeAsk's AskAuthorSession), then each other
+// session asks.Followers reads, ordered by since and then session id, then replier, appended
+// last, when it is a session none of those names, and [] when no session owns the ask. It reads
+// in the route's read phase, where the read holds no transaction id and finds the followers
+// committed before this write, but not the follow the write queues for a session that replies
+// (asks.QueueFollowAuthor), which only Ledger.Commit sends: so the replier is added here rather
+// than read.
+func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string, replier model.Actor) ([]string, error) {
+	followers, err := asks.Followers(ctx, tx, askID)
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]string, 0, len(followers)+2)
+	if author != nil {
+		sessions = append(sessions, *author)
+	}
+	for _, follower := range followers {
+		if author == nil || follower.SessionID != *author {
+			sessions = append(sessions, follower.SessionID)
+		}
+	}
+	if replier.Kind == "session" && replier.ID != "" && !slices.Contains(sessions, replier.ID) {
+		sessions = append(sessions, replier.ID)
+	}
+	return sessions, nil
 }
 
 // commentRoute is the owner's delivery route as the Envoy listener resolved it before the
@@ -1025,6 +1058,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	payload.SuppressedRoute = suppressedRoute
 	payload.SuppressedRouteSessionID = suppressedRouteSessionID
 	payload.MentionsDecideRoutes = start.decidesRoutes
+	if comment.AskID != nil {
+		payload.AskSessions, err = askSessions(r.Context(), tx, *comment.AskID, threadTarget.AskAuthorSession, actor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.queueLoggedEvent(ledger, owner.event(
 		"comment.created",
 		actor,

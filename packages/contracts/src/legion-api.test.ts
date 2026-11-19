@@ -1429,7 +1429,7 @@ test("a claim carries the leak check's cause beside its failure", () => {
     throw new Error("state fixture lacks LEGION-210's implementer");
   }
   const sentence =
-    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+    "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found";
   expect(refused.leakCheckCause).toBe(sentence);
   expect(
     LegionStateResponse.parse(state).issues["LEGION-210"]?.workers?.implementer?.claim
@@ -1466,9 +1466,9 @@ test("a claim carries the leak check's cause beside its failure", () => {
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
 // all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
-// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 154 on,
+// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 168 on,
 // a reader served the body whole, the operator's `legion state --json` among them, is told the
-// daemon's own number as the caller's too, which is the golden's mark. Before contract 154 a daemon
+// daemon's own number as the caller's too, which is the golden's mark. Before contract 168 a daemon
 // from 75 on served that reader the daemon's number alone, and the schema reads that mark as well.
 test("the state says which contract it was built at", () => {
   const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };

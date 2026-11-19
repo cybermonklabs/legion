@@ -86,7 +86,7 @@ func TypeValue(secretType string) string {
 	case policy.TypeGoogleLogin:
 		fields["type"], fields["client_id"], fields["client_secret"], fields["refresh_token"] = "authorized_user", "client", "secret", "refresh"
 	case policy.TypeGoogleServiceAccount:
-		fields["service_account"] = "robot-1@acme-agent-infra.iam.gserviceaccount.com"
+		fields["service_account"] = "robot-1@acme-deployment.iam.gserviceaccount.com"
 	case policy.TypeAzureLogin:
 		fields["tenant_id"], fields["client_id"] = "tenant", "client"
 	default:

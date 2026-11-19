@@ -1293,7 +1293,7 @@ test("the settings keys answers.json types at the daemon's own contract are the 
 });
 
 // The premise both the census above and the daemon's settings records rest on, as
-// `packages/daemon/internal/api/version.go` measures it at entry 154: `legionSettings` passes a
+// `packages/daemon/internal/api/version.go` measures it at entry 168: `legionSettings` passes a
 // key it does not name through whole, so a key no reader types is refused for nothing and no
 // record holds it, and each key it types is a scalar, so no path below a typed key is typed and
 // no record holds one either. A block that refused or stripped a key it does not name, or a typed

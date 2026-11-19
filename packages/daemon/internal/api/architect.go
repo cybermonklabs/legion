@@ -264,7 +264,7 @@ func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID strin
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, fact, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, fact)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact")
 		return
@@ -598,7 +598,7 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant cr
 		}
 		observed = prepared
 	}
-	if _, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("waves/release"), observed, s.handlers...); err != nil {
+	if _, err := s.apply(r.Context(), "api", requestFactID("waves/release"), observed); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("could not record %s", child.Key))
 		return "", false
 	}
@@ -1242,7 +1242,7 @@ func (s *server) adoptReleasedChildren(w http.ResponseWriter, r *http.Request, t
 	if len(outside) == 0 {
 		return true
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", requestFactID("waves/adopt"), intake.ChildAdoption{Tree: tree, Children: outside})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not adopt the released children")
 		return false
@@ -1274,7 +1274,9 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 
 // phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or an
 // architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
-// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED).
+// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
+// move it applies ends the requester's own step — the worker's phase, or accepting, the owning
+// architect's — which apply waits for the requester's stream before.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,

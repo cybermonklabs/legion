@@ -169,6 +169,12 @@ runtime:
         floor_percent: 15
         wait_seconds: 8
         interval_milliseconds: 250
+    volume_trim:
+      enabled: true
+      high_percent: 90
+      low_percent: 60
+      min_age_minutes: 120
+      interval_seconds: 30
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a
@@ -530,7 +536,7 @@ func populatedState(t *testing.T) State {
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
 						PendingCause:   supervise.CauseDied,
-						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found",
+						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found",
 					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no

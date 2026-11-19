@@ -93,7 +93,7 @@ func (s *server) recordOwnStatusWrite(ctx context.Context, written dispatch.Issu
 		}
 		fact = prepared
 	}
-	result, err := intake.ApplyFact(ctx, s.pool, "api", requestFactID("status/own-write"), fact, s.handlers...)
+	result, err := s.apply(ctx, "api", requestFactID("status/own-write"), fact)
 	if err != nil {
 		return &ownWriteFailure{http.StatusInternalServerError, "FACT_APPLY_FAILED", fmt.Sprintf("Dispatch shows %s %s, but the record did not take it (%v); retry", written.Key, written.Status, err)}
 	}

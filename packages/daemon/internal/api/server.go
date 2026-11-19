@@ -70,6 +70,12 @@ type Options struct {
 	ConsumerLag func(ctx context.Context) []intake.ConsumerLag
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
+	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
+	// the daemon had read when it was called (the daemon's awaitStream). apply calls it before a
+	// fact of an agent's own request where the record names that agent the agent of a run the fact
+	// may end, so the record of that step names the model whose answer the stream read ahead of
+	// the request. Nil waits for nothing.
+	AwaitStream func(ctx context.Context, token claim.Token)
 	// PodUpdateRounds answers what the daemon's last pod-update sweep decided, which the claim
 	// listing carries beside the claims (the daemon's podUpdateRoundsView). Nil answers the zero
 	// record, which says the daemon has not swept yet: a deployment that serves the route with no
@@ -310,6 +316,8 @@ type server struct {
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
+	// awaitStream is Options.AwaitStream (apply).
+	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -403,6 +411,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
+		awaitStream:        opts.AwaitStream,
 		podUpdateRounds:    opts.PodUpdateRounds,
 		bootTokens:         opts.BootTokens,
 		project:            opts.Project,
@@ -477,55 +486,12 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /legion/v1/state", s.stateRoute)
-	mux.HandleFunc("GET /legion/v1/issues/{key}/record", s.issueRecordRoute)
-	mux.HandleFunc("GET /healthz", s.healthRoute)
-	mux.HandleFunc("GET /readyz", s.readyz)
-
-	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
-	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
-	mux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)
-	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
-	mux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)
-	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
-	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
-	mux.HandleFunc("POST /legion/v1/grants", s.grant)
-	mux.HandleFunc("POST /legion/v1/controller/secret", s.controllerSecret)
-	mux.HandleFunc("POST /legion/v1/controller/github-credential", s.controllerGitHubCredential)
-	mux.HandleFunc("POST /legion/v1/handoff/complete", s.handoffComplete)
-	mux.HandleFunc("POST /legion/v1/issues/status", s.issueStatus)
-	mux.HandleFunc("POST /legion/v1/claims/fresh-session", s.claimFreshSession)
-	mux.HandleFunc("POST /legion/v1/claims/compact", s.claimCompact)
-	mux.HandleFunc("POST /legion/v1/gates/register", s.gateRegister)
-	mux.HandleFunc("POST /legion/v1/waves/release", s.waveRelease)
-	mux.HandleFunc("POST /legion/v1/phase/backward", s.phaseBackward)
-	mux.HandleFunc("POST /legion/v1/phase/retry", s.phaseRetry)
-	mux.HandleFunc("POST /legion/v1/signoff", s.signOff)
-	mux.HandleFunc("POST /legion/v1/roots/close", s.closeRoot)
-	mux.HandleFunc("POST /legion/v1/children/park", s.parkChild)
-	mux.HandleFunc("POST /legion/v1/children/rerun", s.rerunChild)
-
-	mux.HandleFunc("POST /legion/v1/operator/claims", s.operator(s.spawn))
-	mux.HandleFunc("GET /legion/v1/operator/claims", s.operator(s.list))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
-
-	// The catch-all answers every unrouted request, including a known path asked for with the
-	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
-	// script needs.
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s.refuse(w, r, http.StatusNotFound, "no route")
-	})
-
+	for _, route := range s.routes() {
+		mux.HandleFunc(route.pattern, route.handler)
+	}
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           statingContract{handler: trackTransactions(mux)},
+		Handler:           statingContract{handler: trackTransactions(noteRequesters(mux))},
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 }
@@ -551,6 +517,67 @@ type statingContract struct {
 func (s statingContract) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(daemonContractHeader, strconv.Itoa(DaemonAPIVersion))
 	s.handler.ServeHTTP(w, r)
+}
+
+// route is one route the API serves: the pattern http.ServeMux matches a request against, and the
+// handler that answers it.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes is every route the API serves, the one table NewServer registers.
+func (s *server) routes() []route {
+	return []route{
+		{"GET /legion/v1/state", s.stateRoute},
+		{"GET /legion/v1/issues/{key}/record", s.issueRecordRoute},
+		{"GET /healthz", s.healthRoute},
+		{"GET /readyz", s.readyz},
+
+		{"POST /legion/v1/claims/register", s.register},
+		{"POST /legion/v1/claims/ready", s.ready},
+		{"POST /legion/v1/claims/ready-for-update", s.readyForUpdate},
+		{"POST /legion/v1/claims/exit", s.exit},
+		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
+		{"POST /legion/v1/claims/activity", s.activity},
+		{"POST /legion/v1/claims/release-records", s.releaseRecords},
+		{"POST /legion/v1/grants", s.grant},
+		{"POST /legion/v1/controller/secret", s.controllerSecret},
+		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
+		{"POST /legion/v1/handoff/complete", s.handoffComplete},
+		{"POST /legion/v1/issues/status", s.issueStatus},
+		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
+		{"POST /legion/v1/claims/compact", s.claimCompact},
+		{"POST /legion/v1/gates/register", s.gateRegister},
+		{"POST /legion/v1/waves/release", s.waveRelease},
+		{"POST /legion/v1/phase/backward", s.phaseBackward},
+		{"POST /legion/v1/phase/retry", s.phaseRetry},
+		{"POST /legion/v1/signoff", s.signOff},
+		{"POST /legion/v1/roots/close", s.closeRoot},
+		{"POST /legion/v1/children/park", s.parkChild},
+		{"POST /legion/v1/children/rerun", s.rerunChild},
+
+		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
+		{"GET /legion/v1/operator/claims", s.operator(s.list)},
+		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent))},
+		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent))},
+		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent))},
+		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent))},
+		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
+		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
+		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+
+		// The catch-all answers every unrouted request, including a known path asked for with the
+		// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
+		// script needs.
+		{"/", s.noRoute},
+	}
+}
+
+// noRoute is the catch-all's answer, the daemon's refusal shape like every other refusal.
+func (s *server) noRoute(w http.ResponseWriter, r *http.Request) {
+	s.refuse(w, r, http.StatusNotFound, "no route")
 }
 
 // trackTransactions marks every request's context for the daemon's pool, in this one place

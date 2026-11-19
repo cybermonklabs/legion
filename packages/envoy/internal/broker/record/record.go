@@ -619,37 +619,55 @@ func JudgeAllowsLifetime(bound uint32, lifetimeSeconds int) bool {
 	return int64(lifetimeSeconds) <= int64(bound)
 }
 
-// MayJudge reports whether the model judge may decide this record at all, before any model is
-// asked: the airlock rules' own bound on what a judge decides, read here so one rule answers for
-// every caller. All three must hold, and the error names which one did not.
+// MayJudge reports whether the model judge may grant this record at all: the airlock rules' own
+// bound on what a judge decides, read here so one rule answers for every caller. The record names
+// agent secrets alone; every key the judge decided is one the rules give the judge seconds of;
+// and the lifetime is within every one of those seconds. The error names the first that does
+// not hold. What the reason says is the judge's to read against each key's guidance, and no
+// condition of this.
 //
-// judgeSeconds is the rules file's answer for one secret (airlock.Rules.JudgeSeconds); it is
-// injected because this package must not import airlock. A nil func is no bound at all and
-// refuses, as a record with no lifetime does: an unbounded grant is exactly what the judge's
-// seconds are there to bound, so nothing the rules say can admit it.
-func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (uint32, bool)) error {
-	if len(obj.Details) != 1 {
-		return fmt.Errorf("%w: the request names %d authorization details, and the judge decides a request for one secret", ErrNotJudgeable, len(obj.Details))
+// decided answers which of the record's keys needed a decision when the request was written —
+// the keys the judge decided. A key it answers false for is one the session got at once beside
+// them: the grant releases it too, and no bound of the judge's holds it, since the judge decided
+// nothing of it. A record none of whose keys needed a decision is no record the judge decided. A
+// nil decided is every key decided.
+//
+// judgeSeconds is the rules file's answer for one secret (airlock.Rules.JudgeSeconds); both
+// funcs are injected because this package must not import airlock or read the request rows. A
+// nil judgeSeconds is no bound at all and refuses, as a record with no lifetime does: an
+// unbounded grant is exactly what the judge's seconds are there to bound, so nothing the rules
+// say can admit it.
+func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (uint32, bool), decided func(secret string) bool) error {
+	if len(obj.Details) == 0 {
+		return fmt.Errorf("%w: the request names no authorization detail", ErrNotJudgeable)
 	}
-	if obj.Details[0].Type != KindAgentSecret {
-		return fmt.Errorf("%w: the request is for a %s, not an agent secret", ErrNotJudgeable, obj.Details[0].Type)
+	for _, d := range obj.Details {
+		if d.Type != KindAgentSecret {
+			return fmt.Errorf("%w: the request is for a %s, not an agent secret", ErrNotJudgeable, d.Type)
+		}
 	}
-	name := obj.Details[0].Identifier
 	if judgeSeconds == nil {
-		return fmt.Errorf("%w: no judge bound is available for %q", ErrNotJudgeable, name)
+		return fmt.Errorf("%w: no judge bound is available for %q", ErrNotJudgeable, obj.Details[0].Identifier)
 	}
 	if body.LifetimeSeconds == nil {
 		return fmt.Errorf("%w: the record names no lifetime, so no judge bound holds it", ErrNotJudgeable)
 	}
-	bound, ok := judgeSeconds(name)
-	if !ok {
-		return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, name)
+	judged := 0
+	for _, d := range obj.Details {
+		if decided != nil && !decided(d.Identifier) {
+			continue
+		}
+		judged++
+		bound, ok := judgeSeconds(d.Identifier)
+		if !ok {
+			return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, d.Identifier)
+		}
+		if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
+			return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, d.Identifier, bound)
+		}
 	}
-	if !JudgeAllowsLifetime(bound, *body.LifetimeSeconds) {
-		return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, name, bound)
-	}
-	if IssueKeyInReason(obj.Reason) == "" {
-		return fmt.Errorf("%w: the request's reason names no Dispatch issue", ErrNotJudgeable)
+	if judged == 0 {
+		return fmt.Errorf("%w: the request names no key that needed a decision", ErrNotJudgeable)
 	}
 	return nil
 }
@@ -663,8 +681,27 @@ var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
 // IssueKeyInReason is the first Dispatch issue key in a request's own signed reason, and "" when
 // it names none. The proxy puts it in the line it logs for each request it carries a secret on,
 // so an operator reading that line can open the issue the session said it was working on, and
-// MayJudge reads it to tell whether the reason names an issue at all. It lives here, beside the
+// the judge reads it to find the issue it shows the model as data. It lives here, beside the
 // reason the record signs, so the log line and the judge read one definition of an issue key.
 func IssueKeyInReason(reason string) string {
 	return issueKeyPattern.FindString(reason)
+}
+
+// askRefPattern is a reference to one ask of a Dispatch issue, in the one form Dispatch writes:
+// dispatch://KEY/ask/<uuid>, the key read as issueKeyPattern reads one and the id a lower-case
+// version-agnostic uuid, which is how Dispatch spells every ask id. An upper-case id, a
+// shortened one and a key with no ask path after it name no ask at all.
+var askRefPattern = regexp.MustCompile(`dispatch://([A-Z][A-Z0-9]+-[0-9]+)/ask/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
+
+// AskRefInReason is the first ask a request's signed reason cites, as the issue key it belongs to
+// and the ask's own id, and "", "" when the reason cites none. The judge reads that ask from
+// Dispatch and shows it to the model as data, beside the issue a reason names, so a key's
+// guidance can ask for an answer the key's person gave; nothing requires a reason to cite one. It
+// lives beside IssueKeyInReason, so one definition of a Dispatch reference serves both reads.
+func AskRefInReason(reason string) (issueKey, askID string) {
+	match := askRefPattern.FindStringSubmatch(reason)
+	if match == nil {
+		return "", ""
+	}
+	return match[1], match[2]
 }

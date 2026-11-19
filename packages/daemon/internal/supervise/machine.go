@@ -245,6 +245,26 @@ type Claim struct {
 	// Failure is the reason a terminally failed claim could not continue. It is cleared before a
 	// retry and persisted so a daemon restart can report the same failure to the workflow.
 	Failure string
+	// PodEnd is the last pod end this claim's process was observed to have died of, as the
+	// runtime read it off the pod itself (runtime.Observation.PodEnd): `Evicted: The node was low
+	// on resource: ephemeral-storage. ...` and nothing of the role's own log. It is what lets the
+	// failure the workflow is told name the cause a role never chose, where Failure alone says
+	// only that the relaunch budget ran out.
+	//
+	// It is written where died records a death — a suspension over a dead process records one
+	// without it (suspendOverADeadProcess) — and cleared with Failure at each launch (launchNow),
+	// so a claim that comes back and later fails for something else carries nothing of the
+	// earlier end. The retry that admits a failed claim again clears Failure and not this
+	// (retry), so a retried claim whose launch has not run yet still carries the pod end of its
+	// last death. Since a launch clears it, a failed claim that holds one failed with no launch
+	// since the death that wrote it.
+	//
+	// It is durable for the reason Failure is: the failed claim is what a restarted daemon
+	// reports the failure from. A failure whose fact no daemon applied — the live apply failed, or
+	// the daemon's stop cut it off after the claim's state was written — is applied at the next
+	// boot from the claim read back from the store (the daemon's replayTerminal), and that fact
+	// names the pod end only where the store kept it.
+	PodEnd string
 	// FailureCause is the one word for what failed the claim, written beside that sentence by the
 	// site that failed it (fail), and FailedAt is when it did. Both are cleared where Failure is,
 	// by the retry that gives the claim another run and by the launch of that run (retry,
@@ -1177,6 +1197,17 @@ type Machine struct {
 	// that arrived after the sweep read the claims is already in this machine's inbox, ahead of
 	// the backstop's own event, so a turn whose agent moved in that window is left alone.
 	steppedAt time.Time
+	// answer is the model that answered last and the session it answered in (answered,
+	// LastAnswer), nil before any. It is apart from mu, so a read never waits on a decision, and it
+	// is memory only, as steppedAt is.
+	answer atomic.Pointer[sessionAnswer]
+	// sessionFrom is the first launch of the claim's current session: the launch that spawned it
+	// (spawn), which every later resume continues. The fence takes an answer of any launch from it
+	// to the claim's generation as the session's own and drops an answer of an earlier launch, which
+	// answered a session the claim has left. A machine read back at boot starts it at the claim's
+	// generation: no answer of an earlier launch is in this daemon's stream. It is memory only, as
+	// answer is.
+	sessionFrom uint64
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
@@ -1461,12 +1492,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps.Log = slog.Default()
 	}
 	m := &Machine{
-		ctx:    ctx,
-		deps:   deps,
-		log:    deps.Log.With("claim", string(c.Token)),
-		claim:  copyClaim(c),
-		timers: map[TimerKind]armed{},
-		stale:  map[string]bool{},
+		ctx:         ctx,
+		deps:        deps,
+		log:         deps.Log.With("claim", string(c.Token)),
+		claim:       copyClaim(c),
+		sessionFrom: c.Generation,
+		timers:      map[TimerKind]armed{},
+		stale:       map[string]bool{},
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -2193,9 +2225,9 @@ func (m *Machine) Wait() {
 }
 
 // fence applies the checks an event carries the fields for: the incarnation an observation is
-// about, the generation of a hello or a prompt outcome or a request, the session a request comes
-// from, the delivery a turn or a refusal or a timer names, and the arming a timer came from. It
-// reports whether the event goes on to the table.
+// about, the generation of a hello or an answer or a prompt outcome or a request, the session a
+// request comes from, the delivery a turn or a refusal or a timer names, and the arming a timer
+// came from. It reports whether the event goes on to the table.
 //
 // A hello and a registration are the two events that move a launch on (helloed, register), and a
 // live claim past launching records its process. So neither reaches the table while the claim is
@@ -2224,6 +2256,18 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 		}
 		if m.launchRecordsNoProcess() {
 			m.dropStale("StreamHello", "process", fmt.Sprint(ev.Generation), "none")
+			return false, nil
+		}
+	case StreamAnswered:
+		// A registration reaches the machine on its HTTP request, and the operator's suspend and
+		// resume on theirs, not behind the stream's queue. So an answer of a launch whose session
+		// the claim has left can arrive after a fresh session registered, and would name a model
+		// that never served that session; and an answer of an earlier launch of the claim's own
+		// session can arrive after a resume moved the generation on, and is that session's answer
+		// all the same (sessionFrom).
+		if ev.Generation < m.sessionFrom || ev.Generation > m.claim.Generation {
+			m.dropStale("StreamAnswered", "generation", fmt.Sprint(ev.Generation),
+				fmt.Sprintf("%d..%d", m.sessionFrom, m.claim.Generation))
 			return false, nil
 		}
 	case StreamTurnStart:
@@ -2484,7 +2528,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		m.claim.BootTokenHash = HashBootToken(token)
 
 		m.claim.State = StateLaunching
-		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
+		// The pod end goes with the failure: a claim being launched again carries nothing of the
+		// end that stopped the process before it (Claim.PodEnd).
+		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
 		if err := m.persist(starting); err != nil {
 			err = errors.Join(err, m.stopPrevious(starting))
 			if starting.Err() != nil {
@@ -2753,7 +2799,7 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 		return runtime.Locator{}, err
 	}
 	if m.claim.SessionFile == "" {
-		return m.deps.Runtime.Spawn(ctx, spec)
+		return m.spawn(ctx, spec)
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
@@ -2798,7 +2844,7 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause error) (ru
 	if err != nil {
 		return runtime.Locator{}, err
 	}
-	loc, err := m.deps.Runtime.Spawn(ctx, spec)
+	loc, err := m.spawn(ctx, spec)
 	if err != nil {
 		return loc, err
 	}
@@ -2806,6 +2852,14 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause error) (ru
 		m.deps.SessionLost(m.current(), fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %v", lost, cause))
 	}
 	return loc, nil
+}
+
+// spawn starts a fresh agent for this launch, and so a session of its own: from here an answer of
+// an earlier launch answered a session the claim no longer has (sessionFrom), where a resume keeps
+// the session, and the answers of its earlier launches with it.
+func (m *Machine) spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	m.sessionFrom = m.claim.Generation
+	return m.deps.Runtime.Spawn(ctx, spec)
 }
 
 // stopPrevious stops the process letGo moved into previous when a launch fails: the claim no longer
@@ -2888,8 +2942,18 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // sessionGone.
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
-		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
+		"detail", observation.Detail, "podEnd", observation.PodEnd, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
+	// The pod's own reason for this end is kept on the claim, so the failure the workflow is told
+	// of when this death fails it — here, or where the relaunch it raises finds the launch budget
+	// spent (relaunchAfterFailure) — names the cause the role never chose, and so does the boot's
+	// replay of that failure after a daemon restart (Claim.PodEnd). Each report writes its own, an
+	// empty one included, so where died wrote them the pod end and the account above are one
+	// report's; a suspension over a dead process writes the account alone
+	// (suspendOverADeadProcess). It is written before any branch below returns: each of them
+	// persists the claim or leaves it to the next decision's write, and every path out of here has
+	// had the end recorded.
+	m.claim.PodEnd = observation.PodEnd
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)
 	m.sessionGone()
@@ -3685,6 +3749,8 @@ func claimOf(ev Event) claim.Token {
 	case IssueTurnEnded:
 		return ev.Claim
 	case StreamToolStep:
+		return ev.Claim
+	case StreamAnswered:
 		return ev.Claim
 	case StreamPromptResult:
 		return ev.Claim

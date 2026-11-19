@@ -212,6 +212,11 @@ type KubernetesSettings struct {
 	// credential, and a role reads it to know when a process of its own may be ended under it, so
 	// every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
+	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
+	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
+	// credential, and a role reads it to know whether a cache on its pod's volume may be swept
+	// out from under a build it left running, so every pod may read it.
+	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
 	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
 	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
 	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
@@ -265,6 +270,16 @@ type MemoryGuardPodSettings struct {
 	FloorPercent         int  `json:"floor_percent"`
 	WaitSeconds          int  `json:"wait_seconds"`
 	IntervalMilliseconds int  `json:"interval_milliseconds"`
+}
+
+// VolumeTrimSettings is the settled `runtime.kubernetes.volume_trim`. `enabled` false is the
+// trimmer switched off, and the pod's launcher is then handed no settings at all.
+type VolumeTrimSettings struct {
+	Enabled         bool `json:"enabled"`
+	HighPercent     int  `json:"high_percent"`
+	LowPercent      int  `json:"low_percent"`
+	MinAgeMinutes   int  `json:"min_age_minutes"`
+	IntervalSeconds int  `json:"interval_seconds"`
 }
 
 // SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
@@ -683,6 +698,13 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
 			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
 		}},
+		VolumeTrim: VolumeTrimSettings{
+			Enabled:         block.VolumeTrim.Enabled,
+			HighPercent:     block.VolumeTrim.HighPercent,
+			LowPercent:      block.VolumeTrim.LowPercent,
+			MinAgeMinutes:   block.VolumeTrim.MinAgeMinutes,
+			IntervalSeconds: block.VolumeTrim.IntervalSeconds,
+		},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
 	for i, toleration := range block.Scheduling.Tolerations {

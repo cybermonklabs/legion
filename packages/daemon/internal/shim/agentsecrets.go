@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -220,8 +221,7 @@ func (s *shim) startRenewer(enrollmentID string) {
 				if s.loop.Err() != nil {
 					return
 				}
-				var exited *exec.ExitError
-				if errors.As(err, &exited) && exited.ExitCode() == permanentRenewExitCode {
+				if procgroup.Ended(err).ExitedWith(permanentRenewExitCode) {
 					s.log.Printf("[worker-shim] agent-secrets: renewer permanently refused for enrollment %s (exit %d): %q; not restarting", enrollmentID, permanentRenewExitCode, tail.Last())
 					return
 				}

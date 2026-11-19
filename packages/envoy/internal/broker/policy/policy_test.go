@@ -153,18 +153,18 @@ func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
 // @ and no service name may.)
 func TestRequesters(t *testing.T) {
 	const (
-		sami   = "sami@theorem.dev"
-		jason  = "jason@theorem.dev"
-		aditya = "aditya@theorem.dev"
+		sami   = "sami@example.com"
+		jason  = "jason@example.com"
+		aditya = "aditya@example.com"
 		daemon = "legion-daemon"
 	)
 	listed := func(name, owner, tier, requesters string) secrets.LocalSecret {
 		return policytest.ListedSecret(name, owner, tier, requesters, "v")
 	}
 	store := secrets.NewLocal(
-		listed("GCLOUD_SAMI", sami, policy.TierHuman, daemon+" "+sami),
+		listed("GCLOUD_DEMO", sami, policy.TierHuman, daemon+" "+sami),
 		listed("AZURE_ADMIN", sami, policy.TierHuman, jason+" "+daemon+" "+sami),
-		listed("DEV_ADITYA", aditya, policy.TierAgent, aditya),
+		listed("DEV_PERSON", aditya, policy.TierAgent, aditya),
 		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
 	)
 	set, err := policytest.Loader(store, daemon).Load(context.Background())
@@ -186,7 +186,7 @@ func TestRequesters(t *testing.T) {
 		"a person named like the daemon":      {Operator: daemon},
 	}
 	table := map[string]map[string]policy.Decision{
-		"GCLOUD_SAMI": {
+		"GCLOUD_DEMO": {
 			"sami's session": approval(sami), "jason's session": notListed,
 			"aditya's session": notListed, "the daemon's pod": approval(sami),
 			"another service's pod": notListed, "a pod with no person and no service": notListed,
@@ -198,7 +198,7 @@ func TestRequesters(t *testing.T) {
 			"another service's pod": notListed, "a pod with no person and no service": notListed,
 			"a person named like the daemon": notListed,
 		},
-		"DEV_ADITYA": {
+		"DEV_PERSON": {
 			"sami's session": notListed, "jason's session": notListed,
 			"aditya's session": automatic, "the daemon's pod": notListed,
 			"another service's pod": notListed, "a pod with no person and no service": notListed,

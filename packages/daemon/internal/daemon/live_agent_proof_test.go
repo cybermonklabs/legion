@@ -304,8 +304,10 @@ func buildProofLegion(t *testing.T, root, work string) string {
 // installProofPlugins packs this checkout's two Oh My Pi plugins as the release packs them
 // (scripts/e2e/lib/pack-plugin.sh) and installs each into the run's own profile under its own
 // HOME, as scripts/e2e/lib/install-plugin-profile.sh does for a stage proof — through the Oh My Pi
-// the run's panes run rather than a mise pin, since a pod has no mise. The profile's natives are
-// linked from the shared cache, so no pane downloads a native module.
+// the run's panes run rather than a mise pin, since a pod on a worker image from before
+// dispatch://INFRA-3257 has no mise, and the mise of an image since then holds no Oh My Pi until it
+// downloads one from GitHub. The profile's natives are linked from the shared cache, so no pane
+// downloads a native module.
 func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(home, ".omp"), 0o700); err != nil {

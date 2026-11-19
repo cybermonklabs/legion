@@ -460,7 +460,7 @@ type SecretDecision struct {
 // the broker, where its approver signs in and decides it, while the request is pending; empty
 // once it is not, and from a broker from before that page. Detail is the broker's one sentence
 // about why it denied the request — the secret that refused it and the rule that did, as
-// "GCLOUD_SAMI: requester-not-listed" — which every line this CLI prints about a refusal carries,
+// "GCLOUD_DEMO: requester-not-listed" — which every line this CLI prints about a refusal carries,
 // so a session reads that asking again will not help; nil when the broker recorded none, and from
 // a broker from before the field.
 type RequestResult struct {
@@ -474,6 +474,10 @@ type RequestResult struct {
 	Coalesced       bool             `json:"coalesced,omitempty"`
 	Detail          *string          `json:"detail"`
 	ApproveURL      string           `json:"approve_url"`
+	// JudgeDeciding is true while the model judge holds the request: no person is asked unless
+	// the judge cannot decide it, and the answer then carries ApproveURL. Such a request carries
+	// no page while it is held.
+	JudgeDeciding bool `json:"judge_deciding"`
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
@@ -572,14 +576,15 @@ type requestDecision struct {
 // RequestStatus is GET /v1/requests/{id}'s exact response shape. ApproveURL is as RequestResult's,
 // and so is Detail: the broker's own sentence about the refusal, nil when it recorded none.
 type RequestStatus struct {
-	State      string           `json:"state"`
-	GrantID    *string          `json:"grant_id"`
-	RecordID   *string          `json:"record_id"`
-	Approver   *string          `json:"approver"`
-	DecidedAt  *time.Time       `json:"decided_at"`
-	Decision   *requestDecision `json:"decision"`
-	Detail     *string          `json:"detail"`
-	ApproveURL string           `json:"approve_url"`
+	State         string           `json:"state"`
+	GrantID       *string          `json:"grant_id"`
+	RecordID      *string          `json:"record_id"`
+	Approver      *string          `json:"approver"`
+	DecidedAt     *time.Time       `json:"decided_at"`
+	Decision      *requestDecision `json:"decision"`
+	Detail        *string          `json:"detail"`
+	ApproveURL    string           `json:"approve_url"`
+	JudgeDeciding bool             `json:"judge_deciding"`
 }
 
 // refusedBeforeCall is a refusal this client made before it sent anything, so refusalText adds
@@ -839,6 +844,18 @@ type Settings struct {
 	GCPProject             string `json:"gcp_project,omitempty"`
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
+	// JudgeKeys is each key the broker's airlock rules give the model judge, with its judge
+	// seconds and its guidance; absent where the rules give the judge nothing. `secret show`
+	// reads it to say who decides a request for a key and what the judge will look for.
+	JudgeKeys map[string]JudgeKey `json:"judge_keys,omitempty"`
+}
+
+// JudgeKey is one key in Settings.JudgeKeys.
+type JudgeKey struct {
+	// Seconds is the longest grant the judge makes of the key, and its default lifetime.
+	Seconds uint32 `json:"seconds"`
+	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
+	Guidance string `json:"guidance,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
