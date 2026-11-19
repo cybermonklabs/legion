@@ -473,7 +473,9 @@ MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 wal
                              "and all) and :83 parses every .go file it finds but the test files (:80), for "
                              "the tests that ask it for the module's sources: lock_level_test.go:89, "
                              "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
-                             "review_write_guard_test.go:51, one_expression_guard_test.go:66")
+                             "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
+                             "issue_route_writer_guard_test.go:105; issue_route_writer_guard_test.go:124 "
+                             "also walks packages/envoy and reads every non-test file of it as text")
                   for path in files_but_tests(ENVOY, tree=True)]
 
 
@@ -813,6 +815,7 @@ RULES = {
          "the copies the outbox published with the committed fixture, which :1489 writes under -update")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
+    f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
     # main's #3429 put this check in who_waits_test.go, a behaviour file of this package, where
     # the race job was the only one that ran it and the module walk under it was declared by
@@ -832,6 +835,11 @@ RULES = {
          "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
          "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
          "internal/api/state_golden_test.go writes, which the sampler's decode must read")),
+    f"{ENVOY}/internal/dispatch/outbox/copyrule/copyrule_test.go": [
+        Read(path, "internal/dispatch/outbox/copyrule/copyrule_test.go:45 walks packages/envoy (../../../..) and :58 "
+                   "reads every .go file it finds but the test files and node_modules, to hold every reader of the "
+                   "mention copy rule to copyrule.Holder")
+        for path in files_but_tests(ENVOY, tree=True)],
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
@@ -1771,13 +1779,13 @@ def go_top_level_spans(code: str, path) -> list:
     return spans
 
 
-# The eight static checks of internal/dispatch/api, keyed by their path in this repository: the
-# seven source guards and one_expression_guard_test.go, which reads the module's text for the same
+# The nine static checks of internal/dispatch/api, keyed by their path in this repository: the
+# eight source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all fifteen of their tests in the plain step; they are left out of it instead,
+# below would put all seventeen of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
-# tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# sixteenth such test cannot quietly rejoin the plain step: a file named here that does not
+# tells nobody anything. The exemption is held to the files it is about in three ways, so an
+# eighteenth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -1792,6 +1800,9 @@ TEXT_CHECK_TESTS = {
         "TestTheGuardReadsABodyStringOffARequestType"},
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
         "TestOnlyTheBrokerInsertsEvents"},
+    f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestOnlyTheIssuePatchWritesTheRoute",
+        "TestTheRouteWriterGuardSeesAPlantedWriter"},
     f"{ENVOY}/internal/dispatch/api/keyed_write_guard_test.go": {
         "TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks",
         "TestTheKeyedWriteGuardSeesWhatItGuards"},
@@ -1808,6 +1819,33 @@ TEXT_CHECK_TESTS = {
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
 }
 
+# The mention sender's claim model (internal/dispatch/api), keyed by path as TEXT_CHECK_TESTS is:
+# the search over every interleaving of the sender's own code, and the test that holds the rules
+# it restates to their SQL. Both carry `//go:build !race`, since the detector slows the search
+# about sevenfold, so the walk below would put them in envoy-go's plain step; they are left out of
+# it because the envoy-go-claim-model job runs them by name, alone on its runner, where the search
+# has every core and a deadline measured for it. They are held to the files they are about as
+# TEXT_CHECK_TESTS' are, by the same three refusals.
+CLAIM_MODEL_TESTS = {
+    f"{ENVOY}/internal/dispatch/api/comment_mention_claim_model_search_test.go": {
+        "TestTheMentionSenderClaimModel"},
+    f"{ENVOY}/internal/dispatch/api/comment_mention_claim_model_sql_test.go": {
+        "TestTheClaimModelsRulesAreTheSQLsRules"},
+}
+# Every file whose tests a job of their own runs by name, and which therefore names no test of the
+# plain step: the text-check job's and the claim model job's.
+BY_NAME_TESTS = {**TEXT_CHECK_TESTS, **CLAIM_MODEL_TESTS}
+
+
+def by_name_list(path: Path) -> str:
+    """The name of the list of BY_NAME_TESTS that holds `path`'s row."""
+    return "CLAIM_MODEL_TESTS" if path.as_posix() in CLAIM_MODEL_TESTS else "TEXT_CHECK_TESTS"
+
+
+def by_name_job(path: Path) -> str:
+    """The job that runs the tests of `path`'s BY_NAME_TESTS row by name."""
+    return "the envoy-go-claim-model job" if path.as_posix() in CLAIM_MODEL_TESTS else "the text-check job"
+
 
 def race_impossible_tests_of(path: Path) -> set:
     """The tests of one _test.go file that only a plain run covers: every test of a file the race
@@ -1820,20 +1858,21 @@ def race_impossible_tests_of(path: Path) -> set:
     closes it - holds it, and only when that function is itself a test, so a read in a helper,
     at package level or in a function literal outside any declaration - which a later test may be
     the one caller of - makes ci-filters red rather than giving a test that does not run smaller
-    the plain run and dropping the one that does. A file TEXT_CHECK_TESTS names is the exception:
-    it names no test here, since the text-check job runs its tests by name, and it is refused
-    unless it carries the tag and its tests are exactly the names that list holds for it."""
+    the plain run and dropping the one that does. A file BY_NAME_TESTS names is the exception:
+    it names no test here, since a job of its own runs its tests by name (the text-check job, or
+    the claim model's), and it is refused unless it carries the tag and its tests are exactly the
+    names that list holds for it."""
     text = path.read_text()
     found = GO_BUILD_LINE.search(text)
     constraint = found.group(1) if found else ""
     if constraint not in ("", "race", "!race") and re.search(r"\brace\b", constraint):
         raise ValueError(f"{path}: `//go:build {constraint}` names race in a form ci_job_reads.py does not read; "
                          "teach race_impossible_tests_of() the form, or the plain step loses the file's tests")
-    exempt = TEXT_CHECK_TESTS.get(path.as_posix())
+    exempt = BY_NAME_TESTS.get(path.as_posix())
     if exempt is not None and constraint != "!race":
-        raise ValueError(f"{path}: TEXT_CHECK_TESTS leaves this file's tests out of the plain step because the "
-                         "text-check job runs them by name, but the file does not carry `//go:build !race`, so "
-                         "the race build still compiles and runs them; restore the tag, or drop the row")
+        raise ValueError(f"{path}: {by_name_list(path)} leaves this file's tests out of the plain step because "
+                         f"{by_name_job(path)} runs them by name, but the file does not carry `//go:build !race`, "
+                         "so the race build still compiles and runs them; restore the tag, or drop the row")
     # A file the race build compiles and that nowhere writes raceEnabled, in code or in a comment,
     # names no test here and refuses nothing, so it never reaches the blanking pass below. That is
     # almost every file of the lane: 610 of them, 10.9 MB, which this guard takes from 3.0 s to
@@ -1867,9 +1906,9 @@ def race_impossible_tests_of(path: Path) -> set:
         unnamed = ", ".join(sorted(names - exempt))
         stale = ", ".join(sorted(exempt - names))
         if unnamed or stale:
-            raise ValueError(f"{path}: TEXT_CHECK_TESTS does not name this file's tests exactly - "
+            raise ValueError(f"{path}: {by_name_list(path)} does not name this file's tests exactly - "
                              f"in the file and not in the list: {unnamed or 'none'}; in the list and not in the "
-                             f"file: {stale or 'none'}. A guard test the text-check job does not run by name "
+                             f"file: {stale or 'none'}. A test {by_name_job(path)} does not run by name "
                              "belongs in the plain step, so name it in both places or in neither")
         return set()
     return names
@@ -1905,7 +1944,7 @@ def race_impossible_tests(root, packages=None) -> dict:
     """Per package under `root`, in the order `packages` lists them, the tests only a plain run
     covers (race_impossible_tests_of). `packages` is each (path under `root`, directory) to read,
     and the envoy lane's (race_lane_packages) when it is not given. A package that has none is left
-    out. A file TEXT_CHECK_TESTS names under `root` that this walk never reads is refused: the row
+    out. A file BY_NAME_TESTS names under `root` that this walk never reads is refused: the row
     would otherwise go on exempting a file that has moved out of the lane, or been deleted, and say
     nothing."""
     found, read = {}, set()
@@ -1916,22 +1955,20 @@ def race_impossible_tests(root, packages=None) -> dict:
             names |= race_impossible_tests_of(path)
         if names:
             found[under] = names
-    gone = sorted(f for f in TEXT_CHECK_TESTS if f.startswith(f"{root}/") and f not in read)
+    gone = sorted(f for f in BY_NAME_TESTS if f.startswith(f"{root}/") and f not in read)
     if gone:
-        raise ValueError(f"TEXT_CHECK_TESTS names {', '.join(gone)}, which the lane's walk of {root} does not "
-                         "read: the file moved out of the lane or is gone, and its row now exempts nothing; "
-                         "follow the file, or drop the row")
+        raise ValueError(f"{', '.join(sorted({by_name_list(Path(f)) for f in gone}))} names {', '.join(gone)}, "
+                         f"which the lane's walk of {root} does not read: the file moved out of the lane or is "
+                         "gone, and its row now exempts nothing; follow the file, or drop the row")
     return found
 
 
 def race_impossible_script(packages) -> str:
     """A plain run of the tests the detector makes impossible: one `go test` per package
     of `packages` (race_impossible_tests), each naming that package's own tests, anchored and
-    sorted, in its -run."""
-    lines = []
-    for under, names in packages.items():
-        lines.append(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}")
-    return "\n".join(lines)
+    sorted, in its -run, under a 10-minute timeout."""
+    return "\n".join(f"go test -count=1 -timeout 10m -run '^({'|'.join(sorted(names))})$' ./{under}"
+                     for under, names in packages.items())
 
 
 # The step as the lane and packages/envoy's own source make it, so a test added under
@@ -1965,12 +2002,12 @@ DAEMON_RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(DAEMON, daemon_race_pack
 DAEMON_RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(DAEMON_RACE_IMPOSSIBLE_PACKAGES)
 
 
-# The text-check job: the three modules' text checks, and the fifteen tests of the Dispatch API's
-# eight static checks - its seven source guards and one_expression_guard_test.go. They read the
+# The text-check job: the three modules' text checks, and the seventeen tests of the Dispatch API's
+# nine static checks - its eight source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those fifteen out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those seventeen out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -1986,6 +2023,21 @@ GUARD_STEP = "Test the Dispatch API's source guards (no database)"
 GUARD_SCRIPT = ("go test -count=1 -run "
                 f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
                 f"{GUARD_PACKAGE}")
+
+# The claim model's job: the mention sender's claim model and the test of the rules it restates,
+# by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
+# plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves
+# no closure: the step compiles every test file of internal/dispatch/api, the source guards that
+# walk the module's source among them, so this gate reads what the API's plain tests read.
+CLAIM_MODEL_JOB = "envoy-go-claim-model"
+CLAIM_MODEL_PACKAGE = "./internal/dispatch/api"
+CLAIM_MODEL_STEP = "Search every order of the mention sender's claims"
+# Twice the 19 min 18 s the step took on an ubuntu-24.04 runner at three periods; the job's
+# timeout-minutes is this and ten.
+CLAIM_MODEL_TIMEOUT = "40m"
+CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run "
+                      f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
+                      f"{CLAIM_MODEL_PACKAGE}")
 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
@@ -2339,7 +2391,6 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2818 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:3262-3297 holds the guide's slow-suite list to the jobs the full-ci label gates"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
@@ -3166,12 +3217,12 @@ GATES = [
         *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
           for module in TEXT_CHECK_MODULES],
     ], exact=[
-        # The fifteen static tests by name: a -run is outside the simple form, so the step is
+        # The seventeen static tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
         # run selects - so the Run is the plain go test of the package, which is why this gate
         # reads everything the API's tests read.
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
-            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's fifteen source-check tests in {GUARD_PACKAGE}", {}),
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's seventeen source-check tests in {GUARD_PACKAGE}", {}),
         ]),
         # The supervise table's two pure pins by name (SUPERVISE_TABLE_TESTS), which the
         # daemon-go plain step skips: pinned whole for the same reason, and its Run is the plain
@@ -3182,6 +3233,17 @@ GATES = [
              f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
+
+    # The claim model's job: its two tests by name (CLAIM_MODEL_TESTS), pinned whole since a -run
+    # is outside the simple form. Its Run is the plain go test of the package, which compiles every
+    # test file of internal/dispatch/api whichever two the -run selects, so this gate reads what
+    # the API's plain tests read, the module's source that its guards walk included. The rules'
+    # test opens the job's Postgres; the search opens none.
+    gate("envoy_go_claim_model", CLAIM_MODEL_JOB, exact=[
+        pinned_step(CLAIM_MODEL_JOB, CLAIM_MODEL_STEP, ENVOY, CLAIM_MODEL_SCRIPT, [
+            (ENVOY, [CLAIM_MODEL_PACKAGE], f"go test -run of the sender claim model's two tests in {CLAIM_MODEL_PACKAGE}", {}),
+        ]),
+    ], reads=setup_go(CLAIM_MODEL_JOB, f"{ENVOY}/go.mod")),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
