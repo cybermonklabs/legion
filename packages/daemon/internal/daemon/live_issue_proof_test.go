@@ -441,20 +441,17 @@ type liveGitHub struct {
 	// also is what one proof's stand-in answers beyond that, each answer by its path under
 	// /repos/acme/widgets.
 	also map[string]any
-	// hold, when not nil, runs before each read of the pull request itself, outside the lock
-	// below, since a handler waiting under that lock would stop every other answer this stand-in
-	// gives.
-	hold func()
 	mu   sync.Mutex
 	// sha is the pull request's head on GitHub, which a push moves.
 	sha string
 	// conflicting is what GitHub's lazily computed `mergeable` answers: false once the base has
-	// moved past the head, which is the one answer of a pull request that moves an issue.
+	// moved past the head, which the daemon reads twice and merges forward in the phase the issue
+	// stands in (workflow's mergeability).
 	conflicting bool
 }
 
 // serveGitHub starts g as GitHub for this proof's pull request, at the head g's sha names and with
-// what its also and hold add, and holds it as the proof's github.
+// what its also adds, and holds it as the proof's github.
 func (p *liveIssueProof) serveGitHub(g *liveGitHub) {
 	p.t.Helper()
 	g.t, g.key, g.number, g.base = p.t, p.key, p.number, p.base
@@ -478,9 +475,6 @@ func (g *liveGitHub) conflicts(yes bool) {
 }
 
 func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if g.hold != nil && strings.HasSuffix(req.URL.Path, fmt.Sprintf("/pulls/%d", g.number)) {
-		g.hold()
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {

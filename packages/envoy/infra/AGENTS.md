@@ -74,7 +74,7 @@ versions. Never add the module to the root `go.work`.
   Kubernetes provider from its cluster's exec-plugin kubeconfig; with `clusterOnly` it requires
   the `gcp` provider alone and builds no Kubernetes provider, since it registers no
   `RandomPassword`, no tailnet resource and no Kubernetes object.
-  Every Kubernetes child uses that explicit provider and depends on the cluster; none falls back
+  Every Kubernetes child uses that explicit provider; none falls back
   to a default Kubernetes provider. `gcp:ClusteredNatsHub` takes
   the cluster's `kubeconfig` as a secret input and builds its own provider, `<name>-kubernetes`,
   with `enableServerSideApply` and `enableConfigMapMutable` on, and calls no `providers.Require`,

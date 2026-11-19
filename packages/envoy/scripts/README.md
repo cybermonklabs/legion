@@ -596,7 +596,14 @@ Each tick prints one tab-separated line per target:
 attempt rides the name's line). On exit it prints, per target, when it was
 seen, how many ticks `/healthz` answered, and the `/v1` non-200 answers at the
 ticks `/healthz` answered 200, counted by `code:error` with the first and last
-time, then the sends and Dispatch attempts by outcome, then the verdict.
+time, then the sends and Dispatch attempts by outcome, then the verdict. A
+signal ends the run the same way, whether it reaches the probe alone
+(`kill <pid>`) or its whole process group, as Ctrl-C at a terminal and
+`timeout -s TERM` send it. The group's signal also kills the request or the
+sleep in flight. The target whose request it cut short, and each target after
+it in that tick, print no line for that tick and are not counted; the summary
+and the verdict cover every target line printed before it, and a Dispatch
+message that tick had already posted.
 
 ### Verdict and exit codes
 
@@ -641,8 +648,10 @@ while, so the target fails: a client that reached it then was refused the list
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job,
-whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
+kernel chose, behind a fake `getent`, and that a `TERM` sent to the probe's
+process group during its sleep or a request, or an `INT` during its sleep,
+still ends in the summary and the verdict; CI runs it in the `envoy-go-checks`
+job, whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 ## daemon-release-gate.sh
 
@@ -653,13 +662,24 @@ issue event named in the new form for another project's and acknowledges it with
 producer that moves first stops the fleet's workflow in silence.
 
 ```bash
-packages/envoy/scripts/daemon-release-gate.sh <commit>
-packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --listeners <commit>
 ```
 
-Without `--listeners` it reads the image each Legion daemon runs: each entry of
-example-org/deployment `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
-`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
+`--deployment` names the deployment repository whose Pulumi stacks pin the readers' images; it is
+required, and the gate compiles in no deployment's name. Each stack's config keys are under its
+Pulumi project's name, which the gate reads from that stack's own `Pulumi.yaml` (`name:`): a stack
+whose `Pulumi.yaml` is missing or declares no name prints `UNKNOWN` by name, and no name is guessed.
+
+The deployment's Legion projects are the files of its `legion/projects/` (`<nn>-<KEY>.yaml`, one
+mapping of a project's settings each, in file-name order), as the deployment's legion program reads
+them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
+projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
+listing, a file that is not one mapping, and a deployment that declares no project print `UNKNOWN`
+naming what the gate read.
+
+Without `--listeners` it reads the image each Legion daemon runs: each project's `daemonImage` when
+set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
 its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
 by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
@@ -671,7 +691,7 @@ that key (deployment `dispatch/main.go`) and the listener runs no other image. E
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
 platform agreeing. A pin built from `https://github.com/cybermonklabs/legion`, or from a name the
-deployment records as the same repository — the `repositoryRenames` pairs of `legion/Pulumi.prod.yaml`,
+deployment records as the same repository — the `repositoryRenames` pairs of its Legion projects,
 which the daemon reads as `repository_renames`, so a build made as `sjawhar/legion` before the
 transfer is a build of this repository — passes when GitHub's compare of `<commit>...<revision>`
 answers `ahead` or `identical`, its line naming the rename; a pin built from any other repository
@@ -681,13 +701,15 @@ naming a branch (`main`) would compare as wherever that branch points now.
 
 It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
 `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
-(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error exits
-2. It needs `gh` with read access to both repositories, docker with buildx able to read each pin's
+(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error, a
+missing `--deployment` among them, exits 2 and reads nothing. It needs `gh` with read access to both
+repositories, docker with buildx able to read each pin's
 registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
 `DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
 
 `daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
-answers a single image and an index the way the real one does; CI runs it in the
+answers a single image and an index the way the real one does. Its fakes, fixture builders and
+assertion helpers are in `lib/daemon-release-gate-harness.sh`, which it sources; CI runs it in the
 `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
