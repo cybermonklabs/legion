@@ -34,12 +34,13 @@ const casePerson = " This is a case for a person."
 // checks the guard, asks the runtime and rechecks the tree lifecycle before it stops anything
 // (Options.Relaunch, supervise.RequestRelaunch). Every refusal is answered with the code the
 // controller acts on: the guard's refusal and a claim not out of reach are tried again later, a
-// claim whose tree allows it no launch is its tree's close's or its next admission's to decide,
-// and the five a relaunch cannot get past — the launcher not connected, a launch that would replace
-// the pod, a process that outlived its stop, a pod whose every claim is out of reach, and a
-// relaunch in the last 6 hours — say they are a case for a person. A relaunch whose launch waits
+// claim whose tree allows it no launch is its tree's close's or its next start's to decide, a tree
+// check the daemon's store did not answer is a 503 that stopped nothing and may be asked again,
+// and the five a relaunch cannot get past — the launcher not connected, a launch that would
+// replace the pod, a process that outlived its stop, a pod whose every claim is out of reach, and
+// a relaunch in the last 6 hours — say they are a case for a person. A relaunch whose launch waits
 // for the daemon's store after the stop is one that ran: the machine answers it as made, and the
-// daemon makes the launch itself (supervise's launchOrWait).
+// daemon makes the launch itself (supervise's launchMade).
 //
 // The project's controller is refused: nobody else can relaunch it. The daemon relaunches it
 // itself, once in 6 hours, and only where it runs the controller itself (`controller: daemon` in
@@ -90,8 +91,8 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 	if person {
 		sentence += "." + casePerson
 	}
-	if status == http.StatusInternalServerError {
-		s.logFailure("api: the relaunch of an unreachable claim failed", "claim", token, "error", err)
+	if status == http.StatusInternalServerError || status == http.StatusServiceUnavailable {
+		s.logFailure("api: the relaunch of an unreachable claim failed", "claim", token, "code", code, "error", err)
 	}
 	writeFailure(w, status, code, sentence)
 }
@@ -121,6 +122,8 @@ func relaunchRefusal(err error) (status int, code string, person bool) {
 		return http.StatusConflict, "PROCESS_OUTLIVED_STOP", true
 	case errors.Is(err, supervise.ErrTreeRefusesLaunch):
 		return http.StatusConflict, "TREE_REFUSES_LAUNCH", false
+	case errors.Is(err, supervise.ErrTreeCheckFailed):
+		return http.StatusServiceUnavailable, "TREE_CHECK_FAILED", false
 	case errors.As(err, &refused):
 		return http.StatusConflict, claimUnsettled, false
 	}

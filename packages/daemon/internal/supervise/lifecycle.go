@@ -45,9 +45,31 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
 // reserved, or whose bound epoch is no longer the open one, starts nothing and changes nothing, so
-// a relaunch refused here charges no budget.
+// a relaunch refused here charges no budget. What it answers is read by one rule (treeRefuses),
+// wherever it is read.
 func (m *Machine) checkLaunch(ctx context.Context) error {
 	return m.deps.Store.CheckLaunch(ctx, m.claim)
+}
+
+// treeRefuses is whether err, an answer of the tree lifecycle's recheck (checkLaunch), is the
+// tree's own refusal of the claim's launch rather than a store that did not answer it: a cleanup
+// reserved or confirmed, a lifecycle absent or open under another authority, or the claim bound to
+// a stale epoch or to none. Each of those meets every later try the same way until the tree's
+// close or its next start decides the claim, so it is never tried again at the probe interval;
+// every other error — a dropped connection, a pool that timed out, a lock wait past the caller's
+// time — is the store's, which a later try may get past. It is the one reading of that answer, for
+// the relaunch of a claim Envoy cannot reach before its stop (relaunchUnreachable) and for every
+// launch whose process is let go already (relaunchRefused).
+func treeRefuses(err error) bool {
+	for _, refusal := range []error{
+		treelifecycle.ErrCleanupReserved, treelifecycle.ErrLifecycleClosed, treelifecycle.ErrLifecycleAbsent,
+		treelifecycle.ErrAuthorityHeld, treelifecycle.ErrEpochStale, treelifecycle.ErrEpochUnbound,
+	} {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
 }
 
 // relaunchRefused is a relaunch checkLaunch refused, relaunch the call that made it
@@ -118,20 +140,22 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // they stop, so the check failed while the stop waited out its grace), the relaunch of a claim
 // Envoy cannot reach, which checks before its stop too (relaunchUnreachable), or a launch whose
 // write failed, waiting (relaunchLater). A claim left there would have nothing watching or
-// relaunching it. A reserved cleanup suspends it for the daemon, its session kept, for the tree's
-// close to retire. Any other failure is not the tree's — a store that did not answer — and ends
-// nothing: the relaunch waits (relaunchLater), as a stop that fails does.
+// relaunching it. A refusal of the tree's own (treeRefuses) suspends it for the daemon, its
+// session kept: a reserved cleanup for the tree's close to retire, and a stale epoch or a closed
+// lifecycle for the tree's next start to bind and launch, since every later try would meet the
+// same refusal. Any other failure is not the tree's — a store that did not answer — and ends
+// nothing: the relaunch waits (relaunchLater), as a stop that fails does, and the error it
+// returns says so (errLaunchWaits).
 func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
 	}
-	if errors.Is(err, treelifecycle.ErrCleanupReserved) {
-		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
+	if treeRefuses(err) {
+		m.log.Warn("supervise: the tree refuses the launch of the retired process, which is stopped; suspending the claim for the tree's close or its next start", "error", err)
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
-	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch))
-	return errors.Join(err, m.persist(ctx))
+	return errors.Join(m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch), err), m.persist(ctx))
 }
 
 // watchAgain arms again what watches the process the claim records, where that is not armed: the
@@ -185,14 +209,33 @@ func (m *Machine) watchAgain() {
 // relaunchLater leaves a claim whose process is already let go waiting launching with no process,
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
 // whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
-// (launchAfter), each at the probe interval, and a start the session store could not answer, at
-// its own minute (startWaitsForStore). Nothing else would relaunch such a claim before a restart,
-// which takes it up from what the store last holds.
-func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error) {
+// (launchAfter), each at the probe interval, a start the session store could not answer, at its
+// own minute (startWaitsForStore), and a relaunch whose take-back the store did not write
+// (launchOnceTakenBack). Nothing else would relaunch such a claim before a restart, which takes it
+// up from what the store last holds.
+//
+// It answers cause, the failure that left the launch waiting, marked as a launch that waits
+// (errLaunchWaits), which is what its caller returns: a reader that must tell a launch still to
+// come from one that met a refusal reads the mark by errors.Is (launchMade), not the timer.
+func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Context) error, cause error) error {
 	m.claim.State = StateLaunching
 	m.relaunch = relaunch
 	m.arm(TimerRelaunch, wait, "")
+	return launchWaits{err: cause}
 }
+
+// errLaunchWaits marks the error of a launch relaunchLater left to be tried again: the process is
+// let go, and the machine makes the launch itself when its timer fires.
+var errLaunchWaits = errors.New("the launch is tried again later")
+
+// launchWaits is the failure that left a launch waiting (relaunchLater), marked by errLaunchWaits.
+// It reads as that failure, word for word, and unwraps to it, so every reader of the failure
+// itself is unchanged.
+type launchWaits struct{ err error }
+
+func (w launchWaits) Error() string        { return w.err.Error() }
+func (w launchWaits) Unwrap() error        { return w.err }
+func (w launchWaits) Is(target error) bool { return target == errLaunchWaits }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
 // meanwhile ends here, with no process left to stop, rather than in a relaunch; otherwise the

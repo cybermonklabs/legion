@@ -460,7 +460,8 @@ export function createLegionTool(deps: {
         "wait, or whose last activity report since its launch is missing or shows a background job or a " +
         "subagent running (RELAUNCH_GUARD): relaunch that claim again when the daemon's notice says the guard would let " +
         "it through. While the daemon is stopping it answers 503 with no code and stops nothing: relaunch again once " +
-        "it is back. RELAUNCH_FAILED says the relaunch failed or the daemon could not record it, and the claim may " +
+        "it is back. TREE_CHECK_FAILED (503) says the daemon could not check the claim's tree and stopped nothing: " +
+        "relaunch it again. RELAUNCH_FAILED says the relaunch failed or the daemon could not record it, and the claim may " +
         "already be stopped: read it in read_state before you relaunch it again. The refusals coded " +
         "LAUNCHER_NOT_CONNECTED (the role's launcher is not connected), " +
         "RELAUNCH_REPLACES_POD (the launch would replace the pod and end every other role in it), PROCESS_OUTLIVED_STOP " +

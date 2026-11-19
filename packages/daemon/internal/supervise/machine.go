@@ -2548,10 +2548,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			}
 			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
 				"generation", m.claim.Generation, "error", err)
-			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
+			return m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
 				return m.launchAfter(ctx, charged, exempt, noEnd)
-			}))
-			return err
+			}), err)
 		}
 		if charged {
 			if err := m.backOff(starting); err != nil {
@@ -2712,8 +2711,8 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 	m.log.Error("supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		"generation", m.claim.Generation, "retry", sessionStoreRetry, "error", err)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
-	return errors.Join(err, m.persist(ctx))
+	waits := m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) }, err)
+	return errors.Join(waits, m.persist(ctx))
 }
 
 // tellStoreFault reports the session store fault to the issue and the controller, at the first

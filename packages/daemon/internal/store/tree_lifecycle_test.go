@@ -230,6 +230,55 @@ func TestReservedCleanupWaitsForEveryClaimAndTheNextEpochRebindsIt(t *testing.T)
 	}
 }
 
+// A claim's launch check names the tree's own refusal by type: a claim bound to an epoch its tree
+// no longer runs is refused with treelifecycle.ErrEpochStale, and one bound to no epoch with
+// ErrEpochUnbound, through the store's own wrapping. The relaunch of a claim Envoy cannot reach
+// tells the tree's refusal from a store that did not answer by errors.Is on these (supervise's
+// treeRefuses), so a refusal written as words alone would be read as the store's and retried. The
+// claim bound to the open epoch is the control: it is refused nothing.
+func TestALaunchCheckNamesAStaleAndAnUnboundEpochByType(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	openLingeringTree(t, store)
+	c := supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"), Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, State: supervise.StateQueued}
+	first, err := store.AdmitClaim(ctx, c)
+	if err != nil || first.TreeEpoch != 1 {
+		t.Fatalf("first claim = %+v, err %v", first, err)
+	}
+	first.State = supervise.StateRetired
+	if err := store.PutClaim(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, reserved, err := store.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1)
+	if err != nil || !reserved {
+		t.Fatalf("reserve = reserved %t, err %v", reserved, err)
+	}
+	if err := store.CleanupReservedTree(ctx, "legion", rootIssue, lifecycle.Epoch, &countingReleaser{}); err != nil {
+		t.Fatalf("cleanup of a tree whose every claim retired: %v", err)
+	}
+	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.AdmitClaim(ctx, c)
+	if err != nil || current.TreeEpoch != 2 {
+		t.Fatalf("reactivated claim = %+v, err %v", current, err)
+	}
+
+	if err := store.CheckLaunch(ctx, current); err != nil {
+		t.Fatalf("launch check of the claim bound to the open epoch = %v, want nothing refused", err)
+	}
+	stale := current
+	stale.TreeEpoch = 1
+	if err := store.CheckLaunch(ctx, stale); !errors.Is(err, treelifecycle.ErrEpochStale) {
+		t.Fatalf("launch check of the claim bound to the epoch its tree closed = %v, want ErrEpochStale", err)
+	}
+	unbound := current
+	unbound.TreeEpoch = 0
+	if err := store.CheckLaunch(ctx, unbound); !errors.Is(err, treelifecycle.ErrEpochUnbound) {
+		t.Fatalf("launch check of the claim bound to no epoch = %v, want ErrEpochUnbound", err)
+	}
+}
+
 // Every lifecycle operation takes the shared apply_fact serializer before any lifecycle row. A
 // fact transaction holds that serializer and then locks those rows (admission binding work), so a
 // cleanup step that locked a row first and then waited for the serializer would deadlock against

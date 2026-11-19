@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -627,6 +628,104 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 		}
 		h.wantBudgets(Budgets{})
 	})
+}
+
+// The tree lifecycle's recheck is a transaction of the store's (Store.CheckLaunch), and a store
+// that does not answer it — a dropped connection, a pool that timed out, a lock wait past the
+// request's time — is no refusal of the tree's. The relaunch stops nothing then either, and says
+// so with a sentinel of its own, which the API answers with a code that asks for the relaunch
+// again, and writes a line for it. Read as the tree's refusal, the controller would leave the
+// claim to a close or a start of its tree that nothing is about to make, and the claim would stay
+// out of reach with nobody acting.
+func TestARelaunchWhoseTreeCheckTheStoreDoesNotAnswerStopsNothingAndIsAskedAgain(t *testing.T) {
+	store := &epochStore{epoch: 1}
+	h := lifecycleHarness(t, store, queuedClaim())
+	sent := h.waitingSilently()
+	before := h.claim()
+	store.unanswered = 1
+
+	err := h.handle(h.relaunchOf(false))
+
+	if errors.Is(err, ErrTreeRefusesLaunch) {
+		t.Fatalf("relaunch whose tree check the store did not answer = %v, read as the tree's refusal", err)
+	}
+	var refused *RefusedError
+	if !errors.As(err, &refused) || !errors.Is(err, ErrTreeCheckFailed) || !errors.Is(err, errUnanswered) {
+		t.Fatalf("relaunch whose tree check the store did not answer = %v, want a refusal that the check failed, carrying the store's error", err)
+	}
+	h.wantCalls("Suspend", 0)
+	h.wantCalls("Resume", 0)
+	h.wantState(StateWorking)
+	if c := h.claim(); c.Generation != before.Generation || c.Locator == nil || *c.Locator != *before.Locator || !c.LastRelaunch.IsZero() {
+		t.Fatalf("the refused relaunch left the claim at generation %d on %+v with a relaunch at %v; want it on its process at %d with no relaunch",
+			c.Generation, c.Locator, c.LastRelaunch, before.Generation)
+	}
+	if p := h.pending(); p.ID != sent || p.Interrupted {
+		t.Fatalf("pending = %+v, want the task the turn runs left as it was", p)
+	}
+	if lines := h.logs.lines("the tree lifecycle's check of the relaunch got no answer"); len(lines) != 1 {
+		t.Fatalf("logged %v, want one line naming the check that got no answer", lines)
+	}
+	h.wantBudgets(Budgets{})
+}
+
+// A fresh admission can open the claim's tree again while the relaunch's stop waits on the
+// runtime, leaving the claim bound to an epoch that is no longer open. That is the tree's refusal,
+// as a reserved cleanup is, and no store that did not answer: every later try would meet the same
+// epoch. So the claim, whose process the stop let go, is suspended for the daemon with its session
+// kept, for its tree's next start to bind and launch, nothing is tried again at the probe interval,
+// and the relaunch is answered as the refusal it met, not as a relaunch made.
+func TestARelaunchWhoseTreeOpensAgainWhileItsStopWaitsSuspendsTheClaimAndTriesNothingAgain(t *testing.T) {
+	store := &epochStore{epoch: 1}
+	h := lifecycleHarness(t, store, queuedClaim())
+	h.waitingSilently()
+	h.m.deps.Runtime = &reopeningSuspend{Runtime: h.rt, store: store}
+
+	err := h.handle(h.relaunchOf(false))
+
+	if !errors.Is(err, treelifecycle.ErrEpochStale) {
+		t.Fatalf("relaunch whose tree opened again while its stop waited = %v, want the stale epoch it met, not a relaunch made", err)
+	}
+	h.wantCalls("Suspend", 1)
+	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(h.token)} {
+		if c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon || c.Locator != nil || c.Session != session {
+			t.Errorf("%s holds the claim %s by %q on %+v with session %q; want it suspended by the daemon for its tree's next start, with no process and its session kept",
+				where, c.State, c.SuspendedBy, c.Locator, c.Session)
+		}
+	}
+	if _, armed := h.m.timers[TimerRelaunch]; armed || h.m.relaunch != nil {
+		t.Fatalf("the stale epoch armed a retry (timer %t, relaunch %t), want none: every try meets the same epoch", armed, h.m.relaunch != nil)
+	}
+
+	h.advance(testProbe)
+
+	h.wantCalls("Resume", 0)
+	h.wantBudgets(Budgets{})
+}
+
+// The tree lifecycle's own refusals are read by one rule before the stop and after it
+// (treeRefuses): a reserved or confirmed cleanup, an absent lifecycle, one held under another
+// authority, and a stale or unbound epoch, through whatever wraps them. Every other error of the
+// check is the store's.
+func TestTheTreesOwnRefusalsAreReadByOneRule(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		tree bool
+	}{
+		{fmt.Errorf("launch claim c: bind work of tree T: %w", treelifecycle.ErrCleanupReserved), true},
+		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrLifecycleClosed), true},
+		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrLifecycleAbsent), true},
+		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrAuthorityHeld), true},
+		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrEpochStale), true},
+		{fmt.Errorf("launch claim c: %w", treelifecycle.ErrEpochUnbound), true},
+		{errUnanswered, false},
+		{fmt.Errorf("launch claim c: serialize tree lifecycle: %w", context.DeadlineExceeded), false},
+		{errors.New("launch claim c: bound epoch 1 is stale; current is 2"), false},
+	} {
+		if got := treeRefuses(tc.err); got != tc.tree {
+			t.Errorf("treeRefuses(%v) = %t, want %t", tc.err, got, tc.tree)
+		}
+	}
 }
 
 // Once the stop has ended the process, nothing the relaunch does after it may leave the claim

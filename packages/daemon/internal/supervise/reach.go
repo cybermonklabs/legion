@@ -122,10 +122,15 @@ var (
 	// so a relaunch into it would recover none of them.
 	ErrPodUnreachable = errors.New("every claim of the claim's pod is out of reach")
 	// ErrTreeRefusesLaunch: the tree lifecycle's recheck, which every launch makes first
-	// (checkLaunch), refuses the claim's launch — its tree's cleanup is reserved, or the epoch the
-	// claim is bound to is no longer its tree's open one — so the relaunch stops nothing. The tree's
-	// close or its next admission decides that claim, not a relaunch.
+	// (checkLaunch), refuses the claim's launch with an answer of the tree's own (treeRefuses) —
+	// its cleanup is reserved or confirmed, its lifecycle is absent or held under another authority,
+	// or the epoch the claim is bound to is no longer its tree's open one — so the relaunch stops
+	// nothing. The tree's close or its next start decides that claim, not a relaunch.
 	ErrTreeRefusesLaunch = errors.New("the claim's tree allows it no launch, so nothing was stopped")
+	// ErrTreeCheckFailed: the tree lifecycle's recheck before the stop got no answer of the tree's
+	// — the store did not answer it, or the request's time ran out waiting on it — so the relaunch
+	// stopped nothing and may be asked for again.
+	ErrTreeCheckFailed = errors.New("the daemon could not check the claim's tree lifecycle, so nothing was stopped; relaunch it again")
 	// ErrReachUnwritten: the daemon could not write the record a relaunch's notices are told from
 	// — the guard's refusal, which the notice that the guard would now let the claim through
 	// counts from — so no such notice may follow, and the relaunch is answered as a failure.
@@ -235,9 +240,11 @@ type RequestRelaunch struct {
 // it ended is recorded under the relaunch's cause (letGo, recordEnd); the launch lets nothing more
 // go. Nothing after the stop returns with the stopped process still recorded: the sweep's next
 // report of it would find it gone, charge a death and relaunch it under the death's cause. So a
-// refusal the launch's own recheck still meets — the tree's cleanup reserved, or a store that did
-// not answer, while the stop waited on the runtime — finds a claim that records no process, which
-// is suspended for the tree's close or launched again at the probe interval (relaunchRefused).
+// refusal the launch's own recheck still meets while the stop waited on the runtime finds a claim
+// that records no process, which is read by the same rule as before the stop (treeRefuses,
+// relaunchRefused): the tree's own refusal — its cleanup reserved, or its next lifetime opened, so
+// the claim's epoch is stale — suspends the claim for the tree's close or its next start, and only
+// a store that did not answer is launched again at the probe interval.
 //
 // The task the cut turn ran goes back to waiting in memory at the stop, decided before the let-go
 // forgets the send and the prompts outstanding it reads (decideTakeBack, tookBack), and the claim
@@ -249,11 +256,15 @@ type RequestRelaunch struct {
 // as a finished one and retire its task.
 //
 // A refusal before the stop is a refusal of the claim, as the guard's and the runtime's are
-// (RefusedError): the tree lifecycle's is ErrTreeRefusesLaunch, which says nothing was stopped. A
-// launch left to be tried again after the stop (relaunchLater, which every such wait goes through
-// and which no refusal arms) is no refusal: the process is stopped, the relaunch is recorded and
-// the daemon makes the launch itself, so the relaunch answers as one that ran, with the error the
-// launch met written to the log.
+// (RefusedError), and the tree lifecycle's recheck answers one of two: the tree's own refusal
+// (treeRefuses) is ErrTreeRefusesLaunch, which its tree's close or next start decides, and any
+// other error of that check — a store that did not answer — is ErrTreeCheckFailed, written to the
+// log, which says nothing was stopped and the relaunch may be asked for again. A launch left to be
+// tried again after the stop (relaunchLater, whose error says so: errLaunchWaits) is no refusal:
+// the process is stopped, the relaunch is recorded and the daemon makes the launch itself, so the
+// relaunch answers as one that ran, with the error the launch met written to the log (launchMade).
+// Every other error of the launch after the stop — a refusal of the tree's, or a claim failed at
+// its launch budget — is answered as it is.
 //
 // Once the stop has ended the process the claim records the relaunch (Claim.LastRelaunch), which
 // its next write carries: the take-back's, the launch's own, which moves the generation, or that
@@ -312,7 +323,12 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		}
 	}
 	if err := m.checkLaunch(ctx); err != nil {
-		return refuse(fmt.Errorf("%w: %w", ErrTreeRefusesLaunch, err))
+		if treeRefuses(err) {
+			return refuse(fmt.Errorf("%w: %w", ErrTreeRefusesLaunch, err))
+		}
+		m.log.Warn("supervise: the tree lifecycle's check of the relaunch got no answer; nothing is stopped, and the relaunch may be asked for again",
+			"incarnation", loc.Incarnation, "error", err)
+		return refuse(fmt.Errorf("%w: %w", ErrTreeCheckFailed, err))
 	}
 	m.log.Warn("supervise: relaunching a claim Envoy cannot reach on its same session; the stop charges nothing",
 		"incarnation", loc.Incarnation, "cause", ev.Cause, "mayReplacePod", ev.MayReplacePod,
@@ -356,37 +372,37 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 	if !taking {
 		// The launch that starts writes the generation it left the claim at beside the relaunch,
 		// in its own write (launchNow), whether it runs now or is tried again at the probe interval.
-		return m.launchOrWait(ctx)
+		return m.launchMade(m.launchAfter(ctx, false, true, noEnd))
 	}
 	m.claim.State = StateLaunching
-	return m.launchOnceTakenBack(ctx)
+	return m.launchMade(m.launchOnceTakenBack(ctx))
 }
 
 // launchOnceTakenBack is the relaunch's launch where its stop took the cut turn's task back: the
 // take-back is written first, with the claim launching and recording no process, and the launch
 // follows once that write has landed (relaunchUnreachable). A write the store refuses is tried
-// again at the probe interval, and the launch with it; the relaunch is made meanwhile, as one
-// whose launch waits for the store is (launchOrWait), and nothing more is charged.
+// again at the probe interval, and the launch with it (relaunchLater); the relaunch is made
+// meanwhile, as one whose launch waits for the store is (launchMade), and nothing more is charged.
 func (m *Machine) launchOnceTakenBack(ctx context.Context) error {
 	if m.unsaved {
 		if err := m.saved(m.putClaimAndPending(ctx)); err != nil {
 			m.log.Warn("supervise: the relaunch's take-back of its task was not written; its launch waits for it at the probe interval",
 				"delivery", pendingID(m.claim.Pending), "error", err)
-			m.relaunchLater(m.deps.Timeouts.Probe, m.launchOnceTakenBack)
-			return nil
+			return m.relaunchLater(m.deps.Timeouts.Probe, func(ctx context.Context) error {
+				return m.launchMade(m.launchOnceTakenBack(ctx))
+			}, err)
 		}
 	}
-	return m.launchOrWait(ctx)
+	return m.launchAfter(ctx, false, true, noEnd)
 }
 
-// launchOrWait is the relaunch's launch, once the stop has let its process go: the launch that
-// starts now, or the one a store that did not answer leaves to be tried again at the probe
-// interval (relaunchLater), which the relaunch answers as made (relaunchUnreachable). Every other
-// error of the launch — the tree's cleanup reserved after the stop, or the claim failed at its
-// launch budget — arms no retry and is answered.
-func (m *Machine) launchOrWait(ctx context.Context) error {
-	err := m.launchAfter(ctx, false, true, noEnd)
-	if err == nil || m.relaunch == nil {
+// launchMade is the relaunch's answer once its stop has let the process go: err, the answer of its
+// launch, except a launch left to be tried again (errLaunchWaits), which the daemon makes itself,
+// so the relaunch is made and answers nil, with that launch's error written to the log. Every
+// other error — a refusal of the tree's after the stop, or the claim failed at its launch budget —
+// arms no retry and is answered.
+func (m *Machine) launchMade(err error) error {
+	if !errors.Is(err, errLaunchWaits) {
 		return err
 	}
 	m.log.Warn("supervise: the relaunch's launch waits for the store and is tried again at the probe interval; the relaunch is made",

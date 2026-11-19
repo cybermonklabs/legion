@@ -55,7 +55,9 @@ func TestTheControllersRelaunchReachesTheClaimItsTokenNames(t *testing.T) {
 // Each refusal is answered with the code the controller acts on, and the five a person must
 // handle say so in the sentence. The tree lifecycle's refusal reaches the route as the machine
 // refuses it, a refusal of the claim in its state, and is answered with its own code rather than
-// the one of a claim between states.
+// the one of a claim between states. So is a tree check the store did not answer, with a 503 of
+// its own that says nothing was stopped and the relaunch may be asked for again, rather than the
+// tree's refusal, which sends the controller away from the claim.
 func TestTheControllersRelaunchNamesEachRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
@@ -72,6 +74,8 @@ func TestTheControllersRelaunchNamesEachRefusal(t *testing.T) {
 		{fmt.Errorf("relaunch refused: %w", runtime.ErrProcessOutlivedStop), "PROCESS_OUTLIVED_STOP", true},
 		{&supervise.RefusedError{State: supervise.StateWorking, Request: "relaunch", Reason: "tree cleanup is reserved",
 			Err: fmt.Errorf("%w: %w", supervise.ErrTreeRefusesLaunch, treelifecycle.ErrCleanupReserved)}, "TREE_REFUSES_LAUNCH", false},
+		{&supervise.RefusedError{State: supervise.StateWorking, Request: "relaunch", Reason: "the store did not answer",
+			Err: fmt.Errorf("%w: %w", supervise.ErrTreeCheckFailed, errors.New("the store did not answer"))}, "TREE_CHECK_FAILED", false},
 		{errors.New("the store did not answer"), "RELAUNCH_FAILED", false},
 		{fmt.Errorf("%w; %w: the store did not answer", fmt.Errorf("%w: its open call is bash", supervise.ErrRelaunchGuard),
 			supervise.ErrReachUnwritten), "RELAUNCH_FAILED", false},
@@ -82,8 +86,11 @@ func TestTheControllersRelaunchNamesEachRefusal(t *testing.T) {
 			recorder := h.request(http.MethodPost, "/legion/v1/claims/relaunch",
 				RelaunchRequest{GrantID: controllerGrant(t, h).GrantID, Claim: string(token)}, nil)
 			status := http.StatusConflict
-			if tc.code == "RELAUNCH_FAILED" {
+			switch tc.code {
+			case "RELAUNCH_FAILED":
 				status = http.StatusInternalServerError
+			case "TREE_CHECK_FAILED":
+				status = http.StatusServiceUnavailable
 			}
 			body := recorder.Body.String()
 			assertFailure(t, recorder, status, tc.code)

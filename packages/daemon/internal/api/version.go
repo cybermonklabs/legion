@@ -2234,10 +2234,13 @@ package api
 // the project's own controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; an
 // uncoded 503 once the daemon's stop has begun; 409 CLAIM_REACHABLE, CLAIM_UNSETTLED,
 // RELAUNCH_GUARD, RELAUNCHED_RECENTLY, POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED,
-// RELAUNCH_REPLACES_POD, PROCESS_OUTLIVED_STOP or TREE_REFUSES_LAUNCH (the claim's tree cleanup is
-// reserved, or its bound epoch is no longer open, so nothing was stopped) for a relaunch the daemon
-// refuses; and 500 RELAUNCH_FAILED for a daemon with no relaunch, a refusal whose record it could
-// not write, and every other failure.
+// RELAUNCH_REPLACES_POD, PROCESS_OUTLIVED_STOP or TREE_REFUSES_LAUNCH (the tree itself refuses the
+// claim's launch: its cleanup is reserved or confirmed, its lifecycle is absent or held under
+// another authority, or its bound epoch is stale or unset, so nothing was stopped) for a relaunch
+// the daemon refuses; 503 TREE_CHECK_FAILED for a relaunch whose tree check before the stop the
+// daemon's store did not answer, which stopped nothing and may be asked for again; and 500
+// RELAUNCH_FAILED for a daemon with no relaunch, a refusal whose record it could not write, and
+// every other failure.
 // `packages/contracts/src/legion-claim-recovery.ts` mirrors the request and the `{}`. The
 // controller's plugin starts to post `POST /legion/v1/claims/activity` as a worker's does, under
 // the registration a daemon-launched controller holds, which the relaunch guard reads. Every

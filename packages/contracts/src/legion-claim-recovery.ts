@@ -119,11 +119,14 @@ export const LegionCompactResponse = z.object({
  * is reachable (`POD_UNREACHABLE`), one whose launcher is not connected
  * (`LAUNCHER_NOT_CONNECTED`), one whose launch would replace the pod and end every other role in
  * it (`RELAUNCH_REPLACES_POD`), and one whose tree allows it no launch, because the tree's cleanup
- * is reserved or the epoch the claim is bound to is no longer open (`TREE_REFUSES_LAUNCH`), which
- * that tree's close or its next start decides; and every relaunch while the daemon is stopping,
- * with a 503 that carries no code. It refuses with nothing more done a claim whose process
- * outlived its stop (`PROCESS_OUTLIVED_STOP`). `RELAUNCH_FAILED` (500) is a relaunch that failed,
- * or whose record the daemon could not write, and the claim may already be stopped.
+ * is reserved or confirmed, its lifecycle is absent or held under another authority, or the epoch
+ * the claim is bound to is no longer open (`TREE_REFUSES_LAUNCH`), which that tree's close or its
+ * next start decides; and every relaunch while the daemon is stopping, with a 503 that carries no
+ * code. A tree check that the daemon's store did not answer is a 503 too, coded
+ * `TREE_CHECK_FAILED`: nothing was stopped, and the relaunch may be asked for again. It refuses
+ * with nothing more done a claim whose process outlived its stop (`PROCESS_OUTLIVED_STOP`).
+ * `RELAUNCH_FAILED` (500) is a relaunch that failed, or whose record the daemon could not write,
+ * and the claim may already be stopped.
  * `RELAUNCHED_RECENTLY`, `POD_UNREACHABLE`, `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD` and
  * `PROCESS_OUTLIVED_STOP` are cases for a person. */
 export const LegionRelaunchRequest = z.strictObject({
