@@ -59,15 +59,16 @@ func TestTheRulesPassWhatTheyAreWrittenToPass(t *testing.T) {
 	}
 }
 
-// The host rule reads a host, not a Lean or OCaml name (dispatch://INFRA-3332). A name holding a
-// capital letter, then a segment spelled exactly Internal, passes: Lake's and Rocq's module paths,
-// and a Lean function's own namespace. So does Lean's own option of the cmdline snapshots under
-// its Lean namespace, and no name near it. Every other host is refused, whatever the case of its
-// labels: at the start of a record, on a later line, in italics, right after a reserved example
-// host, and with a capital letter in its first label while the segment is not spelled Internal.
-// The texts are assembled from pieces, as every refusable literal of these tests is, so that no
-// line of this file names one whole, and so that a guard still reading a namespace as a host
-// passes the file too.
+// The host rule reads a host, not a Lean or OCaml name. A name holding a capital letter, then a
+// segment spelled exactly Internal, passes: Lake's and Rocq's module paths (src/lake/Lake/Build of
+// leanprover/lean4, kernel/indTyping.ml of rocq-prover/rocq), and a Lean function's own namespace.
+// So does Lean's own option of the cmdline snapshots under its Lean namespace (as
+// src/Lean/Elab/Frontend.lean of leanprover/lean4 sets it), and no name near it. Every other host
+// is refused, whatever the case of its labels: at the start of a record, on a later line, in
+// italics, right after a reserved example host, and with a capital letter in its first label while
+// the segment is not spelled Internal. The texts are assembled from pieces, as every refusable
+// literal of these tests is, so that no line of this file names one whole, and so that a guard
+// still reading a namespace as a host passes the file too.
 func TestThePrivateHostRuleReadsAHostNotANamespace(t *testing.T) {
 	engine, err := compiled()
 	if err != nil {
