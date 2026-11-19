@@ -42,17 +42,19 @@ func githubCouldHoldRepo(canonical string) bool {
 	return name != "." && name != ".." && repoNamePattern.MatchString(name)
 }
 
-// parseIssueRepo decodes the tri-state `repo` field of an issue write. Absent → (nil, false): leave
-// it alone. JSON null → (nil, true): clear it, so the issue resolves through its parent chain and the
-// project's default again. A string → its canonical `owner/name` (externalRef's canonicalisation,
-// which lowercases and drops a `.git` suffix), provided GitHub could hold a repository of that
-// name (githubCouldHoldRepo); anything else → 400 INVALID_ISSUE. The grammar is checked here and
-// not in externalRef, which this borrows the shape check and the canonicalisation from, because
-// externalRef also resolves a reference to an external issue already linked
-// (resolveIssueRef): a row written before this gate existed is still to be found by the
-// reference that names it, and refusing the grammar there would answer INVALID_ISSUE_REF for a
-// link the server itself stored.
-func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error) {
+// parseIssueRepo decodes a tri-state `repo` field: an issue's own repository on an issue write,
+// and a project's default repository on PUT /api/v1/projects/{key}/default-repository. Absent →
+// (nil, false): leave it alone. JSON null → (nil, true): clear it, so the issue resolves through
+// its parent chain and the project's default again, or the project has no default. A string →
+// its canonical `owner/name` (externalRef's canonicalisation, which lowercases and drops a `.git`
+// suffix), provided GitHub could hold a repository of that name (githubCouldHoldRepo); anything
+// else → 400 with code, the write's own invalid-input code (INVALID_ISSUE, INVALID_PROJECT). The
+// grammar is checked here and not in externalRef, which this borrows the shape check and the
+// canonicalisation from, because externalRef also resolves a reference to an external issue
+// already linked (resolveIssueRef): a row written before this gate existed is still to be found
+// by the reference that names it, and refusing the grammar there would answer
+// INVALID_ISSUE_REF for a link the server itself stored.
+func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
 	}
@@ -61,11 +63,11 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" or null`)
+		return nil, true, errorf(http.StatusBadRequest, code, `repo must be "owner/name" or null`)
 	}
 	canonical, _, err := externalRef(strings.TrimSpace(value) + "#1")
 	if err != nil || !githubCouldHoldRepo(canonical) {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", `repo must be "owner/name" (got %q)`, value)
+		return nil, true, errorf(http.StatusBadRequest, code, `repo must be "owner/name" (got %q)`, value)
 	}
 	return &canonical, true, nil
 }

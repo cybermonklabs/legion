@@ -590,6 +590,9 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
+	"PUT /api/v1/projects/{key}/default-repository": {
+		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
+	},
 	"GET /api/v1/settings/delivery": {
 		Status: http.StatusOK, Response: delivery.DeliverySettings{},
 		// A deployment that has not set them answers 200 and the JSON literal `null`

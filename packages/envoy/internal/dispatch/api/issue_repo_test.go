@@ -33,13 +33,12 @@ func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[
 
 // An issue's repository: its own when set, else its nearest ancestor's, else the project's default,
 // else none; every list row, the detail and every issue event carry both the own field and the
-// resolved one. Its own is any `owner/name`, whether or not a mapping of its project names it.
-// Only a value that is not `owner/name` is refused.
+// resolved one. Its own is any `owner/name`, whether or not it is any project's default. Only a
+// value that is not `owner/name` is refused.
 func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/gadgets", map[string]any{"project": "CORE"}, "alice")
+	createProjects(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 
 	root := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Root"}, "alice"))
 	if root.Repo != nil || root.ResolvedRepo == nil || *root.ResolvedRepo != "acme/widgets" {
@@ -90,15 +89,15 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	if payload["repo"] != nil || payload["resolved_repo"] != "acme/gadgets" {
 		t.Fatalf("issue.updated payload repo=%v resolved_repo=%v, want null and acme/gadgets", payload["repo"], payload["resolved_repo"])
 	}
-	// An issue's own repository is any `owner/name` (INFRA-2543 R3): one its project maps, one
-	// another project maps, and one no project maps are each taken, by the create route and by
-	// the patch route, and each is what the issue then resolves to.
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTHER", "name": "Other"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/other/tools", map[string]any{"project": "OTHER", "default": true}, "alice")
+	// An issue's own repository is any `owner/name` (INFRA-2543 R3): its project's default,
+	// another project's default, and one no project names are each taken, by the create route
+	// and by the patch route, and each is what the issue then resolves to.
+	createProjects(t, handler, "OTHER")
+	setDefaultRepository(t, handler, "OTHER", "other/tools")
 	for _, taken := range []struct{ name, repo string }{
-		{"a repository CORE maps", "acme/gadgets"},
-		{"a repository OTHER maps", "other/tools"},
-		{"a repository no project maps", "acme/unmapped"},
+		{"CORE's default", "acme/widgets"},
+		{"OTHER's default", "other/tools"},
+		{"a repository no project names", "acme/elsewhere"},
 	} {
 		patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+leaf.Key, map[string]any{"repo": taken.repo}, "alice")
 		if patched.Code != http.StatusOK {
@@ -131,8 +130,7 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 // events, never an error.
 func TestIssueRepoResolvesToNoneWithoutADefault(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")
+	createProjects(t, handler, "CORE")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Alone"}, "alice"))
 	if issue.Repo != nil || issue.ResolvedRepo != nil {
 		t.Fatalf("repo=%v resolved=%v, want both null", issue.Repo, issue.ResolvedRepo)
@@ -168,9 +166,8 @@ func createChain(t *testing.T, handler http.Handler, project, parent string, len
 // event; an issue one link deeper is refused, 409 PARENT_INPUT.
 func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/gadgets", map[string]any{"project": "CORE"}, "alice")
+	createProjects(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	root := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Root", "repo": "acme/gadgets"}, "alice"))
 	keys := append([]string{root.Key}, createChain(t, handler, "CORE", root.Key, parentDepthCap)...) // keys[d] is d links below the root
 	listed := map[string]model.IssueSummary{}
@@ -251,8 +248,8 @@ func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
 func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DEEP", "name": "Deep"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "DEEP", "default": true}, "alice")
+	createProjects(t, handler, "DEEP")
+	setDefaultRepository(t, handler, "DEEP", "acme/widgets")
 	const length = 2000 // DEEP-1 is the root; DEEP-n is n-1 links below it
 	if _, err := database.Pool.Exec(ctx, `
 		insert into issues (key, project_key, number, title, parent_key, created_by, rank)
@@ -315,8 +312,8 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 // rather than giving the project's default.
 func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
+	createProjects(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	top := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Top"}, "alice"))
 	below := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Below", "parent": top.Key, "force": true}, "alice"))
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, below.Key, top.Key); err != nil {
@@ -332,8 +329,8 @@ func TestIssueRepoRefusesToResolveALoopedParentChain(t *testing.T) {
 // The claim and its release are issue events too, and carry the repository as the others do.
 func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE", "default": true}, "alice")
+	createProjects(t, handler, "CORE")
+	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Claimed"}, "alice"))
 	for _, method := range []string{http.MethodPost, http.MethodDelete} {
 		if response := dispatchRequest(t, handler, method, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "alice"); response.Code != http.StatusOK {
@@ -349,8 +346,7 @@ func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
 // A closed issue takes no repository write, as it takes no other field but its rank and components.
 func TestIssueRepoIsRefusedOnAClosedIssue(t *testing.T) {
 	handler := newTestHandler(t)
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")
+	createProjects(t, handler, "CORE")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Done"}, "alice"))
 	if closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"status": "done"}, "alice"); closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())

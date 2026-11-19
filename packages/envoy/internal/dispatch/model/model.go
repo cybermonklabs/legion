@@ -278,8 +278,13 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepo is the repository, owner/name, an issue of this project resolves to when
+	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
+	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
+	// carries no member, so a client that does not know the member reads the same project.
+	DefaultRepo *string   `json:"default_repo,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
@@ -574,10 +579,10 @@ type Issue struct {
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
-	// or not a project maps it; nil when it inherits.
+	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`

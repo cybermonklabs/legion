@@ -526,10 +526,7 @@ func issueInRepository(t *testing.T, handler http.Handler, project, repo, title 
 		map[string]string{"key": project, "name": title}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo,
-		map[string]any{"project": project, "default": true}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map %s to %s: status=%d body=%s", repo, project, response.Code, response.Body.String())
-	}
+	setDefaultRepository(t, handler, project, repo)
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": project, "title": title, "spec": "A spec\n"}, "alice")
 	if response.Code != http.StatusCreated {
@@ -909,9 +906,8 @@ func TestAfterMergeResultWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) 
 		}
 		return "diverged"
 	})
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESD", "name": "Default"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "RESD", "default": true}, "alice")
+	createProjects(t, handler, "RESD")
+	setDefaultRepository(t, handler, "RESD", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESD", "title": "Default branch", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -1113,9 +1109,8 @@ func TestAfterMergeResultFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T
 // at another commit and no pass of them stands.
 func TestAfterMergeResultIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T) {
 	handler, _ := resultsGitHub(t, map[string]bool{}, func(string, string) string { return "behind" })
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESU", "name": "Unknown"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/hidden",
-		map[string]any{"project": "RESU", "default": true}, "alice")
+	createProjects(t, handler, "RESU")
+	setDefaultRepository(t, handler, "RESU", "acme/hidden")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESU", "title": "Unreadable", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -1518,8 +1513,8 @@ func TestBeforeMergeResultIsUnknownWhenDispatchCannotSeeTheRepository(t *testing
 		"a pre-merge result of a repository the App cannot read", model.CommitUnknown, false)
 
 	// An issue that resolves to no repository at all has nothing to compare with, and nothing
-	// left to read: createInteractionIssue creates the project itself, and nothing maps a
-	// repository to it.
+	// left to read: createInteractionIssue creates the project itself, with no default
+	// repository.
 	loose := createInteractionIssue(t, handler, "RESL", "No repository", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+loose.Key, "verification.md", twoChecks)
 	none := decodeBody[recordedResult](t, recordResult(t, handler, loose.Key, resultBody("k1", "pass", headCommit, nil)))
@@ -1600,9 +1595,8 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
 	})
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "REST", "name": "Through"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "REST", "default": true}, "alice")
+	createProjects(t, handler, "REST")
+	setDefaultRepository(t, handler, "REST", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "REST", "title": "Read through", "spec": "A spec\n"}, "alice"))
 	issueKey = issue.Key
@@ -1838,11 +1832,8 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream.URL,
 	})
-	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "RESR", "name": "Two repos"}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": "RESR", "default": true}, "alice")
-	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/gadgets",
-		map[string]any{"project": "RESR"}, "alice")
+	createProjects(t, handler, "RESR")
+	setDefaultRepository(t, handler, "RESR", "acme/widgets")
 	parent := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "RESR", "title": "Parent", "spec": "A spec\n"}, "alice"))
 	uploadDocument(t, handler, "/api/v1/issues/"+parent.Key, "verification.md", siblingChecks)
@@ -2428,7 +2419,7 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 		func(string, string) string { return "diverged" })
 
 	// 1. An issue that resolves to no repository at all: createInteractionIssue creates the
-	// project itself, and nothing maps a repository to it.
+	// project itself, with no default repository.
 	loose := createInteractionIssue(t, handler, "NON1", "No repository", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+loose.Key, "verification.md", twoChecks)
 	adrift := decodeBody[recordedResult](t, recordResult(t, handler, loose.Key, resultBody("k1", "pass", headCommit, nil)))
@@ -2460,34 +2451,30 @@ func TestACheckComparingWithNothingNamesWhichKindOfNothing(t *testing.T) {
 	}
 
 	// 4. An issue that resolved to a repository, merged into a branch, and resolves to none
-	// now, its mapping deleted after the merge — the issue whose project mapping was removed,
-	// and the issue whose parent moved. This pins the deep review's finding on #3530: the
-	// merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
+	// now, its project's default cleared after the merge — the issue whose project's default
+	// was removed, and the issue whose parent moved. This pins the deep review's finding on
+	// #3530: the merged row delivery.BaseBranchMergedFor reads by issue key alone goes on naming
 	// `integration/x`, so a branch walk chosen before anything tests the repository reached
 	// onNamedBranch with none and answered `unknown`/`read_failed` for every result, against
 	// what the surface's own rule says — an issue that resolves to no repository is never
 	// unknown, and a retry settles nothing here.
-	adopted := issueInRepository(t, handler, "NON4", "acme/widgets", "Mapping deleted after the merge")
+	adopted := issueInRepository(t, handler, "NON4", "acme/widgets", "Default cleared after the merge")
 	uploadDocument(t, handler, "/api/v1/issues/"+adopted.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 41, adopted.Key, "integration/x")
 	orphaned := decodeBody[recordedResult](t,
 		recordResult(t, handler, adopted.Key, resultBody("k2", "pass", mergeCommit, nil)))
-	unmapped := dispatchRequest(t, handler, http.MethodDelete,
-		"/api/v1/settings/repo-projects/acme/widgets", nil, "alice")
-	if unmapped.Code != http.StatusNoContent {
-		t.Fatalf("delete the mapping of acme/widgets: status=%d body=%s", unmapped.Code, unmapped.Body.String())
-	}
+	setDefaultRepository(t, handler, "NON4", nil)
 	adoptedRead := readResults(t, handler, adopted.Key)
 	comparedNothing(t, adoptedRead, "k2", model.ReasonNoPullRequestOrBranch, model.PassStandsNo)
 	standsAt(t, adoptedRead, "k2", orphaned.Result.ID,
-		"an after-merge result of an issue whose repository mapping was deleted after its merge",
+		"an after-merge result of an issue whose project's default was cleared after its merge",
 		model.CommitOtherCommit, false)
 }
 
 // A resolve of the check's issue's repository that did not answer is a read of Dispatch's own
 // that said nothing, and never a verdict about the work. A parent chain that loops is how
 // that resolve fails on demand: refs.IssueRepository refuses a chain it cannot finish rather
-// than answer with the project's default mapping (refs.IssueRepoTerms), so every read of the
+// than answer with the project's default repository (refs.IssueRepoTerms), so every read of the
 // repository below it says it could not tell.
 //
 // This pins the deep review's finding on #3530: repositoryOf answered nil for two worlds —

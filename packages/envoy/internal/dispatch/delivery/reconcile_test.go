@@ -809,9 +809,9 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 61)
-	// acme/gadgets is a repository of its own project, as in the test above: what makes the
-	// title's issue foreign is that it resolves to acme/widgets, not that Dispatch maps nothing
-	// for the pull request's own repository.
+	// acme/gadgets is the default of a project of its own, as in the test above: what makes the
+	// title's issue foreign is that it resolves to acme/widgets, not that no project has the pull
+	// request's own repository as its default.
 	seedProjectRepository(t, ctx, pool, "GDGT", "Gadgets", gadgetsRepo)
 	const sha = "6161616161616161616161616161616161616161"
 	title := foreign + ": the other repository's issue, and no issue of this one"

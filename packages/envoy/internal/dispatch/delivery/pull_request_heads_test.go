@@ -45,9 +45,9 @@ const (
 	gadgetsOldRepo = "oldco/gadgets"
 )
 
-// seedGadgetsIssue writes project GDGT, maps gadgetsRepo to it as its default and writes
-// GDGT-<number>: the second repository a two-key title needs, since repo_projects' primary key
-// is the repository and acme/widgets already belongs to another project.
+// seedGadgetsIssue writes project GDGT with gadgetsRepo as its default and writes GDGT-<number>:
+// an issue that resolves to the second repository a two-key title needs, since every issue of
+// deliveryProject resolves to acme/widgets.
 func seedGadgetsIssue(t *testing.T, ctx context.Context, pool *store.Pool, number int) string {
 	t.Helper()
 	key := fmt.Sprintf("GDGT-%d", number)
@@ -1278,6 +1278,52 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	row := readHead(t, ctx, pool, gadgetsRepo, 522)
 	if row.HeadSHA != head || row.IssueKey == nil || *row.IssueKey != issue {
 		t.Fatalf("#522 after the refresh = %+v, want %s at %s: the newer event's facts stand", row, issue, head)
+	}
+}
+
+// dispatch://INFRA-4411 drops repo_projects. Once the boot has read the rename pairs, no
+// statement of the attribution names that table: an issue resolves to its project's default
+// through projects.default_repo. So with the table gone, a head refresh, a read through a
+// commit's pull requests (what a results read asks of delivery) and the attribution of a stored
+// pull request each answer with no error, and each credits the issue that resolves to the pull
+// request's repository through its project's default.
+func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	issue := seedGadgetsIssue(t, ctx, pool, 24)
+	if _, err := pool.Exec(ctx, `drop table repo_projects`); err != nil {
+		t.Fatalf("drop repo_projects: %v", err)
+	}
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+
+	const head = "2424242424242424242424242424242424242424"
+	client := gadgetsFake(t, 524, issue+": the work, with repo_projects gone", head).newTestClient()
+	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsRepo, 524, time.Now()); err != nil {
+		t.Fatalf("refresh %s#524: %v", gadgetsRepo, err)
+	}
+	if row := readHead(t, ctx, pool, gadgetsRepo, 524); row.IssueKey == nil || *row.IssueKey != issue {
+		t.Fatalf("%s#524 after the refresh = %+v, want %s, which resolves to %s through its project's default",
+			gadgetsRepo, row, issue, gadgetsRepo)
+	}
+	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now())
+	if err != nil || written != 1 {
+		t.Fatalf("read through %s at %s = %d, %v; want one row written and no error", gadgetsRepo, head, written, err)
+	}
+
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+		Repo: gadgetsRepo, Number: 525, Title: issue + ": the stored work",
+		URL: "https://github.com/" + gadgetsRepo + "/pull/525", Author: "octocat",
+		CreatedAt: &merged, MergedAt: &merged,
+		Attribution: &AttributionInputs{TitleKeys: []string{issue}},
+	}); err != nil {
+		t.Fatalf("store %s#525: %v", gadgetsRepo, err)
+	}
+	if _, err := attributor.AttributePullRequests(ctx, pool, 100); err != nil {
+		t.Fatalf("attribute the stored pull requests: %v", err)
+	}
+	if got := storedIssueKey(t, ctx, pool, gadgetsRepo, 525); got != issue {
+		t.Fatalf("the issue of %s#525 = %s, want %s", gadgetsRepo, got, issue)
 	}
 }
 

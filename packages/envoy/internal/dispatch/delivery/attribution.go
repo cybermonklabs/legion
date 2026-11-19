@@ -242,7 +242,7 @@ type attributionColumns struct {
 
 // attributionCandidateBound is how many ranked candidates one attribution carries out of the
 // union. Every candidate costs a repository resolution now — a walk up its parent chain and its
-// project's default mapping (refs.IssueRepoTerms) — and a title and a body together can name
+// project's default repository (refs.IssueRepoTerms) — and a title and a body together can name
 // many keys: a Legion pull request names one or two, while a body listing a tree's issues can
 // name a dozen, so 25 is room for the shapes that occur and a bound on the work a pathological
 // body can ask for. The bound drops only candidates ranked below it, so an issue is passed over

@@ -25,7 +25,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"owner/" + strings.Repeat("a", 101),
 	} {
 		raw, _ := json.Marshal(value)
-		if repo, _, err := parseIssueRepo(raw); err == nil {
+		if repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE"); err == nil {
 			t.Errorf("parseIssueRepo(%q) = %q, want it refused: GitHub holds no repository of that name", value, *repo)
 		}
 	}
@@ -37,7 +37,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"o/" + strings.Repeat("a", 100): "o/" + strings.Repeat("a", 100),
 	} {
 		raw, _ := json.Marshal(value)
-		repo, _, err := parseIssueRepo(raw)
+		repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE")
 		if err != nil || repo == nil || *repo != want {
 			t.Errorf("parseIssueRepo(%q) = %v, %v, want %q", value, repo, err, want)
 		}

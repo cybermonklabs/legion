@@ -84,15 +84,6 @@ func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what 
 	}
 }
 
-func createProjects(t *testing.T, handler http.Handler, keys ...string) {
-	t.Helper()
-	for _, key := range keys {
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": key, "name": key}, "alice"); response.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
-		}
-	}
-}
-
 // Two first mappings of one repository, to two projects at once: the second is a move, so the
 // project the first put it in hears that it left, as a sequential move tells it.
 func TestRepoProjectFirstMappingRacedToTwoProjectsTellsTheProjectItLeft(t *testing.T) {

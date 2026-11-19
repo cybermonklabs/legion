@@ -149,7 +149,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

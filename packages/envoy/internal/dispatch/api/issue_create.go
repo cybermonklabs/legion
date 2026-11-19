@@ -225,7 +225,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, _, err := parseIssueRepo(input.Repo)
+	repo, _, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
