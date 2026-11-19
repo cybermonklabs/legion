@@ -536,9 +536,10 @@ func seedMergeStateRound(t *testing.T, pool *pgxpool.Pool, state record.MergeSta
 // A read of GitHub's merge state is one round trip outside the record's transaction, so a push can
 // land between GitHub's answer and the apply. A read that answers for a head the record has moved
 // past is dropped whole: it records neither verdict, not the time it was read, and it decides
-// nothing - not even the conflict that sends an issue back to implementing from any phase, since
-// the head that conflicts is not the head the branch now carries. A stamp written there would say
-// the head the record stands at had been read when it was the head before it that was.
+// nothing - not even the first read of a conflict, which would wait for a second read
+// (record.PullRequest.ConflictRead), since the head that conflicts is not the head the branch now
+// carries. A stamp written there would say the head the record stands at had been read when it
+// was the head before it that was.
 func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateClean)
@@ -553,6 +554,9 @@ func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 	if got.Mergeability != "" || got.MergeState != record.MergeStateUnread || got.Base != "" {
 		t.Fatalf("after the stale read the record holds %q/%q on base %q, want nothing read: the move to head-2 took GitHub's answer with it and the read was of the head it left",
 			got.Mergeability, got.MergeState, got.Base)
+	}
+	if got.ConflictRead != nil || got.ConflictingHead != "" {
+		t.Fatalf("after the stale read the record holds first read %+v and %q conflicting, want neither: the conflict was of a head the branch has left", got.ConflictRead, got.ConflictingHead)
 	}
 	if !got.StateReadAt.IsZero() {
 		t.Fatalf("after the stale read the record was last read at %v, want no read time at all: the read was of the head head-2 replaced", got.StateReadAt)

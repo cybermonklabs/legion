@@ -841,7 +841,8 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 	}
 	// Every kind the daemon runs, read from the lanes rather than listed here: a kind added to a
 	// lane and forgotten in a hand-kept list is exactly the omission this case exists to catch,
-	// and it is how phase_ended came to be missing from two of this release's rewrites.
+	// and it is how a kind of the role-message lane came to be missing from two rewrites of an
+	// earlier release.
 	var kinds []record.OutboxKind
 	for _, lane := range []record.OutboxLane{record.LaneLifecycle, record.LaneBoard, record.LaneRoleMessage} {
 		kinds = append(kinds, record.LaneKinds(lane)...)

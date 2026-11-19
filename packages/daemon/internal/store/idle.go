@@ -18,10 +18,9 @@ import (
 
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
-// task it carries, a stop), an architect's notice, the message a phase's end sends the role
-// whose phase ended, the words a hook fired on a move back puts in front of a role
-// (record.HookPrompt), the ask an update round puts to a role of the pod (record.UpdateAsk), the
-// message that tells the merger its pull request left the merge queue
+// task it carries, a stop), an architect's notice, the words a hook fired on a move back puts in
+// front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
+// (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer and
 // the word to the worker of the phase the issue stays in (record.MergeForwardMessage). Two reads of
 // GitHub reach no session themselves, but their answers are what write a message, so each holds
@@ -35,7 +34,7 @@ import (
 // issue's pod out from under the row that was just written for one of its roles, and that role
 // never reads it. An update ask holds the pod only while its row is pending, which is one attempt
 // where the publish goes through or finds no holder.
-var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
+var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
 	"conflict_confirm", "merge_forward"}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),

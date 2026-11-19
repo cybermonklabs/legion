@@ -171,7 +171,6 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status, why str
 		}
 	}
 	assertOutboxCount(t, pool, "supervise", 0)
-	assertOutboxCount(t, pool, "phase_ended", 0)
 	assertOutboxCount(t, pool, "dispatch_status", 0)
 	assertOutboxCount(t, pool, "dispatch_message", 0)
 	if got, gotStatus := issuePhase(t, pool), issueStatus(t, pool); got != at || gotStatus != status {

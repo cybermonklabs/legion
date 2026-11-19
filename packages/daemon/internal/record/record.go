@@ -554,9 +554,9 @@ type PhaseRow struct {
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
 	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail, a worker's backward move and the move the
-	// daemon makes on its own for a head that conflicts with its base each raise Pass and leave
-	// this count where it stands. What review_round_cap bounds is Rounds less ConflictRounds.
+	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
+	// and leave this count where it stands. What review_round_cap bounds is Rounds less
+	// ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -635,7 +635,7 @@ type PhaseRow struct {
 	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
 	// one run, where the entry is new at each one, which is what tells one testing phase from the
-	// testing phase a conflicting head sent the work back to (api/handoff.go). A start that hands
+	// testing phase after a move back (api/handoff.go). A start that hands
 	// the role no work it was not already on leaves it where it stands — the send of this entry's
 	// own work to a claim behind it, the held phase's retry, and every start of no entry
 	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:

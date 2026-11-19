@@ -117,7 +117,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     resumed once; the listener refuses the woken merger's topic at the row's second try, and
 //     the session takes the topic only after it; and the session is then told once, of the pull
 //     request, the head, and that the event names no reason. A row that ended on that refusal, as
-//     a phase-ended message does, would leave the merger it woke untold. The removal moves no
+//     a hook prompt's does, would leave the merger it woke untold. The removal moves no
 //     phase and writes no slot.
 //  2. GitHub's merge queue reports a removal in the same second as the merge it makes, so the read
 //     decides: GitHub answers merged, and the issue closes as the webhook's merge would close it,

@@ -220,7 +220,7 @@ func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T
 			want: ReleaseCancel, wantCause: ReleaseCauseOvertaken},
 		{name: "a notice queued below them", row: boundary, queued: first - 1, kind: "notice",
 			want: ReleaseCancel, wantCause: ReleaseCauseOvertaken},
-		{name: "a phase-ended message queued below them", row: boundary, queued: first - 1, kind: "phase_ended",
+		{name: "a merge-forward message queued below them", row: boundary, queued: first - 1, kind: "merge_forward",
 			want: ReleaseCancel, wantCause: ReleaseCauseOvertaken},
 		{name: "a board write queued below them", row: boundary, queued: first - 1, kind: "dispatch_status", want: ReleaseActs},
 		// The release's own rows are inside the range, so they are not work the pod was given.
@@ -330,7 +330,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 		{name: "a task queued for a role of the pod", kind: "supervise",
 			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":1}`},
 		{name: "an architect's notice", kind: "notice", payload: `{"kind":"todo","reason":"r"}`},
-		{name: "a phase's end message", kind: "phase_ended", payload: `{"kind":"todo","reason":"r"}`},
+		{name: "a merge-forward message", kind: "merge_forward", payload: `{"kind":"todo","reason":"r"}`},
 		{name: "a turn a message started", state: supervise.StateWorking},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -1312,7 +1311,7 @@ func ConflictNeedsMerge(issue record.Issue, pr record.PullRequest, rules *record
 	}
 	green := GreenContexts(pr)
 	for _, required := range rules.Required {
-		if !slices.Contains(green, required) {
+		if at := sort.SearchStrings(green, required); at == len(green) || green[at] != required {
 			return ConflictCheckNotGreen
 		}
 	}
@@ -1341,19 +1340,28 @@ func GreenContexts(pr record.PullRequest) []string {
 			}
 		}
 	}
-	slices.Sort(green)
-	return slices.Compact(green)
+	sort.Strings(green)
+	once := green[:0]
+	for _, name := range green {
+		if len(once) == 0 || once[len(once)-1] != name {
+			once = append(once, name)
+		}
+	}
+	return once
 }
 
 // ConflictRound says whether a backward move made now is a round a conflict with the base caused:
-// the record holds the pull request's own recorded head as conflicting
-// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
-// the move. The exemption keys on that mark rather than on the cause, because every way back out
-// of a conflicting head is the same round of work - the move the daemon makes on its own for the
-// conflict (workflow's TriggerConflict), a reviewer's request for changes, a worker's backward
-// move, a tester's fail - and the implementer answers each of them with one forward merge. That
-// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
-// which is how the exemption ends without a write of its own.
+// the record holds the pull request's own recorded head in a confirmed conflict
+// (record.PullRequest.ConflictingHead, which only the second CONFLICTING read of that head writes,
+// workflow's mergeability), whatever fact is making the move. The exemption keys on that mark
+// rather than on the cause, because every way back out of a conflicting head is the same round of
+// work - a reviewer's request for changes, a worker's backward move, a tester's fail - and the
+// implementer answers each of them with the one forward merge the conflict needs. That merge moves
+// the recorded head, the mark no longer equals it, and the next rejection counts, which is how the
+// exemption ends without a write of its own. The same mark is what says a head needs merging
+// forward before it can merge at all: an approval of it ends its review round (workflow's
+// reviewRound), and a move into accepting, retro or merging at it asks for the merge forward
+// (workflow's mergeForwardOnEntry).
 func ConflictRound(pr record.PullRequest) bool {
 	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
 }

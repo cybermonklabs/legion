@@ -34,7 +34,6 @@ const (
 	OutboxKindCheckLook        OutboxKind = "check_look"
 	OutboxKindCheckBound       OutboxKind = "check_bound"
 	OutboxKindRoleMessage      OutboxKind = "role_message"
-	OutboxKindPhaseEnded       OutboxKind = "phase_ended"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
 	OutboxKindUpdateAsk        OutboxKind = "update_ask"
 	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
@@ -75,20 +74,20 @@ const (
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
-// the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
-// worker (phase_ended, hook_prompt), the message that tells the merger its pull request left the
-// merge queue (merge_queue_removal), the messages of a merge forward, which go to the implementer
-// and to the worker of the phase the issue stays in (merge_forward), and an update round's ask,
-// which goes to any role whose process runs in the issue's pod, its architect included
-// (update_ask). It also runs the two reads of GitHub that come before a message: the read before a
-// merge-queue removal's message (merge_queue_read), and the second read of a head a first read
-// found conflicting, whose confirmation is what writes a merge forward's messages
-// (conflict_confirm). It is a lane of its own because the board lane's architect notices are
-// ordered among themselves and one of them waits for as long as its architect holds no role (the
-// daemon's errNoticeWaits): a role told that its phase ended, given the words a hook fired on a
-// move back, told that its pull request left the merge queue, asked to merge the base forward or
-// to hold while that merge runs, or asked to get ready for the replacement of its pod must hear it
-// while that is news, not after whatever the architect that owns its issue is owed.
+// the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
+// the message that tells the merger its pull request left the merge queue (merge_queue_removal),
+// the messages of a merge forward, which go to the implementer and to the worker of the phase the
+// issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
+// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
+// GitHub that come before a message: the read before a merge-queue removal's message
+// (merge_queue_read), and the second read of a head a first read found conflicting, whose
+// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
+// own because the board lane's architect notices are ordered among themselves and one of them
+// waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
+// words a hook fired on a move back, told that its pull request left the merge queue, asked to
+// merge the base forward or to hold while that merge runs, or asked to get ready for the
+// replacement of its pod must hear it while that is news, not after whatever the architect that
+// owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -107,7 +106,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -1159,46 +1158,6 @@ type CheckBound struct{}
 
 func (CheckBound) OutboxKind() OutboxKind { return OutboxKindCheckBound }
 
-// PhaseEnded tells the role whose phase a transition the daemon raised on its own ended that its
-// phase is over, on that role's own Envoy topic. It is the daemon's own news of the workflow to a
-// role that is not an architect, where the hook prompt beside it on this lane carries a
-// deployment's words: when the daemon moves an issue out of a phase on something it read of the
-// pull request — a head that conflicts with its base, the review GitHub delivered, the merge —
-// the next role starts at once, and without this message nothing tells the tester, the reviewer,
-// the merger or the implementer in retro that the phase it was working is no longer its own,
-// since the daemon's next task for a role waits for that role's turn to end. Role is the
-// recipient, From the phase that ended, To the phase the issue is in now, Reason what the
-// architect's notice carries, and TaskFollows that the recipient is also the role the new phase
-// starts — the implementer sent back from retro — whose task for that phase follows this message.
-// It stops nothing: the recipient keeps its turn, its jobs, its process and its session.
-type PhaseEnded struct {
-	Role        claim.Role  `json:"role"`
-	From        phase.Phase `json:"from"`
-	To          phase.Phase `json:"to"`
-	Reason      string      `json:"reason"`
-	TaskFollows bool        `json:"taskFollows,omitempty"`
-}
-
-func (PhaseEnded) OutboxKind() OutboxKind { return OutboxKindPhaseEnded }
-
-// Message is what the runner publishes for issue: one sentence that the recipient's phase ended
-// and which phase the issue is in now, the implementer's own sentence where its task follows, the
-// two that keep the role off the working copy the new phase owns without stopping it (the worker
-// prompt says the same, internal/prompts/go/worker-common.md), and the reason last, behind the
-// `Reason:` label a started worker's task carries it under (workflow's task), so the GitHub names
-// in it are marked off from the daemon's own sentences in both places.
-func (p PhaseEnded) Message(issue string) string {
-	follows := ""
-	if p.TaskFollows {
-		follows = fmt.Sprintf(" Your %s task follows.", p.To)
-	}
-	return fmt.Sprintf("%s: the daemon ended your %s phase, and the issue is in %s now.%s"+
-		" Nothing of yours is stopped: your turn, your jobs, your process and your session run on."+
-		" The workspace is the %s phase's now, so stop writing it at once and leave whatever you have uncommitted."+
-		" Reason: %s.",
-		issue, p.From, p.To, follows, p.To, p.Reason)
-}
-
 // HookPrompt is a hook of the deployment that fired on a move back of the issue, and its words
 // put in front of one role of the issue on that role's own Envoy topic. Hook is the hook's name
 // as the deployment spells it, Role the recipient, From the phase the work left and To the phase
@@ -1206,9 +1165,10 @@ func (p PhaseEnded) Message(issue string) string {
 // backward-move count of the issue after the move, PullRequest the issue's pull request as
 // `owner/name#n` where the issue has one, and Prompt the hook's own words.
 //
-// It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
-// news, as it hears that its phase ended: a prompt held behind whatever the architect that owns
-// its issue is owed would reach the role rounds after the round the firing wrote it for.
+// It rides the role-message lane (LaneRoleMessage) because a role hears a hook prompt while it is
+// news, as it hears a merge forward's messages (MergeForwardMessage): a prompt held behind
+// whatever the architect that owns its issue is owed would reach the role rounds after the round
+// the firing wrote it for.
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // states the move, the counts and the pull request in sentences of the daemon's own, and then the
@@ -1216,13 +1176,12 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// The prompt is published with keep, as a phase-ended message is: for a role no live session
-// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
-// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
-// nothing for a claim whose holder is not live. The daemon's publishKeptToRole says what each
-// answer does to the row, and why a later round's session can be handed the prompt and what
-// bounds that; the move back and the counts Message states tell that reader which round the
-// words were written for.
+// The prompt is published with keep: for a role no live session holds, the listener answers it
+// kept and holds it for an hour for the role's next live holder, and the row ends with one log
+// line, the listener its keeper. A listener before #4079 keeps nothing for a claim whose holder is
+// not live. The daemon's publishKeptToRole says what each answer does to the row, and why a later
+// round's session can be handed the prompt and what bounds that; the move back and the counts
+// Message states tell that reader which round the words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1332,8 +1291,8 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // for the removal, so the merger reads the reason on GitHub itself. The row names no role: the
 // merger is the one role it is ever for.
 //
-// The row is held as an architect's notice is held, not dropped as a phase-ended message nobody
-// holds is: it wakes a released merger and waits until the merger's session holds its role, since
+// The row is held as an architect's notice is held, not ended as a hook prompt nobody holds is:
+// it wakes a released merger and waits until the merger's session holds its role, since
 // a merger whose pod was released would otherwise never learn that its pull request is out of the
 // queue. While the root's design gate is closed it neither wakes nor tells a released merger, which
 // could enqueue the pull request again against the gate, and it waits for the gate to open; a
@@ -1350,8 +1309,8 @@ type MergeQueueRemoval struct {
 func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRemoval }
 
 // Message is what the runner publishes for issue to its merger, where repo is the repository the
-// record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a
-// phase-ended message does, names the pull request as `owner/name#n` and the head, and says that
+// record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a merge
+// forward's message does, names the pull request as `owner/name#n` and the head, and says that
 // GitHub's event names no reason, so the merger reads the reason on GitHub as step 5 of its role
 // prompt says (internal/prompts/roles/merger.md). With Unread it also says that the daemon could
 // not read the pull request, so the merger does not take the message to mean that GitHub did not
@@ -1692,12 +1651,6 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
-	case OutboxKindPhaseEnded:
-		value := PhaseEnded{}
-		if err := decoder.Decode(&value); err != nil {
-			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
-		}
-		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1776,10 +1729,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("outbox status write has empty status")
 		}
 		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
-		// move's that nothing else on Dispatch explains (workflow's moveReason: a head that
-		// conflicts with its base, and a worker's backward move). A hand-over, a re-assertion or a
-		// person's handover repeats or carries out a move whose cause is already on the issue, so it
-		// posts none.
+		// move's that nothing else on Dispatch explains (workflow's moveReason: a worker's backward
+		// move). A hand-over, a re-assertion or a person's handover repeats or carries out a move
+		// whose cause is already on the issue, so it posts none.
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
@@ -1956,19 +1908,6 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case CheckLook:
 		if value.Look <= 0 {
 			return fmt.Errorf("check look bound requires the look it bounds")
-		}
-	case PhaseEnded:
-		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
-			return fmt.Errorf("a phase-ended message goes to the role whose phase ended, never to an architect, which its checks-red notice tells; %q is neither", value.Role)
-		}
-		if value.From == "" || value.To == "" || value.From == value.To {
-			return fmt.Errorf("a phase-ended message names the phase that ended and the different phase the issue is in now; it names %q and %q", value.From, value.To)
-		}
-		if value.Reason == "" {
-			return fmt.Errorf("a phase-ended message carries the reason the architect's notice carries")
-		}
-		if value.TaskFollows && value.Role != claim.RoleImplementer {
-			return fmt.Errorf("only the implementer is told its task follows, since the phase a conflicting head opens is its own; the %s is not", value.Role)
 		}
 	case HookPrompt:
 		if value.Hook == "" {

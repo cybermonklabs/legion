@@ -702,11 +702,11 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	}
 }
 
-// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its base,
-// carries its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue,
-// under the row's marker, before it moves the issue, as it does a done write's.
+// A workflow move that nothing else on Dispatch explains, here a worker's backward move, carries
+// its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue, under
+// the row's marker, before it moves the issue, as it does a done write's.
 func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
-	reason := "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."
+	reason := "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
 	row.ID = 57
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}

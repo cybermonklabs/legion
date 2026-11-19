@@ -250,43 +250,19 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
-// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
-// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
-// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
-// architect's send-back from accepting showed a bare status change, with its reason only in the
-// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
-// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
-// review's whole body, which does not go on the issue a second time.
-// A person reads this text on the issue, so a conflict's is built from the pull request, not from
-// the conflict handler's sentence to the implementer, and a backward move's names the role that
-// asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
-	switch trigger {
-	case TriggerConflict:
-	case TriggerBackward:
-		return backwardMoveReason(from, to, reason)
-	default:
+// moveReason is what a move's status write posts on the issue, for the one move nothing else on
+// Dispatch explains: a worker's backward move (TriggerBackward, request_backward_move). The request
+// reaches the daemon's API and no Dispatch record, so an architect's send-back from accepting
+// showed a bare status change, with its reason only in the notice and the next role's task over
+// Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
+// reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
+// does not go on the issue a second time. A person reads this text on the issue, so a backward
+// move's names the role that asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+	if trigger != TriggerBackward {
 		return ""
 	}
-	what, base := "its pull request", "its base"
-	if pr != nil {
-		if pr.Number != 0 {
-			what = fmt.Sprintf("pull request #%d", pr.Number)
-			if head := pr.HeadSHA; head != "" {
-				if len(head) > 12 {
-					head = head[:12]
-				}
-				what += " at head " + head
-			}
-		}
-		if pr.Base != "" {
-			base = pr.Base
-		}
-	}
-	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
-		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
-		from, to, what, base, base)
+	return backwardMoveReason(from, to, reason)
 }
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one

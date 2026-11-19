@@ -270,14 +270,14 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 	seedEntryRow(t, pool, claim.RoleTester, "test-claim")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
-	// The head starts conflicting with its base: testing goes back to implementing, which is a
-	// move back, and the implementer's first entry is raised by it.
-	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main",
-		HeadSHA: "head", Mergeable: record.MergeabilityConflicting})
+	// The tester's failed verdict sends testing back to implementing, which is a move back, and
+	// the implementer's first entry is raised by it.
+	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester,
+		Claim: "test-claim", Verdict: "fail", HandoffRecord: "test-1", HandoffVersion: 1})
 
 	assertPhase(t, pool, phase.Implementing)
 	if row := entryRow(t, pool, claim.RoleImplementer); row.Entry != 1 || !row.EntryMovedBack {
-		t.Fatalf("the implementer's row after the conflict = entry %d, moved back %t; want entry 1 raised by a move back: testing came back to implementing",
+		t.Fatalf("the implementer's row after the tester's fail = entry %d, moved back %t; want entry 1 raised by a move back: testing came back to implementing",
 			row.Entry, row.EntryMovedBack)
 	}
 

@@ -526,12 +526,14 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			t.Fatalf("round 2's task = %q, want it to name %s, the commit the approval read", task, headOne)
 		}
 	})
-	t.Run("a move back for a head that conflicts with its base", func(t *testing.T) {
+	t.Run("the reviewer's own move back from a round that decided nothing", func(t *testing.T) {
 		pool, engine, apply := reviewRoundTwo(t)
-		applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-			Base: "main", HeadSHA: headOne, Mergeable: record.MergeabilityConflicting})
+		if result := apply("move-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleReviewer, To: phase.Implementing,
+			Reason: "the change needs the migration first"}); result.Refusal != nil {
+			t.Fatalf("the reviewer's move back was refused: %+v", result.Refusal)
+		}
 		if got := issuePhase(t, pool); got != phase.Implementing {
-			t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
+			t.Fatalf("after the reviewer's move back the issue is in %s, want implementing", got)
 		}
 		mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(2*time.Hour))
 		backToReviewing(t, apply, 3)

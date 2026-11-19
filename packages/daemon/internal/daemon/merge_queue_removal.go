@@ -113,20 +113,19 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // to the Envoy topic of the issue's merger, and to nothing else: the pull request left the merge
 // queue at the row's head, GitHub did not report it merged, and the event names no reason, so the
 // merger reads the reason on GitHub and acts on it (step 5 of its role prompt). It stops nothing
-// it reaches, as a phase-ended message stops nothing.
+// it reaches, as a hook prompt stops nothing.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
-// ended as the row of a phase-ended message nobody holds is (phaseEnded). That row can end because
-// the role's next task names its phase anyway and the listener keeps its message for the role's
-// next holder (publishKeptToRole). Nothing else tells a merger of this removal: its pull request
-// waits out of the queue with nobody to enqueue it again or send the issue back, and a merger
-// whose pod was released would learn of it only when the release's backstop wakes it
-// (backstop_minutes, an hour by default). So a released merger is woken (wakeForDelivery), and
-// the row waits on its backoff until the woken session holds the role, or, while the wake pacing
-// holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
-// (parkedWait), as it waits while the listener answers that nobody holds it (notify.ErrNoHolder)
-// or that its holder is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet,
-// its start still owed, is no end either: the row waits for it.
+// ended as the row of a hook prompt nobody holds is (hookPrompt). That row can end because the
+// listener keeps its prompt for the role's next holder (publishKeptToRole). Nothing else tells a
+// merger of this removal: its pull request waits out of the queue with nobody to enqueue it again
+// or send the issue back, and a merger whose pod was released would learn of it only when the
+// release's backstop wakes it (backstop_minutes, an hour by default). So a released merger is
+// woken (wakeForDelivery), and the row waits on its backoff until the woken session holds the
+// role, or, while the wake pacing holds that resume, for its turn, reading the claim again at
+// most parkedWakeBound apart (parkedWait), as it waits while the listener answers that nobody
+// holds it (notify.ErrNoHolder) or that its holder is unresponsive (notify.ErrHolderUnresponsive).
+// A merger with no claim yet, its start still owed, is no end either: the row waits for it.
 //
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the
@@ -136,10 +135,10 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // may not know the gate closed, and woken by this message it could enqueue the pull request again
 // against the gate, which holds the merge (mergerWaitsForTheDesignGate holds its start the same
 // way). A merger whose session holds its role is told at once, gate or none. The three other
-// answers of the confirmed publish route keep the ordinary retry, as they do for a phase-ended
-// message: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
-// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
-// grant denies (notify.ErrPublishDenied).
+// answers of the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a
+// holder that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the
+// delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
+// (notify.ErrPublishDenied).
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")

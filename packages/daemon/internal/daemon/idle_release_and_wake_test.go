@@ -35,7 +35,7 @@ const (
 	idleRigFreed      = "freed-claim"
 	// The four pods whose sessions end as a released Oh My Pi's does in production
 	// (idleRigPlan.ExitsAsReleasedInProduction): one per message a sender sends that wakes such a
-	// pod, and one for the daemon's own phase-ended message and hook prompt.
+	// pod, and one for the daemon's own hook prompts.
 	idleRigJustReleasedAgent  = "just-released-agent"
 	idleRigJustReleasedRole   = "just-released-role"
 	idleRigJustReleasedRouted = "just-released-routed"
@@ -93,10 +93,9 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		idleRigWakeJustReleased(t, rig)
 	})
 
-	// The daemon's own messages to a released role, a phase-ended message and a hook prompt,
-	// whose rows wake the role's pod and then publish while its woken session has not claimed the
-	// role yet.
-	t.Run("ThePhaseEndedMessageAndTheHookPromptOfAReleasedRoleReachItsWokenSessionOnce", func(t *testing.T) {
+	// The daemon's own messages to a released role, two hook prompts, whose rows wake the role's
+	// pod and then publish while its woken session has not claimed the role yet.
+	t.Run("TheHookPromptsOfAReleasedRoleReachItsWokenSessionOnce", func(t *testing.T) {
 		idleRigOutboxWakesJustReleased(t, rig)
 	})
 
@@ -604,8 +603,8 @@ func idleRigKeptWakesAndReaches(t *testing.T, rig *idleWakeRig, issue idleRigIss
 // raises and not the copy's hand-over. Every other is counted where it is handed over
 // (idleRigDeliveredOnce), by the function that counts it: idleRigKeptWakesAndReaches counts one
 // copy for each of rows (a) and (b) of check k3; idleRigWakeJustReleased counts the
-// just-released role's message; idleRigOutboxWakesJustReleased counts the daemon's phase-ended
-// message and hook prompt; and the restart subtest
+// just-released role's message; idleRigOutboxWakesJustReleased counts the daemon's two hook
+// prompts; and the restart subtest
 // (AMessageSentDuringTheReleaseReachesTheWokenSessionOnceAcrossARestart) counts the role message
 // sent while the daemon was down.
 func idleRigRetryPublish(t *testing.T, rig *idleWakeRig, issue idleRigIssue, message, key string) {

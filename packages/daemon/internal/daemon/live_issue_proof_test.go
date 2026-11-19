@@ -449,7 +449,8 @@ type liveGitHub struct {
 	// sha is the pull request's head on GitHub, which a push moves.
 	sha string
 	// conflicting is what GitHub's lazily computed `mergeable` answers: false once the base has
-	// moved past the head, which is the one answer of a pull request that moves an issue.
+	// moved past the head, which the daemon reads twice and merges forward in the phase the issue
+	// stands in (workflow's mergeability).
 	conflicting bool
 }
 
