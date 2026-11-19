@@ -62,8 +62,10 @@ func issueKeyOfClaim(claim string) string {
 // person its account's BROKER_VM_EXCHANGE_ACCOUNTS entry names; for a pod, assignee, the person
 // its claim's issue is assigned to. "" when none names a person, and then the request is listed
 // for everyone signed in, as it was before, so no request waits where nobody sees it. A person's
-// pod has no claim. So after the setting drops its account, or maps it to another person, its
-// request is everyone's.
+// pod has no claim. So after the setting drops its account, or maps it to another person, a
+// request it makes is everyone's. Create calls this once, as it makes the request, and stores the
+// answer (credential_requests.notify), so a request made before such a change keeps the Inbox it
+// was listed in.
 func (m *Machine) responsiblePerson(e enrollmentRow, req policy.Requester, assignee string) string {
 	person := req.Operator
 	if person == "" {

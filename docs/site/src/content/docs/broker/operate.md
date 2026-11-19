@@ -383,6 +383,11 @@ another person:
   cancel the pod's requests: each is refused `403 NOT_YOURS`, and the request stays pending. The
   pod still reads and cancels its own requests. Putting the entry back gives the pod the person's
   requests again;
+- a request for a shared secret keeps the Inbox it was listed in when it was made, since the broker
+  records the person responsible for a request once, as it makes the request. So a request the pod
+  made before the change still waits in the first person's Inbox alone, also after a move, until
+  someone decides it, the pod cancels it or it expires. Anyone signed in may still decide it from
+  its page. A request the pod makes after the change waits in every person's Inbox;
 - an automatic grant of the person's own agent-tier secret, which the pod got because it acted as
   the person, stops releasing (`GRANT_NOT_LIVE`) and is not given back to a new request, so the
   pod's next request for that secret waits for the person. It is not revoked, and putting the entry
