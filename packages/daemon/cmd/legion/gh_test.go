@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -993,7 +994,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		// A repository of an owner the project maps nothing of: the bundle holds that owner's
 		// directory because the role's App is installed on the account, and the token in it
 		// reaches every repository of that installation.
-		{[]string{"pr", "create", "-R", "theorem-labs/agent-infra", "--fill"}, filepath.Join(root, "theorem-labs")},
+		{[]string{"pr", "create", "-R", "example-org/deployment", "--fill"}, filepath.Join(root, "example-org")},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)
 		want := stub + "|" + tc.dir + "|" + strings.Join(tc.args, " ") + "\n" + wantEnv
@@ -1884,7 +1885,9 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // The read is fresh: the check reads another remote of a push with it, and counts the commits of
 // one it reads public as held, which it does not scan, so a public the guard kept for a
 // repository made private since must not answer it. A kept public, which the guard's own
-// Visibility does answer with, is passed over for the read, and no answer is kept.
+// Visibility does answer with, is passed over for the read, and no answer is kept. For a
+// repository of an owner the bundle holds no directory for, `legion gh` refuses the guard's REST
+// read before any gh runs, and ls-remote alone answers: public, or nothing.
 func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1957,7 +1960,9 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name          string
+		name string
+		// slug is the repository the check reads, sjawhar/legion where it is empty.
+		slug          string
 		rest, graphql string
 		git           string
 		// kept is whether the guard holds a kept public answer for the repository when the read
@@ -1982,8 +1987,11 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		{name: "REST and GraphQL are limited and ls-remote is refused", rest: restSpent, graphql: graphQLLimited, git: refused, reads: "rest\ngraphql\ngit\n"},
 		{name: "REST is limited and GraphQL could not resolve the repository", rest: restSpent, graphql: graphQLNotFound, git: lists, reads: "rest\ngraphql\n"},
 		{name: "REST fails another way", rest: restFails, graphql: answers("PRIVATE"), git: lists, reads: "rest\n"},
+		{name: "an unserved owner's repository ls-remote lists", slug: "other-owner/invented-repo", rest: rest("private"), git: lists, want: "public\n", reads: "git\n"},
+		{name: "an unserved owner's repository GitHub asks ls-remote a credential for", slug: "other-owner/invented-repo", rest: rest("private"), git: refused, reads: "git\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			repo := cmp.Or(tc.slug, slug)
 			bin, record, state := t.TempDir(), filepath.Join(t.TempDir(), "reads"), t.TempDir()
 			if tc.kept {
 				keepPublic(t, state)
@@ -2005,8 +2013,8 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			code, stdout, stderr := legionGh(t, map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 				"PATH": wrappers + ":" + bin + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
-				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: slug,
-			}, leakguard.VisibilityReadArgs(slug)...)
+				"XDG_STATE_HOME": state, leakguard.VisibilityReadVar: repo,
+			}, leakguard.VisibilityReadArgs(repo)...)
 			switch {
 			case tc.want != "" && (code != 0 || stdout != tc.want):
 				t.Errorf("legion gh = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, tc.want)

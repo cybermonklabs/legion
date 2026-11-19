@@ -3,7 +3,7 @@
 // The secret forms under an airlock grant of a Google login, end to end: this command's own
 // Secret Manager client - gRPC, whose TLS handshake offers h2 and nothing else - reaches Secret
 // Manager through the broker's real airlock proxy, holding the grant's placeholder as its access
-// token, as `agent-secrets GCLOUD_SAMI -- sh -c 'CLOUDSDK_AUTH_ACCESS_TOKEN="$GCLOUD_SAMI"
+// token, as `agent-secrets GCLOUD_DEMO -- sh -c 'CLOUDSDK_AUTH_ACCESS_TOKEN="$GCLOUD_DEMO"
 // agent-secrets secret …'` runs it. Only the hosts are stand-ins: Secret Manager is the fake
 // secret manager of secret_gcp_test.go behind TLS, with a certificate for its real name, and the
 // proxy dials it for that name.
@@ -80,7 +80,7 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 // password, lists the secret Secret Manager holds; every Secret Manager call it made reached the
 // service carrying the grant's real token and never the placeholder; and nothing it printed
 // holds either. Its gRPC client offers h2 alone, so a proxy that answers HTTP/1.1 alone fails
-// it with "tls: no application protocol", as every secret form failed under a GCLOUD_SAMI grant
+// it with "tls: no application protocol", as every secret form failed under a GCLOUD_DEMO grant
 // before the proxy carried HTTP/2. The process is the command's own so the SDK's proxy and root
 // certificate caches, each read once per process, read this row's environment.
 func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T) {

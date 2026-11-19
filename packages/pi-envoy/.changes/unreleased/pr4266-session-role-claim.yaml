@@ -2,7 +2,7 @@ kind: Changed
 body: |-
   The Envoy role a session pod's launch names in `ENVOY_SESSION_ROLE` is now claimed only by the
   one session `ENVOY_SESSION_ROLE_SESSION` names: the id the pod starts the agent with, which
-  agent-infra's sessions workload sets beside the role once t-e-32 lands. With the role named and
+  the deployment's sessions workload sets beside the role once t-e-32 lands. With the role named and
   no session named, or an empty one, no session claims it. Each pass compares the session open
   then, so the rule holds after a `/new`, a `/fork` or a tree branch.
 
