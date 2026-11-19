@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // issueRead bounds one GitHub read the per-issue read makes: the pull request itself, the list of
@@ -100,7 +101,7 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 // one whose opened the workflow declined, which leaves the record as it was and nothing for the
 // reads that follow to judge.
 func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*record.PullRequest, error) {
-	issue, pr, err := w.issueRecord(ctx, key)
+	issue, pr, err := issueRecord(ctx, w.pool, w.records, key)
 	if err != nil || issue == nil {
 		return nil, err
 	}
@@ -133,7 +134,7 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*re
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return nil, fmt.Errorf("apply the open pull request %s#%d read from GitHub: %w", repo, pull.Number, err)
 	}
-	_, after, err := w.issueRecord(ctx, key)
+	_, after, err := issueRecord(ctx, w.pool, w.records, key)
 	if err != nil {
 		return nil, err
 	}
@@ -190,21 +191,32 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 }
 
 // issueRecord is key's issue record and its pull request record, both nil for what is not
-// recorded, read in one transaction.
-func (w *workflowRuntime) issueRecord(ctx context.Context, key string) (*record.Issue, *record.PullRequest, error) {
+// recorded, read in one transaction (issueRecordIn): what the per-issue read and the merge-state
+// ladder read before they read GitHub (issuePullRequest, readMergeState), and what the second read
+// of a conflict reads before it acts (outbox's conflictConfirm).
+func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key string) (*record.Issue, *record.PullRequest, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error
-		if issue, err = w.records.Issue(ctx, tx, key); err != nil || issue == nil {
-			return err
-		}
-		pr, err = w.records.PullRequest(ctx, tx, key)
+		issue, pr, err = issueRecordIn(ctx, tx, records, key)
 		return err
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)
 	}
 	return issue, pr, nil
+}
+
+// issueRecordIn reads key's issue record and its pull request record in tx, both nil for what is
+// not recorded: issueRecord's read, and the start of a merge-forward message's, which reads its
+// tree's linger in the same transaction (outbox's mergeForwardMessage).
+func issueRecordIn(ctx context.Context, tx pgx.Tx, records record.Store, key string) (*record.Issue, *record.PullRequest, error) {
+	issue, err := records.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return nil, nil, err
+	}
+	pr, err := records.PullRequest(ctx, tx, key)
+	return issue, pr, err
 }
 
 // readIssuesAtStart reads the pull request of each issue in the workflow once as the runtime starts

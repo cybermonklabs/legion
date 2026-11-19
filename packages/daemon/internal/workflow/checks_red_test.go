@@ -332,9 +332,14 @@ func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
 			read := conflictingRead(&record.BaseRules{Required: []string{"ci"}})
 			read.Mergeable, read.MergeState = tc.mergeable, tc.mergeState
+			if tc.mergeable != record.MergeabilityConflicting {
+				// A read carries the base's rules only when it finds the head conflicting
+				// (intake.PullRequestMergeability.Rules).
+				read.Rules = nil
+			}
 			applyRefusingNothing(t, pool, readsAfter(0), read)
 			applyRefusingNothing(t, pool, readsAfter(conflictConfirmWait), read)
-			if got, status := issuePhase(t, pool), issueStatus(t, pool); got != tc.at || status != tc.status {
+			if got, status := issuePhase(t, pool), recordedStatus(t, pool, "LEGION-208"); got != tc.at || status != tc.status {
 				t.Fatalf("after the two reads the issue is in %s with status %q, want it still in %s with %q", got, status, tc.at, tc.status)
 			}
 			assertOutboxCount(t, pool, "supervise", 0)
@@ -354,7 +359,7 @@ func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
 // merge forward it asked for that head (record.PullRequest.MergeForward), so the same read again
 // asks nothing and tells nobody a second time.
 func TestEveryConflictingReadDecidesAndTheAskItselfStopsTheRepeat(t *testing.T) {
-	pool := seedConflictIssue(t, phase.Merging, "retro", record.PullRequest{ConflictingHead: "head"})
+	pool := seedConflictIssue(t, phase.Merging, "retro", record.PullRequest{ConflictingHead: conflictHead})
 	applyRefusingNothing(t, pool, readsAfter(0), conflictingRead(&record.BaseRules{}))
 	if due := conflictConfirms(t, pool); len(due) != 0 {
 		t.Fatalf("second reads due at %v, want none: the record already held the conflict", due)

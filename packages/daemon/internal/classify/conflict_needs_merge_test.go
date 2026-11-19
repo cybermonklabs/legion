@@ -42,7 +42,7 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 		issue record.Issue
 		pr    record.PullRequest
 		rules *record.BaseRules
-		want  string
+		want  record.ConflictWhy
 	}{
 		{"accepting, before the rules are read", issueIn(phase.Accepting), green, nil, ConflictMergeNext},
 		{"retro, every check green", issueIn(phase.Retro), green, requires("ci"), ConflictMergeNext},
@@ -67,7 +67,7 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 		{"implementing, a plan with no rulesets: nothing is required", issueIn(phase.Implementing), settled(nil), &record.BaseRules{}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ConflictNeedsMerge(tc.issue, tc.pr, tc.rules)
+			got := ConflictNeedsMerge(tc.issue, tc.rules, GreenContexts(tc.pr))
 			if got != tc.want {
 				t.Fatalf("ConflictNeedsMerge = %q, want %q", got, tc.want)
 			}

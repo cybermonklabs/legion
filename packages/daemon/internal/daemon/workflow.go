@@ -262,11 +262,11 @@ type workflowRuntime struct {
 	handedOff *wakeSet[string]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState, by classify.MergeStateReadOwed: a round waiting on GitHub's
-	// answer, a head push in implementing through merging, a base push in testing through
+	// answer, a head move in implementing through merging, a base push in testing through
 	// merging), each the start read found GitHub still computing (readIssuesAtStart), and each a
 	// second read of a conflicting head left reading no answer (queueMergeStateFollow), that
 	// readMergeStates has not started a ladder for yet; mergeStateQueued is what each of them asked
-	// for, the head its ladder starts by following or "" for a climb (queueLadder); and
+	// for, the head its ladder starts by following or "" for a climb (queueMergeStateFollow); and
 	// mergeStateRunning each issue whose ladder is still reading, a climb or a follow
 	// (mergeStateRun), which is why a second fact of an issue already being read starts no second
 	// ladder. mergeStateRetry is how long a ladder waits between reads of a state GitHub answers

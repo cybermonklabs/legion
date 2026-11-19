@@ -1216,10 +1216,11 @@ type MergeStateFact int
 
 const (
 	// MergeStateFactOther is a fact that moves neither the head nor the base: a review, a CI
-	// settlement.
+	// settlement, a push to the pull request's branch, whose synchronize is the fact that moves
+	// the head.
 	MergeStateFactOther MergeStateFact = iota
 	// MergeStateFactHeadMove is a fact that moves the pull request's head or opens it at one: the
-	// pull request opened or reopened, a synchronize, a push to its branch.
+	// pull request opened or reopened, a synchronize.
 	MergeStateFactHeadMove
 	// MergeStateFactBasePush is a push to the base branch the pull request sits on.
 	MergeStateFactBasePush
@@ -1234,19 +1235,19 @@ const (
 //   - The review round waits on GitHub's answer about the head (roundWaits), whatever the fact: an
 //     approval stands on a head GitHub has answered nothing for, or a state it would not merge
 //     from (RoundWaitsOnMergeState), or a head whose first conflicting read waits for its second.
-//   - The fact moves the head, and the issue stands in implementing, testing, reviewing,
-//     accepting, retro or merging (dispatch://INFRA-4374 R0). GitHub runs no checks on a head that
-//     conflicts with its base, so without a read a conflicting push stands with no CI and nobody is
-//     told; the read that finds the head CONFLICTING is the first of the two reads that confirm a
-//     conflict (R2).
+//   - The fact moves the head, and the issue stands in a phase a merge forward is asked in,
+//     implementing through merging (record.MergeForwardPhases, dispatch://INFRA-4374 R0). GitHub
+//     runs no checks on a head that conflicts with its base, so without a read a conflicting push
+//     stands with no CI and nobody is told; the read that finds the head CONFLICTING is the first
+//     of the two reads that confirm a conflict (R2).
 //   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
 //     or merging. GitHub sends no event of the pull request while it computes whether the head
 //     still merges into the moved base. Past the review the merge is next (ConflictMergeNext), so
 //     a conflict there is acted on at once (R0). In testing and reviewing the record otherwise
 //     keeps the state the read before the push left: a record read `blocked` while GitHub answered
 //     DIRTY, because no read followed the base push (INFRA-4315, dispatch://INFRA-4374/spec#b-r4).
-//     A base push reads nothing for an issue in implementing or before it: there the
-//     implementer's next push is read, by the reason above.
+//     A base push reads nothing for an issue in implementing or before it: there the head the
+//     implementer pushes next is read, by the reason above.
 //
 // Every other fact asks nothing, and so does a head move or a base push of an issue outside those
 // phases. It is the one statement of the gate, so the reasons cannot drift apart between the
@@ -1256,20 +1257,21 @@ func MergeStateReadOwed(issue record.Issue, roundWaits bool, fact MergeStateFact
 	case roundWaits:
 		return true
 	case fact == MergeStateFactHeadMove:
-		return record.StandsIn(issue, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
+		return record.StandsIn(issue, record.MergeForwardPhases...)
 	case fact == MergeStateFactBasePush:
 		return record.StandsIn(issue, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging)
 	}
 	return false
 }
 
-// The reasons R0 acts on a confirmed conflict for (ConflictNeedsMerge), in the words the daemon
-// records the act's reason in (record.MergeForward.Why) and logs it under.
+// The reasons R0 acts on a confirmed conflict for (ConflictNeedsMerge), as record declares them
+// (record.ConflictWhy), in the words the daemon records the act's reason in
+// (record.MergeForward.Why) and logs it under.
 const (
-	ConflictMergeNext       = "merge-next"
-	ConflictRulesUnread     = "base-rules-unread"
-	ConflictRequiresCurrent = "base-requires-current"
-	ConflictCheckNotGreen   = "required-check-not-green"
+	ConflictMergeNext       = record.ConflictMergeNext
+	ConflictRulesUnread     = record.ConflictRulesUnread
+	ConflictRequiresCurrent = record.ConflictRequiresCurrent
+	ConflictCheckNotGreen   = record.ConflictCheckNotGreen
 )
 
 // ConflictNeedsMerge is R0's decision on a confirmed conflict (dispatch://INFRA-4374 R0): why the
@@ -1289,18 +1291,20 @@ const (
 //     it (rules.Strict), so the head cannot merge whatever its checks say until the base is merged
 //     into it.
 //   - ConflictCheckNotGreen: a context the base requires (rules.Required) is not green on the
-//     head (GreenContexts). GitHub runs no checks on a head that conflicts with its base, so a
-//     required check that has not passed there never will: only a merge forward gives it a head to
-//     run on. A check still running reads as not green too, since the record holds a run only
-//     once the head's CI settles, and R0 acts at once rather than wait for it.
+//     head (green, which is GreenContexts of the pull request). GitHub runs no checks on a head
+//     that conflicts with its base, so a required check that has not passed there never will: only
+//     a merge forward gives it a head to run on. A check still running reads as not green too,
+//     since the record holds a run only once the head's CI settles, and R0 acts at once rather
+//     than wait for it.
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
 // be current: the tester and the reviewer go on at that head, and the merge forward waits for the
 // step that needs it, the issue's move past its review, where ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
-// and any reader of the record decide alike.
-func ConflictNeedsMerge(issue record.Issue, pr record.PullRequest, rules *record.BaseRules) string {
+// and any reader of the record decide alike. green is the caller's, so the engine, which logs the
+// contexts green on the head when nothing needs a merge yet, reads them once.
+func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []string) record.ConflictWhy {
 	switch {
 	case record.PastReview(issue):
 		return ConflictMergeNext
@@ -1309,7 +1313,6 @@ func ConflictNeedsMerge(issue record.Issue, pr record.PullRequest, rules *record
 	case rules.Strict:
 		return ConflictRequiresCurrent
 	}
-	green := GreenContexts(pr)
 	for _, required := range rules.Required {
 		if at := sort.SearchStrings(green, required); at == len(green) || green[at] != required {
 			return ConflictCheckNotGreen

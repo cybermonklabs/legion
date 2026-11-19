@@ -224,14 +224,15 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		return intake.Result{}, err
 	}
 	if decide {
-		if why := classify.ConflictNeedsMerge(*issue, *pr, fact.Rules); why != "" {
+		green := classify.GreenContexts(*pr)
+		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
 			if err := e.mergeForward(ctx, tx, *issue, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {
 			e.logOnCommit(ctx, "workflow: a confirmed conflict needs no merge yet",
 				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "phase", issue.Phase,
-				"required", fact.Rules.Required, "green", classify.GreenContexts(*pr))
+				"required", fact.Rules.Required, "green", green)
 		}
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
@@ -1188,12 +1189,13 @@ func told(row record.PhaseRow, r round) bool {
 // than a sentence in a comment and nine calls spread through the handlers: the pull request's own
 // events, a push to it, a review, a CI settlement, and a push to the base it sits on. The switch
 // also names which of them move the head (classify.MergeStateFactHeadMove): the pull request
-// opened or reopened, a synchronize, a push to its branch. Apply calls it once, after the
-// handler, so a handler's own early return cannot drop the read and no handler recomputes the
-// round settleRound has just computed (dispatch://INFRA-714 R3). GitHub's own answer does not ask
-// - the fact a read applies is mergeability, and a read that asked for another would read the
-// same head for as long as GitHub kept answering the same way. What a read answers is the
-// ladder's to decide (daemon's mergeStateLadder), and the next fact of the issue asks again.
+// opened or reopened, and a synchronize, which is the fact that moves the head a push to the
+// branch carries (its case says why the push is not one). Apply calls it once, after the handler,
+// so a handler's own early return cannot drop the read and no handler recomputes the round
+// settleRound has just computed (dispatch://INFRA-714 R3). GitHub's own answer does not ask - the
+// fact a read applies is mergeability, and a read that asked for another would read the same head
+// for as long as GitHub kept answering the same way. What a read answers is the ladder's to decide
+// (daemon's mergeStateLadder), and the next fact of the issue asks again.
 //
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
 // walks the open pull requests recorded on the base once, and asks for each read inside that
@@ -1214,8 +1216,11 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 		kind = classify.MergeStateFactHeadMove
 	case intake.Push:
+		// The push moves no head of the record: its synchronize, from GitHub or from the per-issue
+		// read (daemon's followHead), is the fact that moves the head, and the one a head move is
+		// read for. So the push asks only as a review or a settlement does, for a round it leaves
+		// waiting on GitHub, and one push to a branch asks for no ladder beside its synchronize's.
 		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
-		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestChecks:
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
@@ -1250,11 +1255,17 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if err != nil || issue == nil {
 		return err
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-	if err != nil {
-		return err
+	owed := classify.MergeStateReadOwed(*issue, false, fact)
+	if !owed {
+		// The round's own answer matters only where the fact and the phase owe no read: every
+		// phase a round can wait on GitHub in already owes one on a head move or a base push.
+		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		if err != nil {
+			return err
+		}
+		owed = e.reviewRound(*issue, reviewer, pr).waitsOnMergeState
 	}
-	if !classify.MergeStateReadOwed(*issue, e.reviewRound(*issue, reviewer, pr).waitsOnMergeState, fact) {
+	if !owed {
 		return nil
 	}
 	key := issue.Key

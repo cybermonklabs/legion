@@ -444,7 +444,8 @@ func TestASynchronizeBeforeItsPushLeavesNoVerdictToMoveAnApprovalOn(t *testing.T
 // settlement, and a push to the base it sits on. Keyed on the fact rather than called from the
 // handlers, a handler's own early return cannot drop it (dispatch://INFRA-714 R3). GitHub's own
 // answer asks for nothing: a read that asked for another would read the same head for as long as
-// GitHub kept answering the same way.
+// GitHub kept answering the same way. A push to the branch moves no head of the record - its
+// synchronize does - so it asks only for a round left waiting on GitHub.
 func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T) {
 	push := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: testReviewApp}
 	for _, tc := range []struct {
@@ -458,10 +459,11 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 	}{
 		// A push whose new head has not arrived leaves the round waiting on that head, not on
 		// GitHub: the approval of the head the push replaced stands for nothing until the move is
-		// known. The push moves the head all the same, and a head move of an issue in implementing
-		// through merging is read for a conflict with the base (classify.MergeStateReadOwed,
-		// dispatch://INFRA-4374 R0), so it is read for.
-		{name: "a push to the branch", fact: push, want: true},
+		// known, so nothing is read. The push moves no head of the record either: the synchronize
+		// that carries the head moves it, and that is the fact a head move of an issue in
+		// implementing through merging is read for (classify.MergeStateFactHeadMove,
+		// dispatch://INFRA-4374 R0) - the head arriving, below.
+		{name: "a push to the branch", fact: push, want: false},
 		{name: "the head arriving", fact: intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
 			HeadSHA: headTwo, Before: headOne, Sender: testReviewApp}, approved: headTwo, want: true},
 		{name: "a synchronize that moves nothing", fact: intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,

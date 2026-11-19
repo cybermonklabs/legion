@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -69,47 +68,9 @@ const (
 	followEnd  = "github: the merge state reads after the ladder end"
 )
 
-// followRig is CAPTURE-1 in reviewing with its reviewer's approval standing on head code and no
-// merge state read yet (approvedCapture), GitHub answering the nth read of its pull request as
-// answer says and counting the reads, the base main requiring lint (green nowhere) and
-// pr-checks-result, and the runtime whose ladder reads it, its waits cut to retry through its own
-// seam (mergeStateRetry) and its log kept.
-type followRig struct {
-	pool  *store.Pool
-	w     *workflowRuntime
-	logs  *syncBuffer
-	reads atomic.Int32
-}
-
-func newFollowRig(t *testing.T, retry time.Duration, answer func(read int32) pullAnswer) *followRig {
-	t.Helper()
-	rig := &followRig{pool: isolatedOutboxPool(t), logs: &syncBuffer{}}
-	approvedCapture(t, rig.pool)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/acme/widgets/pulls/86":
-			got := answer(rig.reads.Add(1))
-			if got.status != 0 {
-				w.WriteHeader(got.status)
-			}
-			w.Write([]byte(got.body))
-		case "/repos/acme/widgets/rules/branches/main":
-			w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"},{"context":"pr-checks-result"}]}}]`))
-		case "/repos/acme/widgets/branches/main":
-			w.Write([]byte(`{"name":"main","protected":false}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	rig.w = readRuntime(rig.pool, server.URL, slog.New(slog.NewJSONHandler(rig.logs, nil)))
-	rig.w.mergeStateRetry = retry
-	return rig
-}
-
 // start runs the runtime's reader until the test ends, and applies the CI settlement of head code,
-// which asks for a read of GitHub's merge state since the approval waits on it.
-func (rig *followRig) start(t *testing.T) {
+// which asks for a read of GitHub's merge state when an approval waits on it (approvedCapture).
+func (rig *readRig) start(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -118,15 +79,9 @@ func (rig *followRig) start(t *testing.T) {
 }
 
 // follows is every line of a read after the ladder, oldest first.
-func (rig *followRig) follows(t *testing.T) []map[string]any {
+func (rig *readRig) follows(t *testing.T) []map[string]any {
 	t.Helper()
 	return loggedLines(t, rig.logs.String(), followRead)
-}
-
-// running is how many ladders the runtime marks as running, and waiting how many issues wait for
-// one.
-func (rig *followRig) running() (running, waiting int) {
-	return ladders(rig.w)
 }
 
 // ladders is how many ladders w marks as running, and how many issues wait for one.
@@ -137,19 +92,22 @@ func ladders(w *workflowRuntime) (running, waiting int) {
 }
 
 // endedWithNoRead holds that the reads after the ladder end, logging their end, with nothing
-// standing behind them, and that GitHub is read no more than mark times however long their longest
-// wait is given.
-func (rig *followRig) endedWithNoRead(t *testing.T, mark int32) {
+// standing behind them, and that GitHub is read no more after that end however long their
+// longest wait is given. The count is taken once the end is logged, so a read that checked the
+// record just before the change that ends them, and reached GitHub after it, is not counted as a
+// read after the end.
+func (rig *readRig) endedWithNoRead(t *testing.T) {
 	t.Helper()
 	testwait.Eventually(t, "the reads after the ladder to end", func() bool {
-		running, _ := rig.running()
+		running, _ := ladders(rig.w)
 		return running == 0 && len(loggedLines(t, rig.logs.String(), followEnd)) == 1
 	})
+	mark := rig.reads.Load()
 	time.Sleep(2 * mergeStateFollowWaits * rig.w.mergeStateWait())
 	if got := rig.reads.Load(); got > mark {
 		t.Fatalf("GitHub was read %d times, want no read after the %d before the reads after the ladder ended", got, mark)
 	}
-	if running, waiting := rig.running(); running != 0 || waiting != 0 {
+	if running, waiting := ladders(rig.w); running != 0 || waiting != 0 {
 		t.Fatalf("%d issues are queued for a read and %d ladders are running, want none standing behind the end", waiting, running)
 	}
 }
@@ -165,11 +123,11 @@ func (rig *followRig) endedWithNoRead(t *testing.T, mark int32) {
 // and starts a climb at once. The waits are cut only through the runtime's own seam
 // (mergeStateRetry), so the waits the lines name are the production ones in a smaller unit.
 func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
-	const retry = 10 * time.Millisecond
+	const retry = readRigWait
 	forever := func(int32) pullAnswer { return unknownPull }
 
 	t.Run("unknown five times and then CONFLICTING is recorded and reaches R0's decision", func(t *testing.T) {
-		rig := newFollowRig(t, retry, func(read int32) pullAnswer {
+		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
 			if read <= mergeStateLadderReads {
 				return unknownPull
 			}
@@ -197,7 +155,7 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 
 		// The second read the first one queued runs a minute on, and GitHub still answers
 		// CONFLICTING: the conflict is confirmed and R0 decides on the base's rules.
-		if ran := runSecondReads(t, secondReadRunner(rig.w), pr.ConflictRead.At.Add(time.Minute)); ran != 1 {
+		if ran := runSecondReads(t, rig.runner, pr.ConflictRead.At.Add(time.Minute)); ran != 1 {
 			t.Fatalf("%d second reads ran a minute after the first read, want one", ran)
 		}
 		_, pr = capturePhase(t, rig.pool)
@@ -216,7 +174,7 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 	})
 
 	t.Run("the waits double up to twenty of the ladder's, and the reads end when the pull request closes", func(t *testing.T) {
-		rig := newFollowRig(t, retry, forever)
+		rig := newReadRig(t, approvedCapture, forever)
 		rig.start(t)
 		want := []time.Duration{2 * retry, 4 * retry, 8 * retry, 16 * retry, 20 * retry, 20 * retry}
 		testwait.Eventually(t, "six reads after the ladder", func() bool { return len(rig.follows(t)) >= len(want) })
@@ -228,28 +186,28 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 		// GitHub's close, as its webhook records it. A close asks for no read.
 		applyFact(t, rig.pool, "github", "closed-86", intake.PullRequestClosed{Repo: "acme/widgets", Number: 86, HeadSHA: "code",
 			UpdatedAt: time.Now().UTC()}, rig.w.handlers...)
-		mark := rig.reads.Load()
 		if _, pr := capturePhase(t, rig.pool); pr.State != record.PullRequestClosed {
 			t.Fatalf("the record holds the pull request %s, want it closed", pr.State)
 		}
-		rig.endedWithNoRead(t, mark)
+		rig.endedWithNoRead(t)
 	})
 
 	t.Run("the reads end when the record's head moves", func(t *testing.T) {
-		rig := newFollowRig(t, retry, forever)
+		rig := newReadRig(t, approvedCapture, forever)
 		rig.start(t)
 		testwait.Eventually(t, "three reads after the ladder", func() bool { return len(rig.follows(t)) >= 3 })
 		// The record takes another head with no fact that asks for a read: the reads after the
 		// ladder follow the head they read, and read nothing of another.
 		recordCapture(t, rig.pool, func(pr *record.PullRequest) { pr.HeadSHA = "moved" })
-		rig.endedWithNoRead(t, rig.reads.Load())
+		rig.endedWithNoRead(t)
 	})
 
 	t.Run("a request while a read after the ladder waits starts a climb at once", func(t *testing.T) {
 		// A larger unit, so the wait the request ends - eight of them - is far longer than the
 		// test's own step between the read before it and the request.
 		const slower = 50 * time.Millisecond
-		rig := newFollowRig(t, slower, forever)
+		rig := newReadRig(t, approvedCapture, forever)
+		rig.w.mergeStateRetry = slower
 		rig.start(t)
 		testwait.Eventually(t, "two reads after the ladder", func() bool { return len(rig.follows(t)) >= 2 })
 		mark := rig.reads.Load()
@@ -293,7 +251,7 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 			var once sync.Once
 			release := func() { once.Do(func() { close(held) }) }
 			var readAt atomic.Pointer[time.Time]
-			rig := newSecondReadRig(t, func(read int32) pullAnswer {
+			rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
 				switch {
 				case read <= mergeStateLadderReads:
 					return tc.answer
@@ -392,7 +350,7 @@ func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 		{name: "dirty queues none", answer: conflictingPull},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newSecondReadRig(t, func(read int32) pullAnswer {
+			rig := newReadRig(t, captureInTesting, func(read int32) pullAnswer {
 				if read == 1 {
 					return tc.answer
 				}

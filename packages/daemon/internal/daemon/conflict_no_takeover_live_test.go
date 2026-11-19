@@ -296,7 +296,7 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 		conflictBase, conflictFirstHead, conflictBase, conflictRequiredCheck, conflictFirstHead)
 	first := r.awaitLogged(conflictFirstReadLine, r.key, testwait.Bounded(t, time.Minute, time.Second))
 	r.note("read back: the daemon logged %q for %s, head %v against base %v", first.Message, r.key, first.Attrs["head"], first.Attrs["base"])
-	if rows := r.outboxRows(r.key, "conflict_confirm"); rows != 1 {
+	if rows := outboxRowsOfKind(t, r.st.Pool(), r.key, record.OutboxKindConflictConfirm); rows != 1 {
 		t.Fatalf("the outbox holds %d second reads of %s, want the one the first read queued", rows, r.key)
 	}
 	r.note("read back: the outbox holds one second read of %s's head (conflict_confirm)", r.key)
@@ -307,7 +307,7 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 	if heard := r.heardOn(r.key); !maps.Equal(heard, r.heard) {
 		t.Fatalf("the role topics of %s took %v messages after the first read, want %v as before it: a first read sends nothing", r.key, heard, r.heard)
 	}
-	if rows := r.outboxRows(r.key, "merge_forward"); rows != 0 {
+	if rows := outboxRowsOfKind(t, r.st.Pool(), r.key, record.OutboxKindMergeForward); rows != 0 {
 		t.Fatalf("the outbox holds %d merge-forward messages of %s after the first read, want none", rows, r.key)
 	}
 	r.note("read back: no role topic of %s took a message, the architect's included, and the outbox holds no merge-forward message of it", r.key)
@@ -355,7 +355,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 		return len(notices) > 0
 	})
 	if len(notices) != 1 || notices[0].Kind != "checks-red" || notices[0].Phase != phase.Testing {
-		t.Fatalf("the architect was told %+v after the first read, want one checks-red notice naming testing", notices)
+		t.Fatalf("the architect was told %+v after the second read, want one checks-red notice naming testing", notices)
 	}
 	r.note("read back: one notice on the architect's role topic, checks-red naming %s — %s", notices[0].Phase, notices[0].Reason)
 
@@ -447,7 +447,7 @@ func (r *conflictNoTakeoverLive) passedControlGetsNothing() {
 	if asked := r.loggedFor(conflictAskedLine, r.control); len(asked) != 0 {
 		t.Fatalf("the daemon logged %q for %s, want no merge forward asked of a conflict that needs none", asked[0].Message, r.control)
 	}
-	if rows := r.outboxRows(r.control, "merge_forward"); rows != 0 {
+	if rows := outboxRowsOfKind(t, r.st.Pool(), r.control, record.OutboxKindMergeForward); rows != 0 {
 		t.Fatalf("the outbox holds %d merge-forward messages of %s, want none", rows, r.control)
 	}
 	if got := r.issue(r.control); got.Phase != phase.Testing {
@@ -544,27 +544,16 @@ func (r *conflictNoTakeoverLive) architectNoticesSince() []record.Notice {
 // counts what the topics took does not count while a message an earlier step wrote is on its way.
 func (r *conflictNoTakeoverLive) published(issue string) {
 	r.t.Helper()
+	kinds := []string{string(record.OutboxKindNotice), string(record.OutboxKindRoleMessage), string(record.OutboxKindHookPrompt),
+		string(record.OutboxKindMergeForward)}
 	testwait.Eventually(r.t, "the outbox to publish every message of "+issue+" it holds", func() bool {
 		var rows int
-		if err := r.st.Pool().QueryRow(context.Background(),
-			"select count(*) from outbox where issue = $1 and kind in ('notice', 'role_message', 'hook_prompt', 'merge_forward')",
-			issue).Scan(&rows); err != nil {
+		if err := r.st.Pool().QueryRow(context.Background(), "select count(*) from outbox where issue = $1 and kind = any($2)",
+			issue, kinds).Scan(&rows); err != nil {
 			r.t.Fatalf("read the outbox rows of %s: %v", issue, err)
 		}
 		return rows == 0
 	})
-}
-
-// outboxRows is how many rows of kind the outbox holds for issue. A finished row is deleted
-// (record.Postgres.FinishOutbox), and no route shows the table.
-func (r *conflictNoTakeoverLive) outboxRows(issue, kind string) int {
-	r.t.Helper()
-	var rows int
-	if err := r.st.Pool().QueryRow(context.Background(),
-		"select count(*) from outbox where issue = $1 and kind = $2", issue, kind).Scan(&rows); err != nil {
-		r.t.Fatalf("read the outbox rows of %s: %v", issue, err)
-	}
-	return rows
 }
 
 // conflictGitHub is what this proof's GitHub answers beyond the harness's stand-in (liveGitHub's

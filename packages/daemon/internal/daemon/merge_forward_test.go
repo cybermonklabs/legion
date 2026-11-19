@@ -26,44 +26,23 @@ const (
 	mergeForwardEnded     = "outbox merge-forward message finished undelivered: the role's claim has failed or retired"
 )
 
-// mergeForwardRunner is an outbox runner over an isolated database holding LEGION-208 in testing,
-// its pull request #86 open at head sha-1 on main with asked as the merge forward the record
-// holds, and a supervisor with no claim on it yet. It drains on the caller's goroutine (RunOnce),
-// as hookRunner's does, and logs to the buffer it answers.
+// mergeForwardRunner is an outbox runner over an isolated database holding LEGION-208 in testing
+// (runnerIn), its pull request #86 open at head sha-1 on main with asked as the merge forward the
+// record holds, and a supervisor with no claim on it yet. It drains on the caller's goroutine
+// (RunOnce), as hookRunner's does, and logs to the buffer it answers.
 func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", LastDispatchSeq: 5}
-	putOutboxIssue(t, pool, records, issue)
+	logs := &syncBuffer{}
+	runner, sup, pool := runnerIn(t, phase.Testing, "testing", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets",
+		return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: asked})
 	}); err != nil {
 		t.Fatalf("seed the pull request: %v", err)
 	}
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	logs := &syncBuffer{}
-	runner := &outbox{
-		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree),
-		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), notices: publisher,
-		now: time.Now, log: slog.New(slog.NewJSONHandler(logs, nil)),
-	}
 	return runner, sup, pool, logs
-}
-
-// drainAt drains runner's outbox with its clock held ahead of the wall clock by ahead, past the
-// backoff of every attempt before it.
-func drainAt(t *testing.T, runner *outbox, ahead time.Duration, what string) {
-	t.Helper()
-	at := time.Now().Add(ahead)
-	runner.now = func() time.Time { return at }
-	if err := runner.RunOnce(context.Background()); err != nil {
-		t.Fatalf("%s: %v", what, err)
-	}
 }
 
 // The merge forward is a message, not a phase start (dispatch://INFRA-4374 R1), so nothing else

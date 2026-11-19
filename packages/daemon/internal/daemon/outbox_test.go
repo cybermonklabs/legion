@@ -1254,6 +1254,19 @@ func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
 	}
 }
 
+// startedClaim creates role's claim on LEGION-208 as a launch that has not registered yet, so a
+// start queued for it finds it and hands it its task: what the claim then holds is what the start
+// delivered.
+func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Machine {
+	t.Helper()
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
+		Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the %s's claim: %v", role, err)
+	}
+	return machine
+}
+
 // A role whose claim this daemon supervises and has not released is published to as before: the
 // claim read stops only the message to a released pod.
 func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {

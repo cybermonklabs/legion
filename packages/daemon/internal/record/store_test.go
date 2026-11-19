@@ -372,7 +372,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// The first conflicting read still waiting for its second and the ask to merge forward,
 		// each a jsonb column of its own, read back with every field and time as written.
 		ConflictRead: &ConflictRead{Head: "b1c2d3", Base: "main", At: updatedAt.Add(2 * time.Minute)},
-		MergeForward: &MergeForward{Head: "a0b1c2", Base: "main", Phase: phase.Accepting, Why: "required-check-not-green",
+		MergeForward: &MergeForward{Head: "a0b1c2", Base: "main", Phase: phase.Accepting, Why: ConflictCheckNotGreen,
 			AskedAt: updatedAt.Add(-time.Hour), Landed: "b1c2d3", ReviewAsked: true},
 		// The moment of the last read that answered is read back as it was written, so the column
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
@@ -911,7 +911,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		Run:          &HeadRun{Anchor: Judgement{HeadSHA: "fix"}, Steps: []RunStep{{Head: "red-tests"}}},
 		State:        PullRequestOpen,
 		ConflictRead: &ConflictRead{Head: "red-tests", Base: "main", At: time.Date(2026, 9, 25, 21, 1, 0, 0, time.UTC)},
-		MergeForward: &MergeForward{Head: "fix", Base: "main", Phase: phase.Reviewing, Why: "base-requires-current",
+		MergeForward: &MergeForward{Head: "fix", Base: "main", Phase: phase.Reviewing, Why: ConflictRequiresCurrent,
 			AskedAt: time.Date(2026, 9, 25, 20, 58, 0, 0, time.UTC), Landed: "red-tests"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {

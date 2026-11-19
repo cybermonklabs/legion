@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,12 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
-
-// mergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, and every phase after it up to the merge, which the issue keeps while the
-// implementer merges (dispatch://INFRA-4374 R1). An issue that stands in none of them - before
-// its implementation, or out of the workflow - has no pull request work to merge forward.
-var mergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
 
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
 // (dispatch://INFRA-4374 R0, R1; classify.ConflictNeedsMerge): the issue keeps the phase it stands
@@ -41,11 +34,11 @@ var mergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.
 // hold and its notice.
 //
 // The roles are addressed as every role message of the daemon is (addressRoles), each once, and
-// a pull request that is not open, an issue in no phase of mergeForwardPhases and a tree that
-// lingers (record.TreeLingers, where every role is suspended) are asked nothing.
-func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, why string) error {
+// a pull request that is not open, an issue in no phase of record.MergeForwardPhases and a tree
+// that lingers (record.TreeLingers, where every role is suspended) are asked nothing.
+func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
-	if pr.State != record.PullRequestOpen || !slices.Contains(mergeForwardPhases, at) {
+	if pr.State != record.PullRequestOpen || !record.StandsIn(issue, record.MergeForwardPhases...) {
 		return nil
 	}
 	if asked := pr.MergeForward; asked != nil && asked.Head == pr.HeadSHA && (asked.Phase != phase.Implementing || at == phase.Implementing) {
@@ -55,7 +48,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	recipients := []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}
-	if worker := RoleFor(at); at != phase.Implementing && holdsForMergeForward(worker) {
+	if worker := RoleFor(at); at != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, worker) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
 	addressed, err := e.addressRoles(issue.Project, recipients, nil)
@@ -87,14 +80,6 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	e.logOnCommit(ctx, "workflow: merge forward asked", "issue", issue.Key, "tree", issue.Tree, "phase", at,
 		"pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
 	return nil
-}
-
-// holdsForMergeForward says whether the worker of a phase is told to hold while the implementer
-// merges forward (record.MergeForwardHold): the tester, the reviewer and the merger, which work
-// the shared workspace beside the implementer. The implementer is the one the ask tells, and the
-// architect is told by the checks-red notice.
-func holdsForMergeForward(role claim.Role) bool {
-	return role == claim.RoleTester || role == claim.RoleReviewer || role == claim.RoleMerger
 }
 
 // mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once
@@ -157,14 +142,14 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // new value rather than a change of the one the record holds, since a copy of the pull request
 // shares it.
 //
-// The worker of the phase the issue stands in, when that is the tester, the reviewer or the
-// merger (holdsForMergeForward), is told the old head and the new one and to read what the merge
-// changed before it goes on (record.MergeForwardLanded). An issue past its review
-// (record.PastReview) stands on a review of the old head, so the reviewer is asked to read the
-// merge and approve the new head or request changes (record.MergeForwardReview), and the record
-// keeps that the review was asked for (ReviewAsked), which the merger's task reads (task). The
-// daemon records no decision outside reviewing, so that review is the roles' to hold to the head
-// they merge. The architect and the implementer are told nothing: the architect's checks-red
+// The worker of the phase the issue stands in, when the landed reaches it - the tester, the
+// reviewer or the merger (record.MergeForwardReaches) - is told the old head and the new one and
+// to read what the merge changed before it goes on (record.MergeForwardLanded). An issue past its
+// review (record.PastReview) stands on a review of the old head, so the reviewer is asked to read
+// the merge and approve the new head or request changes (record.MergeForwardReview), and the
+// record keeps that the review was asked for (ReviewAsked), which the merger's task reads (task).
+// The daemon records no decision outside reviewing, so that review is the roles' to hold to the
+// head they merge. The architect and the implementer are told nothing: the architect's checks-red
 // notice already said the merge was asked for, and the implementer pushed it. A tree that lingers
 // (record.TreeLingers, where every role is suspended) records and tells nothing.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
@@ -178,7 +163,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 	at := record.StandsAt(issue)
 	review := record.PastReview(issue)
 	var recipients []roleRecipient
-	if worker := RoleFor(at); holdsForMergeForward(worker) {
+	if worker := RoleFor(at); record.MergeForwardReaches(record.MergeForwardLanded, worker) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
 	if review {

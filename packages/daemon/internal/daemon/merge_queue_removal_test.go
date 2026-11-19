@@ -200,7 +200,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.wokenOnce(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		told := rig.told(t, issue)
 		if strings.Contains(told, "could not read") {
@@ -225,7 +225,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			return rig.phase(t, issue.key) == phase.Done
 		})
 		rig.await(t, "the read's row to finish", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
 		})
 		rig.readsWere(t, issue, reads, 1)
 		rig.nothingOwed(t, issue)
@@ -252,7 +252,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		if told := rig.told(t, issue); !strings.Contains(told, "could not read the pull request") {
 			t.Fatalf("the merger was told %q, want it told that the daemon could not read the pull request", told)
@@ -270,7 +270,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		applyFact(t, rig.pool, "api", "backward:"+issue.key, intake.BackwardMove{Issue: issue.key, Requester: claim.RoleMerger,
 			To: phase.Implementing, Reason: "the head needs work the merge queue showed"}, rig.engine)
 		rig.await(t, "the message's row to finish once the issue left merging", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		ended := rig.logged(t, dequeueLeftMerging, issue.key)
 		if len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), string(phase.Implementing)) {
@@ -303,7 +303,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			reads := rig.publish(t, issue, issue.head)
 			rig.await(t, "the message's row to end on the merger's claim", func() bool {
 				return len(rig.logged(t, dequeueMergerEnded, issue.key)) == 1 &&
-					rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+					outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 			})
 			if ended := rig.logged(t, dequeueMergerEnded, issue.key)[0]; ended["state"] != string(tc.state) {
 				t.Fatalf("the row ended on a merger whose claim is %v, want %s", ended["state"], tc.state)
@@ -337,7 +337,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		rig.told(t, issue)
 		rig.readsWere(t, issue, reads, 1)
@@ -704,12 +704,12 @@ func (r *dequeueRig) queuedBeforeItLeft(t *testing.T, issue dequeueIssue, leave 
 	})
 	r.publishAs(t, r.cfg.Project+"-dequeued-again-"+issue.key, issue, issue.head)
 	r.await(t, "the second removal's read queued behind the held one", func() bool {
-		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 2
+		return outboxRowsOfKind(t, r.pool, issue.key, record.OutboxKindMergeQueueRead) == 2
 	})
 	leave(t, issue)
 	release()
 	r.await(t, "both reads' rows to finish", func() bool {
-		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+		return outboxRowsOfKind(t, r.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
 	})
 	r.readsWere(t, issue, reads, 1)
 	if ended := r.logged(t, dequeueReadFinished, issue.key); len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), why) {
@@ -811,22 +811,9 @@ func (r *dequeueRig) wokenOnce(t *testing.T, issue dequeueIssue) {
 // logged is every line of the daemon's log about issue whose message starts with msg.
 func (r *dequeueRig) logged(t *testing.T, msg, issue string) []map[string]any {
 	t.Helper()
-	return slices.DeleteFunc(loggedLines(t, r.logs.String(), msg), func(entry map[string]any) bool {
-		text, _ := entry["msg"].(string)
-		return !strings.HasPrefix(text, msg) || entry["issue"] != issue
+	return slices.DeleteFunc(loggedMessages(t, r.logs.String(), msg), func(entry map[string]any) bool {
+		return entry["issue"] != issue
 	})
-}
-
-// rows is how many rows of kind the outbox holds for issue. A finished row is deleted
-// (record.Postgres.FinishOutbox).
-func (r *dequeueRig) rows(t *testing.T, issue string, kind record.OutboxKind) int {
-	t.Helper()
-	var rows int
-	if err := r.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
-		issue, string(kind)).Scan(&rows); err != nil {
-		t.Fatalf("read the %s rows of %s: %v", kind, issue, err)
-	}
-	return rows
 }
 
 // attempts is how many tries the outbox has made of issue's row of kind, 0 for none.

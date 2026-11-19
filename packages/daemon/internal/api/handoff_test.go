@@ -1405,7 +1405,7 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 
 // A pull request waiting to be merged that the merger sends back to the implementer with its own
 // backward move is worked again in the same run, with the same claim. The key the route builds
-// tells one implementing pass from the last by the pass count, so that pass back has to open a
+// tells one implementing pass from the last by the pass count, so that move back has to open a
 // pass of its own: otherwise a completion that wrote no new handoff names the record of the pass
 // before at the same count, takes that completion's key and is answered HANDOFF_ALREADY_RECORDED,
 // which tells the worker it was received when nothing moved. The workflow sees it instead and
@@ -1413,7 +1413,7 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 // whatever commit the fix pushed; the completion naming a new record moves the issue on to
 // testing. The move back is no review, so it counts no review round; the pass it counts is the one
 // the key is built on.
-func TestAPassBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
+func TestAMoveBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newHarness(t)
 	records := record.NewStore()
@@ -1465,7 +1465,7 @@ func TestAPassBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the merger's move back the issue is in %s, want implementing", got)
 	}
-	// The implementer takes the pass back's task, a task of the run it already serves.
+	// The implementer takes the move back's task, a task of the run it already serves.
 	machine, ok := h.supervisor.Machine(implementer.token)
 	if !ok {
 		t.Fatal("no machine for the implementer")
@@ -1474,10 +1474,10 @@ func TestAPassBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 		t.Fatalf("end the first pass's turn: %v", err)
 	}
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: implementer.token, Task: "put the migration back", ID: "outbox:move-back", Generation: 1}); err != nil {
-		t.Fatalf("deliver the pass back's task: %v", err)
+		t.Fatalf("deliver the move back's task: %v", err)
 	}
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token, DeliveryID: "outbox:move-back"}); err != nil {
-		t.Fatalf("start the pass back's turn: %v", err)
+		t.Fatalf("start the move back's turn: %v", err)
 	}
 
 	// It fixes the head, pushes, and completes without writing a new handoff: the newest record
@@ -1492,9 +1492,9 @@ func TestAPassBacksCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the refused completion the issue is in %s, want implementing", got)
 	}
-	// With the pass back's handoff written, its completion moves the issue on.
+	// With the move back's handoff written, its completion moves the issue on.
 	if recorder := complete("fixed", implementer.writeHandoff("implement", 2), 2); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
-		t.Fatalf("the pass back's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
+		t.Fatalf("the move back's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
 	}
 }
 

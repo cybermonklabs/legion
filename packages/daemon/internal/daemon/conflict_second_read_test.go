@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -53,30 +54,31 @@ func rulesStandIn(t *testing.T, routes map[string]rulesAnswer) (*httptest.Server
 	var mu sync.Mutex
 	var seen []string
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.EscapedPath()
-		mu.Lock()
-		seen = append(seen, path)
-		mu.Unlock()
-		answer, ok := routes[path]
-		if !ok {
-			http.NotFound(w, r)
-			return
-		}
-		if answer.next != "" {
-			w.Header().Set("Link", "<"+server.URL+answer.next+`>; rel="next"`)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if answer.status != 0 {
-			w.WriteHeader(answer.status)
-		}
-		_, _ = io.WriteString(w, answer.body)
-	}))
-	t.Cleanup(server.Close)
+	server = githubtest.Serve(t, githubtest.Spec{
+		Record: func(r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, r.URL.EscapedPath())
+		},
+		Handle: func(w http.ResponseWriter, r *http.Request) {
+			answer, ok := routes[r.URL.EscapedPath()]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			if answer.next != "" {
+				w.Header().Set("Link", "<"+server.URL+answer.next+`>; rel="next"`)
+			}
+			if answer.status != 0 {
+				w.WriteHeader(answer.status)
+			}
+			_, _ = io.WriteString(w, answer.body)
+		},
+	})
 	return server, func() []string {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), seen...)
+		return slices.Clone(seen)
 	}
 }
 
@@ -264,10 +266,13 @@ func secondReadRow(t *testing.T, pool *store.Pool) (due time.Time, attempts int,
 	return due, attempts, true
 }
 
-// secondReadRig is CAPTURE-1 in testing on its pull request 86 at head code, GitHub answering its
-// nth read of the pull request as answer says and counting the reads, listing no review on it, the
-// base main requiring lint (green nowhere) and pr-checks-result, and the runner of its second read.
-type secondReadRig struct {
+// readRig is CAPTURE-1 as seed leaves it, on its pull request 86 at head code, GitHub answering
+// its nth read of the pull request as answer says and counting the reads, listing no review on it,
+// the base main requiring lint (green nowhere) and pr-checks-result; the runtime that reads it, its
+// waits cut to readRigWait through its own seam (mergeStateRetry) and its log kept; and the runner
+// of its second read (secondReadRunner). The second read's tests and the merge-state reads' share
+// it, so a read of either kind meets the same GitHub.
+type readRig struct {
 	pool   *store.Pool
 	w      *workflowRuntime
 	runner *outbox
@@ -281,11 +286,11 @@ type pullAnswer struct {
 	body   string
 }
 
-func newSecondReadRig(t *testing.T, answer func(read int32) pullAnswer) *secondReadRig {
+func newReadRig(t *testing.T, seed func(*testing.T, *store.Pool), answer func(read int32) pullAnswer) *readRig {
 	t.Helper()
-	rig := &secondReadRig{pool: isolatedOutboxPool(t), logs: &syncBuffer{}}
-	seedCapture(t, rig.pool, phase.Testing, "testing")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rig := &readRig{pool: isolatedOutboxPool(t), logs: &syncBuffer{}}
+	seed(t, rig.pool)
+	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			got := answer(rig.reads.Add(1))
@@ -302,17 +307,25 @@ func newSecondReadRig(t *testing.T, answer func(read int32) pullAnswer) *secondR
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	rig.w = readRuntime(rig.pool, server.URL, slog.New(slog.NewJSONHandler(rig.logs, nil)))
-	rig.w.mergeStateRetry = 10 * time.Millisecond
+	}})
+	rig.w = readRuntime(rig.pool, api, slog.New(slog.NewJSONHandler(rig.logs, nil)))
+	rig.w.mergeStateRetry = readRigWait
 	rig.runner = secondReadRunner(rig.w)
 	return rig
 }
 
+// readRigWait is the runtime's wait between reads in a readRig (workflowRuntime.mergeStateRetry).
+const readRigWait = 10 * time.Millisecond
+
+// captureInTesting seeds CAPTURE-1 in testing, where a second read's tests stand it.
+func captureInTesting(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	seedCapture(t, pool, phase.Testing, "testing")
+}
+
 // firstRead applies a first read of the head that found it conflicting with main, read at at, as
 // the workflow receives it from any reader of the pull request.
-func (rig *secondReadRig) firstRead(t *testing.T, at time.Time) {
+func (rig *readRig) firstRead(t *testing.T, at time.Time) {
 	t.Helper()
 	applyFact(t, rig.pool, "github", "first-read", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main",
 		HeadSHA: "code", Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, ReadAt: at,
@@ -323,12 +336,9 @@ func (rig *secondReadRig) firstRead(t *testing.T, at time.Time) {
 }
 
 // lines is every line of the rig's log whose message starts with msg.
-func (rig *secondReadRig) lines(t *testing.T, msg string) []map[string]any {
+func (rig *readRig) lines(t *testing.T, msg string) []map[string]any {
 	t.Helper()
-	return slices.DeleteFunc(loggedLines(t, rig.logs.String(), msg), func(entry map[string]any) bool {
-		text, _ := entry["msg"].(string)
-		return !strings.HasPrefix(text, msg)
-	})
+	return loggedMessages(t, rig.logs.String(), msg)
 }
 
 // GitHub answers for pull request 86 at head code: `mergeable` null (unknown), false (conflicting)
@@ -351,7 +361,7 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 	first := time.Now().UTC().Truncate(time.Microsecond)
 
 	t.Run("a first read queues it a minute on, and it reads once", func(t *testing.T) {
-		rig := newSecondReadRig(t, func(int32) pullAnswer { return conflictingPull })
+		rig := newReadRig(t, captureInTesting, func(int32) pullAnswer { return conflictingPull })
 		rig.firstRead(t, first)
 		if due, _, found := secondReadRow(t, rig.pool); !found || !due.Equal(first.Add(time.Minute)) {
 			t.Fatalf("the second read is due at %s (queued %t), want a minute after the first read, %s", due, found, first.Add(time.Minute))
@@ -390,7 +400,7 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 		{name: "a failed read is read again, five attempts in all, and then the first read is released as unread", answer: unavailablePull, unread: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newSecondReadRig(t, func(int32) pullAnswer { return tc.answer })
+			rig := newReadRig(t, captureInTesting, func(int32) pullAnswer { return tc.answer })
 			rig.firstRead(t, first)
 			at := first.Add(time.Minute)
 			for attempt := 1; attempt <= mergeStateLadderReads; attempt++ {
@@ -428,19 +438,19 @@ func TestAConflictSecondReadRowReadsTheHeadAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// leave takes the record off the first read before its second read runs.
-		leave func(t *testing.T, rig *secondReadRig)
+		leave func(t *testing.T, rig *readRig)
 		why   string
 	}{
-		{name: "a head the record has left is not read", why: "head moved", leave: func(t *testing.T, rig *secondReadRig) {
+		{name: "a head the record has left is not read", why: "head moved", leave: func(t *testing.T, rig *readRig) {
 			recordCapture(t, rig.pool, func(pr *record.PullRequest) { pr.HeadSHA = "moved" })
 		}},
-		{name: "a first read a mergeable read released is not read", why: "a later read confirmed or released", leave: func(t *testing.T, rig *secondReadRig) {
+		{name: "a first read a mergeable read released is not read", why: "a later read confirmed or released", leave: func(t *testing.T, rig *readRig) {
 			applyFact(t, rig.pool, "github", "mergeable-read", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, Base: "main",
 				HeadSHA: "code", Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean, ReadAt: first.Add(30 * time.Second)}, rig.w.handlers...)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newSecondReadRig(t, func(int32) pullAnswer { return conflictingPull })
+			rig := newReadRig(t, captureInTesting, func(int32) pullAnswer { return conflictingPull })
 			rig.firstRead(t, first)
 			tc.leave(t, rig)
 			if ran := runSecondReads(t, rig.runner, first.Add(time.Minute)); ran != 1 {

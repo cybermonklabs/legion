@@ -25,15 +25,15 @@ import (
 // longer open. The same reads follow a second read of a conflicting head whose last attempt still
 // read no answer (conflict_confirm.go's conflictConfirm, queueMergeStateFollow). A request for a
 // read that arrives meanwhile ends the follow's wait and starts a climb at once (mergeStateEnds).
-// The reads are held in memory, as the climb is: no row waits in the outbox, and a restart does
-// not end them, since the daemon's start reads every issue's pull request again and queues a
-// ladder for each one GitHub still answers `unknown` for (readIssuesAtStart). `unknown` is no
-// answer about the head, so nobody is told of it. Every other answer the ladder gets is recorded,
-// and an approval left standing on a head GitHub answers with a state it would not merge from
-// tells the architect that owns the issue and the reviewer, once for that head and state, in the
-// review-stuck notice the round writes - but only once the CI settlement standing for the head
-// says every check GitHub reported on it has concluded, since until then the state says no more
-// than that a check is running (workflow's reviewRound, stuckMergeState).
+// The reads are held in memory, as the climb is: no row waits in the outbox, and a restart ends
+// them; the daemon's start reads every issue's pull request again and queues a ladder again for
+// each one GitHub still answers `unknown` for (readIssuesAtStart), which climbs and follows in
+// turn. `unknown` is no answer about the head, so nobody is told of it. Every other answer the
+// ladder gets is recorded, and an approval left standing on a head GitHub answers with a state it
+// would not merge from tells the architect that owns the issue and the reviewer, once for that
+// head and state, in the review-stuck notice the round writes - but only once the CI settlement
+// standing for the head says every check GitHub reported on it has concluded, since until then the
+// state says no more than that a check is running (workflow's reviewRound, stuckMergeState).
 //
 // mergeStateLadderReads and mergeStateLadderWait have two more users, the outbox's reads of one
 // pull request: the merge-queue read (merge_queue_removal.go's mergeQueueRead), which reads a pull
@@ -59,36 +59,33 @@ const (
 // of which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon's
 // start asks for it too, for each issue whose start read GitHub answered `unknown`
 // (readIssuesAtStart). It queues a ladder of reads for issue that starts with a climb
-// (queueLadder). It only records the issue and wakes the reader, so the fact's own transaction
-// waits for no GitHub call, and a second fact of the same issue queued before the reader takes it
-// is one ladder rather than two. A runtime with no reader - the API-only daemon, and a test that
-// drives the ladder itself - queues nothing.
+// (queueMergeStateFollow, with no head to follow). It only records the issue and wakes the reader,
+// so the fact's own transaction waits for no GitHub call, and a second fact of the same issue
+// queued before the reader takes it is one ladder rather than two. A runtime with no reader - the
+// API-only daemon, and a test that drives the ladder itself - queues nothing.
 func (w *workflowRuntime) queueMergeState(issue string) {
-	w.queueLadder(issue, "")
+	w.queueMergeStateFollow(issue, "")
 }
 
-// queueMergeStateFollow is what the second read of a conflicting head asks for once its last
-// attempt read no answer, GitHub's UNKNOWN or a read that failed, and released the first read
-// (conflict_confirm.go's conflictConfirm, which attach hands this): reads of head that follow
-// GitHub's merge state as the reads after a climb that ended on `unknown` do (followMergeState),
-// the first of them after twice the ladder's wait, with no climb before them, since the second
-// read's attempts were that climb (dispatch://INFRA-4374 R4). Their CONFLICTING answer is applied
-// as every read's is, so it records a first conflicting read of the head and the second read
-// starts again (R2). It queues a ladder that starts with that follow (queueLadder), so a request
-// for a read that arrives during a wait ends the wait and starts a climb at once, as it does for
-// every follow; an issue whose ladder already runs takes it as a request for a read, and its
-// ladder climbs again, which follows the head in turn while GitHub still answers `unknown`.
-func (w *workflowRuntime) queueMergeStateFollow(issue, head string) {
-	w.queueLadder(issue, head)
-}
-
-// queueLadder records that issue is owed a ladder (mergeStateQueued) and wakes the reader
-// (readMergeStates): follow is the head the ladder starts by following, "" for a ladder that
-// starts with a climb. A climb asked for before the reader takes the issue outranks a follow asked
-// for beside it, in either order: the climb reads at once and follows in turn while GitHub answers
-// `unknown`, and the fact that asked for it can have moved the head off the one the follow would
-// read. Of two follows, the later one's head stands. A runtime with no reader records nothing.
-func (w *workflowRuntime) queueLadder(issue, follow string) {
+// queueMergeStateFollow records that issue is owed a ladder (mergeStateQueued) and wakes the
+// reader (readMergeStates): follow is the head the ladder starts by following, "" for a ladder
+// that starts with a climb (queueMergeState). A head is what the second read of a conflicting
+// head asks for once its last attempt read no answer, GitHub's UNKNOWN or a read that failed, and
+// released the first read (conflict_confirm.go's conflictConfirm, which attach hands this): reads
+// of head that follow GitHub's merge state as the reads after a climb that ended on `unknown` do
+// (followMergeState), the first of them after twice the ladder's wait, with no climb before them,
+// since the second read's attempts were that climb (dispatch://INFRA-4374 R4). Their CONFLICTING
+// answer is applied as every read's is, so it records a first conflicting read of the head and the
+// second read starts again (R2). A request for a read that arrives during a follow's wait ends the
+// wait and starts a climb at once, as it does for every follow; an issue whose ladder already runs
+// takes a follow as a request for a read, and its ladder climbs again, which follows the head in
+// turn while GitHub still answers `unknown`.
+//
+// A climb asked for before the reader takes the issue outranks a follow asked for beside it, in
+// either order: the climb reads at once and follows in turn while GitHub answers `unknown`, and
+// the fact that asked for it can have moved the head off the one the follow would read. Of two
+// follows, the later one's head stands. A runtime with no reader records nothing.
+func (w *workflowRuntime) queueMergeStateFollow(issue, follow string) {
 	if w.mergeStates == nil || issue == "" {
 		return
 	}
@@ -103,12 +100,12 @@ func (w *workflowRuntime) queueLadder(issue, follow string) {
 	w.mergeStates.add(issue)
 }
 
-// readMergeStates runs a ladder for each issue queueLadder queued, until ctx ends: each wake takes
-// every issue queued since the last one, in the order of their keys, and runs its ladder on a
-// goroutine of its own, so one issue's waits hold up no other's. The ladder starts as the issue's
-// request asked (mergeStateQueued): with a climb, or with a follow of the head a second read named
-// (queueMergeStateFollow). An issue whose ladder is still running - climbing, or following - starts
-// no second one, and is marked as asked again instead, whichever kind of ladder it asked for: the
+// readMergeStates runs a ladder for each issue queueMergeStateFollow queued, until ctx ends: each
+// wake takes every issue queued since the last one, in the order of their keys, and runs its
+// ladder on a goroutine of its own, so one issue's waits hold up no other's. The ladder starts as
+// the issue's request asked (mergeStateQueued): with a climb, or with a follow of the head a
+// second read named. An issue whose ladder is still running - climbing, or following - starts no
+// second one, and is marked as asked again instead, whichever kind of ladder it asked for: the
 // running ladder climbs once more when its climb ends, and a follow's wait ends at once for it
 // (mergeStateLadder), so the fact that asked is answered by a read made after it, which a ladder
 // already past its last read would not be. Dropping the request outright left the issue standing
@@ -330,7 +327,7 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 // answers is GitHub's state for the head it read, and the push the record took is itself a fact
 // that asks for a read of the head it left (workflow's askMergeState).
 func (w *workflowRuntime) readMergeState(ctx context.Context, issue, head string) (record.MergeState, string, error) {
-	_, recorded, err := w.issueRecord(ctx, issue)
+	_, recorded, err := issueRecord(ctx, w.pool, w.records, issue)
 	if err != nil {
 		return record.MergeStateUnread, "", err
 	}

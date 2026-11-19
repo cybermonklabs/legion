@@ -1,6 +1,9 @@
 package workflow
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,7 +13,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -21,20 +23,28 @@ import (
 // mints carries no read time, so the engine's clock times both reads (mergeability).
 var firstConflictRead = time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)
 
+// conflictHead is the head of #42 GitHub answers CONFLICTING with main (seedConflictIssue), and
+// forwardHead the head the implementer's merge of main forward onto it leaves. Each is spelled as
+// GitHub spells a commit (headOne, headTwo), so a text that names a head names it by a word that
+// says nothing else.
+const (
+	conflictHead = headOne
+	forwardHead  = headTwo
+)
+
 // readsAfter is an engine whose clock stands d after the first read.
 func readsAfter(d time.Duration) *Engine { return mergingEngineAt(firstConflictRead.Add(d)) }
 
-// seedConflictIssue seeds LEGION-208 standing in at with Dispatch status status, its open pull
-// request #42 at head onto main as pr records it otherwise, the implementer's phases row, and the
-// phases row of the phase's own worker where that is another role, as the issue stands when
-// GitHub first answers its head CONFLICTING.
+// seedConflictIssue seeds LEGION-208 standing in at with Dispatch status status (standsIn), its
+// open pull request #42 at conflictHead onto main as pr records it otherwise, the implementer's
+// phases row, and the phases row of the phase's own worker where that is another role, as the
+// issue stands when GitHub first answers its head CONFLICTING.
 func seedConflictIssue(t *testing.T, at phase.Phase, status string, pr record.PullRequest) *pgxpool.Pool {
 	t.Helper()
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: status, Rank: "U"})
+	standsIn(t, pool, at, status)
 	pr.State, pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.HeadSHA =
-		record.PullRequestOpen, "LEGION-208", "sjawhar/legion", 42, "legion/LEGION-208", "main", "head"
+		record.PullRequestOpen, "LEGION-208", "sjawhar/legion", 42, "legion/LEGION-208", "main", conflictHead
 	if pr.Failing == nil {
 		pr.Failing = []string{}
 	}
@@ -46,20 +56,20 @@ func seedConflictIssue(t *testing.T, at phase.Phase, status string, pr record.Pu
 	return pool
 }
 
-// settledGreen is a pull request whose CI settled at head with a run of each name given, every one
-// of them succeeded, as the record keeps a settlement (classify.ApplySettlement).
+// settledGreen is a pull request whose CI settled at conflictHead with a run of each name given,
+// every one of them succeeded, as the record keeps a settlement (classify.ApplySettlement).
 func settledGreen(names ...string) record.PullRequest {
 	runs := make([]record.AttemptRun, len(names))
 	for i, name := range names {
-		runs[i] = record.AttemptRun{Name: name, ID: int64(i + 1), Head: "head", Conclusion: record.RunSucceeded}
+		runs[i] = record.AttemptRun{Name: name, ID: int64(i + 1), Head: conflictHead, Conclusion: record.RunSucceeded}
 	}
-	return record.PullRequest{CheckedHead: "head", CheckRuns: runs, Failing: []string{}, Cancelled: []string{}}
+	return record.PullRequest{CheckedHead: conflictHead, CheckRuns: runs, Failing: []string{}, Cancelled: []string{}}
 }
 
 // conflictingRead is the daemon's read of #42 finding its head CONFLICTING with main, carrying the
 // base's rules as the daemon read them.
 func conflictingRead(rules *record.BaseRules) intake.PullRequestMergeability {
-	return intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: "head",
+	return intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: conflictHead,
 		Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, Rules: rules}
 }
 
@@ -85,41 +95,19 @@ func mergeForwardMessages(t *testing.T, pool *pgxpool.Pool) []record.MergeForwar
 }
 
 // conflictConfirms is the due time of every second read of a conflict the outbox holds, in the
-// order written, each of them a read of #42 at head.
+// order written, each of them a read of #42 at conflictHead.
 func conflictConfirms(t *testing.T, pool *pgxpool.Pool) []time.Time {
 	t.Helper()
 	for _, row := range queuedRows(t, pool) {
-		if read, ok := row.payload.(record.ConflictConfirm); ok && read != (record.ConflictConfirm{Number: 42, Head: "head"}) {
-			t.Fatalf("a second read reads %+v, want #42 at head", read)
+		if read, ok := row.payload.(record.ConflictConfirm); ok && read != (record.ConflictConfirm{Number: 42, Head: conflictHead}) {
+			t.Fatalf("a second read reads %+v, want #42 at %s", read, conflictHead)
 		}
 	}
-	rows, err := pool.Query(t.Context(), "select next_at from outbox where kind = 'conflict_confirm' order by id")
-	if err != nil {
-		t.Fatalf("read the second reads: %v", err)
-	}
-	defer rows.Close()
 	due := []time.Time{}
-	for rows.Next() {
-		var at time.Time
-		if err := rows.Scan(&at); err != nil {
-			t.Fatalf("scan a second read: %v", err)
-		}
-		due = append(due, at)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate the second reads: %v", err)
+	for _, row := range issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindConflictConfirm)) {
+		due = append(due, row.nextAt)
 	}
 	return due
-}
-
-// issueStatus is LEGION-208's Dispatch status as the record holds it.
-func issueStatus(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	var status string
-	if err := pool.QueryRow(t.Context(), "select status from issues where key = 'LEGION-208'").Scan(&status); err != nil {
-		t.Fatalf("read the issue's status: %v", err)
-	}
-	return status
 }
 
 // assertNothingActed is a conflict the daemon acted on in no way: no merge-forward message, no
@@ -140,19 +128,19 @@ func assertNothingActed(t *testing.T, pool *pgxpool.Pool, at phase.Phase) {
 	}
 }
 
-// askedOnce is the one merge forward the record and the outbox hold, asked of head onto main in at
-// for why: the record's ask, the implementer's ask and, where hold names a role, that role's hold,
-// and the architect's one checks-red notice outside implementing. Nothing moved: the issue is in
-// at with the status it had, and no worker was started.
-func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status, why string, hold claim.Role) {
+// askedOnce is the one merge forward the record and the outbox hold, asked of conflictHead onto
+// main in at for why: the record's ask, the implementer's ask and, where hold names a role, that
+// role's hold, and the architect's one checks-red notice outside implementing. Nothing moved: the
+// issue is in at with the status it had, and no worker was started.
+func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string, why record.ConflictWhy, hold claim.Role) {
 	t.Helper()
 	asked := recordedPR(t, pool, "LEGION-208").MergeForward
-	if asked == nil || asked.Head != "head" || asked.Base != "main" || asked.Phase != at || asked.Why != why || asked.Landed != "" || asked.AskedAt.IsZero() {
-		t.Fatalf("the record's merge forward = %+v, want head onto main in %s for %s, not landed", asked, at, why)
+	if asked == nil || asked.Head != conflictHead || asked.Base != "main" || asked.Phase != at || asked.Why != why || asked.Landed != "" || asked.AskedAt.IsZero() {
+		t.Fatalf("the record's merge forward = %+v, want %s onto main in %s for %s, not landed", asked, conflictHead, at, why)
 	}
-	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "head", Base: "main", Phase: at, PullRequest: 42, Why: why}}
+	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}}
 	if hold != "" {
-		want = append(want, record.MergeForwardMessage{Role: hold, Step: record.MergeForwardHold, Head: "head", Base: "main", Phase: at, PullRequest: 42, Why: why})
+		want = append(want, record.MergeForwardMessage{Role: hold, Step: record.MergeForwardHold, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why})
 	}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 		t.Fatalf("merge-forward messages %+v, want %+v", got, want)
@@ -173,18 +161,19 @@ func askedOnce(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status, why str
 	assertOutboxCount(t, pool, "supervise", 0)
 	assertOutboxCount(t, pool, "dispatch_status", 0)
 	assertOutboxCount(t, pool, "dispatch_message", 0)
-	if got, gotStatus := issuePhase(t, pool), issueStatus(t, pool); got != at || gotStatus != status {
+	if got, gotStatus := issuePhase(t, pool), recordedStatus(t, pool, "LEGION-208"); got != at || gotStatus != status {
 		t.Fatalf("the issue is in %s with status %q, want it still in %s with %q", got, gotStatus, at, status)
 	}
 }
 
 // GitHub computes mergeability in a background job and can answer CONFLICTING about a base it has
 // not caught up with, so one read acts on nothing (dispatch://INFRA-4374 R2). The first read
-// records itself and queues the second read a minute after it; a MERGEABLE read releases it; a
-// CONFLICTING read sooner than the minute changes nothing, and the one a minute after the first
-// confirms the conflict and acts; the second read's row ending on GitHub's UNKNOWN releases the
-// first read, and the next CONFLICTING read is a first read again; and a read against another base
-// branch is a first read of its own.
+// records itself and queues the second read a minute after it; a MERGEABLE read releases it and
+// logs both reads; a CONFLICTING read sooner than the minute changes nothing, and the one a minute
+// after the first confirms the conflict and acts; the second read's row ending on GitHub's UNKNOWN
+// releases the first read, and the next CONFLICTING read is a first read again; a read against
+// another base branch is a first read of its own; and a read a minute later of another head than
+// the record stands at confirms nothing.
 func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 	// The rules are unread, so a confirmed conflict is acted on at once (classify.ConflictNeedsMerge):
 	// what holds the act back below is the second read alone.
@@ -196,7 +185,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 			t.Fatalf("second reads due at %v, want exactly one, a minute after the first read at %s", due, firstConflictRead)
 		}
 		if first := recordedPR(t, pool, "LEGION-208").ConflictRead; first == nil ||
-			first.Head != "head" || first.Base != "main" || !first.At.Equal(firstConflictRead) {
+			first.Head != conflictHead || first.Base != "main" || !first.At.Equal(firstConflictRead) {
 			t.Fatalf("the first read = %+v, want head on main read at %s", first, firstConflictRead)
 		}
 		if held := recordedPR(t, pool, "LEGION-208").ConflictingHead; held != "" {
@@ -208,12 +197,33 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 	t.Run("a mergeable read a minute later releases the first read", func(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
 		firstRead(t, pool)
-		applyRefusingNothing(t, pool, readsAfter(time.Minute), intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-			Base: "main", HeadSHA: "head", Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
+		var logged bytes.Buffer
+		engine := readsAfter(time.Minute)
+		engine.log = slog.New(slog.NewJSONHandler(&logged, nil))
+		applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
+			Base: "main", HeadSHA: conflictHead, Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
 		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != "" {
 			t.Fatalf("after the mergeable read the record holds first read %+v and %q conflicting, want neither", pr.ConflictRead, pr.ConflictingHead)
 		}
 		assertNothingActed(t, pool, phase.Testing)
+		var released []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+			var entry map[string]any
+			if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "workflow: a second read did not confirm the conflict" {
+				released = append(released, entry)
+			}
+		}
+		loggedAt := func(field string, want time.Time) bool {
+			text, _ := released[0][field].(string)
+			at, err := time.Parse(time.RFC3339Nano, text)
+			return err == nil && at.Equal(want)
+		}
+		if len(released) != 1 || released[0]["head"] != conflictHead || released[0]["base"] != "main" ||
+			released[0]["mergeable"] != string(record.MergeabilityMergeable) || released[0]["mergeState"] != string(record.MergeStateClean) ||
+			!loggedAt("firstReadAt", firstConflictRead) || !loggedAt("readAt", firstConflictRead.Add(time.Minute)) {
+			t.Fatalf("the engine logged the release as %v, want one line naming %s on main, read first at %s and again at %s, GitHub's MERGEABLE and clean",
+				released, conflictHead, firstConflictRead, firstConflictRead.Add(time.Minute))
+		}
 	})
 
 	t.Run("a conflicting read sooner than a minute waits, and the one a minute after the first acts", func(t *testing.T) {
@@ -229,7 +239,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 		assertNothingActed(t, pool, phase.Testing)
 
 		applyRefusingNothing(t, pool, readsAfter(time.Minute), conflictingRead(unread))
-		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != "head" {
+		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != conflictHead {
 			t.Fatalf("after the confirming read the record holds first read %+v and %q conflicting, want the conflict held for head alone", pr.ConflictRead, pr.ConflictingHead)
 		}
 		askedOnce(t, pool, phase.Testing, "testing", classify.ConflictRulesUnread, claim.RoleTester)
@@ -238,7 +248,7 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 	t.Run("the second read's row ending on unknown releases the first read", func(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
 		firstRead(t, pool)
-		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ConflictConfirmDone{Issue: "LEGION-208", Number: 42, Head: "head"})
+		applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ConflictConfirmDone{Issue: "LEGION-208", Number: 42, Head: conflictHead})
 		if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictRead != nil || pr.ConflictingHead != "" {
 			t.Fatalf("after the second read ended the record holds first read %+v and %q conflicting, want neither", pr.ConflictRead, pr.ConflictingHead)
 		}
@@ -259,8 +269,24 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 		retargeted.Base = "release"
 		applyRefusingNothing(t, pool, readsAfter(time.Minute), retargeted)
 		if first := recordedPR(t, pool, "LEGION-208").ConflictRead; first == nil ||
-			first.Head != "head" || first.Base != "release" || !first.At.Equal(firstConflictRead.Add(time.Minute)) {
+			first.Head != conflictHead || first.Base != "release" || !first.At.Equal(firstConflictRead.Add(time.Minute)) {
 			t.Fatalf("after a read against release the first read = %+v, want that read's own", first)
+		}
+		assertNothingActed(t, pool, phase.Testing)
+	})
+
+	t.Run("a read a minute later of another head confirms nothing", func(t *testing.T) {
+		pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})
+		firstRead(t, pool)
+		other := conflictingRead(unread)
+		other.HeadSHA = headThree
+		applyRefusingNothing(t, pool, readsAfter(time.Minute), other)
+		pr := recordedPR(t, pool, "LEGION-208")
+		if first := pr.ConflictRead; first == nil || first.Head != conflictHead || first.Base != "main" || !first.At.Equal(firstConflictRead) {
+			t.Fatalf("after a read of another head the first read = %+v, want the first read of %s on main at %s as it was", first, conflictHead, firstConflictRead)
+		}
+		if pr.ConflictingHead != "" {
+			t.Fatalf("after a read of another head the record holds %q conflicting, want nothing confirmed", pr.ConflictingHead)
 		}
 		assertNothingActed(t, pool, phase.Testing)
 	})
@@ -278,7 +304,7 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
 		status string
-		why    string
+		why    record.ConflictWhy
 		hold   claim.Role
 	}{
 		{phase.Testing, "testing", classify.ConflictCheckNotGreen, claim.RoleTester},
@@ -301,8 +327,9 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 // A confirmed conflict is acted on only when the issue's next step needs a head that merges
 // (dispatch://INFRA-4374 R0). Where every check the base requires is green on the head and no rule
 // of the base requires the head to be current, the conflict is recorded and nothing is sent: the
-// tester and the reviewer go on at that head, and the tester's next completion moves the issue as
-// before. The reviewer's approval of that head ends its round whatever GitHub's merge state, and
+// tester and the reviewer go on at that head. The tester's next completion moves the issue as
+// before, and the reviewer's, with no approval, is recorded while its round waits on a decision,
+// as before. The reviewer's approval of that head ends its round whatever GitHub's merge state, and
 // the issue's move into accepting, where the merge is next, asks for the merge forward once. Any
 // required check not green, a strict ruleset, and rules the daemon could not read each act at once.
 // GitHub's refusal of rulesets to a plan that has none is no failed read: it reads as no rules, and
@@ -312,14 +339,14 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 	greenStatus := settledGreen("lint")
 	greenStatus.Statuses = []record.CommitStatus{{Context: "ci", State: record.CommitStatusSuccess,
-		CreatedAt: firstConflictRead.Add(-time.Hour), Head: "head"}}
+		CreatedAt: firstConflictRead.Add(-time.Hour), Head: conflictHead}}
 	for _, tc := range []struct {
 		name   string
 		at     phase.Phase
 		status string
 		pr     record.PullRequest
 		rules  *record.BaseRules
-		why    string
+		why    record.ConflictWhy
 	}{
 		{"every required check green in testing", phase.Testing, "testing", settledGreen("ci", "pr-title"),
 			&record.BaseRules{Required: []string{"ci", "pr-title"}}, ""},
@@ -345,7 +372,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, tc.pr)
 			confirmsConflict(t, pool, tc.rules)
-			if held := recordedPR(t, pool, "LEGION-208").ConflictingHead; held != "head" {
+			if held := recordedPR(t, pool, "LEGION-208").ConflictingHead; held != conflictHead {
 				t.Fatalf("the record holds %q conflicting, want the confirmed conflict at head recorded", held)
 			}
 			if tc.why == "" {
@@ -364,9 +391,27 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("ci", "pr-title"))
 		confirmsConflict(t, pool, every)
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-			Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: "head", HandoffRecord: "test-1", HandoffVersion: 1})
+			Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: conflictHead, HandoffRecord: "test-1", HandoffVersion: 1})
 		if got := issuePhase(t, pool); got != phase.Reviewing {
 			t.Fatalf("after the tester's pass the issue is in %s, want reviewing", got)
+		}
+		if messages := mergeForwardMessages(t, pool); len(messages) != 0 {
+			t.Fatalf("merge-forward messages %+v, want none: reviewing needs no merge while every required check is green", messages)
+		}
+	})
+
+	t.Run("every required check green in reviewing with no approval, then the reviewer's completion at that head", func(t *testing.T) {
+		pool := seedConflictIssue(t, phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"))
+		confirmsConflict(t, pool, every)
+		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+			Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "reviewed", Commit: conflictHead, HandoffRecord: "review-1", HandoffVersion: 1})
+		// No review decided the round, so the completion is recorded and the round waits on a
+		// decision of the head, as it does at a head that merges.
+		if got := issuePhase(t, pool); got != phase.Reviewing {
+			t.Fatalf("after the reviewer's completion with no decision the issue is in %s, want reviewing", got)
+		}
+		if row := entryRow(t, pool, claim.RoleReviewer); !row.Completed() || row.HandoffCommit != conflictHead {
+			t.Fatalf("the reviewer's row = %+v, want its completion at %s recorded", row, conflictHead)
 		}
 		if messages := mergeForwardMessages(t, pool); len(messages) != 0 {
 			t.Fatalf("merge-forward messages %+v, want none: reviewing needs no merge while every required check is green", messages)
@@ -378,14 +423,14 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		confirmsConflict(t, pool, every)
 		assertNothingActed(t, pool, phase.Reviewing)
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-			State: "approved", CommitID: "head", HeadSHA: "head", Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
+			State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
 			SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
 		askedInAccepting := func() {
 			t.Helper()
 			if got := issuePhase(t, pool); got != phase.Accepting {
 				t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
 			}
-			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "head", Base: "main",
+			want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
 				Phase: phase.Accepting, PullRequest: 42, Why: classify.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("merge-forward messages %+v, want the one ask in accepting, and no hold: accepting is the architect's", got)
@@ -393,7 +438,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Phase != phase.Accepting || asked.Why != classify.ConflictMergeNext {
 				t.Fatalf("the record's merge forward = %+v, want the one asked in accepting for merge-next", asked)
 			}
-			if told := noticesOf(t, pool, "checks-red"); told != 1 {
+			if told := capNotices(t, pool, "checks-red"); told != 1 {
 				t.Fatalf("%d checks-red notices, want one", told)
 			}
 			if _, stays := checksRedNotice(t, pool); stays != phase.Accepting {
@@ -420,7 +465,7 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		name  string
 		pr    record.PullRequest
 		rules *record.BaseRules
-		why   string
+		why   record.ConflictWhy
 	}{
 		{"a required check not green", settledGreen("lint"), &record.BaseRules{Required: []string{"ci"}}, classify.ConflictCheckNotGreen},
 		{"a strict ruleset with every check green", settledGreen("ci"), &record.BaseRules{Required: []string{"ci"}, Strict: true}, classify.ConflictRequiresCurrent},
@@ -454,12 +499,12 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		confirmsConflict(t, pool, rules)
 		askedOnce(t, pool, phase.Implementing, "in_progress", classify.ConflictCheckNotGreen, "")
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-			Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: "head", HandoffRecord: "implement-1", HandoffVersion: 1})
+			Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: conflictHead, HandoffRecord: "implement-1", HandoffVersion: 1})
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("after the implementer's completion the issue is in %s, want testing: its completion stands", got)
 		}
 		asked := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
-			return record.MergeForwardMessage{Role: role, Step: step, Head: "head", Base: "main", Phase: at, PullRequest: 42, Why: classify.ConflictCheckNotGreen}
+			return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: classify.ConflictCheckNotGreen}
 		}
 		want := []record.MergeForwardMessage{asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing),
 			asked(claim.RoleImplementer, record.MergeForwardAsk, phase.Testing), asked(claim.RoleTester, record.MergeForwardHold, phase.Testing)}
@@ -469,7 +514,7 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 		if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Phase != phase.Testing || mf.Why != classify.ConflictCheckNotGreen {
 			t.Fatalf("the record's merge forward = %+v, want the one asked in testing", mf)
 		}
-		if told := noticesOf(t, pool, "checks-red"); told != 1 {
+		if told := capNotices(t, pool, "checks-red"); told != 1 {
 			t.Fatalf("%d checks-red notices, want one", told)
 		}
 		if _, stays := checksRedNotice(t, pool); stays != phase.Testing {
@@ -478,39 +523,21 @@ func TestAConflictInImplementingIsToldOnlyWhenNeeded(t *testing.T) {
 	})
 }
 
-// forwardHead is the head the implementer's merge of main forward onto head leaves on #42.
-const forwardHead = "merged"
-
-// landsMergeForward is GitHub's synchronize of #42 from head to forwardHead: the merge forward
-// landing, three minutes after the first conflicting read.
+// landsMergeForward is GitHub's synchronize of #42 from conflictHead to forwardHead: the merge
+// forward landing, three minutes after the first conflicting read.
 func landsMergeForward(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
-		Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardHead, Before: "head", Sender: "legion-implementer[bot]"})
+		Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardHead, Before: conflictHead, Sender: "legion-implementer[bot]"})
 }
 
-// noticesOf is how many notices of kind the outbox holds for LEGION-208.
-func noticesOf(t *testing.T, pool *pgxpool.Pool, kind record.NoticeKind) int {
-	t.Helper()
-	told := 0
-	for _, each := range noticeKinds(t, pool, "LEGION-208") {
-		if each == kind {
-			told++
-		}
-	}
-	return told
-}
-
-// readingEngine is the engine of these tests with a reader of GitHub's merge state, which appends
-// the issue of each read the engine asks for to asked once the fact's transaction commits
-// (Config.ReadMergeState).
+// readingEngine is the engine of these tests (mergingEngineAt, at the first conflicting read) with
+// a reader of GitHub's merge state, which appends the issue of each read the engine asks for to
+// asked once the fact's transaction commits (Config.ReadMergeState).
 func readingEngine(asked *[]string) *Engine {
-	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
-		ProductionCheckRole: claim.RoleTester,
-		Clock:               func() time.Time { return firstConflictRead },
-		ReadMergeState:      func(issue string) { *asked = append(*asked, issue) },
-	}, nil)
+	engine := mergingEngineAt(firstConflictRead)
+	engine.cfg.ReadMergeState = func(issue string) { *asked = append(*asked, issue) }
+	return engine
 }
 
 // basePushOntoMain is a push onto main, the base #42 sits on.
@@ -567,17 +594,17 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("lint"))
 			confirmsConflict(t, pool, requiresCI)
 			landsMergeForward(t, pool)
-			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != "head" || asked.Landed != forwardHead {
+			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != forwardHead {
 				t.Fatalf("the record's merge forward = %+v, want head landed as %s", asked, forwardHead)
 			}
 			row, rows := entryRow(t, pool, tc.role), len(queuedRows(t, pool))
 
-			result := applyFacts(t, pool, readsAfter(4*time.Minute))("at the replaced head", tc.complete("head", "handoff-1"))
+			result := applyFacts(t, pool, readsAfter(4*time.Minute))("at the replaced head", tc.complete(conflictHead, "handoff-1"))
 			if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 				t.Fatalf("the completion at the replaced head was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", code, result.Refusal)
 			}
-			if !strings.Contains(result.Refusal.Message, forwardHead) {
-				t.Fatalf("the refusal reads %q, want it to name the new head %s", result.Refusal.Message, forwardHead)
+			if msg := result.Refusal.Message; !strings.Contains(msg, conflictHead) || !strings.Contains(msg, forwardHead) {
+				t.Fatalf("the refusal reads %q, want it to name the replaced head %s and the new head %s", msg, conflictHead, forwardHead)
 			}
 			if after := entryRow(t, pool, tc.role); !reflect.DeepEqual(after, row) {
 				t.Fatalf("the %s's row went from %+v to %+v, want nothing recorded", tc.role, row, after)
@@ -599,7 +626,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 		confirmsConflict(t, pool, requiresCI)
 		landsMergeForward(t, pool)
 		result := applyFacts(t, pool, readsAfter(4*time.Minute))("the merger's completion", intake.HandoffComplete{Generation: 1,
-			Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger-claim", Summary: "merged", Commit: "head"})
+			Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger-claim", Summary: "merged", Commit: conflictHead})
 		if result.Refusal != nil {
 			t.Fatalf("the merger's completion was refused %+v, want it recorded: the fence is of testing, reviewing and retro", result.Refusal)
 		}
@@ -630,7 +657,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
-		return record.MergeForwardMessage{Role: role, Step: step, Head: "head", Landed: forwardHead, Base: "main", Phase: at,
+		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Landed: forwardHead, Base: "main", Phase: at,
 			PullRequest: 42, Why: classify.ConflictMergeNext}
 	}
 	for _, tc := range []struct {
@@ -665,7 +692,7 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 
 			// A later head is no landing of its own: the review asked stands.
 			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
-				Branch: "legion/LEGION-208", Base: "main", HeadSHA: "later", Before: forwardHead, Sender: "legion-implementer[bot]"})
+				Branch: "legion/LEGION-208", Base: "main", HeadSHA: headThree, Before: forwardHead, Sender: "legion-implementer[bot]"})
 			if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
 				t.Fatalf("after a later head the landing messages are %+v, want still %+v", got, want)
 			}
@@ -719,8 +746,10 @@ func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
 
 // GitHub runs no checks on a head that conflicts with its base, so a head pushed in implementing
 // is read for a conflict at once (dispatch://INFRA-4374 R0): without the read, a conflicting push
-// stands with no CI and nobody is told. Before implementing there is no pull request work to merge
-// forward, and a head push reads nothing.
+// stands with no CI and nobody is told. The synchronize that carries the pushed head is the fact
+// that asks: the push of the same commits, delivered before it, moves no head of the record and
+// asks nothing, so one push to the branch asks for one ladder. Before implementing there is no
+// pull request work to merge forward, and a head push reads nothing.
 func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
@@ -733,8 +762,14 @@ func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
 		t.Run(string(tc.at), func(t *testing.T) {
 			pool := seedConflictIssue(t, tc.at, tc.status, settledGreen("ci"))
 			asked := []string{}
-			applyRefusingNothing(t, pool, readingEngine(&asked), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
-				Branch: "legion/LEGION-208", Base: "main", HeadSHA: "head-2", Before: "head", Sender: "legion-implementer[bot]"})
+			engine := readingEngine(&asked)
+			applyRefusingNothing(t, pool, engine, intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208",
+				Before: conflictHead, After: headTwo, Pusher: "legion-implementer[bot]"})
+			if len(asked) != 0 {
+				t.Fatalf("the push to the branch asked reads of %v in %s, want none: its synchronize is what moves the head", asked, tc.at)
+			}
+			applyRefusingNothing(t, pool, engine, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/LEGION-208", Base: "main", HeadSHA: headTwo, Before: conflictHead, Sender: "legion-implementer[bot]"})
 			if !reflect.DeepEqual(asked, tc.want) {
 				t.Fatalf("the head push asked reads of %v in %s, want %v", asked, tc.at, tc.want)
 			}
@@ -767,7 +802,7 @@ func TestTheMergeStateFollowsGitHubWhenABasePushReadsAnIssueInReview(t *testing.
 			t.Fatalf("after the read the record holds %s and %s with the base moved to %q, want GitHub's CONFLICTING and dirty, the push answered",
 				pr.Mergeability, pr.MergeState, pr.BaseMoved)
 		}
-		if pr.ConflictRead == nil || pr.ConflictRead.Head != "head" {
+		if pr.ConflictRead == nil || pr.ConflictRead.Head != conflictHead {
 			t.Fatalf("the first conflicting read = %+v, want one of head", pr.ConflictRead)
 		}
 		assertNothingActed(t, pool, phase.Reviewing)

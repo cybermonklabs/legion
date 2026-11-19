@@ -1001,24 +1001,49 @@ type ConflictRead struct {
 
 // MergeForward is the daemon's ask that the implementer merge Base forward onto Head
 // (PullRequest.MergeForward). Phase is the phase the issue stood in when the daemon asked, and
-// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0), as one word:
-// `merge-next` (the issue stands in accepting, retro or merging, PastReview),
-// `base-rules-unread` (the daemon could not read the base branch's rules),
-// `base-requires-current` (a ruleset of the base requires a pull request to be current with it)
-// or `required-check-not-green` (a check the base requires did not succeed on Head). AskedAt is
-// when the ask was written. Landed is the first new head that arrived after the ask, "" until
-// one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which it
-// does when the issue stands past review. It is stored as the jsonb of
+// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
+// AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
+// until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
+// it does when the issue stands past review. It is stored as the jsonb of
 // pull_requests.merge_forward (migration 20261119003157), null for nil.
 type MergeForward struct {
 	Head        string      `json:"head"`
 	Base        string      `json:"base"`
 	Phase       phase.Phase `json:"phase"`
-	Why         string      `json:"why"`
+	Why         ConflictWhy `json:"why"`
 	AskedAt     time.Time   `json:"askedAt"`
 	Landed      string      `json:"landed,omitempty"`
 	ReviewAsked bool        `json:"reviewAsked,omitempty"`
 }
+
+// ConflictWhy is one of the reasons R0 acts on a confirmed conflict for (dispatch://INFRA-4374
+// R0, classify.ConflictNeedsMerge, which reads them in this order), as the one word the daemon
+// records the act's reason in (MergeForward.Why, MergeForwardMessage.Why) and logs it under. It is
+// a string, so the JSON of a record or a row that carries one is the word itself. They are
+// declared here, and classify's names are these, because record is what both the decision and
+// the message that states it import.
+type ConflictWhy string
+
+const (
+	// ConflictMergeNext: the issue stands in accepting, retro or merging, or is held from one of
+	// them (PastReview).
+	ConflictMergeNext ConflictWhy = "merge-next"
+	// ConflictRulesUnread: the daemon could not read the base branch's rules.
+	ConflictRulesUnread ConflictWhy = "base-rules-unread"
+	// ConflictRequiresCurrent: a ruleset of the base requires a pull request to be current with it.
+	ConflictRequiresCurrent ConflictWhy = "base-requires-current"
+	// ConflictCheckNotGreen: a check the base requires did not succeed on the head.
+	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
+)
+
+// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
+// already is, and every phase after it up to the merge, which the issue keeps while the
+// implementer merges (dispatch://INFRA-4374 R1). An issue that stands in none of them - before its
+// implementation, or out of the workflow - has no pull request work to merge forward. They are
+// also the phases a head move is read for a conflict in (classify.MergeStateReadOwed), since that
+// read is what can lead to the ask. Both read it through StandsIn, so a hold from one of them
+// counts as standing there.
+var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
 // required status checks, on a read that found the head conflicting with that base

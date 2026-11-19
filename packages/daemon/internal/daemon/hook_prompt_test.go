@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -281,17 +282,26 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 // drains on the caller's goroutine (RunOnce).
 func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
+	runner, sup, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
+	holdSlot(t, pool, "LEGION-208")
+	return runner, sup, pool
+}
+
+// runnerIn is an outbox runner over an isolated database holding LEGION-208 in phase at with
+// Dispatch status status, its tree admitted, and a supervisor with no claim on it yet. It
+// publishes to publisher, logs to log, and drains on the caller's goroutine (RunOnce).
+func runnerIn(t *testing.T, at phase.Phase, status string, publisher notify.Publisher, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
+	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
+		Tree: "LEGION-208", Title: "Workflow", Phase: at, Generation: 1, Status: status, Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	holdSlot(t, pool, issue.Key)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{
 		dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree),
 		tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), notices: publisher,
-		now: func() time.Time { return time.Now() }, log: quietLogger(),
+		now: time.Now, log: log,
 	}
 	return runner, sup, pool
 }
@@ -309,19 +319,6 @@ func releasedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Ma
 	}
 	if held := machine.Claim(); !held.Released() {
 		t.Fatalf("the %s is %s by %s, want it released", role, held.State, held.SuspendedBy)
-	}
-	return machine
-}
-
-// startedClaim creates role's claim on LEGION-208 as a launch that has not registered yet, so a
-// start queued for it finds it and hands it its task: what the claim then holds is what the start
-// delivered.
-func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Machine {
-	t.Helper()
-	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
-		Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued}, "")
-	if err != nil {
-		t.Fatalf("create the %s's claim: %v", role, err)
 	}
 	return machine
 }
@@ -416,7 +413,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	row.ID = noticeRowID(t, pool)
 	p := &parkedWake{t: t, runner: runner, pool: pool, publisher: publisher, machine: machine, clock: clock, row: row, topic: topic}
 
-	p.attemptAt(0, "the row's first attempt")
+	drainAt(t, runner, 0, "the row's first attempt")
 	held := machine.View()
 	if held.State != supervise.StateLaunching || held.Locator != nil ||
 		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakeLaunch {
@@ -425,7 +422,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	}
 	p.turn = held.WakeWaiting.At.UTC()
 
-	p.found = p.attemptAt(parkFound, "the row's attempt that finds the park")
+	p.found = drainAt(t, runner, parkFound, "the row's attempt that finds the park")
 	if tries, waited, _ := p.waiting(); tries != 2 || !strings.Contains(waited, "launch, which the wake pacing holds until") {
 		t.Fatalf("the row has run %d times and last waited on %q, want two attempts, the second waiting for the launch the wake pacing holds", tries, waited)
 	}
@@ -435,14 +432,14 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	return p
 }
 
-// attemptAt drains the outbox with the runner's clock held ahead of the wall clock by ahead, and
-// answers the moment that clock reads through the drain.
-func (p *parkedWake) attemptAt(ahead time.Duration, what string) time.Time {
-	p.t.Helper()
+// drainAt drains runner's outbox with its clock held ahead of the wall clock by ahead, past the
+// backoff of every attempt before it, and answers the moment that clock reads through the drain.
+func drainAt(t *testing.T, runner *outbox, ahead time.Duration, what string) time.Time {
+	t.Helper()
 	at := time.Now().Add(ahead).UTC()
-	p.runner.now = func() time.Time { return at }
-	if err := p.runner.RunOnce(context.Background()); err != nil {
-		p.t.Fatalf("%s: %v", what, err)
+	runner.now = func() time.Time { return at }
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("%s: %v", what, err)
 	}
 	return at
 }
@@ -480,11 +477,11 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 		t.Fatalf("the parked attempt answers %v, naming %s (%t), want a routine wait (routineWait) naming the bound, %s: settle warns at every attempt from the seventh of a wait that is not routine, about once a minute over an hour's park",
 			waited, at, named, p.found.Add(parkedWakeBound))
 	}
-	p.attemptAt(parkFound+parkedWakeBound/2, "a drain before the bound")
+	drainAt(p.t, p.runner, parkFound+parkedWakeBound/2, "a drain before the bound")
 	if tries, _, _ := p.waiting(); tries != 2 {
 		t.Fatalf("the row has run %d times after a drain before the bound, want the two it had: it is due at the bound", tries)
 	}
-	again := p.attemptAt(parkFound+parkedWakeBound+time.Minute, "the row's attempt past the bound")
+	again := drainAt(p.t, p.runner, parkFound+parkedWakeBound+time.Minute, "the row's attempt past the bound")
 	tries, _, due := p.waiting()
 	if want := again.Add(parkedWakeBound); tries != 3 || !due.Equal(want.Truncate(time.Microsecond)) {
 		t.Fatalf("the row has run %d times and is due at %s after an attempt past the bound, want three attempts and the row due at the next bound, %s, the park still holding",
@@ -492,7 +489,7 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	}
 	// The row can come due a moment before the machine's own timer runs the wake: its turn is
 	// past then, and the row waits on its backoff rather than at a moment already gone.
-	p.attemptAt(parkedTurn+time.Minute, "an attempt past the turn whose wake has not run yet")
+	drainAt(p.t, p.runner, parkedTurn+time.Minute, "an attempt past the turn whose wake has not run yet")
 	tries, _, due = p.waiting()
 	if tries != 4 || !due.After(p.turn) {
 		t.Fatalf("the row has run %d times and is due at %s after an attempt past the turn %s, want four attempts and the row due on its backoff, past the turn",
@@ -509,7 +506,7 @@ func keptAfterTheParkedWake(t *testing.T, payload record.OutboxPayload, role cla
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the wake's turn, want the resume launched", role, held.State, held.Locator, held.WakeWaiting)
 	}
-	p.attemptAt(parkedTurn+3*time.Minute, "the row's attempt after the resume launched")
+	drainAt(p.t, p.runner, parkedTurn+3*time.Minute, "the row's attempt after the resume launched")
 	keptOnce(t, p.publisher, p.pool, role, p.row.ID, p.topic, message, "the attempt after the launch")
 }
 
@@ -528,7 +525,7 @@ func keptAfterAnOperatorsResume(t *testing.T, payload record.OutboxPayload, role
 	if held := p.machine.View(); held.WakeWaiting != nil || held.Locator == nil {
 		t.Fatalf("the %s is %s recording %+v with wake %+v after the operator's resume, want the resume launched at once", role, held.State, held.Locator, held.WakeWaiting)
 	}
-	p.attemptAt(parkFound+parkedWakeBound, "the row's attempt at the bound")
+	drainAt(p.t, p.runner, parkFound+parkedWakeBound, "the row's attempt at the bound")
 	if attempts, _ := p.publisher.snapshot(); attempts == 0 {
 		_, _, due := p.waiting()
 		t.Fatalf("the row's attempt at the bound after the operator's resume published nothing, the row due at %s: a row due at the wake's turn, %s, waits out a turn the operator's resume has already ended",

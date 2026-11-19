@@ -69,7 +69,8 @@ type githubBranch struct {
 //     of them sets `strict_required_status_checks_policy`.
 //   - GET /branches/{base}: where classic protection is enabled and its required status checks are
 //     not enforced `off`, its `contexts` and each `checks[].context` are required too. That answer
-//     carries no `strict`, so a classic rule is read as not strict (plan departure 5).
+//     carries no `strict`, so a classic rule is read as not strict (departure 5 of the plan of
+//     dispatch://INFRA-4374).
 //
 // Each `/`-separated segment of base is path-escaped (branchPath), so a branch whose name holds a
 // `#`, a `?` or a `%` reads that branch and no other. Required holds each context once, sorted.

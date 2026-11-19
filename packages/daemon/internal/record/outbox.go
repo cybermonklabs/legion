@@ -1379,6 +1379,13 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 	MergeForwardReview: {claim.RoleReviewer},
 }
 
+// MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
+// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
+	return slices.Contains(mergeForwardRoles[step], role)
+}
+
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
 // acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
@@ -1403,29 +1410,32 @@ type MergeForwardMessage struct {
 	Base        string           `json:"base"`
 	Phase       phase.Phase      `json:"phase"`
 	PullRequest int              `json:"pullRequest"`
-	Why         string           `json:"why,omitempty"`
+	Why         ConflictWhy      `json:"why,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
 
-// mergeForwardReason is the sentence the ask and the hold give for why, which is one of the words
-// classify.ConflictNeedsMerge answers (classify.ConflictMergeNext, ConflictRulesUnread,
-// ConflictRequiresCurrent, ConflictCheckNotGreen), and false for any other word. record does not
-// import classify, so the four words are spelled here as well, and a row whose why this does not
-// know is refused (validateOutboxPayload): no message can go out with a reason it cannot state.
-func mergeForwardReason(why, base string) (string, bool) {
+// mergeForwardReason is the sentence the ask and the hold give for why, one of R0's reasons
+// (ConflictWhy), of the base branch base; "" for any other word, which a row never carries, since
+// a row whose why is none of them is refused (validateOutboxPayload, conflictWhys): no message can
+// go out with a reason it cannot state.
+func mergeForwardReason(why ConflictWhy, base string) string {
 	switch why {
-	case "merge-next":
-		return "The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base.", true
-	case "base-rules-unread":
-		return fmt.Sprintf("The daemon could not read the rules of %s, so it cannot tell if every check that %s requires passed on this head.", base, base), true
-	case "base-requires-current":
-		return fmt.Sprintf("A ruleset of %s requires a pull request to be current with %s before it merges.", base, base), true
-	case "required-check-not-green":
-		return fmt.Sprintf("A check that %s requires has not passed on this head, and GitHub runs no checks on a head that conflicts with its base.", base), true
+	case ConflictMergeNext:
+		return "The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base."
+	case ConflictRulesUnread:
+		return fmt.Sprintf("The daemon could not read the rules of %s, so it cannot tell if every check that %s requires passed on this head.", base, base)
+	case ConflictRequiresCurrent:
+		return fmt.Sprintf("A ruleset of %s requires a pull request to be current with %s before it merges.", base, base)
+	case ConflictCheckNotGreen:
+		return fmt.Sprintf("A check that %s requires has not passed on this head, and GitHub runs no checks on a head that conflicts with its base.", base)
 	}
-	return "", false
+	return ""
 }
+
+// conflictWhys is every word a merge-forward message's Why may be (ConflictWhy), which
+// validateOutboxPayload looks a row's up in.
+var conflictWhys = map[ConflictWhy]bool{ConflictMergeNext: true, ConflictRulesUnread: true, ConflictRequiresCurrent: true, ConflictCheckNotGreen: true}
 
 // Message is what the runner publishes for issue to Role, where repo is the repository the record
 // holds the pull request under (PullRequest.Repo). It starts with the issue key, as every message
@@ -1456,11 +1466,6 @@ func mergeForwardReason(why, base string) (string, bool) {
 // architect alone in accepting).
 func (p MergeForwardMessage) Message(issue, repo string) string {
 	pull := fmt.Sprintf("pull request %s#%d", repo, p.PullRequest)
-	reason, _ := mergeForwardReason(p.Why, p.Base)
-	readMerge := fmt.Sprintf("run `git diff %s %s`."+
-		" For a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
-		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, p.Landed, p.Landed, p.Landed)
 	switch p.Step {
 	case MergeForwardAsk:
 		own := ""
@@ -1473,7 +1478,7 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			" First do the working-copy check of skill://legion-worker/references/foreign-path.md."+
 			" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
 			" Write no handoff and make no completion for this merge.%s",
-			issue, pull, p.Head, p.Base, p.Phase, reason, p.Base, own)
+			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
 	case MergeForwardHold:
 		merger := ""
 		if p.Role == claim.RoleMerger {
@@ -1484,11 +1489,11 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			" The issue stays in %s. Stop writing the workspace now.%s"+
 			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+
 			" A result you recorded at head %s stays a result of head %s.",
-			issue, pull, p.Head, p.Base, reason, p.Base, p.Phase, merger, p.Head, p.Head)
+			issue, pull, p.Head, p.Base, mergeForwardReason(p.Why, p.Base), p.Base, p.Phase, merger, p.Head, p.Head)
 	case MergeForwardLanded:
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s. The old head is %s, and the new head is %s."+
 			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.",
-			issue, p.Base, pull, p.Head, p.Landed, p.Phase, readMerge)
+			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge())
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
 		tell := "the architect, on its role topic"
 		switch p.Phase {
@@ -1501,8 +1506,18 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			" Read what the merge changed since the old head: %s"+
 			" Then approve the new head %s by its SHA, with the Legion footer of your review naming that head, or request changes."+
 			" Write no handoff and make no completion for this review. Then tell %s what you decided.",
-			issue, p.Base, pull, p.Phase, p.Head, p.Landed, readMerge, p.Landed, tell)
+			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
 	}
+}
+
+// readMerge is how the landed and the review tell their role to read what a landed merge forward
+// changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
+// `git show --remerge-diff` and `git diff --stat` against the merge's first parent.
+func (p MergeForwardMessage) readMerge() string {
+	return fmt.Sprintf("run `git diff %s %s`."+
+		" For a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
+		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
+		p.Head, p.Landed, p.Landed, p.Landed, p.Landed)
 }
 
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
@@ -1948,11 +1963,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a conflict confirm names the pull request it reads again and the head the first read found conflicting; it names #%d at %q", value.Number, value.Head)
 		}
 	case MergeForwardMessage:
-		roles, known := mergeForwardRoles[value.Step]
-		if !known {
+		if _, known := mergeForwardRoles[value.Step]; !known {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
-		if !slices.Contains(roles, value.Role) {
+		if !MergeForwardReaches(value.Step, value.Role) {
 			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
@@ -1962,7 +1976,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if landing != (value.Landed != "") {
 			return fmt.Errorf("a merge-forward landed or review names the head that landed, and an ask or a hold names none; a %s names %q", value.Step, value.Landed)
 		}
-		if _, ok := mergeForwardReason(value.Why, value.Base); !ok && (value.Why != "" || !landing) {
+		if !conflictWhys[value.Why] && (value.Why != "" || !landing) {
 			return fmt.Errorf("a merge-forward ask or hold names why the daemon acted, as one of R0's reasons, and a landed or a review names one of them or none; a %s names %q", value.Step, value.Why)
 		}
 	default:

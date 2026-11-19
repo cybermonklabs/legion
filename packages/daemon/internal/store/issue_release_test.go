@@ -330,7 +330,8 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 		{name: "a task queued for a role of the pod", kind: "supervise",
 			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":1}`},
 		{name: "an architect's notice", kind: "notice", payload: `{"kind":"todo","reason":"r"}`},
-		{name: "a merge-forward message", kind: "merge_forward", payload: `{"kind":"todo","reason":"r"}`},
+		{name: "a merge-forward message", kind: "merge_forward",
+			payload: `{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"required-check-not-green"}`},
 		{name: "a turn a message started", state: supervise.StateWorking},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

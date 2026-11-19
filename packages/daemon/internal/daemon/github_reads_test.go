@@ -209,10 +209,7 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 			if pr.Mergeability != tc.mergeability {
 				t.Fatalf("recorded mergeability = %q, want %q", pr.Mergeability, tc.mergeability)
 			}
-			var confirms int
-			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'conflict_confirm' and issue = 'CAPTURE-1'").Scan(&confirms); err != nil {
-				t.Fatalf("count the second reads: %v", err)
-			}
+			confirms := outboxRowsOfKind(t, pool, "CAPTURE-1", record.OutboxKindConflictConfirm)
 			wantConfirms := 0
 			if tc.firstRead {
 				wantConfirms = 1
