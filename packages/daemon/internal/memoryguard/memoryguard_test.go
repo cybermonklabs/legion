@@ -6937,3 +6937,152 @@ func TestMemoryGuardEndsForUrgencyNoForkThatRanksAtNothingInAStayWithHistory(t *
 		}
 	}
 }
+
+// The tester's probe run r17 at 41d4f45b under gVisor at 4 GiB (r17.log, the controller pod's
+// latepool shape): an agent, protected, a parent of a 2.4 GB block read across the band, three
+// sleeping forks of it and six growers. Its kills at 86.60% and 89.96% each ended one grower; its
+// next two readings, 90.92%, showed nothing grown since the kill; and at the next, 95.16%, at or
+// above the urgent share, the guard read every process for 205 ms before it ended the four growers
+// left, and the reading came 12.3 MiB from the 4 GiB kill point. At an urgent reading after a kill
+// every process the guard already knows grew since the previous kill ends before the guard reads
+// the other processes for that reading (INFRA-3531 R1 of spec version 43, verification version
+// 36). Here every smaps read at the urgent reading takes 25 ms, and a fork of the parent started
+// since the reading before is listed there: the guard reads again first the processes it read at
+// the reading before, in the order that reading ranked them, the growers first, and sends each
+// grower's kill right after its own read, before it reads the parent or a fork and before it lists
+// the processes; every grower alive at that reading ends at it, and no fork and not the parent.
+func TestMemoryGuardEndsAtAnUrgentReadingAfterAKillEachGrowerItKnowsAsItReadsItBeforeTheFullRead(t *testing.T) {
+	const perRead = 25 * time.Millisecond
+	at := func(hundredths uint64) uint64 { return podLimit / 10000 * hundredths >> 10 << 10 }
+	pod := newFakePod(t)
+	parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock - 40*mib}
+	pod.add(agent(gib), parent)
+	pod.setAnon(at(7600))
+	var h *harness
+	var mu sync.Mutex
+	// smaps are the smaps reads of the guard's loop, and listings its calls of the classifier, one
+	// for each listing of the processes, each with the kills sent before it.
+	var smaps, listings []guardRead
+	record := func(to *[]guardRead, pid int) {
+		r := guardRead{pid: pid, at: h.clock.Now(), kills: int(h.signal.sent.Load())}
+		mu.Lock()
+		defer mu.Unlock()
+		*to = append(*to, r)
+	}
+	classify := protect("tester", 100)
+	h = newHarness(t, pod, func(t *Table) map[int]Class {
+		record(&listings, 0)
+		return classify(t)
+	})
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.g.smapsRead = func(pid int) { record(&smaps, pid) }
+	_, slow := slowMark(h)
+	h.run()
+	for i, r := range []uint64{8000, 8400, 8440} {
+		if i == 0 {
+			for j := range 3 {
+				pod.add(fakeProcess{pid: 701 + j, ppid: 700, start: uint64(5100 + 100*j), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+			}
+			pod.resize(&parent, latepoolBlock)
+		}
+		pod.setAnon(at(r))
+		h.tick()
+	}
+	h.requireKilled()
+	growers := make([]*fakeProcess, 6)
+	for i := range growers {
+		growers[i] = &fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs, anon: uint64(64+i) * mib}
+		pod.add(*growers[i])
+	}
+	// step has each grower that lives take its next 64 MiB step.
+	step := func() {
+		killed := h.signal.kills()
+		for _, g := range growers {
+			if !slices.Contains(killed, g.pid) {
+				pod.resize(g, g.anon+64*mib)
+			}
+		}
+	}
+	pod.setAnon(at(8660))
+	h.tick()
+	h.requireKilled(805)
+	step()
+	pod.setAnon(at(8996))
+	h.tick()
+	h.requireKilled(805, 804)
+	for range 2 {
+		pod.setAnon(at(9092))
+		h.tick()
+	}
+	h.requireKilled(805, 804)
+	step()
+	pod.add(fakeProcess{pid: 704, ppid: 700, start: 7000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock})
+	pod.setAnon(at(9516))
+	slow.Store(int64(perRead))
+	urgentAt := h.clock.Now().Add(h.pending.d)
+	h.tick()
+	slow.Store(0)
+	log := strings.Join(h.log.all(), "\n")
+	mu.Lock()
+	// The reads and the listings of the urgent reading.
+	beforeIt := func(r guardRead) bool { return r.at.Before(urgentAt) }
+	reads, listed := slices.DeleteFunc(slices.Clone(smaps), beforeIt), slices.DeleteFunc(slices.Clone(listings), beforeIt)
+	mu.Unlock()
+	var shown []string
+	for _, r := range reads {
+		shown = append(shown, fmt.Sprintf("pid %d at +%s after %d kills", r.pid, r.at.Sub(urgentAt), r.kills))
+	}
+	kills := h.killed()
+	before := len(kills)
+	for i, k := range kills {
+		if !k.At.Before(urgentAt) {
+			before = i
+			break
+		}
+	}
+	var ended []int
+	for _, k := range kills[before:] {
+		ended = append(ended, k.PID)
+	}
+	slices.Sort(ended)
+	if want := []int{800, 801, 802, 803}; !slices.Equal(ended, want) {
+		t.Fatalf("at the urgent reading the guard ended %v, want %v, every grower alive at it; the log:\n%s", ended, want, log)
+	}
+	// done is how many kills the guard has sent once every grower's kill at the urgent reading is.
+	done := len(kills)
+	for i, r := range reads {
+		if r.pid < 800 {
+			if r.kills < done {
+				t.Fatalf("at the urgent reading the guard read pid %d's smaps with %d kills sent, before every grower's kill; its smaps reads there: %s; the log:\n%s", r.pid, r.kills, strings.Join(shown, ", "), log)
+			}
+			continue
+		}
+		k := slices.IndexFunc(kills, func(k Kill) bool { return k.PID == r.pid })
+		if want := r.at.Add(perRead); !kills[k].At.Equal(want) {
+			t.Fatalf("pid %d's kill went +%s after the urgent reading, want +%s, right after its read; its smaps reads there: %s; the log:\n%s", r.pid, kills[k].At.Sub(urgentAt), want.Sub(urgentAt), strings.Join(shown, ", "), log)
+		}
+		if i+1 < len(reads) && reads[i+1].kills <= k {
+			t.Fatalf("the guard read pid %d's smaps before it sent pid %d's kill; its smaps reads there: %s", reads[i+1].pid, r.pid, strings.Join(shown, ", "))
+		}
+	}
+	for _, r := range listed {
+		if r.kills < done {
+			t.Fatalf("at the urgent reading the guard listed the processes at +%s with %d kills sent, before every grower's kill; the log:\n%s", r.at.Sub(urgentAt), r.kills, log)
+		}
+	}
+	if !slices.ContainsFunc(reads, func(r guardRead) bool { return r.pid == 704 }) {
+		t.Fatalf("at the urgent reading the guard did not read pid 704, the fork started since the reading before; its smaps reads there: %s", strings.Join(shown, ", "))
+	}
+	for _, pid := range h.signal.kills() {
+		if pid < 800 {
+			t.Fatalf("the guard ended pid %d, the parent or a fork, while the growers lived; the log:\n%s", pid, log)
+		}
+	}
+	want := []endedChoice{
+		{805, "new", "search", 0}, {804, "grew", "reading", 0},
+		{803, "grew", "reading", 0}, {802, "urgent", "reading", 0}, {801, "urgent", "reading", 0}, {800, "urgent", "reading", 0},
+	}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("the guard ended %+v, want %+v; the log:\n%s", got, want, log)
+	}
+}
