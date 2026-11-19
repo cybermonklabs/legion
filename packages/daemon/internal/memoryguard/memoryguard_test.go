@@ -3604,6 +3604,12 @@ func endedChoices(h *harness) []endedChoice {
 // window at the first reading at the mark, 93.95%, and one kill there left the pod 26.5 MiB from
 // the kill point: each is new to the stay with memory of its own, beside a parent and forks that
 // are not, and the guard ends all six at that reading (INFRA-3531 R1 of spec versions 41 and 42).
+// In `4g-t4latepool-r3`, at 4d6665d5, the same burst met a slow reading at the mark: half an
+// interval passed before the search, each smaps read took 22 ms, and the search stopped after the
+// one grower it read, so the guard ended that one alone at the mark and the host ended the pod two
+// readings later; once the first kill is sent, the guard reads on through the processes new to the
+// stay up to one interval from the reading at the mark and ends each with memory of its own
+// (INFRA-3531 R1 of spec version 43, verification version 35).
 // Each run's first kill says what the reads at the mark read of the processes new to the stay
 // (new_read).
 func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
@@ -3838,6 +3844,34 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			withinInterval: true,
 			grown:          []uint64{65},
 			newRead:        "9:6",
+			atMark:         6,
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "urgent", "search", 0}, {803, "urgent", "search", 0},
+				{802, "urgent", "search", 0}, {801, "urgent", "search", 0}, {800, "urgent", "search", 0},
+			},
+		},
+		{
+			// r3's forks start before the band's seventh reading, so the band reads them often
+			// and they are not new to the stay; the six growers start after the band's last
+			// reading. The reading at the mark, 101 ms after it, at 92.52%, is at or above the
+			// urgent share, and it spends 50 ms before the search, each smaps read then taking
+			// 22 ms: the search reads one grower past half an interval and the first kill goes
+			// 72 ms after the reading, as the run's did. The guard then reads on through the
+			// other five, which hold memory of their own, and ends them by the urgent rule at
+			// that reading, before the next one; the line of each says what the decision's reads
+			// reached of the processes new to the stay (new_read=6:6).
+			name: "4g-t4latepool-r3, six growers started after the band's last reading and a slow search at a first reading at the mark at 92.52%",
+			band: []replayReading{{7574, 0}, {7974, 102 * time.Millisecond}, {8379, 101 * time.Millisecond},
+				{8390, 100 * time.Millisecond}, {8390, 101 * time.Millisecond}, {8390, 101 * time.Millisecond},
+				{8434, 151 * time.Millisecond}, {8434, 102 * time.Millisecond}, {8434, 103 * time.Millisecond},
+				{8438, 102 * time.Millisecond}, {8438, 101 * time.Millisecond}, {8438, 102 * time.Millisecond}},
+			forksAt:        6,
+			mark:           replayReading{9252, 101 * time.Millisecond},
+			stall:          50 * time.Millisecond,
+			perRead:        22 * time.Millisecond,
+			withinInterval: true,
+			grown:          []uint64{64},
+			newRead:        "6:6",
 			atMark:         6,
 			want: []endedChoice{
 				{805, "new", "search", 0}, {804, "urgent", "search", 0}, {803, "urgent", "search", 0},
