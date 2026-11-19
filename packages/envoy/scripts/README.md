@@ -619,13 +619,24 @@ issue event named in the new form for another project's and acknowledges it with
 producer that moves first stops the fleet's workflow in silence.
 
 ```bash
-packages/envoy/scripts/daemon-release-gate.sh <commit>
-packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> <commit>
+packages/envoy/scripts/daemon-release-gate.sh --deployment <owner/repo> --listeners <commit>
 ```
 
-Without `--listeners` it reads the image each Legion daemon runs: each entry of
-example-org/deployment `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
-`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
+`--deployment` names the deployment repository whose Pulumi stacks pin the readers' images; it is
+required, and the gate compiles in no deployment's name. Each stack's config keys are under its
+Pulumi project's name, which the gate reads from that stack's own `Pulumi.yaml` (`name:`): a stack
+whose `Pulumi.yaml` is missing or declares no name prints `UNKNOWN` by name, and no name is guessed.
+
+The deployment's Legion projects are the files of its `legion/projects/` (`<nn>-<KEY>.yaml`, one
+mapping of a project's settings each, in file-name order), as the deployment's legion program reads
+them. Only a deployment with no such directory (GitHub answers 404) still declares them in the
+projects list of `legion/Pulumi.prod.yaml`, as that program did before the files. Any other failed
+listing, a file that is not one mapping, and a deployment that declares no project print `UNKNOWN`
+naming what the gate read.
+
+Without `--listeners` it reads the image each Legion daemon runs: each project's `daemonImage` when
+set, else its `image`; a project at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
 `runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
 its `image` (deployment `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
 by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
@@ -637,7 +648,7 @@ that key (deployment `dispatch/main.go`) and the listener runs no other image. E
 labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
 (its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
 platform agreeing. A pin built from `https://github.com/cybermonklabs/legion`, or from a name the
-deployment records as the same repository — the `repositoryRenames` pairs of `legion/Pulumi.prod.yaml`,
+deployment records as the same repository — the `repositoryRenames` pairs of its Legion projects,
 which the daemon reads as `repository_renames`, so a build made as `sjawhar/legion` before the
 transfer is a build of this repository — passes when GitHub's compare of `<commit>...<revision>`
 answers `ahead` or `identical`, its line naming the rename; a pin built from any other repository
@@ -647,8 +658,9 @@ naming a branch (`main`) would compare as wherever that branch points now.
 
 It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
 `GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
-(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error exits
-2. It needs `gh` with read access to both repositories, docker with buildx able to read each pin's
+(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error, a
+missing `--deployment` among them, exits 2 and reads nothing. It needs `gh` with read access to both
+repositories, docker with buildx able to read each pin's
 registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
 `DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
 
