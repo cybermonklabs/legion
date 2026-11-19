@@ -148,7 +148,10 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
   }
 }
 
-const keptAsk = shape.record({
+/** An ask's fields (`SentRequest.ask`). This shape and the draft's, the anchor's, the kind's, the
+ *  owner's and the reply's below are what a composer's draft and its address are kept by: here,
+ *  and in the drafts a composer keeps for a reload (`unsent-drafts.ts`). */
+export const keptAsk = shape.record({
   multiple: shape.boolean,
   options: shape.array(
     shape.record({ description: shape.optional(shape.string), label: shape.string })
@@ -156,7 +159,8 @@ const keptAsk = shape.record({
   urgency: shape.oneOf(...ASK_URGENCIES),
 });
 
-const keptDraft = shape.record({
+/** The text of a draft, its accepted mentions and a suggestion's replacement (`SentDraft`). */
+export const keptDraft = shape.record({
   body: shape.string,
   mentions: shape.array(
     shape.record({
@@ -210,53 +214,66 @@ const keptEdit = shape.either(
   })
 ) satisfies Shape<KeptEdit>;
 
-const keptRequest = shape.record({
-  anchor: shape.optional(
-    shape.record({
-      artifact: shape.string,
-      mark_id: shape.string,
-      // The words the reader had around their selection and how many readings of them their
-      // block held, which the recovery from `ANCHOR_MISSING` needs after a reload as much as
-      // the quote beside it (`ComposerAnchor.placement`).
-      placement: shape.optional(
-        shape.record({
-          blockId: shape.nullable(shape.string),
-          prefix: shape.string,
-          readings: shape.number,
-          suffix: shape.string,
-        })
-      ),
-      quote: shape.string,
-    })
+/** The words of a document a margin compose is about (`ComposerAnchor`): the mark the selection
+ *  bar wrote over them, or, on a closed issue's document, which takes no mark, the quote and which
+ *  reading of it the reader selected (`quoteAnchor`), where the server writes the mark. */
+export const keptAnchor = shape.either(
+  shape.record({
+    artifact: shape.string,
+    mark_id: shape.string,
+    // The words the reader had around their selection and how many readings of them their
+    // block held, which the recovery from `ANCHOR_MISSING` needs after a reload as much as
+    // the quote beside it (`ComposerAnchor.placement`).
+    placement: shape.optional(
+      shape.record({
+        blockId: shape.nullable(shape.string),
+        prefix: shape.string,
+        readings: shape.number,
+        suffix: shape.string,
+      })
+    ),
+    quote: shape.string,
+  }),
+  shape.record({ artifact: shape.string, occurrence: shape.number, quote: shape.string })
+);
+
+/** The kind a draft is written as (`ComposerKind`). */
+export const keptKind = shape.oneOf("ask", "comment", "suggestion");
+
+/** Whom a draft is written for (`ComposerOwner`). */
+export const keptOwner = shape.either(
+  shape.record({ issueKey: shape.string, kind: shape.oneOf("issue") }),
+  shape.record({
+    artifactId: shape.string,
+    kind: shape.oneOf("artifact"),
+    project: shape.string,
+  }),
+  shape.record({ kind: shape.oneOf("session"), sessionId: shape.string })
+);
+
+/** The reply a draft answers (`ReplyTarget`). */
+export const keptReplyTo = shape.record({
+  actor: keptActor,
+  excerpt: shape.string,
+  id: shape.string,
+  mentions: shape.optional(
+    shape.array(shape.record({ target: shape.string, title: shape.string }))
   ),
+  parentKind: shape.oneOf("comment", "message"),
+  thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
+  to: shape.optional(shape.string),
+});
+
+const keptRequest = shape.record({
+  anchor: shape.optional(keptAnchor),
   ask: keptAsk,
   draft: keptDraft,
   edit: shape.nullable(keptEdit),
-  kind: shape.oneOf("ask", "comment", "suggestion"),
-  owner: shape.either(
-    shape.record({ issueKey: shape.string, kind: shape.oneOf("issue") }),
-    shape.record({
-      artifactId: shape.string,
-      kind: shape.oneOf("artifact"),
-      project: shape.string,
-    }),
-    shape.record({ kind: shape.oneOf("session"), sessionId: shape.string })
-  ),
+  kind: keptKind,
+  owner: keptOwner,
   pickedDelivery: shape.optional(keptDelivery),
   plainDelivery: keptDelivery,
-  replyTo: shape.nullable(
-    shape.record({
-      actor: keptActor,
-      excerpt: shape.string,
-      id: shape.string,
-      mentions: shape.optional(
-        shape.array(shape.record({ target: shape.string, title: shape.string }))
-      ),
-      parentKind: shape.oneOf("comment", "message"),
-      thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
-      to: shape.optional(shape.string),
-    })
-  ),
+  replyTo: shape.nullable(keptReplyTo),
   sendKey: shape.string,
 }) satisfies Shape<KeptSentRequest>;
 

@@ -2,8 +2,17 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { createDraftStore } from "../inbox/draft-store";
+import { type Shape, shape } from "../writes/write-storage";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
-import type { HeldSend } from "./held-sends";
+import {
+  type HeldSend,
+  keptAnchor,
+  keptAsk,
+  keptDraft,
+  keptKind,
+  keptOwner,
+  keptReplyTo,
+} from "./held-sends";
 import type { SentDraft, SentRequest } from "./send-request";
 
 /**
@@ -121,8 +130,40 @@ export interface UnsentDrafts {
   forgetAway(name: string, at: AwayAddress): void;
 }
 
+/** A draft kept by address, as the tab keeps it for a reload (`AwayDraft`). */
+const keptAway = shape.record({
+  anchor: shape.optional(keptAnchor),
+  ask: shape.optional(keptAsk),
+  base: shape.optional(shape.string),
+  draft: keptDraft,
+  kind: shape.optional(keptKind),
+  owner: keptOwner,
+  replyTo: shape.nullable(keptReplyTo),
+}) satisfies Shape<AwayDraft>;
+
+/** What a store holds under a name, read as JSON: undefined where it holds nothing, or text that
+ *  does not parse. The tab can hold that text, or a draft an older release kept in another shape,
+ *  so what is read here is trusted only once its shape is checked (`keptAway`, `keptDraft`), and
+ *  what does not fit reads as no draft. */
+function parsed(kept: string): unknown {
+  if (kept === "") return undefined;
+  try {
+    return JSON.parse(kept);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The drafts kept by address under a name: those of its list that fit `keptAway`. */
 function parseAway(kept: string): readonly AwayDraft[] {
-  return kept === "" ? [] : (JSON.parse(kept) as AwayDraft[]);
+  const list = parsed(kept);
+  return Array.isArray(list) ? list.filter(keptAway) : [];
+}
+
+/** The draft kept under a name, where it fits `keptDraft`. */
+function parseSent(kept: string): SentDraft | undefined {
+  const draft = parsed(kept);
+  return keptDraft(draft) ? draft : undefined;
 }
 
 const drafts = new WeakMap<QueryClient, UnsentDrafts>();
@@ -138,7 +179,8 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
     const store = createDraftStore("unsent");
     const awayStore = createDraftStore("away");
     function useKept(name: string): boolean {
-      return store.useDraft(name)[0] !== "";
+      const [kept] = store.useDraft(name);
+      return useMemo(() => parseSent(kept) !== undefined, [kept]);
     }
     function useAway(name: string): readonly AwayDraft[] {
       const [kept] = awayStore.useDraft(name);
@@ -158,10 +200,7 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       forgetAway: (name, at) => writeAway(name, at, undefined),
       keepAway: (name, away) =>
         writeAway(name, { anchor: away.anchor, replyTo: away.replyTo }, away),
-      read: (name) => {
-        const kept = store.read(name);
-        return kept === "" ? undefined : (JSON.parse(kept) as SentDraft);
-      },
+      read: (name) => parseSent(store.read(name)),
       readAway: (name, replyTo, anchor) =>
         parseAway(awayStore.read(name)).find(
           (away) => sameReply(away.replyTo, replyTo) && sameAnchor(away.anchor, anchor)
