@@ -88,12 +88,14 @@ func BenchmarkLiveDocumentRead(b *testing.B) {
 // (Service.weighPeerUpdate, ygo's Server.OnPeerUpdate), the apply the hook is handed, which is
 // ygo's own, crdt.ApplyUpdateV1Held of the update into the room's document (sjawhar/ygo
 // v1.55.1-sami.1, provider/websocket/peer_update.go:112-127, provider/websocket/peer.go:292-302),
-// and the observer's whole turn with the replica (renderedReplica.observe), which ygo fires
-// inside that apply once its transaction commits (crdt/doc.go:984-989): the drain of the room's
-// update log, the room charged again from its tracked state (chargeAdded), the
-// update applied to the replica, and the render (renderDocumentForUpdate), which skips
-// pmdoc.Read's copy since the tree it renders never outlives the call. 120 keystrokes 20 ms apart
-// on a 524 KiB document; each run reports the latencies' percentiles in milliseconds.
+// with the render the room's apply check makes, inside that apply's transaction, of what the
+// update leaves (renderCheck, which keepReplica sets on the room's document), and the observer's
+// whole turn with the replica (renderedReplica.observe), which ygo fires inside that apply once
+// its transaction commits (crdt/doc.go:984-989): the drain of the room's update log, the room
+// charged again from its tracked state (chargeAdded), the update applied to the replica, and the
+// check's rendering taken as the replica's in place of a render of its own (takeChecked). 120
+// keystrokes 20 ms apart on a 524 KiB document; each run reports the latencies' percentiles in
+// milliseconds.
 //
 // Each keystroke reaches the room as a browser's does: typed on the browser's own copy of the room,
 // and handed to the hook as the V1 update that copy's transaction encodes (crdt.Doc.OnUpdate, the

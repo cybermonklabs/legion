@@ -829,6 +829,7 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
   parked rows already stored are part of the history a load decodes, so they count.
   ygo bounds those per room by count, not bytes: parked items by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`),
   and parked delete ranges, apart, by `MaxPendingDeleteRanges`, which it sets to `maxParkedDeleteRanges` (4,096).
+  A browser's update that would park past either is answered not applied, its socket left open, since the edits it waits on may still arrive and the browser sends it again.
 
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
@@ -3592,7 +3593,11 @@ Every other answer Dispatch gives before it has read a request's body - `KEY_INV
 A browser that sends a whole upload before it reads the answer (WebKit, Firefox) otherwise met the connection's close as a reset and never saw the answer.
 A body past the limit is answered `413 CAP_EXCEEDED` (the upload routes and the handoff write) or `413 REQUEST_TOO_LARGE` in that answer's place, and the connection closes;
 a `401` is the one early answer that stands, since a caller nobody resolves is refused before any limit is judged.
-Both reads wait at most a minute for a body: one that stops arriving is given its answer with `Connection: close`.
+An early answer's drain waits at most a minute for the rest of a body, counted from when the drain begins.
+The key layer's read of a repeat's body, its spool of a first request's body and a handler's read wait, for a caller Dispatch resolves, at most 20 seconds for the body's next bytes and at most a minute from their first read.
+A body that stops arriving, or is still arriving at the minute, is given its answer with `Connection: close`:
+a repeat's answer is `409 KEY_IN_FLIGHT`, what the key said;
+and where a spool or a handler's read was cut, the `400` answered for a body it never had whole becomes `503 BODY_STALLED` for a body that stopped arriving for 20 seconds and `503 BODY_TOO_SLOW` for one still arriving at the minute, which the caller retries.
 An `Expect: 100-continue` request answered early is never asked for its body: Dispatch sends no `100 Continue`, sends the answer and closes the connection.
 
 Each item below names a status and code, then its meaning.
@@ -4902,11 +4907,22 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/{id}/rebuild` (POST; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Rebuild a document whose durable history no write can change, the recovery from either cap a document can reach:
+  Rebuild a document whose durable history no write can change:
   a history that cannot load (`409 DOCUMENT_UNLOADABLE` on its reads), rebuilt from the latest saved version or optional `{markdown}`;
-  and a history that loads but stands so near the decode cap (1,048,576 structs, within a write's smallest replacement of it) or the room's edit-scan total that every write is refused, rebuilt from its own text, unsettled edits included, or optional `{markdown}`.
+  and a history that loads but stands so near a cap that a write it must still take is refused (`docs.nearACap`), rebuilt from its own text, unsettled edits included, or optional `{markdown}`.
+
+  - Near the decode cap (1,048,576 structs) means that a write's smallest replacement, or a write of the document's whole text in its own shape, would carry its struct total past the cap;
+    the whole-text write counts what a fresh encode of the text holds, and two structs the write splits off for each text, each run and each mark a run carries (`docs.wholeTextWriteAdds`), so a document whose whole-text uploads carried it to within one upload of the cap is taken while a small write still lands on it.
+    Near the state cap means its encoded state stands within 64 KiB of the 16,777,216 bytes one room may hold, and near the edit-scan total that a re-scan of its state scans within 35,800 items of the room's 1,000,000.
+    A write the decode cap refuses on a document the rebuild takes is `413 CAP_EXCEEDED` naming this route (`a person can rebuild the document`), which the document's page offers;
+    every other write the decode cap refuses is told to shorten the change.
+
+  - The rebuilt document keeps its block ids, its open comments', suggestions' and asks' anchor marks, and its margin records:
+    from a history that loads, those of its own tree and marks, or of supplied markdown taken as an upload over that tree (unchanged blocks keep their ids, and anchors are marked again where their quotes stand);
+    from a history that cannot load, what the rows record of it (the block index's ids for blocks of the same type and text, each open anchor marked again nearest the block its row names, and each marked comment's and suggestion's margin record rebuilt from its rows).
+
   It deletes the document's updates, checkpoints, and snapshots, then writes one fresh update that lists the replaced history's clients as retired, so a browser still holding that history is closed `4413` with reason `DOC_REBUILT` rather than handing it back.
-  A document near a cap whose room this server holds has that room closed first, flushed into the stored history;
+  A document near a cap whose room this server holds is judged by that room alone, and the room is closed first, flushed into the stored history, so the document is rebuilt whatever a decode of that history would weigh;
   the browsers connected to it reconnect to the rebuilt document and drop their unsent edits.
   A supplied markdown source that changes the document writes the next immutable version, emits `artifact.version`, and moves an open approval request to that version, where it waits on its agent, as every version does;
   an omitted source keeps the existing latest-version behavior.
@@ -4924,6 +4940,9 @@ Each item below names a path with its method and identity, then its purpose.
   Read a live document's markdown.
   `{id}` must be a UUID.
   A stored tree outside the Proof schema is `409 DOC_SCHEMA`, a stored tree holding an element this build cannot read `409 DOC_NEWER_CONTENT`, and a stored history that cannot load `409 DOCUMENT_UNLOADABLE` (Document errors).
+  A read sending `Dispatch-Trees: 1`, as the dashboard does, also answers `near_decode_cap`, whether the rebuild route takes the document because it stands near the decode cap, and `near_decode_cap_reason`, why, where it does (`docs.Service.NearDecodeCap`).
+  The server answers it from what it holds, encoding and writing nothing: a resident room's struct total and one struct for each of its top-level blocks, or, for a document no room holds, the struct total of the stored state the cold read decoded and a walk of the tree it rendered;
+  either counts a floor under the route's whole-text count, so it answers true only where the route takes the document, and may answer false where the route would take it.
 
 - `/api/v1/artifacts/{id}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
@@ -5369,6 +5388,7 @@ Each item below names a status and code, then its meaning.
   The bounds are the byte bound every server write obeys (1 MiB of rendering; past it an update may still carry 8 KiB of new content, for the editor's own derived writes and for typing, until the rendering has crept 64 KiB past the bound, after which only an update carrying nothing new at all is taken), the rendering the update leaves, and the 1,200,000 values one apply of a browser's update may decode (each struct, each lib0 Any value at any depth, each Any map entry and each JSON member), which is past the decode cap itself, so an honest whole-state handoff decodes within it.
   An update's bytes do not show what it does to the rendering - a few bytes setting a list's start number or deleting a code mark's format items can grow it by hundreds of kilobytes - so the room renders what each browser's update leaves before it commits, and refuses one whose rendering would end past 1 MiB and its 64 KiB of creep and larger than the rendering it found;
   an update that leaves the rendering no larger is taken, so a document already past the bound can be shortened.
+  An edit that waits in the room for an earlier edit it builds on is weighed when that earlier edit lands it: where the room refuses what the landing adds, the update that filled the gap stands, and each browser whose waiting edit the landing held is closed with the refusal's own reason - `DOC_TOO_LARGE` for a rendering past the bound, `DOC_UPDATE_REFUSED` for one this build cannot render, and `DOC_TOO_TANGLED` where the landing's scans or splits pass the apply's allowance.
   The 4400-4499 band is permanent, so the dashboard drops the refused edit, re-reads the document and says so in one sentence, rather than reconnecting into the same refusal.
 
 - `4413 DOC_TOO_TANGLED`
@@ -5403,29 +5423,35 @@ Each item below names a status and code, then its meaning.
   one the document's admissions gave another person, one another person's edit claimed first, or one at 2^32 or above that no admission gave out;
   for an edit under an id below 2^32 that another person claimed, at clocks the room already holds from the claim on, whose content differs from what the room holds there;
   and for a claim past the bounds below.
-  Each document socket's admission gives its page a client id of its own, stored with the person the socket is signed in as (`document_client_ids`) where the page may write, and names it in the socket's first frame, a stateless message starting `dispatch.client_id:` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`);
-  the page presents that id again on every reconnect (`client_id`, `DOCUMENT_CLIENT_ID_PARAMETER`) and is given it back, so a tab keeps one id across reconnects and offline edits.
-  A page admitted read-only writes under no id, and its admission stores nothing: it is given back an id its person's row names, or sent one drawn as a fresh one is that no row names, and a page that writes nothing under it takes the fresh id its next writable admission gives it.
-  A request that never becomes a socket is answered as the websocket upgrade answers it, and no id is given out for it: `400` for one with no `Connection: upgrade`, a websocket version other than 13 or no valid `Sec-WebSocket-Key`, `403` for one from another origin, `405` for a method other than `GET`, and `426` for one with no `Upgrade: websocket`.
-  An id below 2^32 that no row names - one a page of a build from before client ids, or a client that presents no `client_id` at all, drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, the rows it saved, and the clients deployed without an id still land, and by a page of this build that presents it, at its writable admission:
-  every claim, on every kind of socket, counts against 64 claims a person makes in one document in one UTC day, counted from `document_client_ids`, and the claims one socket's updates make against 64 a socket besides, past either of which the update is refused and nothing in it is claimed, and an update's claim is given back where its update does not stand and kept where it stands, its edit parked or not, so the id stays its claimant's;
-  a socket that presents no `client_id` may claim an id the stored history does not name at any time;
-  an id the stored history names may be claimed for 30 days from the first boot of a build that gives client ids out (`document_client_ids_since`, set once and never moved), and only by a person a version or a pending author row lists as having edited the document since the history first named it;
-  and a page that presents a `client_id` claims an id only within those 30 days, its admission's claim stored as landed and counted in those 64 a day, and a fresh id given where it is refused.
-  A sync step 2 is judged as an incremental update is: one carrying another person's structs past what the room holds - a browser handing back on its reconnect an edit the room relayed to it and then lost before its store - is refused whole and nothing of it lands, so no answer tells the browser that edit is saved.
-  The person whose edit it was resends it from their own browser, which kept it unsaved.
-  A delete of what the room holds is not judged: a person deletes other people's text.
-  Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds,
-  with one exception that keeps a lost edit from passing in silence: structs under an id below 2^32 that another person claimed are compared, from the clock the claim started at (`claimed_from`), with what the room holds at the same clocks, and refused where they differ.
-  Only an update carrying such structs under at most 4 claimed ids is compared, as a keystroke in flight, a resend or a replayed saved row is;
-  a whole-state handoff carrying them under more is neither compared nor refused for it from a page that presents a `client_id`, and is refused whole from one that presents none, since an honest tab of that kind writes under one id.
-  A co-author who claims an earlier build's tab's id first, or a reader who reads an id no history names off the tab's presence and claims it first, at the clock the tab writes next, otherwise left the tab's own edit at that clock a duplicate the room dropped while the tab believed it saved; an equal resend passes.
-  A delete past the clocks the room holds of a client id waits in the room for that client's next edits and would delete each as it landed, while its writer was answered saved, so it is taken only under an id the socket holds, judged where it would wait (`parkJudge`), and refused the same way otherwise, with the id in the refusal's log line;
-  the close is this permanent one even where the room is behind another process's rows that carry those clocks, since the room cannot tell that exactly, and the page that sent it rebuilds from the room and loses only that delete.
-  A person holds at most 64 client ids in a document that no edit landed under - integrated, not only parked behind a clock the room lacks - and an admission past them gives back, in the statement that stores its own, the one presented least recently, never one an open socket holds: an open socket presents its id again every 5 minutes until an edit lands under it, and only an id no admission or socket presented for 15 minutes is given back; where every one of them is that fresh, the admission is closed `4503 DOC_BUSY` for the editor to retry.
-  A page whose id was given back is given a fresh one at its next admission, and loses only what it typed offline under the old one that never landed.
-  A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given a fresh one.
-  The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
+
+  - Each document socket's admission gives its page a client id of its own, stored with the person the socket is signed in as (`document_client_ids`) where the page may write, and names it in the socket's first frame, a stateless message starting `dispatch.client_id:` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`);
+    the page presents that id again on every reconnect (`client_id`, `DOCUMENT_CLIENT_ID_PARAMETER`) and is given it back, so a tab keeps one id across reconnects and offline edits.
+    A page admitted read-only writes under no id, and its admission stores nothing: it is given back an id its person's row names, or sent one drawn as a fresh one is that no row names, and a page that writes nothing under it takes the fresh id its next writable admission gives it.
+    A request that never becomes a socket is answered as the websocket upgrade answers it, and no id is given out for it: `400` for one with no `Connection: upgrade`, a websocket version other than 13 or no valid `Sec-WebSocket-Key`, `403` for one from another origin, `405` for a method other than `GET`, and `426` for one with no `Upgrade: websocket`.
+
+  - An id below 2^32 that no row names - one a page of a build from before client ids, or a client that presents no `client_id` at all, drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, the rows it saved, and the clients deployed without an id still land, and by a page of this build that presents it, at its writable admission:
+    every claim, on every kind of socket, counts against 64 claims a person makes in one document in one UTC day, counted from `document_client_ids`, and the claims one socket's updates make against 64 a socket besides, past either of which the update is refused and nothing in it is claimed, and an update's claim is given back where its update does not stand and kept where it stands, its edit parked or not, so the id stays its claimant's;
+    a socket that presents no `client_id` may claim an id the stored history does not name at any time;
+    an id the stored history names may be claimed for 30 days from the first boot of a build that gives client ids out (`document_client_ids_since`, set once and never moved), and only by a person a version or a pending author row lists as having edited the document since the history first named it;
+    and a page that presents a `client_id` claims an id only within those 30 days, its admission's claim stored as landed and counted in those 64 a day, and a fresh id given where it is refused.
+
+  - A sync step 2 is judged as an incremental update is: one carrying another person's structs past what the room holds - a browser handing back on its reconnect an edit the room relayed to it and then lost before its store - is refused whole and nothing of it lands, so no answer tells the browser that edit is saved.
+    The person whose edit it was resends it from their own browser, which kept it unsaved.
+    A delete of what the room holds is not judged: a person deletes other people's text.
+    Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds,
+    with one exception that keeps a lost edit from passing in silence: structs under an id below 2^32 that another person claimed are compared, from the clock the claim started at (`claimed_from`), with what the room holds at the same clocks, and refused where they differ.
+    Only an update carrying such structs under at most 4 claimed ids is compared, as a keystroke in flight, a resend or a replayed saved row is;
+    a whole-state handoff carrying them under more is neither compared nor refused for it from a page that presents a `client_id`, and is refused whole from one that presents none, since an honest tab of that kind writes under one id.
+    A co-author who claims an earlier build's tab's id first, or a reader who reads an id no history names off the tab's presence and claims it first, at the clock the tab writes next, otherwise left the tab's own edit at that clock a duplicate the room dropped while the tab believed it saved; an equal resend passes.
+
+  - A delete past the clocks the room holds of a client id waits in the room for that client's next edits and would delete each as it landed, while its writer was answered saved, so it is taken only under an id the socket holds, judged where it would wait (`parkJudge`), and refused the same way otherwise, with the id in the refusal's log line;
+    the close is this permanent one even where the room is behind another process's rows that carry those clocks, since the room cannot tell that exactly, and the page that sent it rebuilds from the room and loses only that delete.
+
+  - A person holds at most 64 client ids in a document that no edit landed under - integrated, not only parked behind a clock the room lacks - and an admission past them gives back, in the statement that stores its own, the one presented least recently, never one an open socket holds: an open socket presents its id again every 5 minutes until an edit lands under it, and only an id no admission or socket presented for 15 minutes is given back; where every one of them is that fresh, the admission is closed `4503 DOC_BUSY` for the editor to retry.
+    A page whose id was given back is given a fresh one at its next admission, and loses only what it typed offline under the old one that never landed.
+    A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given a fresh one.
+    The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
+
   Permanent like `DOC_TOO_LARGE`: the dashboard drops the refused edit and every edit it saved under the same id, which would each meet the same refusal, says how many it dropped, re-reads the document and takes a fresh client id with it.
   A refused sync step 2 drops no saved edit, since it names none: the re-read document replays each edit the browser saved as an update of its own, one that waits on the lost edit included, which the room holds back and answers not applied until that edit lands, and an edit there under an id the browser's person does not hold is refused and dropped as above.
 
@@ -5437,6 +5463,7 @@ Each item below names a status and code, then its meaning.
   The 4500-4599 band is transient, so the dashboard keeps the edit it could not send and reconnects on its own backoff, the live socket's (`reconnectDelayMs`), which spreads a crowd of tabs and caps at 30 s, to retry it.
   The same close refuses for now an update whose rendering would end past the 1 MiB bound and its creep where the rendering of the commit it starts from is not known yet, since a commit no browser's apply made - a write of the server's own, a catch-up or ygo's format cleanup - has landed since and the room's rendered copy has not taken it;
   the edit is sent again on the backoff and weighed once the room's rendering is known, an edit that shortens the document taken and one that grows it past the bound refused `DOC_TOO_LARGE`.
+  A waiting edit that lands behind an update that changed nothing itself is refused for now the same way where a write of the server's own has landed since the room's last rendering, and each browser whose waiting edit it held is closed with this code and sends the edit again.
   It also closes, for a retry, a socket whose update's client ids the server could not read or write `document_client_ids` for, one whose first sync the pod's copy heap had no room to answer within the server's wait bound, and, at its upgrade, one whose person holds the 64 client ids no edit landed under that a document allows them, each held by an open socket.
 
 ## Comment errors
@@ -5462,3 +5489,12 @@ go vet ./...
 ```
 
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
+
+The real-process memory tests (`memory_test.go` and every other file built under the `memory` tag) start real Dispatch servers and read their resident memory from `/proc`, so the commands above run none of them.
+CI's `dispatch-memory` job runs only the tests the tag adds, by the `-run` list `.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch` reads off the source, so a test added under the tag needs no edit there;
+its step runs them under `-timeout 90m` and records the time they took (`.github/workflows/ci-job-dispatch-memory.yaml`).
+Those tests alone take about an hour, so a local run of the whole package, which runs its untagged tests beside them, needs a longer deadline:
+
+```sh
+go test -tags memory -count=1 -timeout 3h ./cmd/dispatch
+```

@@ -326,7 +326,7 @@ export function ProofDocument({
   // could not send wait in this browser.
   const [busy, setBusy] = useState(false);
   // The wait before the connection's next socket, while one is waiting and the backoff has grown
-  // past its first attempt (`ReconnectNotice` says why that one shows nothing).
+  // past its first attempt (`onReconnectWait`, below, says why that one shows nothing).
   const [reconnectWait, setReconnectWait] = useState<ReconnectWait | undefined>(undefined);
   const [schemaReadOnly, setSchemaReadOnly] = useState(false);
   /** Why the closed document's last Comment opened no composer, for the reader. */

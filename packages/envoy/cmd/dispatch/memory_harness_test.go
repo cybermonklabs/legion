@@ -44,9 +44,10 @@ import (
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
 // binary that runs main as a Dispatch server on the shared test database (memoryTestServeEnv), the
 // server's resident memory read from /proc, and requests over HTTP and the document websocket.
-// Both files build only under the `memory` tag, which the shards of ci.yaml's dispatch-memory job
-// set (.github/workflows/ci.yaml): their rows run past go test's default deadline, so the unit
-// run of every Go package leaves them out.
+// Both files build only under the `memory` tag, which ci.yaml's dispatch-memory job sets
+// (.github/workflows/ci-job-dispatch-memory.yaml), one job that runs only the tests the tag adds:
+// their rows run past go test's default deadline, so the unit run of every Go package leaves them
+// out.
 
 const memoryTestToken = "memory-test-token"
 

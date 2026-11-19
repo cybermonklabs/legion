@@ -1281,6 +1281,13 @@ func (r *renderedReplica) startFromLoad(decoded *crdt.Doc, loaded *replicaRender
 // document lock, and so every browser's update to the room, for the whole walk. The caller must
 // not hold live's document lock - be inside a Yjs transaction on it - since the copy encodes
 // under that lock, and read must not keep doc past its return.
+//
+// Reads take no replica of their own. Such a replica would never keep a read waiting, since no
+// update observer holds it, but a room read while resident would then hold a third whole copy of
+// its document until eviction, beside the two the room budget charges it (roomCopies), and
+// nothing would count the third. It would raise what a resident room costs by half: for a
+// mebibyte of prose, a third copy at copyWeight is 51,599,080 bytes beside the 103,198,160 its
+// two copies are charged (roomWeight).
 func (s *Service) readLive(room string, live *crdt.Doc, read func(doc *crdt.Doc)) error {
 	doc, release, err := s.holdLive(room, live)
 	if err != nil {
