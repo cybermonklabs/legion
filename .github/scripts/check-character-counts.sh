@@ -127,8 +127,9 @@ PROSE_SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n\s*\n|\n\s*(?:[-*+]|\d+\.)\s|
 CODE_SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n|\|")
 
 # The counters, by language: the code-point counters, then each other counter with what it
-# counts and a value that uses it. A value holding a code-point counter and one of the others is
-# an instance, and each entry of OTHER_COUNTERS has a control that shows it.
+# counts. A value holding a code-point counter and one of the others is an instance, and
+# COUNTER_CASES below holds a planted case for each entry, written out apart from this list, so
+# taking an entry off it fails that entry's case.
 CODE_POINTS = {
     "go": re.compile(r"\butf8\.RuneCount(?:InString)?\(|\blen\(\[\]rune\(|\[\]rune\("),
     "ts": re.compile(r"\[\.\.\.[^\]]*\]\.length\b|\bArray\.from\("),
@@ -136,15 +137,15 @@ CODE_POINTS = {
     "sh": re.compile(r"\$\{#\w+\}|\bwc\s+-m\b"),
 }
 OTHER_COUNTERS = {
-    "go": [("len()", r"\blen\(", "bytes", "len(name)"),
-           ("Units16", r"\bUnits16\(", "UTF-16 code units", "itemblocks.Units16(name)"),
-           ("utf16.", r"\butf16\.", "UTF-16 code units", "len(utf16.Encode([]rune(name)))")],
-    "ts": [(".length", r"\.length\b", "UTF-16 code units", "name.length"),
-           ("byteLength", r"\bbyteLength\b", "bytes", "Buffer.byteLength(name)")],
+    "go": [("len()", r"\blen\(", "bytes"),
+           ("Units16", r"\bUnits16\(", "UTF-16 code units"),
+           ("utf16.", r"\butf16\.", "UTF-16 code units")],
+    "ts": [(".length", r"\.length\b", "UTF-16 code units"),
+           ("byteLength", r"\bbyteLength\b", "bytes")],
     "py": [],
-    "sh": [("wc -c", r"\bwc\s+-c\b", "bytes", "$(printf '%s' \"$name\" | wc -c)")],
+    "sh": [("wc -c", r"\bwc\s+-c\b", "bytes")],
 }
-OTHER = {lang: [(label, re.compile(rx), unit) for label, rx, unit, _ in entries] for lang, entries in OTHER_COUNTERS.items()}
+OTHER = {lang: [(label, re.compile(rx), unit) for label, rx, unit in entries] for lang, entries in OTHER_COUNTERS.items()}
 # Calls that hand their argument's number on unchanged, so the count is that argument's.
 PASS_THROUGH = re.compile(
     r"^(?:strconv\.Itoa|strconv\.FormatInt|int|int64|int32|uint|float64|String|Number|Math\.(?:max|min|round|floor|ceil|abs)"
@@ -1349,24 +1350,43 @@ CONTROLS = [
 ]
 
 
-def counter_controls() -> list:
-    """One control per entry of OTHER_COUNTERS: a value that holds a code-point counter and that
-    entry must fire, so the control fails when the entry is taken off the list."""
+# One planted value per entry of OTHER_COUNTERS: a code-point counter and that entry together.
+COUNTER_CASES = [
+    ("go", "len()", "len(name)"),
+    ("go", "Units16", "itemblocks.Units16(name)"),
+    ("go", "utf16.", "utf16.RuneLen(rune(name[0]))"),
+    ("ts", ".length", "name.length"),
+    ("ts", "byteLength", "Buffer.byteLength(name)"),
+    ("sh", "wc -c", "$(printf '%s' \"$name\" | wc -c)"),
+]
+
+
+def counter_controls() -> list[tuple[str, str | None]]:
+    """Each case of COUNTER_CASES must fire naming its own counter, and each entry of
+    OTHER_COUNTERS must have a case: the reason a hit fails names the counter, so an entry taken
+    off the list fails its case even where the check would fail the hit as one it cannot judge."""
     out = []
+    for lang, label, sample in COUNTER_CASES:
+        if lang == "go":
+            path = "packages/envoy/internal/planted/mixed.go"
+            content = ('package planted\n\nfunc m(name string) string {\n'
+                       f'\treturn fmt.Sprintf("%d characters", utf8.RuneCountInString(name)+{sample})\n}}\n')
+        elif lang == "ts":
+            path = "packages/envoy-client/src/mixed.ts"
+            content = f"export const m = (name: string) => `${{[...name].length + {sample}}} characters`;\n"
+        else:
+            path = "packages/envoy/scripts/planted-mixed.sh"
+            content = ("#!/usr/bin/env bash\nexport LC_ALL=C.UTF-8\nname=$1\n"
+                       f"n=$(( ${{#name}} + {sample} ))\necho \"$n characters\"\n")
+        name = f"a value holding a code-point counter and {label} fires, naming {label}"
+        got = [(hit.verdict, hit.why) for hit in scan(path, content)]
+        ok = len(got) == 1 and got[0][0] == "instance" and got[0][1].startswith(f"{label} counts")
+        out.append((name, None if ok else f"{name}: answered {got}"))
+    cased = {(lang, label) for lang, label, _ in COUNTER_CASES}
     for lang, entries in OTHER_COUNTERS.items():
-        for label, _, _, sample in entries:
-            if lang == "go":
-                path = "packages/envoy/internal/planted/mixed.go"
-                content = ('package planted\n\nfunc m(name string) string {\n'
-                           f'\treturn fmt.Sprintf("%d characters", utf8.RuneCountInString(name)+{sample})\n}}\n')
-            elif lang == "ts":
-                path = "packages/envoy-client/src/mixed.ts"
-                content = f"export const m = (name: string) => `${{[...name].length + {sample}}} characters`;\n"
-            else:
-                path = "packages/envoy/scripts/planted-mixed.sh"
-                content = ("#!/usr/bin/env bash\nexport LC_ALL=C.UTF-8\nname=$1\n"
-                           f"n=$(( ${{#name}} + {sample} ))\necho \"$n characters\"\n")
-            out.append((f"a value holding a code-point counter and {label} fires", path, content, ["instance"]))
+        for label, _, _ in entries:
+            if (lang, label) not in cased:
+                out.append((f"{lang} counter {label} has a case", f"{lang} counter {label} has no case in COUNTER_CASES"))
     return out
 
 
@@ -1418,13 +1438,17 @@ def tree_controls() -> list[str]:
 
 
 def main() -> int:
-    checks = CONTROLS + counter_controls()
-    failed = [problem for problem in (control(*c) for c in checks) if problem] + tree_controls()
+    counters = counter_controls()
+    failed = [problem for problem in (control(*c) for c in CONTROLS) if problem] + \
+        [problem for _, problem in counters if problem] + tree_controls()
     if failed:
         print("CONTROLS FAILED: " + "; ".join(failed))
         return 1
-    print(f"controls: {len(checks) + 1} of {len(checks) + 1} answered as they must")
-    for name, *_ in checks:
+    total = len(CONTROLS) + len(counters) + 1
+    print(f"controls: {total} of {total} answered as they must")
+    for name, *_ in CONTROLS:
+        print(f"  ok  {name}")
+    for name, _ in counters:
         print(f"  ok  {name}")
     print("  ok  a count in a workflow, a test and a generated file fires; each class left out is counted; an empty listing is UNKNOWN")
     listed = subprocess.run(
