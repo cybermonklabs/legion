@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2154 # fixture.sh, which autodeploy_test.sh sources first, sets these
 # Case group of autodeploy_test.sh: a failed deploy's rollback, the schema-set refusal, the stop
 # first, the migration key's poll and holder, and the database credential's split. It runs on the
 # stand-ins of fixture.sh, which autodeploy_test.sh sources first.

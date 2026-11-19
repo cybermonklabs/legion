@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2154 # fixture.sh, which autodeploy_test.sh sources first, sets these
 # Case group of autodeploy_test.sh: the bound each call of a deploy and of its rollback is given,
 # against the pass's deadline. It runs on the stand-ins of fixture.sh, which autodeploy_test.sh
 # sources first. The pass's clock is the fixture's, which only the stand-ins move, so every bound

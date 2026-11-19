@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2154,SC2034 # fixture.sh, which autodeploy_test.sh sources first, sets these and reads deployer_prefix
 # Case group of autodeploy_test.sh: the commit order, the record of failed deploys, the continuous
 # loop, the settings and the end of a --once run. It runs on the stand-ins of fixture.sh, which
 # autodeploy_test.sh sources first. Every order read is the real jj's, against the fixture's

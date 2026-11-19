@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2154 # fixture.sh, which autodeploy_test.sh sources first, sets these
 # Case group of autodeploy_test.sh: the pull's retry, the fetch of main and the registry's manifest
 # reads. It runs on the stand-ins of fixture.sh, which autodeploy_test.sh sources first.
 

@@ -1,4 +1,4 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2034 # the case groups beside this file read what it sets
 # The deployer suite's fixture, which autodeploy_test.sh sources before the case groups beside
 # it: a scratch tree, the stand-ins the deployer runs on its PATH (docker, jj, curl, date, sleep,
 # timeout, and psql and pg_dump inside the database clients' container), and the helpers each case
