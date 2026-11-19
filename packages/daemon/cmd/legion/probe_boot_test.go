@@ -81,8 +81,8 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testi
 
 // A cluster read that never reaches the API server fails with a *url.Error, whose text keeps the
 // server URL's user name (Go's client masks only a password). probe-boot writes its refusal to
-// stderr, which is the daemon's log, through the URL rule (redact.URLCredentials): the refusal
-// names the CRD and the server's address, and no part of the URL's userinfo.
+// stderr through the URL rule (redact.URLCredentials): the refusal names the CRD and the server's
+// address, and no part of the URL's userinfo.
 func TestProbeBootWritesARefusalWithNoUserNameOfTheURLItFailedToRead(t *testing.T) {
 	legionState(t)
 	closed := httptest.NewServer(http.NotFoundHandler())

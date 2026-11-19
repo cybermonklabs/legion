@@ -347,8 +347,9 @@ const outboxErrorInFull = "outbox row's error in full; the row and the lines abo
 // line about it carries it as the row keeps it (storetext.FarSideError, record.Store.RetryOutbox),
 // this function's own and finishRefused's alike, so no line holds more than a log entry takes.
 // This is the one place the whole text is logged (storetext.LogWhole), once for each failed
-// attempt: every failed attempt passes here once, retried or finished refused, and the whole text
-// is in the log even where the retry's or the finish's own write then fails.
+// attempt and only when storetext.FarSideError cuts it: every failed attempt passes here once,
+// retried or finished refused, and the whole text is in the log even where the retry's or the
+// finish's own write then fails.
 func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err != nil {
 		r.noteLimit(row, err)

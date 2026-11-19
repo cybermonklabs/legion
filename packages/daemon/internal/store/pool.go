@@ -98,6 +98,19 @@ func hold(ctx context.Context) func() {
 	return sync.OnceFunc(func() { state.connection.Store(false) })
 }
 
+// heldRelease is hold's release for a caller that runs its release however it ends, so it is never
+// nil: noRelease for a context the pool cannot see.
+func heldRelease(ctx context.Context) func() {
+	if release := hold(ctx); release != nil {
+		return release
+	}
+	return noRelease
+}
+
+// noRelease is the release of a hold that marked nothing: one on a context the pool cannot see,
+// and a savepoint's, which ends inside the transaction that holds the connection.
+func noRelease() {}
+
 // holdsConnection answers whether ctx's caller holds a connection of this pool now. A context
 // nothing marked holds none as far as the pool can tell, which is the guard's own limit
 // (ErrNestedAcquire).
@@ -314,11 +327,7 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 	if err != nil {
 		return nil, nil, err
 	}
-	release = hold(ctx)
-	if release == nil {
-		release = func() {}
-	}
-	return conn, release, nil
+	return conn, heldRelease(ctx), nil
 }
 
 // Begin opens a transaction and marks the caller as holding a connection. It is what
@@ -350,11 +359,7 @@ func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 	if err != nil {
 		return nil, err
 	}
-	release := hold(ctx)
-	if release == nil {
-		release = func() {}
-	}
-	return &storeTx{Tx: tx, release: release}, nil
+	return &storeTx{Tx: tx, release: heldRelease(ctx)}, nil
 }
 
 // storeTx is every transaction the pool hands out, and every savepoint opened inside one. Its
@@ -379,7 +384,7 @@ func (t *storeTx) Begin(ctx context.Context) (pgx.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &storeTx{Tx: savepoint, release: func() {}}, nil
+	return &storeTx{Tx: savepoint, release: noRelease}, nil
 }
 
 func (t *storeTx) Commit(ctx context.Context) error {

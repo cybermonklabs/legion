@@ -1598,8 +1598,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
 // process to stop (holdSuspendUntilReady).
 //
-// Every row reads ev as the store keeps its text (storetext.Strings), so no row cleans a field of
-// an event itself.
+// Handle gives ev through the store's rule first; the comment that opens its body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the

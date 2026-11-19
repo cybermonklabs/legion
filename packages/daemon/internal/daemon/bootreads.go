@@ -259,9 +259,13 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // invocation), then of postgres_dsn as the store reads it before it opens a connection
 // (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
 // such refusal, and the public keys of the pane seed's user and the daemon seed's user, each ""
-// when the daemon has no such seed, never a seed. The store's refusal comes in the words
-// `legion start` prints for it (store.ConnectError, as store.Open wraps it): the DSN's address
-// and the refusal, never the DSN's password.
+// when the daemon has no such seed, never a seed. The store refuses a postgres_dsn pgx cannot
+// parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
+// cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
+// fills what the DSN leaves unset from the process's own PG* environment variables, whatever
+// lookup holds, as it does at boot. Each such refusal comes in the words `legion start` prints
+// for it (store.ConnectError, as store.Open wraps it): the DSN's address and the refusal, never
+// the DSN's password.
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {

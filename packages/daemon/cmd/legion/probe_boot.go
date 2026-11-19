@@ -38,13 +38,13 @@ func newProbeBootCommand(stdout, stderr io.Writer) *cobra.Command {
 func runProbeBoot(ctx context.Context, configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-boot: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion probe-boot", err)
 		return 1
 	}
 	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	report, err := daemon.ProbeBoot(ctx, cfg, os.LookupEnv, log)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-boot: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion probe-boot", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "probe-boot: OK project=%s image=%s model-fallback=%s capacity-waits=%d\n",

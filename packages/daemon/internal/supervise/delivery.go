@@ -459,15 +459,14 @@ func pendingID(p *Delivery) string {
 // The task is as the store keeps it: a deliver's request comes through Handle, which gives every
 // event's text through the store's rule, and the daemon's own delivery of a relaunch's record
 // (queueRelaunch) is written from the claim's record, which holds only text the store keeps. An
-// operator's task can hold a NUL, which the request already holds as the store keeps it
-// (storetext.Strings, at Handle), as the stored delivery does and a restart reads back. So the
-// comparison with the pending task, the delivery written and the prompt the agent is sent all
-// read the stored text, before a restart as after one.
+// operator's task can hold a NUL, which the request holds as the stored delivery does and a
+// restart reads back. So the comparison with the pending task, the delivery written and the
+// prompt the agent is sent all read the stored text, before a restart as after one.
 func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
-	id, task := request.ID, request.Task
+	id := request.ID
 	queued := m.given(request)
 	if pending := m.claim.Pending; pending != nil {
-		if (id != "" && pending.ID == id && pending.Task == task) || queued {
+		if (id != "" && pending.ID == id && pending.Task == request.Task) || queued {
 			return nil
 		}
 		switch {
@@ -513,7 +512,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if id == "" {
 		id = rand.Text()
 	}
-	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
+	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(), RoundNamed: request.RoundNamed}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them

@@ -207,12 +207,15 @@ func pluginsLine(cfg config.Config) string {
 // boot makes, through the loader that runs neither GitHub App's private_key_command nor any
 // secretsd read, then every refusal boot makes from the configuration, the environment and the
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
-// starts with, the daemon's own NATS nkey seed among them, then the store's refusal of a
-// postgres_dsn whose default_query_exec_mode its text rule cannot run in), and nothing else: no
-// store connection, no team, no file written, and no process but `mise where <tool>` when a tmux
-// configuration's omp_invocation names a mise tool. The OK line names the design-gate steps the
-// file resolved to, in the order it named them (`design-gate-steps=`, `none` for a deployment that
-// gates none), and each NATS nkey seed's public key when there is one, never the seed.
+// starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
+// postgres_dsn: one pgx cannot parse, such as a malformed URL, a bad pool_* key or an sslrootcert,
+// sslcert or sslkey file it cannot read, or one whose default_query_exec_mode its text rule cannot
+// run in; pgx fills what the DSN leaves unset from the process's PG* environment variables, as it
+// does at boot), and nothing else: no store connection, no team, no file written, and no process
+// but `mise where <tool>` when a tmux configuration's omp_invocation names a mise tool. The OK
+// line names the design-gate steps the file resolved to, in the order it named them
+// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
+// public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
@@ -335,10 +338,8 @@ func reservedUnder(request, limit string) string {
 // stop`, `legion status` and `legion legions` read one answer and not the daemon's own opinion
 // of itself.
 //
-// Every error start writes to stderr passes the URL rule (redact.URLCredentials) that the log's
-// handler applies to every record: the daemon's stderr is its log, and an error of the
-// configuration's read or of the boot can wrap a *url.Error, which keeps the URL's query and its
-// user name (Go's client masks only a password).
+// Every error start writes to stderr passes the URL rule the log's handler applies to every
+// record (printRefusal).
 func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	log := slog.New(slog.NewJSONHandler(stderr, redact.HandlerOptions(nil)))
 	slog.SetDefault(log)
@@ -347,7 +348,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	// of them inherits its descriptor: from here on only the close-on-exec copy serving it is open.
 	inherited, socket, err := adoptListenFD()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	if inherited != nil {
@@ -357,7 +358,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	}
 	cfg, err := config.Load(configPath, nil)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	// Each warning the loader has (config.Config.Warnings) is logged once, here and nowhere
@@ -377,26 +378,26 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		bind := listenfd.Setting{Name: "bind", Value: cfg.Bind, Set: true}
 		port := listenfd.Setting{Name: "port", Value: strconv.Itoa(cfg.Port), Set: true}
 		if err := socket.CheckAgainst(bind, port); err != nil {
-			fmt.Fprintf(stderr, "legion start: %s: %s\n", configPath, redact.URLCredentials(err.Error()))
+			printRefusal(stderr, "legion start: "+configPath, err)
 			return 1
 		}
 	}
 	applyLinkedPlugins(&cfg)
 	absoluteConfig, err := filepath.Abs(configPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: resolve %s: %s\n", configPath, redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start: resolve "+configPath, err)
 		return 1
 	}
 	// The state directory is where the worker stream socket, the panes' secret files, and their
 	// home live; the registry refuses a second live legion on it, which only holds if every
 	// start names it the same way.
 	if cfg.StateDir, err = filepath.Abs(cfg.StateDir); err != nil {
-		fmt.Fprintf(stderr, "legion start: resolve state_dir: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start: resolve state_dir", err)
 		return 1
 	}
 	legions, err := registryPath()
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 
@@ -413,7 +414,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		StartedAt:  time.Now().UTC(),
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "legion start: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	if !claimed {
@@ -423,15 +424,25 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 	// Only this process's own entry: a daemon that replaced it owns the team now.
 	defer func() {
 		if err := registry.RemoveIf(legions, cfg.Project, os.Getpid()); err != nil {
-			fmt.Fprintf(stderr, "legion start: %s\n", redact.URLCredentials(err.Error()))
+			printRefusal(stderr, "legion start", err)
 		}
 	}()
 
 	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
-		fmt.Fprintf(stderr, "legion start: %s\n", redact.URLCredentials(err.Error()))
+		printRefusal(stderr, "legion start", err)
 		return 1
 	}
 	return 0
+}
+
+// printRefusal writes prefix, ": ", err's text through the URL rule (redact.URLCredentials) and a
+// newline to stderr. Every error start writes to stderr comes through here, so each passes the
+// rule the log's handler applies to every record: the daemon's stderr is its log, and an error of
+// the configuration's read or of the boot can wrap a *url.Error, which keeps the URL's query and
+// its user name (Go's client masks only a password). probe-boot writes its refusals through it
+// too (runProbeBoot).
+func printRefusal(stderr io.Writer, prefix string, err error) {
+	fmt.Fprintf(stderr, "%s: %s\n", prefix, redact.URLCredentials(err.Error()))
 }
 
 // listenFDVariable names the listening TCP socket `legion start` serves its API on in place of

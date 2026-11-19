@@ -1455,10 +1455,11 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 //
 // The text is the far side's own — a refused adoption carries the wedged command's whole stderr
 // and a refused prompt Oh My Pi's decoded `error` — so the delivery holds it, in memory as in the
-// store, as the daemon keeps any far side's error text: the text the split's line carries, which
-// logFarSideError writes and returns, so the line, the record and the charge's own line carry one
-// text. That is why the split chooses its line before the record is written. The whole text
-// follows the line under a message of its own (logFarSideError).
+// store, as the daemon keeps any far side's error text, a text the store takes whatever the far
+// side wrote: the text the split's line carries, which logFarSideError writes and returns, so the
+// line, the record and the charge's own line carry one text. That is why the split chooses its
+// line before the record is written. The whole text follows the line under a message of its own
+// (logFarSideError).
 //
 // The write may still fail — the store has its own weather — and a failed write is logged and
 // carried past rather than returned, so what the split decided is always done. A return there would
@@ -1484,7 +1485,8 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	}
 	// The split: the line that names this failure, and for a charged one the words its charge
 	// puts before the far side's text ("" for a failure charged nothing).
-	busy := errors.Is(r.Err, runtime.ErrPromptRefused) && agentBusy(runtime.RefusalReason(r.Err))
+	promptRefused := errors.Is(r.Err, runtime.ErrPromptRefused)
+	busy := promptRefused && agentBusy(runtime.RefusalReason(r.Err))
 	level, msg, charge := slog.LevelWarn, "supervise: the prompt was lost to the transport; the delivery waits", ""
 	args := []any{"delivery", r.DeliveryID}
 	switch {
@@ -1493,7 +1495,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		args = append(args, "outstanding", m.outstanding)
 	case busy:
 		msg = "supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again"
-	case errors.Is(r.Err, runtime.ErrPromptRefused):
+	case promptRefused:
 		msg, charge = "supervise: the agent refused the prompt", "refused: "
 	case errors.Is(r.Err, runtime.ErrAdoptRefused):
 		msg, charge = "supervise: the shim refused to adopt the working copy; the prompt was never sent", "the working copy was not adopted: "
@@ -2338,14 +2340,13 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // the agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	session, file := r.Session, r.SessionFile
-	if err := checkSessionNames(session, file); err != nil {
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
 		return err
 	}
-	if err := m.holdRecorded(ctx, session, file); err != nil {
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
 		return err
 	}
-	m.claim.Session, m.claim.SessionFile = session, file
+	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
 	if r.PluginContract == m.deps.PluginContract {
@@ -2374,14 +2375,13 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	session, file := r.Session, r.SessionFile
-	if err := checkSessionNames(session, file); err != nil {
+	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
 		return err
 	}
-	if err := m.holdRecorded(ctx, session, file); err != nil {
+	if err := m.holdRecorded(ctx, r.Session, r.SessionFile); err != nil {
 		return err
 	}
-	m.claim.SessionFile = file
+	m.claim.SessionFile = r.SessionFile
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
 	if r.PluginContract == m.deps.PluginContract {
