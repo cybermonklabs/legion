@@ -75,9 +75,10 @@ go_test_exit=""
 
 # failures prints, on stderr, what a failed run left in the report: each failed test, each test a
 # failed package started and never ended (the one a timed-out binary was running), every output
-# line of a failed package but those of its tests that passed or skipped, and every line from the
-# package's first `panic: ` on (so the goroutine dump of a timeout, a data race and the package's
-# own FAIL line), the build output, and, for a run of its own, go test's stderr.
+# line of a failed package but those of its tests that passed or skipped, every line filed under a
+# test after that test's own `--- PASS` or `--- SKIP` line, and every line from the package's first
+# `panic: ` on (so the goroutine dump of a timeout, a data race and the package's own FAIL line),
+# the build output, and, for a run of its own, go test's stderr.
 failures() {
   jq -rs '
     (reduce (.[] | select(.Test != null and (.Action == "pass" or .Action == "fail" or .Action == "skip"))) as $e ({}; .["\($e.Package) \($e.Test)"] = true)) as $ended
@@ -86,16 +87,24 @@ failures() {
     | if .Action == "fail" then "FAIL \(.Package) \(.Test)"
       elif .Action == "run" and $failed[.Package] and ($ended["\(.Package) \(.Test)"] | not) then "UNFINISHED \(.Package) \(.Test)"
       else empty end' "$report" >&2 || true
-  # test2json files each output line under the test whose framing line came last, so a panic that
-  # follows a parallel test's `--- PASS` is filed under that passed test: a failed package's lines
-  # from its first `panic: ` on are printed whatever test they are filed under.
+  # test2json files each output line under the test whose framing line came last. A test's own
+  # output comes before its `--- PASS` or `--- SKIP` line, so a line filed under it after that line
+  # is another's: a data race report after a subtest passed, or a panic after a parallel test
+  # passed. Those lines are printed, as is every line of a failed package from its first `panic: `
+  # on, whatever test they are filed under.
   jq -rsj '
     (reduce (.[] | select(.Test != null and (.Action == "pass" or .Action == "skip"))) as $e ({}; .["\($e.Package) \($e.Test)"] = true)) as $passed
     | (reduce (.[] | select(.Action == "fail" and .Test == null)) as $e ({}; .[$e.Package] = true)) as $failed
     | foreach (.[] | select(.Action == "output" and $failed[.Package // ""])) as $e
-        ({}; if ($e.Output | startswith("panic: ")) then .[$e.Package] = true else . end; [.[$e.Package], $e])
-    | .[0] as $panicked | .[1]
-    | select($panicked or .Test == null or ($passed["\(.Package) \(.Test)"] | not))
+        ({panicked: {}, ended: {}, show: false};
+         "\($e.Package) \($e.Test)" as $k
+         | ($e.Output | startswith("panic: ")) as $panic
+         | .show = ($panic or .panicked[$e.Package] == true or .ended[$k] == true)
+         | if $panic then .panicked[$e.Package] = true else . end
+         | if $e.Test != null and ($e.Output | test("^\\s*--- (PASS|SKIP): ")) then .ended[$k] = true else . end;
+         [.show, $e])
+    | .[0] as $misfiled | .[1]
+    | select($misfiled or .Test == null or ($passed["\(.Package) \(.Test)"] | not))
     | .Output' "$report" >&2 || true
   jq -rj 'select(.Action == "build-output") | .Output' "$report" >&2 || true
   [ -z "$go_test_exit" ] || cat "$work/stderr" >&2
@@ -215,6 +224,9 @@ status=0
 awk '$1 == "fail"' "$work/ended" >"$work/failed"
 [ ! -s "$work/failed" ] || status=1
 if [ -n "$go_test_exit" ]; then
+  # Each listed package's time, which go test prints without -json and the CI steps' limits are
+  # set from, on stderr.
+  jq -r --argjson listed "$listed" "$under"' select(.Test == null and (.Action == "pass" or .Action == "fail") and under(.Package // "")) | "\(.Action) \(.Package) \(.Elapsed // 0)s"' "$report" >&2 || true
   echo "go_test_exit=$go_test_exit"
   [ "$go_test_exit" -eq 0 ] || status=1
 fi

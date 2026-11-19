@@ -214,6 +214,20 @@ unknown_report partial "holds no test that passed or failed in $cmdbroker, which
 count failed bash "$COUNTER" --report "$WORK/failed.json" ./internal/broker/api/
 judge "$([ "$(code failed)" = 1 ] && [ "$(out failed)" = 'database_skips=0' ] && said failed "FAIL $brokerapi TestABrokenTest" && echo 0 || echo 1)" \
   "control 3: a report holding a failed test fails, naming it" "$(seen failed)"
+# A data race report the detector prints after a subtest's `--- PASS` is filed under that passed
+# subtest, as test2json files it; the counter must print it, and no line a passed test printed
+# before its own `--- PASS`.
+oev() { jq -nc --arg p "$brokerapi" --arg t "$1" --arg o "$2" '{Action: "output", Package: $p, Test: $t, Output: $o}'; }
+{ oev TestPassedBeside 'a line TestPassedBeside printed itself'$'\n'; oev TestPassedBeside '--- PASS: TestPassedBeside (0.00s)'$'\n'
+  ev pass "$brokerapi" TestPassedBeside
+  oev TestRaced/sub '--- PASS: TestRaced/sub (0.00s)'$'\n'; ev pass "$brokerapi" TestRaced/sub
+  oev TestRaced/sub 'WARNING: DATA RACE'$'\n'; oev TestRaced/sub 'Write at 0x00c000 by goroutine 7:'$'\n'
+  oev TestRaced '    testing.go:1617: race detected during execution of test'$'\n'; oev TestRaced '--- FAIL: TestRaced (0.01s)'$'\n'
+  ev fail "$brokerapi" TestRaced; ev fail "$brokerapi"; } >"$WORK/raced.json"
+count raced bash "$COUNTER" --report "$WORK/raced.json" ./internal/broker/api/
+judge "$([ "$(code raced)" = 1 ] && said raced 'WARNING: DATA RACE' && said raced 'Write at 0x00c000 by goroutine 7:' &&
+  ! said raced 'a line TestPassedBeside printed itself' && echo 0 || echo 1)" \
+  "control 3: a data race report filed under a subtest that passed is printed, and a passed test's own output is not" "$(seen raced)"
 { ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev skip "$cmdbroker" TestPlantedSkip; ev pass "$cmdbroker"; } >"$WORK/spelled.json"
 for spelling in ./cmd/./broker/ .//cmd/broker/ ./cmd/broker/../broker/; do
   count spelled bash "$COUNTER" --report "$WORK/spelled.json" "$spelling"
@@ -249,7 +263,11 @@ judge "$([ "$(code no-timeout)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/no-
 
 echo "database-skips.test.sh: control 5, a copy of the counter with one EXPECTED_SKIPS line deleted" >&2
 TREE="$WORK/tree"
-git -C "$ENVOY" worktree add --detach --quiet "$TREE" HEAD
+# The checkout holds the working tree's tracked changes (git stash create, which changes no ref and
+# no file; HEAD when there are none), so a test and its EXPECTED_SKIPS line added together and not
+# yet committed are both in it.
+snapshot="$(git -C "$ENVOY" stash create)"
+git -C "$ENVOY" worktree add --detach --quiet "$TREE" "${snapshot:-HEAD}"
 tree_envoy="$TREE/${ENVOY#"$(git -C "$ENVOY" rev-parse --show-toplevel)/"}"
 copy="$tree_envoy/scripts/database-skips.sh"
 # The copy is of the counter under test, which a working tree may hold uncommitted.
