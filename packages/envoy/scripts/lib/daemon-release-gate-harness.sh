@@ -252,21 +252,22 @@ case "$6" in
   *) echo "fake docker: unexpected format: $6" >&2; exit 2 ;;
 esac
 EOF
-# The fake npm. `npm view <spec> <field>... --json` reads FAKE_ROOT/npm/<spec with / @ < > = as _>,
-# the versions the registry matches to the spec in its order: a version alone, or a list of
-# versions, each a version string or an object of its fields (`{"version", "deprecated",
-# "engines"}`); every version's `name` is the spec's package. It answers as npm 10.9.7's `npm view`
-# does (lib/commands/view.js): each match keeps only the asked fields it has a value for (:417-422),
-# a match left with none is dropped, every match is unwrapped to its one field when the first match
-# holds exactly one (:248-249), and one match is answered as itself, not as a list (:253-254). A
-# file that is no JSON, or a file with `.raw` added, is answered as it is, as an npm that answers
-# garbage would. `npm view <spec> dist-tags --json` answers that file with `.dist-tags` added, and
-# `npm config get tag` answers FAKE_NPM_TAG, by default latest. With `--registry=<url>`, each view
-# is answered from FAKE_ROOT/npm-registries/<url with / and : as _>/ instead. Each view fails as an
-# unreachable registry when FAKE_NPM_DOWN=1.
+# The fake npm. `npm pack <spec> --dry-run --json` answers as npm 10.9.7's does: a list of the one
+# package it packed, with the fields npm prints (id, name, version, size, unpackedSize, shasum,
+# integrity, filename, files, entryCount, bundled), for the version FAKE_ROOT/npm/<spec with / @ < >
+# = as _> names, which is the version npm's own pick takes for the spec under the npm configuration
+# the case sets; that file with `.raw` added is answered as it is, as an npm that answers garbage
+# would. With `--registry=<url>`, each is read from FAKE_ROOT/npm-registries/<url with / and : as _>/
+# instead. It fails as npm does (E404) when no file names a version, and as an unreachable registry
+# when FAKE_NPM_DOWN=1. It records each call, the directory it runs in as an `npm-cwd <dir>` line,
+# and each npm_config_ variable it runs with as an `npm-config <name>=<value>` line, so a case sees
+# where the gate runs npm and the configuration it leaves npm; it refuses any other command, and a
+# pack without --dry-run, which would write the tarball.
 cat >"${temporary_dir}/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
+printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
+env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
 registry=""
 words=()
 for word in "$@"; do
@@ -276,42 +277,19 @@ for word in "$@"; do
   esac
 done
 set -- "${words[@]}"
-if [ "$*" = "config get tag" ]; then
-  printf '%s\n' "${FAKE_NPM_TAG:-latest}"
-  exit 0
-fi
-[ "$1" = view ] && [ "$#" -ge 4 ] && [ "${*: -1}" = --json ] || { echo "fake npm: unexpected command: $*" >&2; exit 2; }
+[ "$1" = pack ] && [ "$#" -eq 4 ] && [ "$3 $4" = "--dry-run --json" ] || { echo "fake npm: unexpected command: $*" >&2; exit 2; }
 [ "${FAKE_NPM_DOWN:-0}" != 1 ] || { echo "npm error code ENOTFOUND" >&2; exit 1; }
 dir="${FAKE_ROOT:?}/npm"
 [ -z "$registry" ] || dir="${FAKE_ROOT}/npm-registries/$(printf '%s' "$registry" | tr '/:' '__')"
 file="${dir}/$(printf '%s' "$2" | tr '/@<>=' '_____')"
-if [ "$#" -eq 4 ] && [ "$3" = dist-tags ]; then
-  [ -f "${file}.dist-tags" ] || { echo "npm error code E404" >&2; exit 1; }
-  cat "${file}.dist-tags"
-  exit 0
-fi
 [ ! -f "${file}.raw" ] || { cat "${file}.raw"; exit 0; }
 [ -f "$file" ] || { echo "npm error code E404" >&2; exit 1; }
-jq -e . "$file" >/dev/null 2>&1 || { cat "$file"; exit 0; }
-python3 - "$file" "${2%@*}" "${@:3:$#-3}" <<'PY'
-import json
-import sys
-
-path, name, fields = sys.argv[1], sys.argv[2], sys.argv[3:]
-with open(path) as handle:
-    matched = json.load(handle)
-matched = matched if isinstance(matched, list) else [matched]
-if not matched:
-    sys.exit("npm error code E404")
-manifests = [{"name": name, **(m if isinstance(m, dict) else {"version": m})} for m in matched]
-answer = [{f: m[f] for f in fields if m.get(f)} for m in manifests]
-answer = [a for a in answer if a]
-first = list(answer[0]) if answer else []
-if len(first) == 1:
-    answer = [a.get(first[0]) for a in answer]
-if answer:
-    print(json.dumps(answer[0] if len(answer) == 1 else answer, indent=2))
-PY
+name=${2%@*}
+jq -n --arg name "$name" --arg version "$(tr -d '\n' <"$file")" '[{
+  id: "\($name)@\($version)", name: $name, version: $version, size: 1, unpackedSize: 1, shasum: "",
+  integrity: "", filename: "\($name | ltrimstr("@") | sub("/"; "-"))-\($version).tgz", files: [],
+  entryCount: 0, bundled: []
+}]'
 EOF
 chmod +x "${temporary_dir}/bin/gh" "${temporary_dir}/bin/docker" "${temporary_dir}/bin/npm"
 
@@ -423,8 +401,8 @@ plugins_line() {
 }
 # dotfiles <pi-envoy pin> [<claude-envoy enabled>]: the developer box's ~/.dotfiles, with
 # ~/.omp/plugins linked to its plugin tree, the pin installed there, and a settings.json whose
-# marketplace legion-plugins is example-org/plugins, serving @sjawhar/claude-envoy at >=1.0.0,
-# which npm matches to 3.3.0 and 4.0.0, its `latest` dist-tag 4.0.0.
+# marketplace legion-plugins is example-org/plugins, serving @sjawhar/claude-envoy at >=1.0.0, for
+# which npm's pick takes 4.0.0.
 dotfiles() {
   local home="${case_root}/home" plugins="${case_root}/home/.dotfiles/omp/plugins"
   mkdir -p "$plugins/node_modules/@sjawhar/pi-envoy" "$home/.dotfiles/.claude" "$home/.omp" "${case_root}/marketplaces/example-org"
@@ -435,8 +413,7 @@ dotfiles() {
     "${2:-true}" >"$home/.dotfiles/.claude/settings.json"
   printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source": {"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0"}}]}\n' \
     >"${case_root}/marketplaces/example-org/plugins.json"
-  printf '["3.3.0", "4.0.0"]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
-  printf '{"latest": "4.0.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
+  printf '4.0.0\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
 }
 # legion_stack <yaml body> [<project>]: legion/Pulumi.prod.yaml, its projects list being the body,
 # its keys under <project>, by default the name legion/Pulumi.yaml declares.

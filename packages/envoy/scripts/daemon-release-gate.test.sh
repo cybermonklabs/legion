@@ -6,12 +6,12 @@
 # this test writes; a fake `docker` answers `buildx imagetools inspect` the way the real one answers
 # a single image and an OCI image index (an index's `.Image.Config.Labels` is `null`, and its
 # platforms are read one at a time) and `run` from an image's files; and a fake `npm` answers `npm
-# view`. Each records every call, so a case asserts what the gate printed and what it asked. The
-# deployment repository is the one `--deployment` names, and each stack's config keys carry the
-# project name its own Pulumi.yaml declares; the fake gh answers that repository alone, so a gate
-# that read any other would fail every row. Each run's HOME is the case's own, so no row reads the
-# machine's dotfiles. The scenarios of the VM hub, the images' clients, the developer box, its
-# versions and a project's fields are in lib/daemon-release-gate-cases-*.sh, sourced below.
+# pack --dry-run --json`. Each records every call, so a case asserts what the gate printed and what
+# it asked. The deployment repository is the one `--deployment` names, and each stack's config keys
+# carry the project name its own Pulumi.yaml declares; the fake gh answers that repository alone,
+# so a gate that read any other would fail every row. Each run's HOME is the case's own, so no row
+# reads the machine's dotfiles. The scenarios of the VM hub, the images' clients, the developer
+# box, its versions and a project's fields are in lib/daemon-release-gate-cases-*.sh, sourced below.
 #
 # Negative control, run when this was written: make the gate read an index with
 # `{{json .Image.Config.Labels}}`, as a single image is read; every --listeners row below that

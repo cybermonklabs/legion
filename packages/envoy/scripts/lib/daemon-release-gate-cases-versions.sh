@@ -6,88 +6,53 @@
 # it is not run on its own.
 #
 # A version is judged by the commit of its release tag, so it must be one exact release version, as
-# Semantic Versioning writes one. npm's install takes the package's `latest` dist-tag when it
-# matches the marketplace's range, else the highest version that matches, so the gate judges both:
-# `latest` when it is among the versions npm answers for the range, and the highest of them by
-# semantic-version precedence, where a release ranks above its own pre-release and numbers compare
-# as numbers. An npm answer holding anything that is no such version is unreadable whole, and a
+# Semantic Versioning writes one. The claude-envoy version the marketplace serves is the one npm's
+# own pick takes on this box (`npm pack --dry-run --json`), so the gate judges that version alone,
+# and an npm answer that is not one package named @sjawhar/claude-envoy is unreadable whole. A
 # marketplace that names claude-envoy twice is read as neither.
 # shellcheck disable=SC2154 # every variable read here is set by the harness or the test that sources this file
 
 readonly npm_answer="_sjawhar_claude-envoy___1.0.0"
 
-echo "case: --clients, npm matches a release and its own pre-release"
+echo "case: --clients, npm takes a version behind the commit"
+box_case versions-npm-behind
+printf '3.3.0\n' >"${case_root}/npm/${npm_answer}"
+run_gate -- --clients "$commit"
+check "exits 1" "$(is "$status" 1)"
+check "shuts naming the version npm takes" \
+  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}")"
+check "judges no other version" "$(is "$(grep -c '^[A-Z ]*: dotfiles .claude/settings.json runs claude-envoy ' "$out")" 1)"
+
+echo "case: --clients, npm takes a pre-release a release tag names"
 box_case versions-npm-pre-release
-printf '["4.0.0-rc.1", "4.0.0"]\n' >"${case_root}/npm/${npm_answer}"
-tag claude-envoy-v4.0.0 "$behind_rev"
-tag claude-envoy-v4.0.0-rc.1 "$ahead_rev"
-run_gate -- --clients "$commit"
-check "exits 1" "$(is "$status" 1)"
-check "judges the release npm serves, not its pre-release" \
-  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}")"
-
-echo "case: --clients, npm matches versions whose numbers sort apart as text"
-box_case versions-npm-numeric
-printf '["4.10.0", "4.9.0"]\n' >"${case_root}/npm/${npm_answer}"
-tag claude-envoy-v4.10.0 "$ahead_rev"
-tag claude-envoy-v4.9.0 "$behind_rev"
+printf '4.1.0-rc.1\n' >"${case_root}/npm/${npm_answer}"
+tag claude-envoy-v4.1.0-rc.1 "$ahead_rev"
 run_gate -- --clients "$commit"
 check "exits 0" "$(is "$status" 0)"
-check "judges 4.10.0, the highest by precedence" \
-  "$(has_line "PASS: dotfiles .claude/settings.json runs claude-envoy 4.10.0 from claude-envoy-v4.10.0 at ${ahead_rev} (ahead of ${commit})${claude_note}")"
+check "reads it as the exact version it is" \
+  "$(has_line "PASS: dotfiles .claude/settings.json runs claude-envoy 4.1.0-rc.1 from claude-envoy-v4.1.0-rc.1 at ${ahead_rev} (ahead of ${commit})${claude_note}")"
 
-echo "case: --clients, npm matches one version, which it answers as a string"
-box_case versions-npm-one
-printf '"4.0.0"\n' >"${case_root}/npm/${npm_answer}"
-run_gate -- --clients "$commit"
-check "exits 0" "$(is "$status" 0)"
-check "judges that version" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
-
-echo "case: --clients, npm's latest dist-tag below the highest match and behind the commit"
-box_case versions-npm-latest-lower
-printf '{"latest": "3.3.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
-run_gate -- --clients "$commit"
-check "exits 1" "$(is "$status" 1)"
-check "shuts naming latest, the version npm installs" \
-  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12); the version legion-plugins serves for >=1.0.0, npm's latest dist-tag")"
-check "still judges the highest match on its own line" \
-  "$(has_line "PASS: dotfiles .claude/settings.json runs claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit}); the highest version npm matches to >=1.0.0")"
-check "the verdict is GATE SHUT" "$(last_line_is "GATE SHUT")"
-
-echo "case: --clients, npm's latest dist-tag outside the marketplace's range"
-box_case versions-npm-latest-outside
-printf '{"latest": "0.9.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
-tag claude-envoy-v0.9.0 "$behind_rev"
-run_gate -- --clients "$commit"
-check "exits 0" "$(is "$status" 0)"
-check "asks npm for the latest dist-tag" \
-  "$(grep -qxF "npm view @sjawhar/claude-envoy dist-tags --json" "$calls" && echo true || echo false)"
-check "judges the highest match alone, as the version served" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
-check "never judges latest" "$([ "$(lacks "claude-envoy-v0.9.0" "$calls")" = true ] && lacks "0.9.0" "$out" || echo false)"
-
-echo "case: --clients, npm answers no latest dist-tag"
-box_case versions-npm-no-latest
-printf '{"next": "4.0.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
+echo "case: --clients, npm takes a version with build metadata"
+box_case versions-npm-build
+printf '4.0.0+build.1\n' >"${case_root}/npm/${npm_answer}"
 run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the dist-tag" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm answers no latest dist-tag of @sjawhar/claude-envoy")"
-check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+check "refuses UNKNOWN naming the version, which no release tag carries" \
+  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: claude-envoy 4.0.0+build.1 is no exact release version")"
 
-# Each answer below is npm's whole answer, printed as it is (`.raw`): one npm can never give to the
-# gate's query (bare versions, a mixed list, a version that is no release version, text), which the
-# gate must read as no answer at all.
-for answer in '["4.0.0-01"]' '["4.0.0-rc..1"]' '["4.0.0-."]' '["3.0.0-01", "4.0.0"]' '["3.0.0+..", "4.0.0"]' '["1.0.0\n4.0.0"]' '["4.0.0", {"version": "1.0.0"}]' '["3.3.0", "4.0.0"]' 'text'; do
+# Each answer below is npm's whole answer, printed as it is (`.raw`): none is the one package named
+# @sjawhar/claude-envoy that `npm pack --dry-run --json` answers, so the gate reads it as no answer.
+for answer in '[]' '{"name": "@sjawhar/claude-envoy", "version": "4.0.0"}' \
+  '[{"name": "@sjawhar/claude-envoy", "version": "4.0.0"}, {"name": "@sjawhar/claude-envoy", "version": "3.3.0"}]' \
+  '[{"name": "@other/claude-envoy", "version": "4.0.0"}]' '[{"name": "@sjawhar/claude-envoy", "version": 4}]' \
+  '[{"name": "@sjawhar/claude-envoy"}]' '["4.0.0"]' 'text'; do
   echo "case: --clients, npm answers ${answer}"
-  box_case "versions-npm-grammar-$(printf '%s' "$answer" | tr -c 'A-Za-z0-9' '_')"
+  box_case "versions-npm-shape-$(printf '%s' "$answer" | tr -c 'A-Za-z0-9' '_')"
   if [ "$answer" = text ]; then
     printf 'npm warn config something\n4.0.0\n' >"${case_root}/npm/${npm_answer}.raw"
   else
     printf '%s\n' "$answer" >"${case_root}/npm/${npm_answer}.raw"
   fi
-  tag "claude-envoy-v4.0.0-01" "$ahead_rev"
-  tag "claude-envoy-v4.0.0-rc..1" "$ahead_rev"
-  tag "claude-envoy-v4.0.0-." "$ahead_rev"
   run_gate -- --clients "$commit"
   check "exits 3" "$(is "$status" 3)"
   check "refuses UNKNOWN" \
@@ -111,7 +76,7 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN, choosing neither" \
   "$(grep -q '^UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as .*2 entries name claude-envoy' "$out" && echo true || echo false)"
-check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 echo "case: --clients, a marketplace that serves claude-envoy from no npm package"
 box_case versions-marketplace-not-npm

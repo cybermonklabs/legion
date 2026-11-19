@@ -26,8 +26,7 @@ release_commit() {
 }
 
 # A release version, as Semantic Versioning writes one with no build metadata: no leading zero in a
-# number, no empty identifier in a pre-release. It is the one grammar of a version here: the order of
-# the versions npm answers (dotfiles_claude_envoy) compiles it too, adding only build metadata.
+# number, no empty identifier in a pre-release. It is the one grammar of a version here.
 readonly release_version='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
 
 # judge_release <label> <package> <version> [<note>]: compares the commit <package>'s release
@@ -239,8 +238,8 @@ dotfiles_clients() {
 # legion-plugins serves to a new install. A copy recorded in any other Claude Code configuration,
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
-  local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range served tags latest
-  local extra file shown_file shown_range shown_plugin registry tag shown_tag
+  local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range packed served
+  local extra file shown_file shown_range shown_plugin registry
   local -a registry_args=()
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
@@ -366,113 +365,24 @@ dotfiles_claude_envoy() {
     return
   fi
   [ -z "$registry" ] || registry_args=("--registry=$registry")
-  # npm's install (npm-pick-manifest, lib/index.js:123-136 and :168-186 in npm 10.9.7) takes the
-  # dist-tag its `tag` setting names, `latest` by default, when that version matches the range, is
-  # not deprecated and its engines fit; else it ranks the matches that are not deprecated and whose
-  # engines fit first, and takes the highest by semantic-version precedence, where a release ranks
-  # above its own pre-release (`sort -V` ranks them the other way). Only `engines.node` and
-  # `engines.npm` are checked (npm-install-checks, lib/index.js:13-14), against a runtime the gate
-  # does not know, so the version npm takes is UNKNOWN when it declares either; one it passes over
-  # cannot move it. Where both may be installed, both are judged: the dist-tag's version when it is
-  # among the matches, and the highest match. `npm view` prints each match with only the fields it
-  # has a value for, and unwraps every match to its one field when the first match holds only one
-  # (lib/commands/view.js:417-422, :248-249), so the query asks for `name`, which every version
-  # has, and an answer that is not one object per match is unreadable whole.
-  if ! tag=$(npm config get tag 2>"$work/err") || [ -z "$tag" ]; then
-    printf "UNKNOWN: %s: cannot read npm's tag setting: %s\n" "$label" "$(first_line "$work/err")"
-    unknown=$((unknown + 1))
-    return
-  fi
-  shown_tag=$(printable "$tag")
-  if ! served=$(npm view "@sjawhar/claude-envoy@$range" name version deprecated engines --json "${registry_args[@]}" 2>"$work/err"); then
+  # npm picks the version, as an install on this box does: `npm pack <spec> --dry-run --json` runs
+  # npm's own pick (npm-pick-manifest) under this box's npm configuration — the dist-tag its `tag`
+  # setting names, `before` (and on npm 11 `min-release-age`), deprecation, and the engines of the
+  # node and npm it runs on — and answers the one version an install takes, so the gate keeps no
+  # pick of its own to fall behind npm's rules. It runs in $work, a directory with no package.json
+  # or .npmrc, so no project's npm configuration applies: a plugin is installed outside any
+  # project. The dry run fetches the tarball into npm's cache and writes nothing else.
+  if ! packed=$(cd "$work" && npm pack "@sjawhar/claude-envoy@$range" --dry-run --json "${registry_args[@]}" 2>"$work/err"); then
     printf 'UNKNOWN: %s: npm cannot resolve @sjawhar/claude-envoy@%s: %s\n' "$label" "$shown_range" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
-  if ! tags=$(npm view @sjawhar/claude-envoy dist-tags --json "${registry_args[@]}" 2>"$work/err"); then
-    printf 'UNKNOWN: %s: npm cannot read the dist-tags of @sjawhar/claude-envoy: %s\n' "$label" "$(first_line "$work/err")"
-    unknown=$((unknown + 1))
-    return
-  fi
-  if ! latest=$(jq -er --arg tag "$tag" '.[$tag] | strings' <<<"$tags" 2>/dev/null); then
-    printf 'UNKNOWN: %s: npm answers no %s dist-tag of @sjawhar/claude-envoy\n' "$label" "$shown_tag"
-    unknown=$((unknown + 1))
-    return
-  fi
-  if ! python3 - "$served" "$release_version" "$latest" >"$work/served" 2>/dev/null <<'PY'; then
-import json
-import re
-import sys
-
-answer, latest = json.loads(sys.argv[1]), sys.argv[3]
-# The gate's own release_version, so a version reads one way here and in judge_release. npm may also
-# answer a version with build metadata, which Semantic Versioning orders as the version without it;
-# judge_release still refuses one, since no release tag carries it.
-release = re.compile(sys.argv[2])
-build = re.compile(r"[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*")
-
-
-def core(version):
-    """version with its build metadata removed, or None when it is no such version."""
-    if not isinstance(version, str):
-        return None
-    head, plus, meta = version.partition("+")
-    if plus and not build.fullmatch(meta):
-        return None
-    return head if release.fullmatch(head) else None
-
-
-# npm answers one match as itself and several as a list, each an object of its name, its version and
-# whichever of deprecated and engines it has. A bare version, or an object with no name, is the
-# unwrapped shape, which has lost the other matches' fields, so the answer is unreadable whole.
-matches = answer if isinstance(answer, list) else [answer]
-if not matches or not all(isinstance(m, dict) and m.get("name") == "@sjawhar/claude-envoy" for m in matches):
-    sys.exit(1)
-versions = [m.get("version") for m in matches]
-if any(core(v) is None for v in versions):
-    sys.exit(1)
-by_version = {m["version"]: m for m in matches}
-
-
-def precedence(version):
-    numbers, _, pre = core(version).partition("-")
-    major, minor, patch = (int(n) for n in numbers.split("."))
-    parts = [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")] if pre else []
-    return (major, minor, patch, not pre, parts)
-
-
-def bound(version):
-    """whether the version declares an engine npm checks: engines.node or engines.npm."""
-    engines = by_version[version].get("engines")
-    return isinstance(engines, dict) and bool(engines.get("node") or engines.get("npm"))
-
-
-deprecated = {v for v in versions if by_version[v].get("deprecated")}
-# The highest match npm may take, and the dist-tag's version when npm takes it instead.
-highest = max([v for v in versions if v not in deprecated] or versions, key=precedence)
-taken = latest if latest in versions and latest not in deprecated else highest
-if bound(taken):
-    print(f"engines {taken}")
-    sys.exit(0)
-print(highest)
-if taken != highest:
-    print(taken)
-PY
+  # npm answers a list of the one package it packed, holding its name and version.
+  if ! served=$(jq -er 'if type == "array" and length == 1 and (.[0] | type == "object")
+      and .[0].name == "@sjawhar/claude-envoy" then .[0].version | strings else empty end' <<<"$packed" 2>/dev/null); then
     printf 'UNKNOWN: %s: npm answers no version of @sjawhar/claude-envoy for %s\n' "$label" "$shown_range"
     unknown=$((unknown + 1))
     return
   fi
-  served=$(sed -n 1p "$work/served")
-  latest=$(sed -n 2p "$work/served")
-  if [[ $served == "engines "* ]]; then
-    printf "UNKNOWN: %s: npm's choice among the versions it matches to %s depends on the engines %s declares, which this gate does not read\n" "$label" "$shown_range" "${served#engines }"
-    unknown=$((unknown + 1))
-    return
-  fi
-  if [ -z "$latest" ]; then
-    judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $shown_range"
-    return
-  fi
-  judge_release "$label" claude-envoy "$latest" "; the version legion-plugins serves for $shown_range, npm's $shown_tag dist-tag"
-  judge_release "$label" claude-envoy "$served" "; the highest version npm matches to $shown_range"
+  judge_release "$label" claude-envoy "$served" "; the version legion-plugins serves for $shown_range"
 }

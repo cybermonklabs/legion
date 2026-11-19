@@ -21,16 +21,19 @@ check "exits 0" "$(is "$status" 0)"
 check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 check "reads the dotfiles' pi-envoy pin by its release tag" \
   "$(has_line "PASS: dotfiles omp/plugins/package.json runs ${pi_envoy_ahead}")"
-check "reads the claude-envoy version the marketplace serves, the highest npm matches" \
+check "reads the claude-envoy version the marketplace serves, the one npm takes" \
   "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
 check "reads the marketplace the settings name" \
   "$(grep -qF "repos/example-org/plugins/contents/.claude-plugin/marketplace.json" "$calls" && echo true || echo false)"
-check "asks npm for the range the marketplace names, with each match's name, deprecation and engines" \
-  "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 name version deprecated engines --json" "$calls" && echo true || echo false)"
+check "lets npm pick the version for the range the marketplace names, writing nothing" \
+  "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --json" "$calls" && echo true || echo false)"
+check "runs npm outside the gate's working directory and any project's configuration" \
+  "$(npm_cwd=$(sed -n 's/^npm-cwd //p' "$calls"); [ -n "$npm_cwd" ] && [ "$npm_cwd" != "$PWD" ] &&
+    [ ! -e "$npm_cwd/package.json" ] && [ ! -e "$npm_cwd/.npmrc" ] && echo true || echo false)"
 check "resolves each version through its release tag" \
   "$(grep -qF "repos/cybermonklabs/legion/commits/refs/tags/pi-envoy-v17.40.0" "$calls" && grep -qF "repos/cybermonklabs/legion/commits/refs/tags/claude-envoy-v4.0.0" "$calls" && echo true || echo false)"
-check "asks npm for the latest dist-tag, and judges it once, it being the highest match" \
-  "$(grep -qxF "npm view @sjawhar/claude-envoy dist-tags --json" "$calls" && is "$(grep -c '^PASS: dotfiles .claude/settings.json runs claude-envoy ' "$out")" 1)"
+check "judges the one version npm takes, once" \
+  "$(is "$(grep -c '^PASS: dotfiles .claude/settings.json runs claude-envoy ' "$out")" 1)"
 
 echo "case: --clients, the developer box's pi-envoy pin behind the commit"
 box_case box-pin-behind
@@ -60,7 +63,7 @@ dotfiles 17.40.0 false
 run_gate -- --clients "$commit"
 check "exits 0" "$(is "$status" 0)"
 check "skips it by name" "$(has_line "SKIPPED: dotfiles .claude/settings.json enables no claude-envoy@legion-plugins")"
-check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
 check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 
 echo "case: --clients, a settings.json that enables claude-envoy from another marketplace"
@@ -99,7 +102,7 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the marketplace and jq's answer" \
   "$(grep -q '^UNKNOWN: dotfiles \.claude/settings\.json: cannot read the marketplace legion-plugins it names: jq: error' "$out" && echo true || echo false)"
-check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
 check "the verdict is the last line" "$(last_line_is "UNKNOWN")"
 
 echo "case: --clients, a marketplace at a ref that holds a URL's reserved characters"

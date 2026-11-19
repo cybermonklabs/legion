@@ -237,7 +237,7 @@ marketplace_source '{"source": "github", "repo": "example-org/plugins", "path": 
 mkdir -p "${case_root}/marketplaces/example-org/plugins/plugins"
 printf '{"name": "legion-plugins", "plugins": [{"name": "claude-envoy", "source": {"source": "npm", "package": "@sjawhar/claude-envoy", "version": "3.3.0"}}]}\n' \
   >"${case_root}/marketplaces/example-org/plugins/plugins/market.json"
-printf '"3.3.0"\n' >"${case_root}/npm/_sjawhar_claude-envoy_3.3.0"
+printf '3.3.0\n' >"${case_root}/npm/_sjawhar_claude-envoy_3.3.0"
 run_gate -- --clients "$commit"
 check "exits 1" "$(is "$status" 1)"
 check "reads the marketplace at its path" \
@@ -249,11 +249,11 @@ echo "case: --clients, a claude-envoy served from a registry of its own"
 box_case clients-npm-registry
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "registry": "https://npm.internal.example"}'
 mkdir -p "${case_root}/npm-registries/https___npm.internal.example"
-printf '["3.3.0"]\n' >"${case_root}/npm-registries/https___npm.internal.example/_sjawhar_claude-envoy___1.0.0"
-printf '{"latest": "3.3.0"}\n' >"${case_root}/npm-registries/https___npm.internal.example/_sjawhar_claude-envoy.dist-tags"
+printf '3.3.0\n' >"${case_root}/npm-registries/https___npm.internal.example/_sjawhar_claude-envoy___1.0.0"
 run_gate -- --clients "$commit"
 check "exits 1" "$(is "$status" 1)"
-check "asks that registry, for the versions and for latest" "$(is "$(grep -cF -- "--registry=https://npm.internal.example" "$calls")" 2)"
+check "lets npm pick from that registry" \
+  "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --json --registry=https://npm.internal.example" "$calls" && echo true || echo false)"
 check "judges the version it serves" \
   "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}")"
 
@@ -281,56 +281,61 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the key" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy with integrity, which this gate does not read")"
-check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
 
-# npm installs `latest` only when it matches the range and is not deprecated, and otherwise the
-# highest match that is not deprecated, so a deprecated version is judged only when every match is.
-# Here the first match has neither field, so npm, asked for `version deprecated engines`, would
-# unwrap every match to its bare version (view.js:248-249) and lose 4.0.0's deprecation: the gate
-# asks for `name` too, which every version has.
-echo "case: --clients, npm's latest is deprecated, and the first match declares nothing"
-box_case clients-npm-deprecated
-printf '[{"version": "3.3.0"}, {"version": "4.0.0", "deprecated": "broken"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
-run_gate -- --clients "$commit"
+# npm picks the version on this box (`npm pack --dry-run --json`) under its own configuration, so a
+# setting that moves npm's pick moves what the gate judges. Each case below sets one, and its npm
+# answer is the version npm's pick takes under it from 3.3.0, behind the commit, and 4.0.0, the
+# `latest` dist-tag, identical to it; a gate that picked from the registry's record itself would
+# judge 4.0.0. Each case checks that its setting reaches npm, so the gate leaves npm the box's own
+# configuration.
+# npm_pick <case> [<npm_config_ assignment>...]: a box case whose npm answer is 3.3.0, run with
+# those settings in its environment, as `~/.npmrc` or the environment sets them for npm.
+npm_pick() {
+  box_case "$1"
+  shift
+  printf '3.3.0\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
+  run_gate "$@" -- --clients "$commit"
+}
+readonly npm_pick_shut="GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}"
+
+# npm 11 takes no version published within its min-release-age, in days (@npmcli/config's
+# definitions turn it into `before`), so a box that sets it installs an older version than latest.
+echo "case: --clients, npm's min-release-age passes over the version published yesterday"
+npm_pick clients-npm-min-release-age npm_config_min_release_age=3
 check "exits 1" "$(is "$status" 1)"
-check "asks npm for each match's name, so no match is unwrapped" \
-  "$(grep -qxF "npm view @sjawhar/claude-envoy@>=1.0.0 name version deprecated engines --json" "$calls" && echo true || echo false)"
-check "judges the match npm installs, not the deprecated latest" \
-  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}")"
-check "never judges the deprecated version" "$(lacks "claude-envoy 4.0.0" "$out")"
+check "leaves npm the setting" "$(grep -qxF "npm-config npm_config_min_release_age=3" "$calls" && echo true || echo false)"
+check "judges the version npm takes" "$(has_line "$npm_pick_shut")"
+check "never judges latest" "$(lacks "claude-envoy 4.0.0" "$out")"
 
-# npm checks engines.node and engines.npm (npm-install-checks), against a runtime the gate does not
-# know, so only the version npm takes is UNKNOWN when it declares either.
-echo "case: --clients, the version npm takes declares engines.node"
-box_case clients-npm-engines
-printf '[{"version": "3.3.0"}, {"version": "4.0.0", "engines": {"node": ">=99"}}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
-run_gate -- --clients "$commit"
-check "exits 3" "$(is "$status" 3)"
-check "refuses UNKNOWN naming the version and its engines" \
-  "$(has_line "UNKNOWN: dotfiles .claude/settings.json: npm's choice among the versions it matches to >=1.0.0 depends on the engines 4.0.0 declares, which this gate does not read")"
-
-echo "case: --clients, a version npm passes over declares engines.node"
-box_case clients-npm-engines-passed-over
-printf '[{"version": "3.3.0", "engines": {"node": ">=99"}}, {"version": "4.0.0"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
-run_gate -- --clients "$commit"
-check "exits 0" "$(is "$status" 0)"
-check "judges the version npm takes" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
-
-echo "case: --clients, the version npm takes declares an engine npm does not check"
-box_case clients-npm-engines-unchecked
-printf '[{"version": "4.0.0", "engines": {"vscode": "^1.80.0"}}, {"version": "3.3.0"}]\n' >"${case_root}/npm/_sjawhar_claude-envoy___1.0.0"
-run_gate -- --clients "$commit"
-check "exits 0" "$(is "$status" 0)"
-check "judges the version npm takes" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
-
-# npm takes the dist-tag its `tag` setting names, `latest` by default.
-echo "case: --clients, npm's tag setting names another dist-tag"
-box_case clients-npm-tag
-printf '{"latest": "4.0.0", "next": "3.3.0"}\n' >"${case_root}/npm/_sjawhar_claude-envoy.dist-tags"
-run_gate FAKE_NPM_TAG=next -- --clients "$commit"
+echo "case: --clients, npm's before setting passes over a version published after it"
+npm_pick clients-npm-before npm_config_before=2026-11-16T00:00:00Z
 check "exits 1" "$(is "$status" 1)"
-check "judges the version that dist-tag names" \
-  "$(has_line "GATE SHUT: dotfiles .claude/settings.json runs claude-envoy 3.3.0 from claude-envoy-v3.3.0 at ${behind_rev} (behind ${commit} by 12)${claude_note}, npm's next dist-tag")"
+check "leaves npm the setting" "$(grep -qxF "npm-config npm_config_before=2026-11-16T00:00:00Z" "$calls" && echo true || echo false)"
+check "judges the version npm takes" "$(has_line "$npm_pick_shut")"
+check "never judges latest" "$(lacks "claude-envoy 4.0.0" "$out")"
+
+# npm-pick-manifest takes the dist-tag the `tag` setting names, and when the package has no such
+# dist-tag it sorts the matches and takes the highest (lib/index.js:123-137 in npm 10.9.7's
+# npm-pick-manifest 10.0.0): here 4.0.0, which is this case's answer.
+echo "case: --clients, npm's tag setting names a dist-tag the package does not have"
+box_case clients-npm-tag-missing
+run_gate npm_config_tag=beta -- --clients "$commit"
+check "exits 0" "$(is "$status" 0)"
+check "leaves npm the setting" "$(grep -qxF "npm-config npm_config_tag=beta" "$calls" && echo true || echo false)"
+check "judges the version npm takes, the highest match" "$(has_line "PASS: dotfiles .claude/settings.json runs ${claude_served}")"
+
+# npm takes a deprecated version only when every match is, and passes over a version whose
+# engines.node or engines.npm the node and npm it runs on do not meet; 4.0.0 is deprecated in the
+# first case and asks for a node no box runs in the second, so npm takes 3.3.0 in both.
+for reason in deprecated engines; do
+  echo "case: --clients, npm passes over latest, which is ${reason}"
+  npm_pick "clients-npm-${reason}"
+  check "exits 1" "$(is "$status" 1)"
+  check "lets npm pick" "$(grep -qxF "npm pack @sjawhar/claude-envoy@>=1.0.0 --dry-run --json" "$calls" && echo true || echo false)"
+  check "judges the version npm takes" "$(has_line "$npm_pick_shut")"
+  check "never judges latest" "$(lacks "claude-envoy 4.0.0" "$out")"
+done
 
 # Claude Code takes a registry other than the box's default only over https, and npm answers from
 # its default registry for a value it cannot read as a URL.
@@ -341,7 +346,7 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the registry" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy from registry http://npm.internal.example, which is no https URL")"
-check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 echo "case: --clients, a marketplace repository that is no owner/repo"
 box_case clients-marketplace-repo-path
@@ -359,7 +364,7 @@ run_gate -- --clients "$commit"
 check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the source" \
   "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy as {"source":"npm","package":"@sjawhar/claude-envoy","version":">=1.0.0","registry":7}, not as one entry of the npm package @sjawhar/claude-envoy')"
-check "asks npm nothing" "$(lacks "npm view" "$calls")"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
 
 # A stack's pin is the deployment's text: one that is no plain image reference is never read, and its
 # newline is written out, so it can start no line of the gate's.

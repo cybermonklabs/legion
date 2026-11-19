@@ -781,27 +781,21 @@ in silence:
   serves to `.claude/settings.json`. The marketplace is read as Claude Code reads it: its GitHub
   `repo` at its `ref` (sent percent-encoded), the file at its `path`, by default
   `.claude-plugin/marketplace.json`, and the plugin from its npm `registry` when the entry names
-  one, which must be an `https` URL (`npm view --registry=<url>`); a `path` with an empty, `.` or
-  `..` segment, and any other key of the marketplace source or the npm source, print `UNKNOWN`,
-  since either may move what is installed. npm's install (npm-pick-manifest) takes the dist-tag its
-  `tag` setting names (`npm config get tag`, `latest` by default) when that version matches the
-  range the marketplace names and is not deprecated, else the highest match that is not deprecated
-  (the highest of all when every match is), so the gate asks
-  `npm view @sjawhar/claude-envoy@<range> name version deprecated engines` and judges both: the
-  dist-tag's version (`npm view @sjawhar/claude-envoy dist-tags`) when it is among those matches,
-  and the highest of them by semantic-version precedence (a release above its own pre-release),
-  each on its own line. It asks for `name`, which every version has, because `npm view` prints each
-  match with only the fields it has a value for and unwraps every match to a bare version when the
-  first holds only one, losing the later matches' `deprecated`; an answer that is not one object
-  per match is unreadable. npm checks `engines.node` and `engines.npm` against the runtime it runs
-  on, which the gate does not know, so the version npm takes prints `UNKNOWN` when it declares
-  either. Each version must be an exact release version and is judged by the commit of its release
-  tag, `pi-envoy-v<version>` or `claude-envoy-v<version>`. A settings file that enables no
+  one, which must be an `https` URL (`--registry=<url>`); a `path` with an empty, `.` or `..`
+  segment, and any other key of the marketplace source or the npm source, print `UNKNOWN`, since
+  either may move what is installed. The version is the one npm itself takes on this box: the gate
+  runs `npm pack @sjawhar/claude-envoy@<range> --dry-run --json` in a directory with no
+  `package.json` or `.npmrc` of a project, so npm applies every rule of its own pick under the
+  box's npm configuration (the dist-tag its `tag` setting names, `before` and, on npm 11,
+  `min-release-age`, deprecation, and the engines of the node and npm it runs on), and the gate
+  judges the one version npm answers. The dry run fetches the package into npm's cache and writes
+  nothing else. An answer that is not one package named `@sjawhar/claude-envoy` prints `UNKNOWN`.
+  Each version must be an exact release version and is judged by the commit of its release tag,
+  `pi-envoy-v<version>` or `claude-envoy-v<version>`. A settings file that enables no
   `claude-envoy@legion-plugins` prints `SKIPPED`. A pi-envoy in `~/.omp/plugins` or a profile's
   plugin tree that is not the dotfiles' copy, a claude-envoy recorded in `~/.claude` or another
   `CLAUDE_CONFIG_DIR`, a link that does not resolve, a directory the gate may not search, a
-  marketplace entry it cannot read, a marketplace that names claude-envoy twice, npm dist-tags that
-  name no version for its tag, and an npm answer that is not all release versions print
+  marketplace entry it cannot read, and a marketplace that names claude-envoy twice print
   `UNKNOWN`. A session started before a pin moved still runs the plugin it loaded: the gate reads
   pins and installs, not processes.
 
