@@ -45,10 +45,10 @@
 # never PASS's 0, and refuses an empty value with exit 2.
 # OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS and OUTSIDE_PATH_ORIGIN_READ_SECONDS bound each of the two
 # reads of the origin, as curl's --connect-timeout and --max-time: 3 and 10 s when unset or empty.
-# Each must be a number of seconds from 0.001 to 999999, digits with an optional fraction (0.5,
-# 30), since curl counts in whole milliseconds, reads 0 as no bound and refuses a number past what
-# a long holds; any other value refuses the run, naming the setting. They do not bound the probes,
-# whose 3 s to connect and 5 s in all the classifier's rules count on.
+# Each must be a number of seconds of at least 0.001 and less than 1000000, digits with an optional
+# fraction (0.5, 30), since curl counts in whole milliseconds, reads 0 as no bound and refuses a
+# number past what a long holds; any other value refuses the run, naming the setting. They do not
+# bound the probes, whose 3 s to connect and 5 s in all the classifier's rules count on.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
@@ -333,9 +333,9 @@ fi
   unknown "OUTSIDE_PATH_TARGETS is unset: set it to the file of 'name host port' lines naming every internal target"
 
 # check_seconds NAME VALUE: refuses the run, naming NAME, unless VALUE is a number of seconds as
-# `is_seconds` reads one, from 0.001 to 999999: curl's --connect-timeout and --max-time count
-# whole milliseconds and read 0 as no bound at all, and refuse a number past what a long counts
-# in milliseconds, 2147483 s where a long has 32 bits.
+# `is_seconds` reads one, of at least 0.001 and less than 1000000: curl's --connect-timeout and
+# --max-time count whole milliseconds and read 0 as no bound at all, and refuse a number past what a
+# long counts in milliseconds, 2147483 s where a long has 32 bits.
 check_seconds() {
   local whole=${2%%.*} fraction=''
   case $2 in *.*) fraction=${2#*.} ;; esac
@@ -343,7 +343,7 @@ check_seconds() {
   if is_seconds "$2" && [ "${#whole}" -le 6 ]; then
     case $whole${fraction:0:3} in *[1-9]*) return ;; esac
   fi
-  unknown "$1 must be a number of seconds from 0.001 to 999999, digits with an optional fraction, not $2"
+  unknown "$1 must be a number of seconds of at least 0.001 and less than 1000000, digits with an optional fraction, not $2"
 }
 origin_connect=${OUTSIDE_PATH_ORIGIN_CONNECT_SECONDS:-3}
 origin_read=${OUTSIDE_PATH_ORIGIN_READ_SECONDS:-10}

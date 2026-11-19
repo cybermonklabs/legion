@@ -47,12 +47,14 @@ const mkdir = hostTool("mkdir") ?? "mkdir";
 
 /** The timeout of a row that stops before the probes. It only stops a run that hangs: each such row
  *  is decided by the verdicts and exit codes its runs print, and its work is counted (one runner
- *  per row; 85 `Bun.spawn` calls in one run of the input file, 86 where zsh is present). A hang
- *  guard is at least twice the longest correct run, read on the machines that run it. The slowest
- *  such row measured, the byte row (64 runners of 12 runs of the script), took 54.5 s on two CPUs
- *  shared with eight busy loops and five other runs of the file (378 row results, none failing;
- *  53.7 s in an earlier such run), so the guard is twice that, rounded up to the second. Alone on
- *  the dev box at a 1-minute load of 339 to 695 the whole file took 1.4 to 1.5 s. */
+ *  per row; 86 `Bun.spawn` calls in one run of the input file, 87 where zsh is present, the fake
+ *  Dispatch host included). A hang guard is at least twice the longest correct run, read on the
+ *  machines that run it. The slowest such row measured, the byte row (64 runners of 12 runs of the
+ *  script), took 54.5 s on two CPUs shared with eight busy loops and five other runs of the file
+ *  (378 row results, none failing; 53.7 s in an earlier such run), so the guard is twice that,
+ *  rounded up to the second. In CI's dispatch-ui job on 2026-11-19 (job 135904767413) the file's 21
+ *  rows passed, the slowest in 1.54 s; alone on the dev box at a 1-minute load of 339 to 695 the
+ *  whole file took 1.4 to 1.5 s. */
 const rowTimeout = 109_000;
 
 /** One row that stops before the probes: `test.skipIf(skip)` with `rowTimeout`. */

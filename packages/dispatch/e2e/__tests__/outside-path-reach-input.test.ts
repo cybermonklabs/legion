@@ -189,7 +189,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   row(withoutTools)(
-    "refuses an origin-read bound that is not a number of seconds from 0.001 to 999999, naming the setting, before going on the network",
+    "refuses an origin-read bound that is not a number of seconds of at least 0.001 and less than 1000000, naming the setting, before going on the network",
     async () => {
       const origin = await fakeDispatch();
       try {
@@ -230,7 +230,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           cases.map(({ setting, value }) => ({
             setting,
             value,
-            verdict: `UNKNOWN: ${setting} must be a number of seconds from 0.001 to 999999, digits with an optional fraction, not ${value}`,
+            verdict: `UNKNOWN: ${setting} must be a number of seconds of at least 0.001 and less than 1000000, digits with an optional fraction, not ${value}`,
             code: 2,
           }))
         );
