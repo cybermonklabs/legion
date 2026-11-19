@@ -92,12 +92,14 @@ func TestTheReclaimParagraphNeverDeletesWhatItExempts(t *testing.T) {
 }
 
 // The reclaim paragraph is read where an operator who follows it sees it. The paragraph inside an
-// HTML comment, a bullet inside one, a bullet the extract lacks inside one, and a comment never
-// closed before the paragraph each leave the rendered guide and the file disagreeing on the lists,
-// and fail for the comment; so does a comment after a delete-list bullet, which makes it a bare
-// path, one segment too coarse, only on the rendered page. A "<!--" inside a fenced block before
-// the paragraph hides nothing. The paragraph has no fenced block of its own: its markers are prose
-// and its lists are bullets. Each case is a paragraph as the guide writes one (reclaimParagraphText).
+// HTML comment, a bullet inside one, a bullet the extract lacks inside one, and a comment opened on
+// a line of its own and never closed before the paragraph each leave the rendered guide and the
+// file disagreeing on the lists, and fail for the comment; so does a comment after a delete-list
+// bullet, which makes it a bare path, one segment too coarse, only on the rendered page. A "<!--"
+// inside a fenced block before the paragraph hides nothing, and nor does a "<!--" inside a line
+// that its paragraph never closes, which the page shows as text. The paragraph has no fenced block
+// of its own: its markers are prose and its lists are bullets. Each case is a paragraph as the
+// guide writes one (reclaimParagraphText).
 func TestTheReclaimParagraphIsReadWhereAnOperatorSeesIt(t *testing.T) {
 	const deleteBullet, exemptBullet = "- `/legion/scratch/cache`", "- `/legion/scratch/state/<role>` — per-role, and small."
 	extractDeleted, extractExempt := map[string]bool{"/legion/scratch/cache": true}, map[string]bool{"/legion/scratch/state/<role>": true}
@@ -115,7 +117,9 @@ func TestTheReclaimParagraphIsReadWhereAnOperatorSeesIt(t *testing.T) {
 		{"a bullet the extract lacks inside a comment",
 			reclaimParagraphText(deleteBullet+"\n<!--\n- `/legion/scratch/other`\n-->", exemptBullet), errCommented, nil},
 		{"a comment never closed before the paragraph",
-			"An earlier note. <!-- a note\n\n" + reclaimParagraphText(deleteBullet, exemptBullet), errCommented, errCommented},
+			"An earlier note.\n<!-- a note\n\n" + reclaimParagraphText(deleteBullet, exemptBullet), errCommented, errCommented},
+		{"a \"<!--\" never closed inside a line before the paragraph",
+			"An earlier note. <!-- a note\n\n" + reclaimParagraphText(deleteBullet, exemptBullet), nil, nil},
 		{"a comment that makes a delete-list bullet a bare path one segment too coarse",
 			reclaimParagraphText(deleteBullet+"\n- `/legion/scratch` <!-- the whole of it -->", exemptBullet), errCommented,
 			errCommented},
