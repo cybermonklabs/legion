@@ -117,7 +117,7 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
 
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: root,
     env: {

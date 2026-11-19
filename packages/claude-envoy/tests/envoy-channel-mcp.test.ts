@@ -83,7 +83,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
   const dispatchToken = fixtureSecret("dsp")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
@@ -186,7 +186,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
   const stateDirectory = await modSocketScratch("claude-envoy-quiet-")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
@@ -261,7 +261,7 @@ test("a tool call while the start waits for its broker token says what the start
   await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
