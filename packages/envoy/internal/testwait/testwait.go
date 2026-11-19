@@ -9,9 +9,55 @@
 package testwait
 
 import (
+	"context"
 	"testing"
 	"time"
 )
+
+// Cleanup is the part of the test binary's deadline a call bounded by Answered leaves for what
+// the test does after it gives up: its own failure, its t.Cleanup functions (a rollback, a pool's
+// close, a database's drop, a container's removal) and the report, so a call that never answers
+// fails the test, naming the call, while the test still has that long to clean up. A database's
+// drop forces a checkpoint, which on a host whose disk is busy took more than 10 s (a hung read
+// of TestEmbeddingsMigrationsLockOneTableAtATime named itself, then its database's drop outlived
+// a 10 s allowance and the binary's own deadline ended the run), so the allowance is 30 s. A
+// cleanup slower than that still ends in the binary's panic, after the failure has named the call.
+const Cleanup = 30 * time.Second
+
+// Answered is parent with the deadline a test gives a call it only needs answered — a query, a
+// connection, a transaction's begin, a lock it takes to set a scene — whose timing the test does
+// not test: what the test binary's own deadline leaves, less Cleanup. No literal bounds it, so a
+// loaded machine on which the call is slow but answers passes, and a call that never answers still
+// fails, at the test's deadline, naming the call. With no test deadline (`go test -timeout 0`)
+// the call has none but parent's. A call whose bound is the test's own subject (a lock wait the
+// test expects refused, a latency it claims) keeps its bound instead.
+func Answered(t testing.TB, parent context.Context) (context.Context, context.CancelFunc) {
+	if deadlined, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, set := deadlined.Deadline(); set {
+			return context.WithDeadline(parent, deadline.Add(-Cleanup))
+		}
+	}
+	return context.WithCancel(parent)
+}
+
+// NoBound stands for no bound where a library takes a duration and has no form without one
+// (testcontainers' WithStartupTimeout): a century.
+const NoBound = 100 * 365 * 24 * time.Hour
+
+// StartupBound is the duration a wait for a container the test starts is given — a testcontainers
+// readiness wait, whose own default is 60 s — what the test binary's own deadline leaves less
+// Cleanup, so a container that starts slowly on a loaded host is waited for and one that never
+// becomes ready fails at the test's deadline, naming the wait; with no test deadline, NoBound. The
+// strategy reads the container's state on every poll, so a container that exits ends the wait at
+// once all the same.
+func StartupBound(t testing.TB) time.Duration {
+	if deadlined, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, set := deadlined.Deadline(); set {
+			return time.Until(deadline.Add(-Cleanup))
+		}
+	}
+	return NoBound
+}
 
 // Poll is how often a condition is asked. It is short enough that a test which passes in
 // milliseconds still does, and long enough that a waiting test costs a loaded machine little.

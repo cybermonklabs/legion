@@ -13,13 +13,13 @@ import (
 	"net/url"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Image is the pgvector server image CI uses for Dispatch's Postgres service: pgvector 0.8.7 on
@@ -107,24 +107,12 @@ func containerURL(t testing.TB) string {
 	return "postgres://postgres:test@" + endpoint + "/postgres?sslmode=disable"
 }
 
-// noBound is the startup timeout of a wait whose test has no deadline (`go test -timeout 0`): a
-// century, which stands for none, as testcontainers' wait takes a duration and has no form without
-// one.
-const noBound = 100 * 365 * 24 * time.Hour
-
 // readyWait waits for Postgres to log that it is ready a second time: once after the image's first
 // initdb and again after the restart that follows it. It has no bound of its own. Without
 // WithStartupTimeout testcontainers gives it 60 s (wait/wait.go, defaultStartupTimeout), one
 // bound over that initdb and the restart in a container of two CPUs, which a loaded host can pass
-// while Postgres still works and logs; so it is given what t's deadline leaves, and with no
-// deadline no bound. A container that exits ends the wait at once all the same: the strategy reads
-// the container's state on every poll.
+// while Postgres still works and logs; so it is given what t's deadline leaves
+// (testwait.StartupBound), and with no deadline no bound.
 func readyWait(t testing.TB) *wait.LogStrategy {
-	startup := noBound
-	if deadlined, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, set := deadlined.Deadline(); set {
-			startup = time.Until(deadline)
-		}
-	}
-	return wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(startup)
+	return wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(testwait.StartupBound(t))
 }

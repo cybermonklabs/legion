@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeEmbedder is a deterministic, text-keyed stand-in for Cohere (LEGION-549's tests use a fake
@@ -1576,7 +1577,7 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 // on a connection that does.
 func cacheTheProgressRead(t *testing.T, database *store.Store) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := testwait.Answered(t, context.Background())
 	defer cancel()
 	var done bool
 	if err := database.Pool.QueryRow(ctx, embeddingProjectKeysFilledQuery).Scan(&done); err != nil {

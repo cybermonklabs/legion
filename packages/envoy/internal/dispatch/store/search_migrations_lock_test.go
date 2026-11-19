@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The search migrations take one table's ACCESS EXCLUSIVE lock at a time, each in its own
@@ -31,26 +32,26 @@ func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
 	migrated := make(chan error, 1)
 	go func() { migrated <- store.Migrate(ctx) }()
 
-	// Wait until the runner is queued on messages, then read issues with a one-second bound.
+	// Wait until the runner is queued on messages, then read issues, given what the test's deadline
+	// leaves (testwait.Answered).
 	waitForQueuedLock(t, store, "messages", "AccessExclusiveLock")
 	var version int
 	var issues int
 	err = func() error {
-		tx, err := store.Pool.Begin(ctx)
+		read, cancel := testwait.Answered(t, ctx)
+		defer cancel()
+		tx, err := store.Pool.Begin(read)
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback(ctx)
-		if _, err := tx.Exec(ctx, "set local statement_timeout = '1s'"); err != nil {
+		if err := tx.QueryRow(read, "select count(*) from issues").Scan(&issues); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, "select count(*) from issues").Scan(&issues); err != nil {
-			return err
-		}
-		return tx.QueryRow(ctx, "select max(version) from schema_migrations").Scan(&version)
+		return tx.QueryRow(read, "select max(version) from schema_migrations").Scan(&version)
 	}()
 	if err != nil {
-		t.Fatalf("while the runner waited for messages, a read of issues did not answer within 1 s: %v", err)
+		t.Fatalf("while the runner waited for messages, a read of issues did not answer: %v", err)
 	}
 	if version != 60 {
 		t.Errorf("while the runner waited for messages, schema_migrations was at %d, want 60 (0056-0060 committed one by one)", version)

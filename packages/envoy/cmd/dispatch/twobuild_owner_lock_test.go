@@ -534,7 +534,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
 			break
 		}
-		booted = previous.healthyWithin(50*time.Millisecond) == nil
+		booted = previous.healthyWithin(t, 50*time.Millisecond) == nil
 		if !booted && time.Now().After(deadline) {
 			t.Fatalf("the %s neither served nor waited for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
 		}
@@ -557,7 +557,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 			t.Errorf("the %s waits for the gate in %q, want its dashboard publish's insert", builds.previousName(), gateQuery)
 		}
 		const held = 3 * time.Second
-		if previous.healthyWithin(held) == nil {
+		if previous.healthyWithin(t, held) == nil {
 			t.Fatalf("the %s served while this build's PATCH it waits for was still under way", builds.previousName())
 		}
 		if pid, _ := gateWaiter(t, builds.database, patchPID); pid != gatePID {

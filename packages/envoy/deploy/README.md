@@ -82,9 +82,10 @@ docker compose -f compose/dispatch.compose.yml up -d
 
 `scripts/autodeploy.sh` polls `main`, selects the newest published Dispatch
 image among its last 30 commits, creates a `pg_dump`, then pulls and starts
-only the `dispatch` service. It retains the ten newest pre-deploy dumps. Its
-defaults target the devbox; set `REPO`, `COMPOSE_PROJECT`, or `BACKUPS` to run
-against another checkout, Compose project, or dump directory.
+only the `dispatch` service. It retains the ten newest pre-deploy dumps, and
+every dump taken before a deploy that failed (below). Its defaults target the
+devbox; set `REPO`, `COMPOSE_PROJECT`, or `BACKUPS` to run against another
+checkout, Compose project, or dump directory.
 
 It asks the registry about each commit with `docker manifest inspect`, newest
 first, and passes over a commit only when the registry answers that it holds no
@@ -96,23 +97,29 @@ the pass with nothing deployed.
 
 `PASS_DEADLINE` (3600 seconds by default) is a pass's one deadline, counted from
 its start. Every call of the pass that waits on the registry, Docker or the
-database is given the time it leaves: each manifest read (the walk of the 30
-commits has no bound of its own), the backup, each schema read's container, and
-the rollback's stop, its check that the stop took, and its `up`. A call that
+database is given the time it leaves: the fetch of `main`, each manifest read
+(the walk of the 30 commits has no bound of its own), the backup, each schema
+read's container, the origin check, and every step of a rollback. A call that
 answers slowly is waited for; one that has not answered when the pass's time is
 spent is stopped and named as having run out the pass's deadline, and the pass
-fails. Three steps of a deploy keep a bound of their own, each cut to what the
-pass leaves: the pull's 900 seconds (a pull that runs it out changes nothing, and
-the next pass pulls again), the `up`'s 300 seconds (the deploy's limit for the
-new image's start: a start that has not finished within it is rolled back), and
-the health check's 180 at most (below). Those three add up to 1380 seconds. A
-`PASS_DEADLINE` below that sum plus the rollback's longest bounded step (its own
-health check, or `SCHEMA_READ_DEADLINE` where that is longer), 1560 seconds by
-default, is refused at start, naming both numbers. The deadline is the pass's,
-not the poll's: a rollback comes after the deploy's own steps, so a deadline as
-short as `POLL` would leave a slow deploy's rollback no time. `POLL`,
+fails. Each step of a deploy keeps 180 seconds of the pass for its rollback (the
+rollback's health check, its one step with a bound of its own), so a deploy whose
+steps run until the pass is nearly spent still leaves its rollback that time, and
+a deploy the pass has no more than 180 seconds left for does not start: the
+previous image still serves, and the next pass starts with the whole deadline.
+Three steps of a deploy keep a bound of their own, each cut to what the pass
+leaves after those 180 seconds: the pull's 900 seconds (a pull that runs it out
+changes nothing, and the next pass pulls again), the `up`'s 300 seconds (the
+deploy's limit for the new image's start: a start that has not finished within it
+is rolled back), and the health check's 180 at most (below), which stops at the
+try the pass has no time for. Those three add up to 1380 seconds, and the least
+`PASS_DEADLINE` the deployer takes is 1560 seconds, those and the rollback's 180:
+a smaller value is refused at start, naming both numbers. The deadline is the
+pass's, not the poll's: a rollback comes after the deploy's own steps, so a
+deadline as short as `POLL` would leave a slow deploy's rollback no time. `POLL`,
 `PASS_DEADLINE` and `SCHEMA_READ_DEADLINE` are whole numbers of seconds, and a
-value with a unit, such as `300s`, is refused at start by name.
+value with a unit, such as `300s`, is refused at start by name. A clock that
+answers no time is named, with the step it stopped, and the pass fails.
 
 It never deploys a commit older than the deployed one. The walk passes over a
 commit the registry says it holds no image of, and where that commit is the
@@ -147,8 +154,24 @@ In the continuous loop each pass runs as a process of its own, a `--once` run.
 A pass that fails logs its own line and ends, the loop logs that it failed, and
 the next pass starts after `POLL`. One pass, `--once`, exits 1 when it fails.
 
-The health check asks `/healthz` up to 30 times, 3 seconds apart and each
-request bounded at 3 seconds, 180 seconds at most, for `200` with
+A deploy that started its image and did not succeed is recorded in
+`$BACKUPS/failed-deploy`, one line each: the commit, `rolled-back` or `stopped`,
+and the backup taken before that deploy. The record is written as stopped before
+the image starts and rewritten as rolled-back once the rollback restored the
+previous image, so a pass that ends in between leaves the deployer stopped.
+While the record names a commit, no pass deploys it or an ancestor of it again:
+each pass names the commit and the file on one line, and only a newer published
+commit deploys. A refused or failed rollback, or any stopped line, ends the
+continuous loop with exit 3 and one line saying forward recovery is required,
+and a deployer started again deploys nothing while that line is there. The
+backups the record names are never pruned, so the dump taken before a failed
+deploy is kept for the person recovering from it. A deploy that succeeds removes
+the record; a person deletes it to deploy a recorded commit again, or to let the
+deployer start after a stop.
+
+The health check asks `/healthz` up to 30 times, each try a 3-second wait and a
+request bounded at 3 seconds (`HEALTH_INTERVAL`, `HEALTH_REQUEST_BOUND`), 180
+seconds at most, for `200` with
 NATS connected: `"nats": false` fails it, and `"nats": null` (NATS turned off)
 passes. Dispatch serves while NATS is down or refuses its credential, so a
 `200` alone would keep an image whose NATS connection fails; such an image is
@@ -171,13 +194,17 @@ the max where it was. The deployer keeps that record until the tag changes, so a
 retry of a failed image compares against the set the previous tag runs against,
 not the one the failed attempt left. When a deploy fails, it first stops the
 failed image and confirms that no `dispatch` container still runs. Then it reads
-the versions again, waiting on the advisory lock Dispatch's migration runner
-holds, so a migration the failed image left in flight ends before the read. If
-the stop or the read fails, or the value differs from the record, it starts
-nothing, logs `refusing to roll back to <previous>` with both values, each as
-`<max> (<count> applied)`, and exits 1. Recovery is then forward: deploy an image
-that fixes the failure, or start the failed one by hand once its failure is
-understood. Never start the previous tag against the newer schema.
+the versions again, polling the advisory lock Dispatch's migration runner holds
+for as long as the pass's deadline leaves, so a migration the failed image left in
+flight, still working, ends before the read rather than refusing it. A key still
+held when the pass's deadline passes refuses the rollback, naming the key and the
+session the server reports as its holder. If the stop or the read fails, or the
+value differs from the record, it starts nothing, logs `refusing to roll back to
+<previous>` with what it knows (both values, each as `<max> (<count> applied)`,
+or that whether the failed image migrated is not known, since the schema was not
+read), and exits 3. Recovery is then forward: deploy an image that fixes the
+failure, or start the failed one by hand once its failure is understood. Never
+start the previous tag against the newer schema.
 
 A record the deployer before this one wrote is `<tag>:<version>`, a bare
 `max(version)`. While the tag that wrote it is still deployed it is compared the
@@ -189,9 +216,11 @@ records the set.
 The deployer's database clients (`pg_dump` for the backup, `psql` for the schema
 version) run in the `pg_dump` image under `docker run --init`, so the `timeout`
 the pass's deadline puts on a container also ends a hung connection. Each try of
-the schema read bounds its `psql` inside the container by what
-`SCHEMA_READ_DEADLINE` leaves, so the deadline bounds the database's answers and
-not Docker's start of the container. Each client gets
+a schema read bounds its `psql` inside the container, and its `lock_timeout`, by
+what the read's deadline leaves: `SCHEMA_READ_DEADLINE` before a deploy, where a
+refused read changes nothing, and the pass's deadline after a failed deploy's
+stop, where it decides the rollback. Docker's start of the container is given
+what the pass leaves. Each client gets
 `DATABASE_URL` with its password removed as its argument, and the password as
 `PGPASSWORD`; docker reads both from the deployer's environment by name. So no
 process's arguments carry the password, the containers' included, which are host

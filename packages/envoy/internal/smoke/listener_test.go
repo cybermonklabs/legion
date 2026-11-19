@@ -18,10 +18,10 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/network"
@@ -107,7 +107,9 @@ func TestSmoke(t *testing.T) {
 					}
 					return json.NewDecoder(body).Decode(&health) == nil && health.Status == "healthy"
 				}).
-				WithStartupTimeout(60*time.Second),
+				// What the test's deadline leaves (testwait.StartupBound): a listener that warms
+				// slowly on a loaded host still becomes healthy, and a bound of its own would fail it.
+				WithStartupTimeout(testwait.StartupBound(t)),
 		),
 	)
 	testcontainers.CleanupContainer(t, listenerC)

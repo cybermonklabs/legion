@@ -11,10 +11,10 @@ import (
 	"context"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -35,7 +35,10 @@ func Start(t testing.TB, bucket string) string {
 	container, err := testcontainers.Run(ctx, Image,
 		testcontainers.WithCmd("server", "-s3", "-dir=/data", "-ip=0.0.0.0", "-s3.port=8333"),
 		testcontainers.WithExposedPorts("8333/tcp"),
-		testcontainers.WithWaitStrategy(wait.ForHTTP("/").WithPort("8333/tcp").WithStartupTimeout(90*time.Second)),
+		// The server's start is waited for as long as the test's deadline leaves
+		// (testwait.StartupBound): a loaded host starts it slowly, and a bound of its own would
+		// fail a test whose server still starts.
+		testcontainers.WithWaitStrategy(wait.ForHTTP("/").WithPort("8333/tcp").WithStartupTimeout(testwait.StartupBound(t))),
 		// One CPU and 1 GiB, as every container the repository's tests start is capped on a shared
 		// host: one process runs the master, volume, filer and S3 servers for a few small objects.
 		testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {

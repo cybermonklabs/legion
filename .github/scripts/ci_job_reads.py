@@ -481,6 +481,10 @@ RULES = {
     # --- daemon
     f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:371 (runtime.Caller at :367 + ../../../..)")),
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:1003 ../../docker/gh")),
+    # The worker image's legion-testpg, which the launcher's test runs, the real script against the
+    # runner's own PostgreSQL, so a change to its waits starts the job that tests them.
+    f"{DAEMON}/internal/launcher/testpg_script_test.go": reads(
+        (f"{DAEMON}/docker/legion-testpg", "internal/launcher/testpg_script_test.go:23 testPGScript, ../../docker/legion-testpg, which run starts with sh")),
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1069")),

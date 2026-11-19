@@ -1160,7 +1160,7 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 func TestACopySettlingWhileItsSourceIsAnsweredWaitsForTheAnswerAndNeitherFails(t *testing.T) {
 	service, _ := newTestService(t)
 	service.settle = time.Hour
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := testwait.Answered(t, context.Background())
 	defer cancel()
 	shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 	original := createProjectDocument(t, service.store, "# Original")
@@ -1371,7 +1371,7 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := testwait.Answered(t, context.Background())
 			defer cancel()
 			shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 			original := createProjectDocument(t, service.store, "# Original")

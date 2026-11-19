@@ -62,6 +62,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -494,6 +495,9 @@ func Wait[T any](t *testing.T, what string, arrived <-chan T, warnings func() []
 // diagnosis runs (events.StallHolderSQL), and fails only if no transaction holds an id on the
 // instance; a holder it finds counts as a warning, so the own-hold rule judges it too.
 type Watch struct {
+	// t is the test the watch waits for, whose deadline bounds the watch's own read of the holder
+	// (readHolder).
+	t        *testing.T
 	warnings func() []Warning
 	probe    Querier
 	began    time.Time
@@ -523,7 +527,7 @@ type Querier interface {
 func NewWatch(t *testing.T, warnings func() []Warning, ownDatabase string, probe Querier) *Watch {
 	t.Helper()
 	now := time.Now()
-	watch := &Watch{warnings: warnings, probe: probe, began: now, before: len(warnings()), rose: now, current: state{ownDatabase: ownDatabase}}
+	watch := &Watch{t: t, warnings: warnings, probe: probe, began: now, before: len(warnings()), rose: now, current: state{ownDatabase: ownDatabase}}
 	if deadline, ok := t.Deadline(); ok {
 		watch.drain = deadline.Add(-Drain)
 	}
@@ -552,7 +556,7 @@ func (w *Watch) Failure(what string) string {
 	verdict := verdictOf(w.current)
 	var probed string
 	if (verdict == noSignal || verdict == signalStopped) && w.probe != nil {
-		switch held, found, err := readHolder(w.probe); {
+		switch held, found, err := readHolder(w.t, w.probe); {
 		case err != nil:
 			probed = fmt.Sprintf("; reading the instance's holder failed too: %v", err)
 		case !found:
@@ -608,16 +612,13 @@ func (w *Watch) Poll(t *testing.T, what string, every time.Duration, detail func
 	}
 }
 
-// probeTimeout bounds the watch's own read of the holder, as horizonDiagnosisTimeout bounds the
-// horizon's.
-const probeTimeout = 2 * time.Second
-
 // readHolder reads the instance's oldest transaction holding an id through db, with the query the
 // horizon's diagnosis runs, as a warning: dated by the database's own clock, so its holder's age
 // is read on one clock, and holding for that age (pending_for), since a watch that reads it has
-// been waiting at least as long as the holder it finds has stood.
-func readHolder(db Querier) (Warning, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+// been waiting at least as long as the holder it finds has stood. The read is given what t's
+// deadline leaves (testwait.Answered): the watch needs its answer, not its speed.
+func readHolder(t *testing.T, db Querier) (Warning, bool, error) {
+	ctx, cancel := testwait.Answered(t, context.Background())
 	defer cancel()
 	var kind, state, application, database, query string
 	var pid int32

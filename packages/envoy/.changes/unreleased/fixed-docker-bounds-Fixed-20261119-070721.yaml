@@ -8,14 +8,22 @@ body: |-
   outcome is logged on one line that names the image read, and the pass fails with nothing
   deployed. The deployer never deploys a commit that the repository's history says is an
   ancestor of the deployed one. A pass has one deadline, `PASS_DEADLINE` (3600 s by default,
-  counted from its start): each manifest read, the backup, the schema reads' containers and the
-  rollback's stop, check and start wait as long as it leaves, where the rollback's stop had a
-  fixed 120 s, its check 60 s and its start 300 s, and the schema read's container start shared
-  the read's 60 s, so a slow Docker no longer refuses a rollback. The pull keeps its 900 s and the
-  deploy's start its 300 s, each cut to what the pass leaves. In the continuous loop a failed pass
-  no longer ends the deployer: the next pass runs after `POLL`. A setting of seconds with a unit,
-  such as `300s`, and a `PASS_DEADLINE` that leaves a rollback no time are refused at start by
-  name.
+  counted from its start): the fetch of `main`, each manifest read, the backup, the schema reads'
+  containers, the origin check and every step of a rollback wait as long as it leaves, where the
+  rollback's stop had a fixed 120 s, its check 60 s and its start 300 s, and the rollback's schema
+  read gave up on the migration key at a fixed 60 s while the stopped image's migration still
+  worked, so a slow Docker or a slow migration no longer refuses a rollback; a key still held at
+  the deadline is refused naming the key and its holder. Every deploy step keeps the rollback's
+  180 s, so a failed health check always leaves time to roll back, and a deploy the pass has no
+  time for does not start. The pull keeps its 900 s and the deploy's start its 300 s, each cut to
+  what the pass leaves. A deploy that started its image and failed is recorded in
+  `$BACKUPS/failed-deploy`: no later pass deploys that commit again, a refused rollback stops the
+  deployer with one line, and the backup taken before it is never pruned while the record names
+  it. In the continuous loop a pass that failed without starting an image no longer ends the
+  deployer: the next pass runs after `POLL`. A setting of seconds with a unit, such as `300s`,
+  and a `PASS_DEADLINE` that leaves a rollback no time are refused at start by name. The test
+  database a test starts in a container (`internal/testpg`), and every Postgres call of a test that
+  only needs its answer, wait as long as the test's own deadline leaves rather than a fixed bound.
 time: 2026-11-19T07:07:21Z
 custom:
   Issue: fixed-docker-bounds
