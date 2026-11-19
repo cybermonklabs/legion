@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
+  cleanupHook,
   deliveryFor,
   messageStream,
   ompRoot,
@@ -27,9 +28,7 @@ const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** The system prompt of a request the charter check sends: its own frame heads it. */
 const isGateRequest = (request: Request): boolean =>

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   type Cleanup,
   call,
+  cleanupHook,
   type LegionPane,
   ompNatsGuard,
   type Reply,
@@ -35,9 +36,7 @@ const TREE = "TOOLS-1";
 type Role = "architect" | "reviewer" | "merger";
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** Runs `jj` with a test identity, so it commits in CI too, failing loudly on a non-zero exit. */
 async function runJj(jj: string, args: readonly string[]): Promise<void> {

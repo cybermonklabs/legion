@@ -12,9 +12,9 @@ import {
 import {
   type Block,
   type Cleanup,
+  cleanupHook,
   deliveryFor,
   messageStream,
-  OMP_TEARDOWN_MS,
   ompRoot,
   type Request,
   runCleanup,
@@ -95,14 +95,8 @@ interface Seen extends Request {
 /** The assignment a case's `task` call hands its subagent, which tells its requests apart. */
 const ASSIGNMENT = "SUBAGENT-ASSIGNMENT: report what you were told.";
 
-// A case's teardown waits for its omp and every process of omp's group to end, which the harness
-// bounds at OMP_TEARDOWN_MS and fails on naming what did not end, and for the stand-in to stop;
-// the scratch root's removal is started and waited on by nobody. So the hook's own bound is that
-// one omp's, with bun's default 5 s beside it for the steps that end no process.
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  await runCleanup(cleanup);
-}, OMP_TEARDOWN_MS + 5_000);
+cleanupHook(afterEach, [cleanup]);
 
 /** Whether a Messages request is one of a compaction's summary calls, sent under their own system prompt. */
 function isSummarization(request: Request): boolean {

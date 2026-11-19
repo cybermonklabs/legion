@@ -11,6 +11,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  cleanupHook,
   deliveryFor,
   messageStream,
   ompNatsGuard,
@@ -89,9 +90,7 @@ const REPORT_PERIOD_MS = 5_000;
 const QUIET_WATCH_MS = 3 * REPORT_PERIOD_MS + 2_000;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {

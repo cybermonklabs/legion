@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
-import { call } from "@legion/pi-shared/test/omp-harness";
+import { call, cleanupHook } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   ARCHITECT_TOPIC,
@@ -88,21 +88,9 @@ import {
 //     thing — the real worker exits, the real counter file is written and read back by the
 //     relaunch, and the real notice reaches the listener.
 
-/**
- * What one case's cleanup has to do, and why it gets a bound of its own: each pane's steps kill a
- * real Oh My Pi and wait for it to be reaped, close the stand-in server and the socket that
- * refuses NATS, and remove a scratch root holding that pane's home, its sessions and its `eval`
- * kernel's temporary files. On a loaded pod that is seconds of real work, and Bun's default hook
- * bound is 5 s: one run of three at `c9f2ddf3c71f` came back 6 pass, 2 fail with 68 `expect()`
- * calls against a clean run's 83, two cases cut short at the hook rather than at an assertion.
- * The bound here is proportionate to what the hook does, in a suite whose own cases are allowed
- * three minutes each; a cleanup that really hangs still fails, two minutes later.
- */
-const CLEANUP_MS = 120_000;
-
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-}, CLEANUP_MS);
+// Three omps: the case whose worker ends itself starts three launches of one claim, and the end of
+// each is a step of the pane's one cleanup list, whose steps run one after another (`cleanupHook`).
+cleanupHook(afterEach, [cleanup], 3);
 
 /** A directory of one case's own: the claim's state directory, or where a cell writes the pid of
  * the child it started. The maker is made here rather than in `stall-watchdog-pane.ts`, because

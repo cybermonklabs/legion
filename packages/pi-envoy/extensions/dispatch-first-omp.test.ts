@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
   type Cleanup,
+  cleanupHook,
   deliveryFor,
   isSummarization,
   messageStream,
@@ -24,9 +25,7 @@ const onActions = process.env.GITHUB_ACTIONS === "true";
 type Step = { readonly prompt: string } | { readonly compact: true };
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** How many times a Messages request carries the injected skill. */
 function markers(request: Request): number {

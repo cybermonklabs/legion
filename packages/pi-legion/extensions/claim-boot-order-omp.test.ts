@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  cleanupHook,
   deliveryFor,
   messageStream,
   ompRoot,
@@ -80,9 +81,7 @@ const STEP_DEADLINE_MS = 30_000;
 const CASE_TIMEOUT_MS = 600_000;
 
 const cleanup: Cleanup = [];
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step();
-});
+cleanupHook(afterEach, [cleanup]);
 
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {
