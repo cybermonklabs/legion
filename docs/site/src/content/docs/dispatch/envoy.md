@@ -704,8 +704,8 @@ with no credential where `/v1` is open, names the sender itself in `source_sessi
 can send under another session's id and spend that session's count, which then takes up to
 `burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
 
-A token does not make a message count. A message whose `source` is not `agent` is not counted, with
-a token or without one. The agents' own Envoy tools send the source `agent` and give the agent no
+A token does not make a message count. A message with another `source` is not counted, with a
+token or without one. The agents' own Envoy tools send the source `agent` and give the agent no
 argument for it, so the limit holds those tools. A caller that writes its own request can give
 another source, so the limit is not a security boundary.
 
