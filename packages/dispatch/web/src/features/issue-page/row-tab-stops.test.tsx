@@ -15,7 +15,7 @@ import { NoTooltips } from "./NoTooltips";
 import { CONTROL_LABELS } from "./page-words";
 import { RowText, useOutOfTabOrder } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
-import { wordsScrollSheet } from "./words-scroll-fixtures";
+import { overflowing, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
  * Whether the controls inside a node's words and facts take a place in the tab order (part G's
@@ -358,7 +358,8 @@ test("RowText with tabStops leaves its wide code block and table in the tab orde
 
 /** A box `useOutOfTabOrder` keeps out of the tab order, with `keepScrollers` as given: a code
  *  block, a table's wrapper, a drawn diagram's preview (the class `mermaid-diagrams.ts`'s
- *  `drawBlock` gives it) and a box of another kind, each scrolling. */
+ *  `drawBlock` gives it) and a box of another kind, each able to scroll, and each with somewhere
+ *  to scroll to where the test lays its content out past its box (`overflowKept`). */
 function KeptScrollers({ keepScrollers }: { keepScrollers: boolean }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
   useOutOfTabOrder(box, true, { keepScrollers });
@@ -406,10 +407,23 @@ function keptState(container: HTMLElement, selectors: readonly string[]): Scroll
   });
 }
 
+/** Lays the content of every scroller of `KeptScrollers` out past its box until the answer is
+ *  called: the code block's, the table wrapper's and the diagram preview's sideways, as each
+ *  scrolls, and the other box's down. */
+function overflowKept(): () => void {
+  const sideways = overflowing("[data-code], [data-table], [data-diagram]");
+  const down = overflowing("[data-other]", "scrollHeight");
+  return () => {
+    down();
+    sideways();
+  };
+}
+
 // Decision 317: hiding every scroller from the keyboard leaves a reader on the keyboard no way to
 // scroll a wide code block or table sideways, so the focused row's scrollers keep their tab stop,
 // each named by what it scrolls. A `pre` and a wrapper may carry a name only with a role.
 test("useOutOfTabOrder with keepScrollers keeps a code block and a table's wrapper in the tab order, each named by what it scrolls", () => {
+  const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
   try {
     expect(keptState(view.container, ["[data-code]", "[data-table]"])).toEqual([
@@ -418,12 +432,14 @@ test("useOutOfTabOrder with keepScrollers keeps a code block and a table's wrapp
     ]);
   } finally {
     view.unmount();
+    restore();
   }
 });
 
 // Decision 317 covers every scroller of the focused row, so none stays out of reach: a drawn
 // diagram's preview is named as a diagram, with a role, since a `div` takes a name only with one.
 test("useOutOfTabOrder with keepScrollers keeps a drawn diagram's preview in the tab order, named as a diagram", () => {
+  const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
   try {
     expect(keptState(view.container, ["[data-diagram]"])).toEqual([
@@ -431,11 +447,13 @@ test("useOutOfTabOrder with keepScrollers keeps a drawn diagram's preview in the
     ]);
   } finally {
     view.unmount();
+    restore();
   }
 });
 
 // A scroller of a kind the page has no word of its own for takes the word for content.
 test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in the tab order, named as content", () => {
+  const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
   try {
     expect(keptState(view.container, ["[data-other]"])).toEqual([
@@ -443,12 +461,46 @@ test("useOutOfTabOrder with keepScrollers keeps a scroller of any other kind in 
     ]);
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// A scroller whose content fits its box has nowhere to scroll, and Chromium gives it no tab stop,
+// though `styles.css` lets every code block and table in a row's words scroll sideways, a one-line
+// one included. So the focused row keeps only the scrollers whose content runs past their box, and
+// one whose content comes to fit leaves the tab order at the next change inside the box, with its
+// own name and role again.
+test("useOutOfTabOrder with keepScrollers keeps only a scroller whose content runs past its box", async () => {
+  let restore = overflowing("[data-code], [data-table]");
+  const view = draw(<KeptScrollers keepScrollers />);
+  try {
+    expect(keptState(view.container, ["[data-code]", "[data-table]", "[data-diagram]"])).toEqual([
+      { label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" },
+      { label: CONTROL_LABELS.scrolls_table, role: "region", tabIndex: "0" },
+      { label: null, role: null, tabIndex: "-1" },
+    ]);
+    restore();
+    restore = overflowing("[data-code]");
+    act(() => {
+      view.container.querySelector("[data-code]")?.append(" --verbose");
+    });
+    await waitFor(() => {
+      expect(keptState(view.container, ["[data-code]", "[data-table]"])).toEqual([
+        { label: CONTROL_LABELS.scrolls_code, role: "region", tabIndex: "0" },
+        { label: null, role: null, tabIndex: "-1" },
+      ]);
+    });
+    expect(view.container.querySelectorAll("[data-kept-scroller]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+    restore();
   }
 });
 
 // A row that loses the focus stops passing `keepScrollers`, and its scrollers leave the tab order
 // again, with no name or role left of the ones they carried while it held the focus.
 test("useOutOfTabOrder takes every kept scroller out of the tab order, unnamed, once keepScrollers turns off", () => {
+  const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
   try {
     expect(keptState(view.container, KEPT_SCROLLERS).map((state) => state.tabIndex)).toEqual([
@@ -463,6 +515,7 @@ test("useOutOfTabOrder takes every kept scroller out of the tab order, unnamed, 
     );
   } finally {
     view.unmount();
+    restore();
   }
 });
 
@@ -470,6 +523,7 @@ test("useOutOfTabOrder takes every kept scroller out of the tab order, unnamed, 
 // carries `data-kept-scroller` while it keeps its tab stop, no other element does, and none keeps
 // it once the row stops passing `keepScrollers`.
 test("useOutOfTabOrder marks each kept scroller with data-kept-scroller, and no scroller once keepScrollers turns off", () => {
+  const restore = overflowKept();
   const view = draw(<KeptScrollers keepScrollers />);
   try {
     expect(
@@ -482,5 +536,6 @@ test("useOutOfTabOrder marks each kept scroller with data-kept-scroller, and no 
     expect(view.container.querySelectorAll("[data-kept-scroller]")).toHaveLength(0);
   } finally {
     view.unmount();
+    restore();
   }
 });

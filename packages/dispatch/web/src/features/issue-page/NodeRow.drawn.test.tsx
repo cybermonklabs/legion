@@ -34,7 +34,7 @@ import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
-import { wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
+import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
 
 /**
  * What one row of the tree draws, read as a reader reads it (R1, R6, R9,
@@ -661,9 +661,11 @@ test("a table and a code block in a row's words each scroll sideways on their ow
 // sideways; every other row's stay out of the tab order. The row hands its focus to its words.
 test("out of the tab order, a focused row's code block and table keep their tab stop, named, and an unfocused row's do not", () => {
   const text = "| One | Two |\n| --- | --- |\n| 1 | 2 |\n\n```\nconst wide = true;\n```";
-  // The rules that make each block scroll, which the hook reads through the computed style.
+  // The rules that make each block scroll, which the hook reads through the computed style, and
+  // each block's content laid out past its box, as a wide one's is.
   const sheet = wordsScrollSheet();
   document.head.append(sheet);
+  const restore = overflowing("[data-node-words] pre, [data-node-words] table");
   const drawn = (focused: boolean) => {
     const view = renderRow(
       node({ id: "notes-md#b-n1", text, tree: displayTree(text), type: "callout" }),
@@ -693,6 +695,7 @@ test("out of the tab order, a focused row's code block and table keep their tab 
       { label: null, role: null, tabIndex: "-1" },
     ]);
   } finally {
+    restore();
     sheet.remove();
   }
 });
