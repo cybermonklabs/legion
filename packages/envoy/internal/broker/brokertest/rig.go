@@ -215,10 +215,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	servicesByAccount := map[string]string{WorkerAccount: "legion-daemon"}
 	enr := &enroll.Service{Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
-	// A session name belongs to one principal here as it does on the real broker: the binder is
-	// a store on the same pool the OAuth provider's own store uses (NewOAuthProvider, built
-	// below), so a name the token exchange binds and a name an enrollment binds are the one
-	// table's.
+	// A session name is held here as the real broker holds one with no account paired
+	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
+	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
+	// store uses (NewOAuthProvider, built below), so a name the token exchange binds and a name an
+	// enrollment binds are the one table's.
 	enr.Sessions = oauthstore.New(st.Pool)
 
 	reqMachine := &requests.Machine{

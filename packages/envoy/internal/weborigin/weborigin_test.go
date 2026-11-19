@@ -113,6 +113,19 @@ func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 	}
 }
 
+// NumericLabel reads a label as the WHATWG URL parser's IPv4 reading does: decimal, or 0x and hex
+// digits, 0x alone being 0. It reads a label in lower case, as Parse and rulehost hand it one, so
+// an upper-case 0X or hex digit is no number to it.
+func TestNumericLabelIsANumberTheWHATWGParserReads(t *testing.T) {
+	for label, want := range map[string]bool{
+		"0": true, "123": true, "093": true, "0x": true, "0x1f": true, "0x5db8d822": true,
+		"": false, "1e100": false, "0xg": false, "x1": false, "-1": false, "0x1f.": false,
+		"0X1F": false, "0x1F": false,
+	} {
+		require.Equal(t, want, weborigin.NumericLabel(label), "NumericLabel(%q)", label)
+	}
+}
+
 // GoogleRedirectHost takes a host under a top-level domain in the public suffix list's ICANN
 // section: ones the list carries only as a "*.<tld>" rule (np, ck, as er, fk, jm, kh, mm and pg
 // are), an internationalised one (xn--p1ai), and one under a private-section suffix (ts.net),

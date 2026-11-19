@@ -1431,6 +1431,9 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
+	// for a caller that sent `Dispatch-Trees: 1`.
+	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
 	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
