@@ -15,7 +15,7 @@ type SecretFile struct {
 
 // WriteSecretFiles writes each secret to its 0600 file in the 0700 SecretsDir under stateDir,
 // re-applying the directory's mode on every write — a directory's mkdir mode is masked and ignored
-// when it exists (secrets.ts:83-98). Each file is replaced whole (replaceFile), so a live process
+// when it exists (secrets.ts:83-98). Each file is replaced whole (ReplaceFile), so a live process
 // reading it while it is rewritten reads the old value or the new, never an empty or partial one. A
 // failed write names the file's variable. The caller owns the files' lifetimes.
 func WriteSecretFiles(stateDir string, files []SecretFile) error {
@@ -27,17 +27,20 @@ func WriteSecretFiles(stateDir string, files []SecretFile) error {
 		return err
 	}
 	for _, file := range files {
-		if err := replaceFile(file.Path, file.Value); err != nil {
+		if err := ReplaceFile(file.Path, file.Value); err != nil {
 			return fmt.Errorf("write the %s file: %w", file.Variable, err)
 		}
 	}
 	return nil
 }
 
-// replaceFile writes value to a 0600 temporary file in path's directory and renames it over path,
+// ReplaceFile writes value to a 0600 temporary file in path's directory and renames it over path,
 // which swaps the whole file in one step: there is no moment where path is truncated and not yet
-// written. The temporary file is removed when any step fails.
-func replaceFile(path, value string) error {
+// written. It is also what the tmux runtime writes a pane's own files with, in a directory the
+// pane can write (the Claude Code MCP configuration): the rename replaces whatever is at path, a
+// fifo or a link included, without opening it, following it or waiting on it. The temporary file
+// is removed when any step fails.
+func ReplaceFile(path, value string) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
