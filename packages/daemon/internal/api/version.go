@@ -2213,4 +2213,38 @@ package api
 // entry's own 152 were both outside it.
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 152
+//
+// 170: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// `--session-writer-audience <audience>`, a fifth session flag after
+// `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
+// `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
+// when `runtime.kubernetes.session_database.writer_audience` is set. Its value is a workload
+// identity provider's full resource name. The launcher then reads a projected ServiceAccount token
+// of that audience at `<roles-dir>/session-writer/token`, which no role's namespace shows. Its
+// session proxy exchanges that token at Google's security token service and impersonates the
+// account with the federated token, never with the pod's own credentials (`connectorOptions`,
+// `internal/sessionproxy`). The proxy admits to the session socket only the launcher's own process
+// and the generation's Oh My Pi process, and closes and logs every other connection
+// (`internal/launcher`'s sessionPeer). The launcher's start command gains `agentExecutable`
+// (`shimwire.LauncherStart.AgentExecutable`), the agent's executable, by which the launcher knows
+// the Oh My Pi process. The daemon fills it for every Oh My Pi launch (sandbox's launcherCommand)
+// and leaves it out when it is empty, as for a Claude Code launch. Under the same member the
+// controller's pod runs the launcher's roles-dir form for its one role in place of the
+// single-role form (`--roles-dir` and `--role controller`, sandbox's
+// controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
+// launcher token from the controller's agent. A launcher built before 170 exits 2 on the unknown
+// flag in every pod the daemon creates with it, so the image probe, which holds the image's
+// pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
+// older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
+// renders neither the flag nor the controller's roles-dir form. An older launcher ignores
+// `agentExecutable`. A deployment that sets no writer audience renders no fifth flag, and its
+// launcher reads no `agentExecutable`, so its pods carry the command they carried before. (The
+// number was the lowest above main's 160 (46795520, #3519's INFRA-2009) that no open pull request
+// of cybermonklabs/legion declared at 2026-11-19T10:30Z-10:34Z, read with the `take` of
+// .github/scripts/check-daemon-api-contract.sh. This branch's base, 4eec2cc2, carries 152, and
+// the next forward merge brings 160 in. The reading passed over 161 (#4173, #4180, #4193 and
+// #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166 (#4432), 167 (#3831, #4030 and
+// #4485), 168 (#2230, #3659, #3993, #4175, #4273 and #4488) and 169 (#4065 and #4493). Read the
+// base's own number and every open pull request again at every forward merge rather than from
+// this line.)
+const DaemonAPIVersion = 170
