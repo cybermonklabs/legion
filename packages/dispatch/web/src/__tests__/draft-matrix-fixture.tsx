@@ -132,10 +132,13 @@ export function goneLead(parent: "comment" | "message"): string {
 }
 
 /** What `place` draws of a reply it keeps for a comment or message that has left the list: the
- *  status that holds the reply's text, `BODY`, and the presses beside it. */
+ *  status that holds the reply's text, `BODY`, and the presses beside it; and whether any status
+ *  on the page, in `place` or beside it, still asks the reader to press a Reply (`KeptReply`'s
+ *  `Press Reply on that …`), which the gone comment or message no longer draws. */
 export function goneIn(place: HTMLElement): {
   discard: boolean;
   line: string | undefined;
+  pressReply: boolean;
   use: boolean;
 } {
   const shown = within(place);
@@ -145,6 +148,9 @@ export function goneIn(place: HTMLElement): {
       .queryAllByRole("status")
       .map((status) => status.textContent ?? "")
       .find((text) => text.includes(BODY)),
+    pressReply: screen
+      .queryAllByRole("status")
+      .some((status) => /\bPress Reply\b/.test(status.textContent ?? "")),
     use: shown.queryByRole("button", { name: "Use it here" }) !== null,
   };
 }

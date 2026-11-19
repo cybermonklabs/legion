@@ -592,6 +592,7 @@ test(`${HOST} · the message replied to leaves the list · typed`, async () => {
       discard: true,
       kept: true,
       line: `${goneLead("message")}${BODY}`,
+      pressReply: false,
       quoted: "B",
       use: false,
     });
@@ -601,6 +602,7 @@ test(`${HOST} · the message replied to leaves the list · typed`, async () => {
       discard: false,
       kept: false,
       line: undefined,
+      pressReply: false,
       quoted: "B",
       text: prefill,
       use: false,
@@ -623,6 +625,7 @@ test(`${HOST} · the message replied to leaves the list, then Cancel reply · ty
     expect({ ...goneIn(composer()), quoted: quoted(), text: field().value }).toEqual({
       discard: true,
       line: `${goneLead("message")}${BODY}`,
+      pressReply: false,
       quoted: "none",
       text: "",
       use: true,
@@ -633,6 +636,7 @@ test(`${HOST} · the message replied to leaves the list, then Cancel reply · ty
       discard: false,
       kept: false,
       line: undefined,
+      pressReply: false,
       quoted: "none",
       text: BODY,
       use: false,

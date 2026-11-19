@@ -411,6 +411,7 @@ test(`${HOST} · the comment replied to leaves the list · typed`, async () => {
       discard: true,
       kept: true,
       line: `${goneLead("comment")}${BODY}`,
+      pressReply: false,
       thread: "comment:comment-b",
       use: false,
     });
@@ -419,6 +420,7 @@ test(`${HOST} · the comment replied to leaves the list · typed`, async () => {
       discard: false,
       kept: false,
       line: undefined,
+      pressReply: false,
       typed: false,
       use: false,
     });
@@ -455,6 +457,7 @@ for (const held of HELD) {
         discard: true,
         docked: DOCKED_DRAFT,
         line: `${goneLead("comment")}${BODY}`,
+        pressReply: false,
         use: false,
       });
       await page.user.click(within(form).getByRole("button", { name: "Discard my draft" }));
@@ -472,6 +475,7 @@ for (const held of HELD) {
         kept: false,
         keptLine: false,
         line: undefined,
+        pressReply: false,
         typed: false,
         use: false,
       });
