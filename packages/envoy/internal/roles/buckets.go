@@ -61,16 +61,16 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
-// bucket returns the handle of bucket on the client's current connection, opening it when it is
-// not open on that connection yet, within ctx and at most readTimeout.
+// bucket returns the handle of bucket on the client's current connection, opening it within ctx
+// when it is not open on that connection yet.
 //
 // b.mu guards the handles alone, and the open is made with it released: the open sends a
 // STREAM.INFO, which waits for nats.go's connection lock, and nats.go holds that lock through a
 // reconnect's dial and handshake. Held across the open, b.mu kept every other read of Buckets
-// waiting behind that handshake, past its own caller's bound, since the open's request took no
-// context and so outlived the read that made it. Two reads that both find a handle missing each
-// open one, and the first to finish keeps its handle; an open is one read of the bucket's stream
-// and leaves nothing behind.
+// waiting behind that handshake. The read that makes the open answers its caller at its own bound
+// (within); an open still waiting then goes on to ctx's end or the JetStream MaxWait, holding
+// nothing. Two reads that both find a handle missing each open one, and the first to finish keeps
+// its handle; an open is one read of the bucket's stream and leaves nothing behind.
 func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()
@@ -87,8 +87,6 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 		return kv, nil
 	}
 	b.mu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, readTimeout)
-	defer cancel()
 	kv, err := bus.OpenKeyValue(ctx, b.client.Connection(), js, name)
 	if err != nil {
 		return bus.KeyValue{}, err

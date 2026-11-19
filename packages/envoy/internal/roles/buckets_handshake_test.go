@@ -35,11 +35,12 @@ func lockedWithin(mu *sync.Mutex, wait time.Duration) bool {
 // testnats.HeldHandshakeAnswerWait of that answer.
 //
 // The role bucket does not exist, so no read keeps a handle and the read in the hold opens one, as
-// a first read after a reconnect does. The controls: a read before the hold and one after its
-// release answer the role's empty claim, so the row's answers are the hold's. The negative control
-// is bucket as it was (OpenKeyValue with context.Background() under b.mu): the second caller does
-// not take b.mu, and b.mu is still held when the wait ends. An open under b.mu that ended at the
-// read's bound would fail the second caller's take too.
+// a first read after a reconnect does. The controls: nats.go's lock is still held when the two
+// have answered (RequireLockHeld), so they answered during the handshake; and a read before the
+// hold and one after its release answer the role's empty claim, so the row's answers are the
+// hold's. The negative control is bucket as it was (OpenKeyValue with context.Background() under
+// b.mu): the second caller does not take b.mu, and b.mu is still held when the wait ends. An open
+// under b.mu that ended at the read's bound would fail the second caller's take too.
 func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 	_, url := testnats.Start(t)
 	hold := testnats.StartHandshakeHold(t, url)
@@ -54,6 +55,7 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 		t.Fatalf("control: before the hold the claim with no role bucket is %+v, %v; want none", claim, err)
 	}
 
+	conn := client.Connection()
 	hold.HoldReconnect(t)
 	// The read's own bound, inside the answer wait. The second caller tries for b.mu from 200 ms
 	// into it, by when the read is waiting on its open, until 300 ms before it ends.
@@ -76,6 +78,7 @@ func TestABucketsOpenHoldsNoLockAcrossAHeldHandshake(t *testing.T) {
 			}
 			return nil
 		})
+	testnats.RequireLockHeld(t, conn)
 	if answers[0] == nil {
 		t.Fatal("a read of the role's claim answered nil while the handshake was held, want its bound's error")
 	}

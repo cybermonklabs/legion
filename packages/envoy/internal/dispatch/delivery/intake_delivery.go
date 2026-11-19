@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -47,8 +48,10 @@ type intakeDelivery struct {
 	// messages that were waiting behind their keys, and those the callback was handed since.
 	held []*natsgo.Msg
 	// released is set once held has been handed back; the callback then hands a message back at
-	// once.
+	// once, unless withheld is set with it: the stop did not drain in time, and hands nothing back
+	// (drain).
 	released bool
+	withheld bool
 }
 
 // intakeMessage is one message on its way to its key's handler, with its envelope when keying
@@ -163,10 +166,10 @@ func stopContext(ctx context.Context) (stopping context.Context, release func())
 // intakeDrainWait after the last handler returned, or as ctx ends if that is sooner, when it
 // unsubscribes instead. The drain gives up the subscription's registration on the client
 // (bus.Client.DrainSubscription), so that no reconnect binds it again and a later subscribe on the
-// same client starts afresh. While the client's connection is not connected -- down, or in a
-// reconnect's dial or handshake, which hold nats.go's connection lock that every call to NATS
-// waits for -- the stop waits for no such call: the drain is left to a goroutine of its own, and
-// the hand-backs are withheld (drain, handBackHeld).
+// same client starts afresh. The stop waits for its drain, and for the unsubscribe that ends a drain
+// that did not end, at most stopCallWait each: nats.go holds its connection lock, which every call
+// to NATS waits for, through a reconnect's dial and handshake. A drain NATS did not take in that time
+// goes on without the stop, and the stop then hands nothing back (drain).
 //
 // run calls it as its ctx ends, under its stop deadline (stopContext), and when the hold is lost
 // or the durable no longer delivers here, under a budget of its own (stopDeliveringWithin). It is
@@ -183,31 +186,39 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 	}
 }
 
-// stop is StopDelivering for this subscription. The drain goes first, so the server has the
-// subscription's interest gone before any negative acknowledgement reaches it, and redelivers
-// what this one gives back to the next subscriber rather than straight back here. It drains the
-// subscription the client holds for this one's registration (bus.Client.DrainSubscription): a
-// handle of the client's own once it has replaced its connection, not sub, which went with the
-// replaced connection while the client's handle went on delivering here. The client holds nothing
-// of this stopped callback's from the drain on.
+// stop is StopDelivering for this subscription. The drain goes before any hand-back, so the server
+// has the subscription's interest gone before any negative acknowledgement reaches it, and
+// redelivers what this one gives back to the next subscriber rather than straight back here. It
+// drains the subscription the client holds for this one's registration
+// (bus.Client.DrainSubscription): a handle of the client's own once it has replaced its connection,
+// not sub, which went with the replaced connection while the client's handle went on delivering
+// here. The client holds nothing of this stopped callback's from the drain on. The messages waiting
+// behind their keys are taken before the drain, which can take up to stopCallWait, so that none of
+// them starts its handler meanwhile; they are held with the rest, and handed back after it.
 func (d *intakeDelivery) stop(ctx context.Context) {
 	giveUp := context.AfterFunc(ctx, d.abandon)
 	defer giveUp()
 	d.stopped.Do(func() {
 		d.stopping.Store(true)
-		draining := d.drain()
 		for _, waiting := range d.keys.stop() {
 			d.giveBack(waiting.msg)
 		}
+		draining, drained := d.drain()
 		// Returns once every handler has, which a handler given up (abandon) does promptly: its
 		// GitHub calls and its writes all run under its context.
 		d.keys.wait()
 		d.mu.Lock()
-		d.released = true
+		d.released, d.withheld = true, !drained
 		held := d.held
 		d.held = nil
 		d.mu.Unlock()
-		d.handBackHeld(held)
+		if !drained && len(held) > 0 {
+			slog.Warn(stopLeftHeld, "messages", len(held))
+			held = nil
+		}
+		for _, msg := range held {
+			d.handBack(msg)
+		}
 		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
 		// the client had buffered, and reports it only by the subscription turning invalid.
 		waitedFrom := time.Now()
@@ -223,75 +234,76 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 	})
 }
 
+// stopCallWait is the most the stop waits for one call of its own to NATS -- the drain, and the
+// unsubscribe of a drain that did not end -- before it goes on without it. Such a call takes
+// microseconds on a connected link, and up to the connect timeout (5 s) while a reconnect's dial and
+// handshake hold nats.go's connection lock.
+const stopCallWait = time.Second
+
+// stopLeftHeld is the line of a stop that did not drain in time and so leaves the messages it held
+// with the durable (drain).
+const stopLeftHeld = "dispatch delivery: the intake's subscription was not drained in time, so the messages the stop held are left with the durable"
+
 // drain drains the subscription the client holds for this one's registration
-// (bus.Client.DrainSubscription) and returns the handle whose drain the stop waits to end, nil
-// when there is none to wait for.
+// (bus.Client.DrainSubscription) and returns the handle whose drain the stop waits to end, nil when
+// there is none to wait for, and whether NATS took the drain within stopCallWait.
 //
-// It asks first whether the client's connection is connected now (bus.Client.ConnectedNow), which
-// waits for no reconnect. While it is not, the drain, or the unsubscribe DrainSubscription makes in
-// its place, would wait for nats.go's connection lock, which a reconnect's dial and handshake hold,
-// and would hold this stop's once -- and so every StopDelivering behind it -- until the attempt
-// ended. So the drain is made on a goroutine of its own, which holds nothing of the stop's, and the
-// stop does not wait for it: DrainSubscription gives up the registration before it reads the
+// A drain NATS did not take in that time goes on, on a goroutine of its own (bus.Bounded), and
+// holds nothing of the stop's: DrainSubscription gives up the registration before it reads the
 // connection, so no reconnect binds the subscription again, and it drains or unsubscribes the
-// subscription once nats.go lets its lock go.
-func (d *intakeDelivery) drain() *natsgo.Subscription {
-	if !d.nats.ConnectedNow() {
-		slog.Warn("dispatch delivery: NATS is not connected, so the intake's subscription is drained without the stop waiting for it")
-		go func() {
-			if _, err := d.nats.DrainSubscription(d.sub); err != nil {
-				slog.Error("dispatch delivery: drain the intake's subscription", "error", err)
-			}
-		}()
-		return nil
+// subscription once nats.go lets its lock go. The stop then hands nothing back, neither the
+// messages it held nor any the callback is handed later (giveBack): the drain goes first so that the
+// server has the subscription's interest gone before a hand-back reaches it, and here nothing says
+// when that is. Those messages stay outstanding, as a hand-back the hold no longer covers leaves
+// them (handBack): a take-over hands them to the next holder, or the durable redelivers them after
+// its ack wait.
+func (d *intakeDelivery) drain() (draining *natsgo.Subscription, drained bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), stopCallWait)
+	defer cancel()
+	draining, drained, _ = bus.Bounded(ctx, func() (*natsgo.Subscription, error) {
+		draining, err := d.nats.DrainSubscription(d.sub)
+		logStopCall("dispatch delivery: drain the intake's subscription", err)
+		return draining, nil
+	})
+	if !drained {
+		slog.Warn("dispatch delivery: NATS did not take the drain of the intake's subscription in time, so the drain goes on without the stop, which hands nothing back", "waited", stopCallWait)
 	}
-	draining, err := d.nats.DrainSubscription(d.sub)
-	if err != nil {
-		slog.Error("dispatch delivery: drain the intake's subscription", "error", err)
-	}
-	return draining
+	return draining, drained
 }
 
-// handBackHeld hands back the messages the stop held (handBack), once no handler is running. While
-// the client's connection is not connected now (bus.Client.ConnectedNow), it withholds them all:
-// each hand-back is a publish, which would wait for nats.go's connection lock as the drain would
-// (drain), and NATS takes no publish until the connection is back, since the client keeps no
-// reconnect buffer. The messages stay outstanding, as a hand-back the hold no longer covers
-// leaves them (handBack): the durable redelivers them after its ack wait, or a take-over hands
-// them to the next holder.
-func (d *intakeDelivery) handBackHeld(held []*natsgo.Msg) {
-	if len(held) == 0 {
-		return
-	}
-	if !d.nats.ConnectedNow() {
-		slog.Warn("dispatch delivery: NATS is not connected, so the messages the stop held are left with the durable", "messages", len(held))
-		return
-	}
-	for _, msg := range held {
-		d.handBack(msg)
-	}
-}
-
-// unsubscribe ends a drain that did not end in time. While the client's connection is not
-// connected now, the unsubscribe is made on a goroutine of its own, for the reason drain gives.
+// unsubscribe ends a drain that did not end in time, waiting for it at most stopCallWait; one NATS
+// did not take in that time goes on without the stop, as drain's does.
 func (d *intakeDelivery) unsubscribe(draining *natsgo.Subscription) {
-	unsubscribe := func() {
-		if err := draining.Unsubscribe(); err != nil {
-			slog.Error("dispatch delivery: unsubscribe the intake's subscription", "error", err)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), stopCallWait)
+	defer cancel()
+	_, answered, _ := bus.Bounded(ctx, func() (struct{}, error) {
+		logStopCall("dispatch delivery: unsubscribe the intake's subscription", draining.Unsubscribe())
+		return struct{}{}, nil
+	})
+	if !answered {
+		slog.Warn("dispatch delivery: NATS did not take the unsubscribe of the intake's subscription in time, so it goes on without the stop", "waited", stopCallWait)
 	}
-	if !d.nats.ConnectedNow() {
-		go unsubscribe()
-		return
+}
+
+// logStopCall logs err, the failure of the stop's call named by message. A connection already
+// closed is how a call that outlived the stop ends when the client closes at shutdown, and is
+// logged as that rather than as an error.
+func logStopCall(message string, err error) {
+	switch {
+	case err == nil:
+	case errors.Is(err, natsgo.ErrConnectionClosed):
+		slog.Info(message+": the connection had closed", "error", err)
+	default:
+		slog.Error(message, "error", err)
 	}
-	unsubscribe()
 }
 
 // giveBack hands msg back to NATS for the next holder: once no handler of this delivery is
 // running, at once (handBack); until then it is held, and the stop hands it back with the rest.
 // Handed back earlier, a message of a key whose handler is still running here could be
 // redelivered to the next holder and run there beside it, and two fetches of one pull request or
-// run at once can write the older answer last.
+// run at once can write the older answer last. A stop that did not drain in time hands nothing
+// back (drain), and msg is left with the durable.
 func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 	d.mu.Lock()
 	if !d.released {
@@ -299,7 +311,12 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 		d.mu.Unlock()
 		return
 	}
+	withheld := d.withheld
 	d.mu.Unlock()
+	if withheld {
+		slog.Info("dispatch delivery: the intake's subscription was not drained in time, so the message is left with the durable", "subject", msg.Subject)
+		return
+	}
 	d.handBack(msg)
 }
 

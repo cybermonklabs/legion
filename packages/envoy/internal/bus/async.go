@@ -101,8 +101,11 @@ type RequestOptions struct {
 // WindowUntil returns a Sender whose sends all go out on one connection, or not at all. Its first
 // send waits, within publishAcknowledgementTimeout, for the client to have a connection, and pins
 // the window to it. Every later send checks that connection first and answers ErrUnavailable at
-// once, without sending, once it has been lost or has reconnected since, so a window does not go
-// on sending across a connection it saw fail.
+// once, without sending, once the client has had a connection event since the pin - a disconnect,
+// a reconnect, a close or a replacement (ConnectionChanged) - so a window does not go on sending
+// across a connection it saw fail. That check reads no state of nats.go's and takes no lock, so a
+// send never waits on it for a reconnect's handshake, during which nats.go holds its connection
+// lock.
 //
 // A window keeps no order of its own between its sends. Its answers come back in whatever order
 // the server and the stream give them, and a JetStream publish NATS did not acknowledge may still
@@ -146,15 +149,15 @@ type window struct {
 	// deadline, when not nil, is the moment the window's sends stop writing (WindowUntil).
 	deadline func() time.Time
 
-	// pinning guards conn, js, reconnects and status while the first send pins them (pin); they
-	// never change after it. It is held only to read and set them: no wait for a connection and no
-	// read of nats.go's state is made under it.
-	pinning    sync.Mutex
-	conn       *nats.Conn
-	js         nats.JetStreamContext
-	reconnects uint64
-	// status reads conn's status within statusReadLockWait (boundedStatusReader), for pin's check.
-	status *boundedStatusReader
+	// pinning guards conn, js and changed while the first send pins them (pin); they never change
+	// after it. It is held only to read and to set them: the wait for a connection is made with it
+	// released.
+	pinning sync.Mutex
+	conn    *nats.Conn
+	js      nats.JetStreamContext
+	// changed is the client's connection-event channel (ConnectionChanged) as it was taken before
+	// the pinned connection was read connected, so it is closed by any connection event since.
+	changed <-chan struct{}
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -205,74 +208,68 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 }
 
 // pin pins the window to the client's connection at its first send, waiting up to wait for the
-// client to have one, and at every later one answers ErrUnavailable unless that connection is
-// still connected and has not reconnected.
+// client to have one, and at every later one answers ErrUnavailable once that connection is no
+// longer current (current).
 //
-// It holds pinning only to read and to set the pin. The wait for a connection is made with it
-// released, and ends at wait whatever nats.go is doing (Bounded): nats.go holds its connection lock
-// through a reconnect's dial and handshake, which ensureConnWithContext's read of the connection
-// waits for. The check of a pinned connection reads it through the window's status reader, which
-// waits for that lock at most statusReadLockWait, and a read kept waiting longer is the connection
-// in a reconnect, so this send answers ErrUnavailable within that bound. Every other send of the
-// window takes pinning at once and answers the same, where before each waited, behind the one
-// before it, for the handshake to end.
+// It holds pinning only to read and to set the pin. The first send's wait for a connection is made
+// with it released, and ends at wait whatever nats.go is doing (Bounded): nats.go holds its
+// connection lock through a reconnect's dial and handshake, which ensureConnWithContext's read of
+// the connection waits for. The check of a pinned connection reads the client's connection events
+// alone, so no send of the window waits for a handshake, nor behind another send that does.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
-	status := w.status
+	pinned := w.changed != nil
 	w.pinning.Unlock()
-	if status == nil {
-		pinned, err := w.pinFirst(wait)
-		if err != nil {
+	if !pinned {
+		if err := w.pinFirst(wait); err != nil {
 			return err
 		}
-		if pinned {
-			return nil
-		}
-		// Another send pinned the window while this one waited: this send checks that pin.
-		w.pinning.Lock()
-		status = w.status
-		w.pinning.Unlock()
 	}
-	if up, reconnects := status.connectedNow(); !up || reconnects != w.reconnects {
+	if !w.current() {
 		return fmt.Errorf("bus: %w: the window's connection was lost or reconnected since its first send", ErrUnavailable)
 	}
 	return nil
 }
 
 // pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to it unless another send pinned it first, in which case pinned is false. A
-// connection the status reader does not read connected is not pinned: it was lost, or went into a
-// reconnect, as the wait ended.
-func (w *window) pinFirst(wait time.Duration) (pinned bool, err error) {
+// the window to it unless another send pinned it first. The client's connection-event channel is
+// taken before the connection is read connected, so an event after that read closes it; an event
+// during the wait itself, such as the reconnect a send made during an outage waits for, has the
+// connection read again under a channel taken afresh.
+func (w *window) pinFirst(wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	type connection struct {
-		conn *nats.Conn
-		js   nats.JetStreamContext
+		conn    *nats.Conn
+		js      nats.JetStreamContext
+		changed <-chan struct{}
 	}
 	got, _, err := Bounded(ctx, func() (connection, error) {
-		if err := w.client.ensureConnWithContext(ctx); err != nil {
-			return connection{}, err
+		for {
+			changed := w.client.ConnectionChanged()
+			if err := w.client.ensureConnWithContext(ctx); err != nil {
+				return connection{}, err
+			}
+			select {
+			case <-changed:
+				continue
+			default:
+			}
+			w.client.mu.Lock()
+			pinned := connection{conn: w.client.Conn, js: w.client.js, changed: changed}
+			w.client.mu.Unlock()
+			return pinned, nil
 		}
-		w.client.mu.Lock()
-		defer w.client.mu.Unlock()
-		return connection{conn: w.client.Conn, js: w.client.js}, nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
-	}
-	status := newBoundedStatusReader(got.conn)
-	up, reconnects := status.connectedNow()
-	if !up {
-		return false, fmt.Errorf("bus: %w: the client's connection was lost before the window pinned it", ErrUnavailable)
+		return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
 	}
 	w.pinning.Lock()
 	defer w.pinning.Unlock()
-	if w.status != nil {
-		return false, nil
+	if w.changed == nil {
+		w.conn, w.js, w.changed = got.conn, got.js, got.changed
 	}
-	w.conn, w.js, w.reconnects, w.status = got.conn, got.js, reconnects, status
-	return true, nil
+	return nil
 }
 
 // expired answers ErrWindowDeadline once the window's deadline has passed, and nil before it or
@@ -303,10 +300,18 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// current reports whether the window's connection is connected and has not reconnected since the
-// window pinned it.
+// current reports whether the window's connection is still the one it pinned, connected as it was:
+// no connection event has reached the client since the pin (ConnectionChanged). The client hears of
+// a disconnect from nats.go's callback, which can come after nats.go has marked the connection
+// down; a send checked in that moment writes, and nats.go refuses the write (unsent), as it does a
+// send whose connection drops between the check and the write.
 func (w *window) current() bool {
-	return w.conn.IsConnected() && w.conn.Stats().Reconnects == w.reconnects
+	select {
+	case <-w.changed:
+		return false
+	default:
+		return true
+	}
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as
