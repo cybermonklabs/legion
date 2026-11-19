@@ -333,19 +333,26 @@ census_complete "$section" "after the backfill"
 # pass has finished.
 #
 # The tick reads an event only once the event horizon has passed it (events.Horizon). A
-# transaction of this run's own database that holds a transaction id for 5 s or more (events'
-# horizonStallAfter, and horizontest.OwnHoldBound) holds the server's event readers back, which is
-# the defect the horizon's own test waits fail on (docs/testing.md, "A test that waits for the event
-# feed's first frame"), so it fails the section at once, named; the holders are read as
-# events.StallHolderSQL reads them, the oldest transaction id first, a prepared transaction's as
-# well as a backend's.
+# transaction of this run's own database that has been open for 5 s or more holding a transaction
+# id (events' horizonStallAfter, and horizontest.OwnHoldBound) holds the server's event readers
+# back, which is the defect the horizon's own test waits fail on (docs/testing.md, "A test that
+# waits for the event feed's first frame"), so it fails the section at once, named; the holders
+# are read as events.StallHolderSQL reads them, the oldest transaction id first, a prepared
+# transaction's as well as a backend's. pg_stat_activity shows another role's xact_start only to a
+# superuser or a member of pg_read_all_stats, so a hold of another role that this role cannot date
+# fails the section at the tick bound below and is not named; in harness mode the server and this
+# driver share one role, so the server's own holds are dated.
 #
 # The wait is counted in the server's own work, not in time: the block-index tick's passes, each
-# recorded in duty_passes as the period it served (duty's recordPass). A tick reads the event, owes
-# the pass and runs it, so six ticks with no pass are a server that does not cure the row, and the
-# section fails. The lease and the tick's interval are read from the source that declares them. The
-# clock is a hang guard alone: ten of the tick's intervals with no pass of its lease at all is a
-# server whose tick has stopped, and fails the section naming the last period it served.
+# recording the period it served in duty_passes, in the row keyed by the lease and the tick's
+# period in nanoseconds, which every pass writes (duty's recordPass and passKey). A tick reads the
+# event, owes the pass and runs it, so six ticks with no pass are a server that does not cure the
+# row, and the section fails: six of the tick's 30 s intervals are the 180 s this wait held before
+# it counted ticks. The lease and the tick's interval are read from the source that declares them.
+# The period is read before the cure in each poll, so a pass that cures the row is never counted
+# as one that did not. The clock is a hang guard alone: ten of the tick's intervals with no pass of
+# its lease at all, against passes 30 s apart in every server log these runs kept, is a server
+# whose tick has stopped, and fails the section naming the last period it served.
 section=pass
 # declared WHAT FILE SED: the one value SED prints out of a Go source file, refused when the file or
 # the declaration is gone, so a build that moves one moves this driver with it.
@@ -358,9 +365,9 @@ readonly docs_source="$script_dir/../../../envoy/internal/dispatch/docs"
 declared "read the block-index tick's lease" "$docs_source/block_index.go" 's/^const BlockIndexLease = "\(.*\)"$/\1/p'
 readonly tick_lease="$answer"
 declared "read the block-index tick's interval" "$docs_source/block_index.go" \
-  's/^[[:space:]]*BlockIndexReconcileInterval = \([0-9][0-9]*\) \* time\.Second$/\1/p'
+  's/^[[:space:]]*BlockIndexReconcileInterval[[:space:]]*=[[:space:]]*\([0-9][0-9]*\) \* time\.Second$/\1/p'
 readonly tick_seconds="$answer"
-readonly quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
+readonly pass_key="$tick_lease/$((tick_seconds * 1000000000))" quiet_ticks=6 stalled_seconds=$((10 * tick_seconds))
 query "$section" "an earlier build sends a direct message with its event and no node" "
   with message as (
     insert into messages (issue_key, author, body, target)
@@ -376,6 +383,12 @@ query "$section" "an earlier build sends a direct message with its event and no 
 read -r before written <<<"$answer"
 boundary="" ticks=0 last_pass=$SECONDS
 while :; do
+  query "$section" "read the period the block-index tick last served" \
+    "select coalesce((select boundary::text from duty_passes where lease = '$pass_key'), '')"
+  if [[ "$answer" != "$boundary" ]]; then
+    [[ -z "$boundary" ]] || ticks=$((ticks + 1))
+    boundary="$answer" last_pass=$SECONDS
+  fi
   query "$section" "read whether the server's object pass has run after event $written" "
     select exists (select 1 from block_index_event_cursors where event_id >= $written and object_nodes_owed_at is null)
        and exists (select 1 from graph_nodes where kind = 'message' and id = '$before')"
@@ -392,19 +405,13 @@ while :; do
     ) holder where started < now() - interval '5 seconds' order by age desc limit 1), '')"
   [[ -z "$answer" ]] ||
     fail "$section" "no transaction of this run's database holds the event horizon back" \
-      "$answer has held a transaction id in this run's database for more than 5 s, which holds the server's event readers back"
-  query "$section" "read the period the block-index tick last served" \
-    "select coalesce((select boundary::text from duty_passes where lease = '$tick_lease'), '')"
-  if [[ "$answer" != "$boundary" ]]; then
-    [[ -z "$boundary" ]] || ticks=$((ticks + 1))
-    boundary="$answer" last_pass=$SECONDS
-  fi
+      "$answer has been open for more than 5 s holding a transaction id in this run's database, which holds the server's event readers back"
   ((ticks < quiet_ticks)) ||
     fail "$section" "the server's object pass runs" \
       "no cursor past event $written without a debt and no node of message $before after $ticks block-index ticks"
   if ((SECONDS - last_pass >= stalled_seconds)); then
     fail "$section" "the server's block-index tick runs" \
-      "no pass of lease $tick_lease for $((SECONDS - last_pass)) s; the last period it served began at ${boundary:-no period}"
+      "no pass of lease $pass_key for $((SECONDS - last_pass)) s; the last period it served began at ${boundary:-no period}"
   fi
   sleep 1
 done
