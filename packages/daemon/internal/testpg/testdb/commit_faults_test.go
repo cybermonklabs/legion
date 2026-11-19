@@ -276,13 +276,11 @@ func TestTheProxyDropsAHeldReplyAsItsTestEnds(t *testing.T) {
 	}
 }
 
-// pgx drops its connection when the server refuses TLS and dials again. libpq keeps it and sends
-// its startup message on it, with no type byte, so the proxy reads the message after an
-// SSLRequest as untyped too, and the server reads that startup message and answers it with an
-// authentication message.
-func TestTheProxyPassesAStartupMessageAfterARefusedSSLRequest(t *testing.T) {
-	dsn := Database(t, "legion_testdb_faults")
-	through, _ := CommitFaults(t, dsn)
+// rawClient is a TCP connection to the proxy at through, for a test that writes the protocol's
+// bytes itself, and the proxy URL's config. Its deadline is bounded, so a read the proxy never
+// answers fails the test and does not hang it.
+func rawClient(t *testing.T, through string) (net.Conn, *pgconn.Config) {
+	t.Helper()
 	config, err := pgconn.ParseConfig(through)
 	if err != nil {
 		t.Fatal("pgx refuses the proxy's URL")
@@ -295,30 +293,85 @@ func TestTheProxyPassesAStartupMessageAfterARefusedSSLRequest(t *testing.T) {
 	if err := conn.SetDeadline(time.Now().Add(testwait.Bounded(t, faultMetBound, time.Second))); err != nil {
 		t.Fatalf("set the connection's deadline: %v", err)
 	}
-	exchange := func(message interface{ Encode([]byte) ([]byte, error) }) byte {
-		t.Helper()
-		encoded, err := message.Encode(nil)
-		if err != nil {
-			t.Fatalf("encode %T: %v", message, err)
-		}
-		if _, err := conn.Write(encoded); err != nil {
-			t.Fatalf("send %T through the proxy: %v", message, err)
-		}
-		answer := make([]byte, 1)
-		if _, err := io.ReadFull(conn, answer); err != nil {
-			t.Fatalf("read the server's answer to %T through the proxy: %v", message, err)
-		}
-		return answer[0]
+	return conn, config
+}
+
+// exchange sends message on conn and reads the first byte of the server's answer.
+func exchange(t *testing.T, conn net.Conn, message interface{ Encode([]byte) ([]byte, error) }) byte {
+	t.Helper()
+	encoded, err := message.Encode(nil)
+	if err != nil {
+		t.Fatalf("encode %T: %v", message, err)
 	}
-	if answer := exchange(&pgproto3.SSLRequest{}); answer != 'N' {
-		t.Skipf("the server answers an SSLRequest with %q: this test needs one that refuses TLS", answer)
+	if _, err := conn.Write(encoded); err != nil {
+		t.Fatalf("send %T through the proxy: %v", message, err)
 	}
-	startup := &pgproto3.StartupMessage{
+	answer := make([]byte, 1)
+	if _, err := io.ReadFull(conn, answer); err != nil {
+		t.Fatalf("read the server's answer to %T through the proxy: %v", message, err)
+	}
+	return answer[0]
+}
+
+// startup is the startup message of config's user and database.
+func startup(config *pgconn.Config) *pgproto3.StartupMessage {
+	return &pgproto3.StartupMessage{
 		ProtocolVersion: pgproto3.ProtocolVersionNumber,
 		Parameters:      map[string]string{"user": config.User, "database": config.Database},
 	}
-	if answer := exchange(startup); answer != 'R' {
+}
+
+// pgx drops its connection when the server refuses TLS and dials again. libpq keeps it and sends
+// its startup message on it, with no type byte, so the proxy reads the message after an
+// SSLRequest as untyped too, and the server reads that startup message and answers it with an
+// authentication message.
+func TestTheProxyPassesAStartupMessageAfterARefusedSSLRequest(t *testing.T) {
+	through, _ := CommitFaults(t, Database(t, "legion_testdb_faults"))
+	conn, config := rawClient(t, through)
+	if answer := exchange(t, conn, &pgproto3.SSLRequest{}); answer != 'N' {
+		t.Skipf("the server answers an SSLRequest with %q: this test needs one that refuses TLS", answer)
+	}
+	if answer := exchange(t, conn, startup(config)); answer != 'R' {
 		t.Fatalf("the server answered the startup message with a message of type %q, want an authentication message 'R'", answer)
+	}
+}
+
+// A message's length counts the length field itself, so no message is shorter than 4 bytes, and
+// no untyped one is shorter than 8, its length and the code that says what it is. No client sends
+// a shorter length. The proxy ends the connection that sends one, as the server does, instead of
+// reading a message shorter than the bytes it then slices, which would panic the test binary; and
+// the next client gets through.
+func TestTheProxyEndsAConnectionWhoseMessageIsShorterThanItsHeader(t *testing.T) {
+	through, _ := CommitFaults(t, Database(t, "legion_testdb_faults"))
+	for _, tc := range []struct {
+		name    string
+		typed   bool // the client sends its startup message first, so the proxy reads a type byte
+		message []byte
+	}{
+		{name: "an untyped message of length 4", message: []byte{0, 0, 0, 4}},
+		{name: "a typed message of length 3", typed: true, message: []byte{'Q', 0, 0, 0, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, config := rawClient(t, through)
+			if tc.typed {
+				if answer := exchange(t, conn, startup(config)); answer != 'R' {
+					t.Fatalf("the server answered the startup message with a message of type %q, want an authentication message 'R'", answer)
+				}
+			}
+			if _, err := conn.Write(tc.message); err != nil {
+				t.Fatalf("send %s through the proxy: %v", tc.name, err)
+			}
+			// ReadAll ends at the close: nil at an orderly one, or the reset of a close that left
+			// bytes unread. A timeout is the proxy waiting for bytes the length names.
+			var timeout net.Error
+			if _, err := io.ReadAll(conn); errors.As(err, &timeout) && timeout.Timeout() {
+				t.Fatalf("the proxy kept the connection that sent %s open: %v", tc.name, err)
+			}
+			var one int
+			if err := connect(t, through).QueryRow(context.Background(), "select 1").Scan(&one); err != nil || one != 1 {
+				t.Fatalf("a client after %s read %d, %v through the proxy, want 1", tc.name, one, err)
+			}
+		})
 	}
 }
 
