@@ -40,9 +40,12 @@
 #      applied. The allowed hosts of rules 3 and 4 are exceptions to those rules alone, never to a
 #      term. A line of the form `key:<KEY>` (capitals and digits) is no term: it names one Dispatch
 #      project of the deployment's own, whose issue keys the sixth rule refuses;
-#   6. an issue key of one of those projects: the key, a "-" and a number, standing as a word of
-#      its own (`\b<KEY>-[0-9]+\b`, case-sensitive, so the bare word and a lowercase slug pass).
-#      `LEGION` is never such a project, so Legion's own `LEGION-<n>` keys always pass;
+#   6. an issue key of one of those projects: the key, a "-" and a number, with no letter or digit
+#      on either side (`(^|[^[:alnum:]])<KEY>-[0-9]+([^[:alnum:]]|$)`, case-sensitive, so the bare
+#      word and a lowercase slug pass, and a key beside a "_", which a GNU "\b" would pass, is
+#      refused). `LEGION` is never such a project, so Legion's own `LEGION-<n>` keys always pass.
+#      A run that reads this rule with terms in the list and no `key:` line fails with exit 2, since
+#      it would report a clean result over no project at all;
 #   7. a Dispatch link: the link scheme Dispatch's references are written in, in any case.
 #
 # Rules 6 and 7 read new text only, until a cleanup leaves the tree with no key and no link.
@@ -258,9 +261,12 @@ while IFS= read -r term; do
     term_patterns+=("$(term_pattern "$term")")
   fi
 done <<< "${PRIVATE_NAME_TERMS:-}"
-# The sixth rule's pattern: any of the keys, a "-" and a number, as a word of its own.
+# The sixth rule's pattern: any of the keys, a "-" and a number, with no letter or digit on either
+# side (a GNU "\b" would pass a key beside a "_", as the tailnet rule's comment says).
 key_pattern=''
-if [ ${#keys[@]} -gt 0 ]; then key_pattern="\\b($(IFS='|'; echo "${keys[*]}"))-[0-9]+\\b"; fi
+if [ ${#keys[@]} -gt 0 ]; then
+  key_pattern="(^|[^[:alnum:]])($(IFS='|'; echo "${keys[*]}"))-[0-9]+([^[:alnum:]]|\$)"
+fi
 # One line says how many terms and keys the run read, and never a term or a key: on a pull
 # request's own run, the proof that the job holds the list. An empty list prints the warning
 # below instead.
@@ -378,6 +384,16 @@ if [ ${#terms[@]} -eq 0 ]; then
       exit 2
       ;;
   esac
+fi
+# Rule 6 reads the `key:` lines of the list. A run that reads it (a `keys` run, or a tree run once
+# issue_keys_in_tree is `yes`) under a list that holds terms and no `key:` line would check no
+# project and report clean, so it fails instead. A list with no term at all is handled above.
+if { [ "$rules" = keys ] || [ "$issue_keys_in_tree" = yes ]; } &&
+  [ ${#terms[@]} -gt 0 ] && [ ${#keys[@]} -eq 0 ]; then
+  echo "::error::check-private-names: PRIVATE_NAME_TERMS holds no key: line, so the issue-key" \
+    "rule has no project to read; add one key:<KEY> line for each of the deployment's own" \
+    "Dispatch projects to that Actions secret" >&2
+  exit 2
 fi
 
 # sanitized <command...>: runs the command with its error output masked line by line, since a
@@ -557,8 +573,8 @@ if [ -s "$hits" ]; then
   echo "    that fits it (\"the deployment repository\", \"the company\", a placeholder id). The list"
   echo "    is an Actions secret, so this log never prints the term: read the reported line;"
   echo "  - for an issue key of the deployment's own projects, or a Dispatch link, write neither: a"
-  echo "    pull request's title, body, branch, commits, comments and reviews carry no key but"
-  echo "    Legion's own LEGION-<n> and no link; the Dispatch issue links the pull request instead;"
+  echo "    pull request's title, body, commits, comments and reviews carry no key but Legion's own"
+  echo "    LEGION-<n> and no link; the Dispatch issue links the pull request instead;"
   echo "  - for a file or directory whose path is reported with <name> in it, rename it."
   exit 1
 fi

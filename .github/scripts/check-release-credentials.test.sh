@@ -473,6 +473,36 @@ mutate "$root/$RELEASE" $'    uses: ./.github/workflows/worker-image.yaml\n' $' 
 run_check "$root"
 check "GITHUB_TOKEN alone, which every job holds, passes" "$(is "$status" 0)"
 
+echo "case: a step that starts publishing a build's output waits for the names job that checks it"
+# gated_fixture <name>: the green fixture with notes_names checking pi_envoy_build's output (it
+# needs that build and holds the term list) and pi_envoy_publish needing both, so rule 8 reads
+# pi_envoy_publish's steps.
+gated_fixture() {
+  local dir
+  dir=$(fixture "$1")
+  mutate "$dir/$RELEASE" $'  notes_names:\n    permissions:\n' $'  notes_names:\n    needs: pi_envoy_build\n    permissions:\n'
+  mutate "$dir/$RELEASE" $'  pi_envoy_publish:\n    needs: pi_envoy_build\n' $'  pi_envoy_publish:\n    needs: [pi_envoy_build, notes_names]\n'
+  echo "$dir"
+}
+root=$(gated_fixture names-gate-missing)
+add_publish_step "$root" $'      - name: Download the tarball\n        if: needs.pi_envoy_build.result == \'success\' && needs.pi_envoy_build.outputs.skip != \'true\'\n        run: echo download\n'
+run_check "$root"
+check "a step that tests the build's result and not the names job's: exits 1" "$(is "$status" 1)"
+check "names the job, the step and the names job at the if's line" \
+  "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" "^        if: needs.pi_envoy_build.result == 'success' && needs.pi_envoy_build.outputs"): job 'pi_envoy_publish' step 'Download the tarball' tests needs.pi_envoy_build.result == 'success' but not needs.notes_names.result == 'success'")"
+root=$(gated_fixture names-gate-present)
+add_publish_step "$root" $'      - name: Download the tarball\n        if: needs.pi_envoy_build.result == \'success\' && needs.notes_names.result == \'success\'\n        run: echo download\n'
+run_check "$root"
+check "the same step testing the names job's result too: exits 0" "$(is "$status" 0)"
+root=$(gated_fixture names-gate-index)
+add_publish_step "$root" $'      - name: Download the tarball\n        if: needs.pi_envoy_build.result == \'success\' && needs[\'notes_names\'].result == \'success\'\n        run: echo download\n'
+run_check "$root"
+check "the names job's result tested by index: exits 0" "$(is "$status" 0)"
+root=$(gated_fixture names-gate-disjunction)
+add_publish_step "$root" $'      - name: Set up node for any package\n        if: (needs.pi_envoy_build.result == \'success\') || (needs.pi_legion_build.result == \'success\')\n        run: echo node\n'
+run_check "$root"
+check "an if: that joins packages with ||, no step of one package: exits 0" "$(is "$status" 0)"
+
 echo "case: a credentialed job runs bun install"
 root=$(fixture bun-install)
 add_publish_step "$root" $'      - name: Install the publish dependencies\n        run: bun install --frozen-lockfile\n'

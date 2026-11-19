@@ -71,6 +71,14 @@
 #    are what run the secret, and this check reads only those. So a names job pointed at
 #    worker-image.yaml, which runs a docker build, or a `secrets:` block added to worker_image, is
 #    refused here rather than passing unread.
+# 8. A step that starts publishing a build job's output waits for that output's private-name check.
+#    A names job is a job whose text names secrets.PRIVATE_NAME_TERMS; it checks the output of
+#    each job it needs. In any other job, a step whose `if:` tests `needs.<build>.result ==
+#    'success'` for such a build, as a conjunction (no `||`), is the first step of that package's
+#    chain, since every later step of it reads the step before it: that `if:` also tests
+#    `needs.<names job>.result == 'success'`. Else a finding of the names job publishes anyway.
+#    An `if:` that joins packages with `||`, such as the setup-node step that serves every npm
+#    publish, is no step of one package and is not read.
 #
 # "Runs dependency code" is a tripwire over named patterns, not a proof that no other code runs: a
 # step runs dependency code when its `uses:` starts with one of DEPENDENCY_USES, when the shell its
@@ -916,6 +924,46 @@ def check_call(path: Path, name: str, job: Mapping, job_line: int) -> None:
             f"to a workflow on WORKFLOWS, called as './' and its path",
         )
 
+# 8. A step that starts publishing a build's output waits for the names job that checks it.
+NAMES_SECRET = re.compile(
+    r"(?<![\w./-])secrets\s*(?:\.\s*PRIVATE_NAME_TERMS\b|\[\s*['\"]PRIVATE_NAME_TERMS['\"]\s*\])",
+    re.IGNORECASE,
+)
+SUCCESS_TEST = re.compile(NEEDS_REF + r"result\s*==\s*'success'", re.IGNORECASE)
+
+
+def check_names_gates(path: Path, jobs: Mapping) -> None:
+    names_of: dict[str, list[str]] = {}
+    for name, job in jobs.items():
+        if isinstance(job, Mapping) and any(NAMES_SECRET.search(text) for _, _, text in texts_of(job)):
+            for build in needs_of(job):
+                names_of.setdefault(str(build).lower(), []).append(str(name))
+    for name, job in jobs.items():
+        if not isinstance(job, Mapping) or not isinstance(job.get("steps"), list):
+            continue
+        for index, step in enumerate(job["steps"]):
+            cond = step.get("if") if isinstance(step, Mapping) else None
+            if not isinstance(cond, str) or "||" in cond:
+                continue
+            tested = {
+                (match.group(1) or match.group(2)).lower() for match in SUCCESS_TEST.finditer(cond)
+            }
+            for build, names in names_of.items():
+                if build not in tested or str(name) in names:
+                    continue
+                for names_job in names:
+                    if names_job.lower() in tested:
+                        continue
+                    problem(
+                        path, step.lines.get("if", line_of(step, jobs.lines.get(name, 1))),
+                        f"job '{name}' {describe(step, index)} tests needs.{build}.result == "
+                        f"'success' but not needs.{names_job}.result == 'success'; {names_job} "
+                        f"checks {build}'s output for the deployment's private names, so the step "
+                        f"that starts publishing it waits for that check, else a finding there "
+                        f"publishes anyway",
+                    )
+
+
 
 
 loaded: dict[Path, tuple[Mapping, Mapping]] = {}
@@ -977,6 +1025,10 @@ if LISTENER in loaded:
 # belongs to a job with no skippable ancestor, where GitHub's implicit success() can decide.
 for path, (_, jobs) in loaded.items():
     check_conditions(path, jobs)
+
+# 8. A step that starts publishing a build's output waits for the names job that checks it.
+for path, (_, jobs) in loaded.items():
+    check_names_gates(path, jobs)
 
 if problems:
     for entry in problems:

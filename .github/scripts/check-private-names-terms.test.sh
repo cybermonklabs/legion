@@ -849,5 +849,48 @@ set -e
 check "the same file fails a keys run" "$(is "$status" 1)"
 check "names its line" "$(contains "$out" "docs/notes.md:1: $key_refused")"
 
+# keys_run_in <root> <terms> [path...]: a keys run of the check from <root> on a merge group,
+# under <terms> as the list.
+keys_run_in() {
+  local root=$1 list=$2
+  shift 2
+  set +e
+  out=$(cd "$root" && PRIVATE_NAME_TERMS=$list GITHUB_EVENT_NAME=merge_group PRIVATE_NAME_RULES=keys \
+    .github/scripts/check-private-names.sh "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+echo "case: a key beside a \"_\" is a key, in a line and in a path"
+# GNU grep's \b counts "_" as a word character, so a key glued to a "_" passed a \b pattern.
+root=$(fixture key-underscore)
+printf 'Moved under fix_%s now.\n' "$planted_key" > "$root/docs/notes.md"
+mkdir -p "$root/docs/plans"
+printf 'clean text\n' > "$root/docs/plans/${planted_key}_plan.md"
+keys_run_in "$root" "$key_terms" docs
+check "exits 1" "$(is "$status" 1)"
+check "names the line where the key follows a \"_\"" "$(contains "$out" "docs/notes.md:1: $key_refused")"
+check "names the path where the key comes before a \"_\", masked" \
+  "$(contains "$out" "^::error::docs/plans/<name>: $key_refused .* in its path\$")"
+check "prints no key" "$(is "$(contains "$out" "$planted_key")" false)"
+root=$(fixture key-underscore-lower)
+printf 'Runs as fix_%s now.\n' "${planted_key,,}" > "$root/docs/notes.md"
+keys_run_in "$root" "$key_terms" docs
+check "the same line in lower case still passes" "$(is "$status" 0)"
+
+echo "case: a keys run under a list with terms and no key: line fails, rather than checking no project"
+root=$(fixture key-no-key-line)
+printf 'Tracked as %s.\n' "$planted_key" > "$root/docs/notes.md"
+keys_run_in "$root" "$planted_terms" docs
+check "exits 2" "$(is "$status" 2)"
+check "says the list holds no key: line" \
+  "$(contains "$out" '^::error::check-private-names: PRIVATE_NAME_TERMS holds no key: line')"
+keys_run_in "$root" "$(printf '%s\n' "$planted_terms" key:LEGION)" docs
+check "a key: line for Legion's own project alone counts as none: exits 2" "$(is "$status" 2)"
+keys_run_in "$root" "$key_terms" docs
+check "the same run with the project's key: line finds the key: exits 1" "$(is "$status" 1)"
+run_check_as merge_group "$planted_terms" "$root"
+check "a names run of the tree, which reads no key, still passes with no key: line" "$(is "$status" 0)"
+
 finish_self_log
 summary "check-private-names.sh's term list"
