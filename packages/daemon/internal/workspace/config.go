@@ -744,17 +744,32 @@ func runCheckedInWithin(ctx context.Context, run Runner, ws Workspace, timeout t
 
 // checkedResult is the checked runners' shared answer: a process that could not start, that a
 // signal ended, that exited non-zero, or that outlived its budget is an error naming the command
-// (runFailure, commandFailure). A clean exit whose I/O draining outlived WaitDelay
+// (answered, commandFailure). A clean exit whose I/O draining outlived WaitDelay
 // (exec.ErrWaitDelay) is not this: execRunner.Run already reads that as the process's own true
 // ExitCode, so it passes through the same as any other answer.
 func checkedResult(argv []string, result Result, err error) (Result, error) {
-	if err != nil {
-		return Result{}, runFailure(argv, result, err)
+	if err := answered(argv, result, err); err != nil {
+		return Result{}, err
 	}
-	if result.ExitCode != 0 || result.TimedOut {
+	if result.ExitCode != 0 {
 		return Result{}, commandFailure(argv, result)
 	}
 	return result, nil
+}
+
+// answered is nil when a run's status is an answer to read, and otherwise the error naming the
+// command: a run that could not start or that a signal ended (runFailure), and one its budget
+// ended (commandFailure). A read whose non-zero exit means something (`git rev-parse --verify`'s
+// "no such ref", `git config --get-all`'s "not set", `git symbolic-ref --quiet`'s "not a symbolic
+// ref") calls this first, since the -1 such a run leaves is no answer, then reads the exit.
+func answered(argv []string, result Result, err error) error {
+	if err != nil {
+		return runFailure(argv, result, err)
+	}
+	if result.TimedOut {
+		return commandFailure(argv, result)
+	}
+	return nil
 }
 
 // runFailure is a run that answered no status of its own, as an error naming the command: `run
@@ -860,16 +875,13 @@ func ConfigureRepositoryCredential(ctx context.Context, run Runner, cloneDir str
 		{"credential.useHttpPath", "true"},
 	} {
 		// `git config --get-all` exits 1 for a key the clone never set, which is as stale as an old
-		// helper; a run that failed to start, or that its budget ended before it answered, is an
-		// error. Each read runs in the clone itself, the directory --git-dir names the repository
-		// of: the daemon runs this over a clone it has just provisioned or found, so it is there.
+		// helper, once the read answered (answered). Each read runs in the clone itself, the
+		// directory --git-dir names the repository of: the daemon runs this over a clone it has
+		// just provisioned or found, so it is there.
 		argv := []string{"git", "--git-dir=" + gitDir, "config", "--get-all", check.key}
 		result, err := runCommand(ctx, run, argv, nil, cloneDir)
-		if err != nil {
-			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, runFailure(argv, result, err))
-		}
-		if result.TimedOut {
-			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, commandFailure(argv, result))
+		if err := answered(argv, result, err); err != nil {
+			return false, fmt.Errorf("read the shared clone's %s: %w", check.key, err)
 		}
 		values := strings.Split(strings.TrimRight(result.Stdout, "\n"), "\n")
 		if result.ExitCode != 0 || values[len(values)-1] != check.want {

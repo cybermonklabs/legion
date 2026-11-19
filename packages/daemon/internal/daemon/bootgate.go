@@ -689,7 +689,7 @@ func (g pluginGate) probeLoad(ctx context.Context, launch, probe string, lane pl
 	// that is not Oh My Pi: its own refusal, since "not loaded" would send the operator to
 	// `omp plugin list` when the fix is the prefix or the invocation.
 	if r.exit != 0 && !strings.Contains(r.output, notLoadedMarker) {
-		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.ending(), launch)))}, loaded{}
+		return bootprobe.Outcome{Refusal: errors.New(r.quoting(fmt.Sprintf("OMP launch probe failed (%s) for launch command %q", r.end, launch)))}, loaded{}
 	}
 	return bootprobe.Outcome{Refusal: lane.notLoaded(version)}, loaded{}
 }
@@ -883,16 +883,6 @@ type ran struct {
 	elapsed                time.Duration
 }
 
-// ending is how the probe's command ended, as a message's parenthesis names it: `exit 3`, or the
-// signal that ended it, which left it no status (procgroup.Ending.String); `exit N` from the
-// status read when the run's error said neither.
-func (r ran) ending() string {
-	if r.end.Ran() {
-		return r.end.String()
-	}
-	return fmt.Sprintf("exit %d", r.exit)
-}
-
 // ended is how the probe's command ended, as a message's verb says it: `exited 3`, or `was ended
 // by signal: killed`.
 func (r ran) ended() string {
@@ -929,7 +919,7 @@ func (r ran) killed(launch string, budget time.Duration) string {
 // when ctx ended, whose attempt is then not judged, and when the terminal's Ctrl-C ended the
 // attempt. A probe some other signal ended (Oh My Pi crashing, the kernel's out-of-memory kill)
 // is no error: it is judged as a run that exited -1, which each probe reads as its doc says, and
-// its messages name the signal (ran.ending, ran.ended).
+// its messages name the signal (ran.end, ran.ended).
 func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran, error) {
 	attempt, cancel := context.WithTimeout(ctx, g.timeout)
 	defer cancel()

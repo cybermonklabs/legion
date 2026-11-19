@@ -377,12 +377,8 @@ func feedClone(ctx context.Context, run Runner, steps cloneSteps, temporary, rem
 	}
 	revParse := []string{"git", "--git-dir=" + gitDir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/" + defaultBranch}
 	present, err := runCommand(ctx, run, revParse, nil, temporary)
-	if err != nil {
-		return runFailure(revParse, present, err)
-	}
-	// A rev-parse its budget ended answered nothing: an exit of -1 is no "the branch is absent".
-	if present.TimedOut {
-		return commandFailure(revParse, present)
+	if err := answered(revParse, present, err); err != nil {
+		return err
 	}
 	if present.ExitCode != 0 {
 		return nil

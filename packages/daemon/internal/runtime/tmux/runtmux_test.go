@@ -187,7 +187,8 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 		}
 	})
 	// The launch's context ends during the marker, and the kill of the window it opened is then
-	// ended by a signal: the kill still runs, and the launch error says the window may still run.
+	// ended by a signal: the kill still runs, and the launch error says the window may still run,
+	// through openWindow too, whose second look for the session meets the ended context.
 	t.Run("a kill of the opened window a signal ended, its launch's context gone", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		var calls []string
@@ -198,6 +199,8 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 			command := verb(argv)
 			calls = append(calls, command)
 			switch command {
+			case "has-session":
+				return result{}, nil
 			case "new-window":
 				return result{stdout: "@7 %9 4242\n"}, nil
 			case "set-option":
@@ -206,11 +209,11 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 			}
 			return result{exitCode: -1, signal: "signal: killed", stderr: "lost server"}, nil
 		}}
-		_, err := r.openWindowIn(ctx, "tree", []string{"true"}, false)
+		_, err := r.openWindow(ctx, "tree", []string{"true"})
 		if want := "kill window @7, which the failed launch opened: tmux was ended by signal: killed: lost server"; err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("openWindowIn = %v, want it to say %q", err, want)
+			t.Errorf("openWindow = %v, want it to say %q", err, want)
 		}
-		if want := []string{"new-window", "set-option", "kill-window"}; !slices.Equal(calls, want) {
+		if want := []string{"has-session", "new-window", "set-option", "kill-window"}; !slices.Equal(calls, want) {
 			t.Errorf("tmux ran %q, want %q: the kill must run once the launch's context ended", calls, want)
 		}
 	})

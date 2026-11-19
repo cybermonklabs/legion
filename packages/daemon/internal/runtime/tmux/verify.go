@@ -24,6 +24,10 @@ var noServerStderr = regexp.MustCompile(`no server running|server exited unexpec
 // means no Legion pane. Every other failure proves nothing about the pane (tmux.ts:386-392).
 var paneGoneStderr = regexp.MustCompile(`can't find pane|` + noServerStderr.String())
 
+// windowGoneStderr is what a command's stderr says when the window it targets provably does not
+// exist, as paneGoneStderr says of a pane.
+var windowGoneStderr = regexp.MustCompile(`can't find window|` + noServerStderr.String())
+
 // targetAbsent is a failure that says nothing is behind a target: no server, or no such session
 // (tmux.ts:42-46).
 func targetAbsent(res result) bool {

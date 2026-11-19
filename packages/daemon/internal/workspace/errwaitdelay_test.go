@@ -215,8 +215,9 @@ func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
 	})
 }
 
-// timesOut answers every command a runner is given with an empty success, but a command argv
-// starts with, which it answers as one its budget ended: TimedOut, and the -1 exit a kill leaves.
+// timesOut answers a command argv starts with as one its budget ended (TimedOut, and the -1 exit a
+// kill leaves), a GitHub ls-remote with a HEAD naming refs/heads/main, and every other command
+// with an empty success.
 type timesOut struct{ argv []string }
 
 func (r timesOut) Timeout() time.Duration { return time.Minute }
@@ -259,7 +260,7 @@ func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 		held := &fetchCredential{remote: credential, env: credential.env, read: staticToken(testInstallationToken), held: []string{testInstallationToken}}
-		run := timesOut{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref"}}
+		run := timesOut{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet"}}
 		err = followHead(context.Background(), run, fetchRequest(t), gitDir, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}, held, time.Now().Add(time.Minute))
 		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+gitDir+" symbolic-ref --quiet HEAD") {
 			t.Errorf("followHead with its symbolic-ref timed out = %v, want the timeout refused", err)

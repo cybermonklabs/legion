@@ -171,7 +171,7 @@ func (r *Runtime) kill(ctx context.Context, argv []string, target string) error 
 	if err != nil {
 		return err
 	}
-	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) && !strings.Contains(res.stderr, "can't find window") {
+	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) && !windowGoneStderr.MatchString(res.stderr) {
 		return fmt.Errorf("reconcile orphans: %s %s%s", verb(argv), target, exited(res))
 	}
 	return nil

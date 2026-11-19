@@ -440,12 +440,8 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	}
 	symbolicRef := []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}
 	current, err := runCommandTimeout(ctx, run, symbolicRef, isolatedGitConfig, gitDir, run.Timeout())
-	if err != nil {
-		return runFailure(symbolicRef, current, err)
-	}
-	// A read its budget ended answered nothing: its -1 exit is no "HEAD names nothing".
-	if current.TimedOut {
-		return commandFailure(symbolicRef, current)
+	if err := answered(symbolicRef, current, err); err != nil {
+		return err
 	}
 	was := strings.TrimSpace(current.Stdout)
 	if was == target {
