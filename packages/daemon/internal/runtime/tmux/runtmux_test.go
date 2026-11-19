@@ -217,6 +217,42 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 			t.Errorf("tmux ran %q, want %q: the kill must run once the launch's context ended", calls, want)
 		}
 	})
+	// With the launch's context alive, a window whose marker failed and whose kill a signal ended
+	// sends openWindow to look for the session again; when that look fails too, the launch error
+	// keeps the first failure, kill report and all, beside the second.
+	t.Run("a kill of the opened window a signal ended, its second session check failing", func(t *testing.T) {
+		var calls []string
+		sessions := 0
+		r := &Runtime{socket: "legion-test", run: func(_ context.Context, argv []string) (result, error) {
+			command := verb(argv)
+			calls = append(calls, command)
+			switch command {
+			case "has-session":
+				sessions++
+				if sessions > 1 {
+					return result{exitCode: 1, stderr: "can't find session"}, nil
+				}
+				return result{}, nil
+			case "new-window":
+				return result{stdout: "@7 %9 4242\n"}, nil
+			case "set-option":
+				return result{exitCode: 1, stderr: "invalid option"}, nil
+			case "new-session":
+				return result{exitCode: 1, stderr: "create window failed"}, nil
+			}
+			return result{exitCode: -1, signal: "signal: killed", stderr: "lost server"}, nil
+		}}
+		_, err := r.openWindow(context.Background(), "tree", []string{"true"})
+		want := "tmux window ownership marker failed (exit 1): invalid option\n" +
+			"kill window @7, which the failed launch opened: tmux was ended by signal: killed: lost server\n" +
+			"tmux new-session failed (exit 1): create window failed"
+		if err == nil || err.Error() != want {
+			t.Errorf("openWindow = %v, want %q", err, want)
+		}
+		if want := []string{"has-session", "new-window", "set-option", "kill-window", "has-session", "new-session"}; !slices.Equal(calls, want) {
+			t.Errorf("tmux ran %q, want %q", calls, want)
+		}
+	})
 	t.Run("select-layout after a split", func(t *testing.T) {
 		var calls []string
 		var logs strings.Builder
