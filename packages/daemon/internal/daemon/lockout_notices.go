@@ -148,23 +148,23 @@ func (l *lockOutNotices) tellNow(ctx context.Context, token claim.Token, untold 
 		delete(l.kept, token)
 		return
 	}
-	kept := store.ReachProjectNotice{Project: l.project, Kind: string(untold.notice.Kind), Claim: token,
-		Newer: untold.newer, Older: untold.older, Issue: untold.issue}
-	told := kept
-	told.Told = true
-	if tellQueued(ctx, l.log, l.tell, untold.notice, untold.issue, projectMark(l.log, told, untold.notice)...) {
+	kept, encoded := projectNotice(l.log, store.ReachProjectNotice{Project: l.project, Kind: string(untold.notice.Kind), Claim: token,
+		Newer: untold.newer, Older: untold.older, Issue: untold.issue}, untold.notice)
+	var marks []reachMark
+	if encoded {
+		told := kept
+		told.Told = true
+		marks = []reachMark{{project: &told}}
+	}
+	if tellQueued(ctx, l.log, l.tell, untold.notice, untold.issue, marks...) {
 		l.told[token] = [2]uint64{untold.newer, untold.older}
 		delete(l.kept, token)
 		return
 	}
-	if !keep || l.records == nil {
+	if !keep || l.records == nil || !encoded {
 		return
 	}
-	marks := projectMark(l.log, kept, untold.notice)
-	if len(marks) == 0 {
-		return
-	}
-	if err := l.records.PutReachProjectNotice(ctx, *marks[0].project); err != nil && ctx.Err() == nil {
+	if err := l.records.PutReachProjectNotice(ctx, kept); err != nil && ctx.Err() == nil {
 		l.log.Error("lock-out: a lock-out notice the controller's lane did not queue was not kept in the project's record; this daemon still keeps it",
 			"claim", token, "error", err)
 	}

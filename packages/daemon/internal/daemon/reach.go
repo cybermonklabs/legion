@@ -429,8 +429,11 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 				notice := record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice,
 					Reason: fmt.Sprintf("Envoy's session list has held no live session since %s, %s, so no agent of the fleet can hear anything; the daemon marks no claim out of reach while it holds none",
 						stamp(k.noLiveSince), timewords.Words(silentListFor))}
-				k.tellController(ctx, notice, k.project, projectMark(k.log,
-					store.ReachProjectNotice{Project: k.project, Kind: string(notice.Kind), Issue: k.project, Told: true}, notice)...)
+				var marks []reachMark
+				if n, ok := projectNotice(k.log, store.ReachProjectNotice{Project: k.project, Kind: string(notice.Kind), Issue: k.project, Told: true}, notice); ok {
+					marks = []reachMark{{project: &n}}
+				}
+				k.tellController(ctx, notice, k.project, marks...)
 			}
 		}
 	}

@@ -57,17 +57,18 @@ func (w *workflowRuntime) reachNotify() reachNotify {
 	return reachNotify{tell: w.tellControllerQueued, enqueue: w.enqueueReachNotice}
 }
 
-// projectMark is the mark of a controller notice whose told record is the project's own
-// (reachMark.project): n, which its caller fills field by field, with notice encoded into it as
-// the controller is told it. It is nil, and marks nothing, for a notice that does not encode.
-func projectMark(log *slog.Logger, n store.ReachProjectNotice, notice record.ControllerNotice) []reachMark {
+// projectNotice is n, the project's own record of a controller notice that speaks for no claim's
+// reach record, which its caller fills field by field, with notice encoded into it as the
+// controller is told it, and whether notice encoded; a notice that does not encode is told with no
+// record (reachMark.project) written beside it.
+func projectNotice(log *slog.Logger, n store.ReachProjectNotice, notice record.ControllerNotice) (store.ReachProjectNotice, bool) {
 	encoded, err := json.Marshal(notice)
 	if err != nil {
 		log.Error("controller notice: a notice did not encode, so its record is not written with it", "kind", notice.Kind, "error", err)
-		return nil
+		return n, false
 	}
 	n.Notice = encoded
-	return []reachMark{{project: &n}}
+	return n, true
 }
 
 // tellQueued queues notice on issue through tell, with the records marks says it marks told
