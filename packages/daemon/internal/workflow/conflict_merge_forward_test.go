@@ -1008,9 +1008,6 @@ func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLa
 	result := applyFacts(t, pool, readsAfter(4*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
 		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
 		HandoffRecord: "handoff-1", HandoffVersion: 1})
-	if code := refusalCode(result); code == "HANDOFF_HEAD_MERGED_FORWARD" {
-		t.Fatalf("the tester's completion naming no head was refused %+v, want it past the merge forward's fence: no merge forward landed", result.Refusal)
-	}
 	if result.Refusal != nil {
 		t.Fatalf("the tester's completion naming no head was refused %+v, want it recorded", result.Refusal)
 	}
@@ -1058,6 +1055,116 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMerg
 		if !strings.Contains(msg, says) {
 			t.Fatalf("the refusal reads %q, want it to say %q", msg, says)
 		}
+	}
+	if after := entryRow(t, pool, claim.RoleTester); !reflect.DeepEqual(after, row) {
+		t.Fatalf("the completion took the tester's row from %+v to %+v, want nothing recorded", row, after)
+	}
+	if after := len(queuedRows(t, pool)); after != rows {
+		t.Fatalf("the completion took the outbox from %d rows to %d, want nothing queued", rows, after)
+	}
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the refused completion the issue is in %s, want testing", got)
+	}
+}
+
+// A completion at a head an earlier merge forward replaced is refused (dispatch://INFRA-4374 R1),
+// and the refusal tells the role where to do its work. It tells the role to wait for the landed
+// message of a merge forward asked of the head the pull request stands at only when that ask's
+// hold reached the role, and in retro the role that completes is the implementer, which no hold
+// and no landed message reaches (record.MergeForwardReaches): it is the one asked to make the
+// merge. So when the head the first merge left conflicts in its turn and a second merge forward is
+// asked of it in retro, the refusal of the implementer's retro completion at the head the first
+// merge replaced sends it to do the phase's work at the head the pull request stands at, never to
+// wait for a message it is not sent. It records and moves nothing.
+func TestAConflictKeepsPhaseSendsARetroCompletionAtAReplacedHeadToTheCurrentHead(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	pool := seedConflictIssue(t, phase.Retro, "retro", settledGreen("lint"))
+	confirmsConflict(t, pool, requiresCI)
+	landsMergeForward(t, pool)
+	again := conflictingRead(requiresCI)
+	again.HeadSHA = forwardHead
+	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
+	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Phase != phase.Retro || asked.Landed != "" {
+		t.Fatalf("the record's merge forward = %+v, want the second ask, of %s in retro and not landed", asked, forwardHead)
+	}
+
+	row, rows := entryRow(t, pool, claim.RoleImplementer), len(queuedRows(t, pool))
+	result := applyFacts(t, pool, readsAfter(6*time.Minute))("at the head the first merge replaced", intake.HandoffComplete{Generation: 1,
+		Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
+		t.Fatalf("the implementer's retro completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
+	}
+	msg := result.Refusal.Message
+	if says := "do the phase's work at head " + forwardHead; !strings.Contains(msg, says) {
+		t.Fatalf("the refusal reads %q, want it to say %q: no hold of the merge forward asked of %s reaches the implementer", msg, says, forwardHead)
+	}
+	if says := "Wait for the daemon's message"; strings.Contains(msg, says) {
+		t.Fatalf("the refusal reads %q, want it not to say %q: no landed message of a merge forward goes to the implementer", msg, says)
+	}
+	if after := entryRow(t, pool, claim.RoleImplementer); !reflect.DeepEqual(after, row) {
+		t.Fatalf("the completion took the implementer's row from %+v to %+v, want nothing recorded", row, after)
+	}
+	if after := len(queuedRows(t, pool)); after != rows {
+		t.Fatalf("the completion took the outbox from %d rows to %d, want nothing queued", rows, after)
+	}
+	if got := issuePhase(t, pool); got != phase.Retro {
+		t.Fatalf("after the refused completion the issue is in %s, want retro", got)
+	}
+}
+
+// An ask made in implementing covers implementing alone and sends no hold, and the next phase
+// asks it again only at a head the record holds in a confirmed conflict (mergeForwardOnEntry).
+// When the head a first merge forward left conflicts in its turn and is asked of again in
+// implementing, a MERGEABLE read of that head releases the conflict, and the implementer completes
+// at it without the merge, the move into testing asks nothing: the ask of implementing stands, and
+// no hold reached the tester. So the tester's completion naming no head is refused
+// HANDOFF_HEAD_MERGED_FORWARD (dispatch://INFRA-4374 R1) and sent to do the phase's work at the
+// head the pull request stands at, never to wait for the landed message of an ask whose hold it
+// was not sent. It records and moves nothing.
+func TestAConflictKeepsPhaseSendsACompletionToTheCurrentHeadWhenTheAskOfImplementingWasNotAskedAgain(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	pool := seedConflictIssue(t, phase.Implementing, "in_progress", settledGreen("lint"))
+	confirmsConflict(t, pool, requiresCI)
+	landsMergeForward(t, pool)
+	again := conflictingRead(requiresCI)
+	again.HeadSHA = forwardHead
+	applyRefusingNothing(t, pool, readsAfter(4*time.Minute), again)
+	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), again)
+	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
+		Base: "main", HeadSHA: forwardHead, Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
+	if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictingHead != "" {
+		t.Fatalf("after the MERGEABLE read of %s the record holds %q conflicting, want none", forwardHead, pr.ConflictingHead)
+	}
+	applyRefusingNothing(t, pool, readsAfter(7*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+		Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: forwardHead, HandoffRecord: "implement-1", HandoffVersion: 1})
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the implementer's completion the issue is in %s, want testing", got)
+	}
+	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != forwardHead || asked.Phase != phase.Implementing || asked.Landed != "" ||
+		!reflect.DeepEqual(asked.Earlier, []record.LandedMergeForward{{Head: conflictHead, Landed: forwardHead}}) {
+		t.Fatalf("the record's merge forward = %+v, want the ask of implementing, of %s and not landed, after the first, of %s, landed as %s: the move into testing asks nothing",
+			asked, forwardHead, conflictHead, forwardHead)
+	}
+	for _, message := range mergeForwardMessages(t, pool) {
+		if message.Role == claim.RoleTester {
+			t.Fatalf("merge-forward message %+v went to the tester, want none: an ask of implementing sends no hold", message)
+		}
+	}
+
+	row, rows := entryRow(t, pool, claim.RoleTester), len(queuedRows(t, pool))
+	result := applyFacts(t, pool, readsAfter(8*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		HandoffRecord: "handoff-1", HandoffVersion: 1})
+	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
+		t.Fatalf("the tester's completion naming no head was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", code, result.Refusal)
+	}
+	msg := result.Refusal.Message
+	if says := "do the phase's work at head " + forwardHead; !strings.Contains(msg, says) {
+		t.Fatalf("the refusal reads %q, want it to say %q: no hold of the merge forward asked of %s in implementing reached the tester", msg, says, forwardHead)
+	}
+	if says := "Wait for the daemon's message"; strings.Contains(msg, says) {
+		t.Fatalf("the refusal reads %q, want it not to say %q: the ask of implementing sent the tester no hold", msg, says)
 	}
 	if after := entryRow(t, pool, claim.RoleTester); !reflect.DeepEqual(after, row) {
 		t.Fatalf("the completion took the tester's row from %+v to %+v, want nothing recorded", row, after)
