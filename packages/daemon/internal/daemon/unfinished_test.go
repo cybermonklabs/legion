@@ -40,11 +40,12 @@ func putUnfinished(t *testing.T, cfg config.Config, issue string, role claim.Rol
 	return token, bootToken
 }
 
-// newTestShim is the test's shim on conn, closed when the test ends.
+// newTestShim is the test's shim on conn, which the test ends when it ends (shim.end).
 func newTestShim(t *testing.T, conn net.Conn) *shim {
 	t.Helper()
-	t.Cleanup(func() { conn.Close() })
-	return &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+	s := &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn), stopping: make(chan struct{})}
+	t.Cleanup(s.end)
+	return s
 }
 
 // registerReady registers the agent a launch started and has it say it is ready, as a relaunched

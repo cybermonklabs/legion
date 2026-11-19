@@ -214,3 +214,45 @@ func (s *server) decode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// TestTheCarriedRouteNamesItsBodyAndItsRefusals reads the broker's own source, as the docs build
+// does. POST /v1/enrollments/carried reads its body through readCarriedBody, which decodes the
+// list one id at a time rather than through readJSON, so refgen has to know that reader to name
+// the route's request body, carriedBody; and its 403 and 400 are written from sentinels, so their
+// messages are the sentinels' own words, not "(varies)" or a format with its verbs elided (review
+// of #4355).
+//
+// The controls (the pull request records each run): refgen's list without readCarriedBody names no
+// body; the caller checked by `err != nil` rather than by its sentinel answers the 403 "(varies)".
+func TestTheCarriedRouteNamesItsBodyAndItsRefusals(t *testing.T) {
+	a, err := readAPI(filepath.Join("..", "..", "..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(a.routes, func(r route) bool {
+		return r.Method == http.MethodPost && r.Pattern == "/v1/enrollments/carried"
+	})
+	if i < 0 {
+		t.Fatal("no route POST /v1/enrollments/carried")
+	}
+	if !slices.ContainsFunc(a.outcomes[i], func(o outcome) bool { return o.BodyType == "carriedBody" }) {
+		t.Errorf("POST /v1/enrollments/carried reads no request body refgen can name: %+v", a.outcomes[i])
+	}
+	want := map[string]string{
+		"SERVICE_LOGIN_REQUIRED": "only a launcher credential whose login names an account may ask",
+		"INVALID_SESSION_IDS":    "session_ids must name 1 to 4096 session ids, each 1 to 255 bytes of text",
+	}
+	for _, o := range refusals(a.outcomes[i]) {
+		part, ok := want[o.Code]
+		if !ok {
+			continue
+		}
+		if !slices.ContainsFunc(o.Messages, func(m string) bool { return strings.Contains(m, part) }) {
+			t.Errorf("the route's %d %s says %q, want a message holding %q", o.Status, o.Code, o.Messages, part)
+		}
+		delete(want, o.Code)
+	}
+	for code := range want {
+		t.Errorf("the route answers no %s refusal", code)
+	}
+}

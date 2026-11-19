@@ -1156,7 +1156,8 @@ func (s *Set) Machine(credential, approver, session string, projects []string) (
 // enrollment of that name under that principal takes what the last one held. The name a session
 // writes its Dispatch tokens under and the name its grant follows are one name, so one holder
 // has to spell the same either way, which it does only while there is one definition of each
-// spelling.
+// spelling. A pod's enrollment is the one exception, whose grant follows a pair rather than its
+// account alone (PodLaunchPrincipal), while its name is held under the account.
 
 // AccountPrincipal is a Kubernetes ServiceAccount's spelling: the account a pod's own projected
 // token proves.
@@ -1171,6 +1172,21 @@ func GooglePrincipal(account string) string { return "google:" + account }
 
 // PersonPrincipal is a person's spelling, by the login that names them.
 func PersonPrincipal(person string) string { return "person:" + person }
+
+// PodLaunchPrincipal is the principal a pod's enrollment carries its grants under: the account
+// the pod's own projected token proved, paired with launcher, the principal of the token login
+// that enrolled the pod (AccountPrincipal of the account that login proved). Every pod of one
+// account is one principal, and the pods of several daemons can run as one account (every public
+// Legion project's pods run as legion-worker), so a session name's grant must follow the daemon
+// that enrolled it too: a pod of another daemon, enrolled under the same name, takes nothing
+// (plan E's t-e-54). It is never a name's holder: a pod's session name is
+// held under its account alone, the principal its own token exchange claims the name under, so
+// the pod's enrollment and its trade never refuse each other. No account or principal kind holds
+// a space, so no two pairs spell one string. The broker's migration 0037_pod_carry_launcher
+// writes the same spelling in SQL.
+func PodLaunchPrincipal(account, launcher string) string {
+	return AccountPrincipal(account) + " launched-by " + launcher
+}
 
 // sessionRule is the one sentence that says what a session name may be, so an entry refused at
 // build time and a request refused at exchange time are refused in the same words, and the cap it
