@@ -17,7 +17,9 @@ import (
 // package declares, and copy none, whole or in part: the broker's wake, Dispatch's client, the
 // load-test rigs' listener client and the refill rig, and the daemon's publisher and controller
 // probe, which is another module and so is read by its own directory. A type with the same
-// fields, a map and an anonymous struct are each a finding.
+// fields, a map and an anonymous struct are each a finding. The table is LISTENER_CLIENTS of
+// .github/scripts/ci_job_reads.py, whose modules envoy-go-checks fetches before this test runs,
+// and check-ci-filters.sh refuses the two when they differ.
 func TestListenerClientsUseListenerwire(t *testing.T) {
 	const wire = "github.com/sjawhar/envoy/listenerwire"
 	for _, clients := range []struct {

@@ -54,7 +54,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
-from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, run
+from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, load_repository_yaml, run, script_lines
 from ci_filter_coverage import at as at_in, gate as gate_in
 from go_build_tags import go_skips_dir, tag_sets
 
@@ -472,6 +472,88 @@ def legion_build(why):
     return run(DAEMON, [LEGION_BUILD], why, mode="build")
 
 
+# ------------------------------------------------ the listener clients the wire test lists
+# The listener's Go clients listenerwire/clients_test.go's TestListenerClientsUseListenerwire
+# holds to listenerwire with wirecheck.Check, by the module directory each go list runs in, and the
+# load-test package TestTheLoadTestCallsTheListenerOnlyThroughItsClient lists. Both listings run
+# with GOPROXY=off, so envoy-go-checks fetches their modules in a step before the test, and
+# ci-caches.yaml's go-envoy fill fetches the same so that a filled entry leaves the step nothing
+# to download. This is the one list of them: the RULES rows of clients_test.go are built from it,
+# and hold_listener_clients() holds the test's own table, the fetch step's script and the fill's
+# lines to it.
+LISTENER_CLIENTS_TEST = f"{ENVOY}/listenerwire/clients_test.go"
+LISTENER_CLIENTS = {
+    ENVOY: ["./internal/broker/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"],
+    DAEMON: ["./internal/notify", "./internal/controller"],
+}
+LISTENER_LOADTEST = "./loadtest"
+LISTENER_FETCH_STEP = "Fetch the modules of the listener clients the wire test lists"
+LISTENER_FILL_STEP = "Build the listener and natsd, and fetch the modules of the other commands the readers build"
+
+
+def listener_fetch_lines(script, here):
+    """The go-fetch.sh deps line of each module of LISTENER_CLIENTS, the envoy module's with the
+    load-test package after its clients, as a step whose directory is `here` writes them, running
+    go-fetch.sh by the path `script`."""
+    return [f"{script} deps {os.path.relpath(module, here)} "
+            + " ".join(packages + ([LISTENER_LOADTEST] if module == ENVOY else []))
+            for module, packages in LISTENER_CLIENTS.items()]
+
+
+LISTENER_FETCH_SCRIPT = "\n".join(listener_fetch_lines(".github/scripts/go-fetch.sh", "."))
+LISTENER_FILL_LINES = listener_fetch_lines("../../.github/scripts/go-fetch.sh", ENVOY)
+LISTENER_TABLE_ROW = re.compile(r'\{dir: "([^"]+)", pkgs: \[\]string\{([^}]*)\}\}')
+LISTENER_LOADTEST_LISTING = re.compile(r'goList\(t, "([^"]+)", [^\n]*"\.\./loadtest"\)')
+
+
+def hold_listener_clients():
+    """Refuse a listener-clients list that its four other places no longer follow: the test's own
+    table (each row's directory, resolved from listenerwire, and its packages, in order), the
+    package the test's load-test listing fetches, envoy-go-checks' fetch step (its whole script),
+    and ci-caches.yaml's go-envoy fill (each line listener_fetch_lines builds, whole, in the step
+    named LISTENER_FILL_STEP). Held to nothing, a client added to the test and to no fetch passes
+    every check and fails the test in CI only when the cache lacks its modules, and a client
+    dropped from the fetch and the fill leaves that test downloading on the first run after its
+    modules move; neither the filter check nor the test sees either. The files are read as text and
+    YAML, as this script runs where no Go toolchain is guaranteed."""
+    test = Path(LISTENER_CLIENTS_TEST).read_text()
+    table = {os.path.normpath(os.path.join(Path(LISTENER_CLIENTS_TEST).parent, directory)):
+             re.findall(r'"([^"]+)"', packages)
+             for directory, packages in LISTENER_TABLE_ROW.findall(test)}
+    if table != LISTENER_CLIENTS:
+        raise ValueError(f"{LISTENER_CLIENTS_TEST}'s TestListenerClientsUseListenerwire checks {table or 'no table'} "
+                         f"(its rows' dir resolved from listenerwire), and LISTENER_CLIENTS lists {LISTENER_CLIENTS}: "
+                         f"envoy-go-checks fetches, and ci-caches.yaml's go-envoy fill fills, LISTENER_CLIENTS, so a "
+                         f"client the test checks and the list leaves out is fetched by no step, and one the list "
+                         f"holds and the test no longer checks is fetched for nothing. Make the two the same")
+    loadtest = LISTENER_LOADTEST_LISTING.findall(test)
+    if loadtest != [LISTENER_LOADTEST]:
+        raise ValueError(f"{LISTENER_CLIENTS_TEST} lists ../loadtest fetching {loadtest or 'nothing this check reads'}, "
+                         f"and LISTENER_LOADTEST is {LISTENER_LOADTEST}: the fetch step and the fill fetch "
+                         f"LISTENER_LOADTEST's modules for that listing, so the two must name one package")
+    steps = [step for job in (load_repository_yaml(Path(job_file("envoy-go-checks"))) or {}).get("jobs", {}).values()
+             for step in job.get("steps") or [] if step.get("name") == LISTENER_FETCH_STEP]
+    if [str(step.get("run", "")).rstrip() for step in steps] != [LISTENER_FETCH_SCRIPT]:
+        raise ValueError(f"{job_file('envoy-go-checks')} has {len(steps)} steps named {LISTENER_FETCH_STEP!r}, "
+                         f"running {[str(step.get('run', '')).rstrip() for step in steps]}, and LISTENER_CLIENTS makes "
+                         f"it one, running {LISTENER_FETCH_SCRIPT!r}: the step fetches before the test what the "
+                         f"test lists with GOPROXY=off, so a client it leaves out fails the test on an empty cache. "
+                         f"Write the step as this list builds it, or change the list and the test together")
+    fills = [script_lines(str(step.get("run", "")))
+             for job in (load_repository_yaml(Path(CACHE_WORKFLOW)) or {}).get("jobs", {}).values()
+             for step in job.get("steps") or [] if step.get("name") == LISTENER_FILL_STEP]
+    missing = [line for line in LISTENER_FILL_LINES if len(fills) != 1 or line not in fills[0]]
+    if missing:
+        raise ValueError(f"{CACHE_WORKFLOW} has {len(fills)} steps named {LISTENER_FILL_STEP!r}, and LISTENER_CLIENTS "
+                         f"makes the one go-envoy fill hold {missing}, line by line: a filled entry must leave "
+                         f"envoy-go-checks' {LISTENER_FETCH_STEP!r} nothing to download, so the fill fetches what "
+                         f"that step does. Write the line as this list builds it, or change the list and the test "
+                         f"together")
+
+
+hold_listener_clients()
+
+
 RULES = {
     # --- daemon
     f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:371 (runtime.Caller at :367 + ../../../..)")),
@@ -882,16 +964,17 @@ RULES = {
     # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over
     # the export data of `go list -deps -export`, which it runs in each module's own directory, and
     # the load-test harness's main package is parsed for a listener route named outside its client.
-    f"{ENVOY}/listenerwire/clients_test.go": [
-        run(ENVOY, ["./internal/broker/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"],
-            "listenerwire/clients_test.go:27,30 wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)",
+    # The packages are LISTENER_CLIENTS, which hold_listener_clients() holds the test's table to.
+    LISTENER_CLIENTS_TEST: [
+        run(ENVOY, LISTENER_CLIENTS[ENVOY],
+            "listenerwire/clients_test.go:29,32 wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)",
             mode="build"),
-        run(DAEMON, ["./internal/notify", "./internal/controller"],
-            "listenerwire/clients_test.go:28,30 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
+        run(DAEMON, LISTENER_CLIENTS[DAEMON],
+            "listenerwire/clients_test.go:30,32 wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)",
             mode="build"),
-        *[Read(path, "listenerwire/clients_test.go:99 lists the load-test package's Go files (goList, golist_test.go:19) "
-                     "and :106 parses each, test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
-          for path in files_but_tests(f"{ENVOY}/loadtest")]],
+        *[Read(path, "listenerwire/clients_test.go:101 lists the load-test package's Go files (goList, golist_test.go:22) "
+                     "and :108 parses each, test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)")
+          for path in files_but_tests(f"{ENVOY}/{LISTENER_LOADTEST.removeprefix('./')}")]],
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
         run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go:404 buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],

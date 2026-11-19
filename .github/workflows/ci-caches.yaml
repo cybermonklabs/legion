@@ -309,7 +309,8 @@ jobs:
       # broker's three commands (that job's harness, e2e/run-broker.sh). Then the modules of the
       # listener clients envoy-go-checks' wire test lists with GOPROXY=off (listenerwire's
       # clients_test.go: four envoy packages and ./loadtest, and two of packages/daemon), which that
-      # job's fetch step fetches before the test, so a filled entry leaves it nothing to download.
+      # job's fetch step fetches before the test, so a filled entry leaves it nothing to download
+      # (both lines are ci_job_reads.py's LISTENER_CLIENTS, which check-ci-filters.sh holds them to).
       # Last, the helm loadtest/cluster/tools.txt pins, which envoy-go-checks' fetch step installs
       # before cluster.test.sh renders with it under GOPROXY=off: installed here, its modules and
       # its compiled packages are in the entry, so that step finds them there rather than

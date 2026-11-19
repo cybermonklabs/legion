@@ -134,7 +134,9 @@ jobs:
       # this step fetches what those listings read first, from the go-envoy entry restored above
       # and tried again on failure: the four envoy packages and the two daemon packages
       # TestListenerClientsUseListenerwire names, and ./loadtest. ci-caches.yaml's go-envoy fill
-      # fetches the same, so a filled entry leaves this step nothing to download.
+      # fetches the same, so a filled entry leaves this step nothing to download. The script is
+      # LISTENER_CLIENTS in .github/scripts/ci_job_reads.py written out, and check-ci-filters.sh
+      # holds it, the fill's two lines and the test's table to that list (hold_listener_clients).
       - name: Fetch the modules of the listener clients the wire test lists
         run: |
           .github/scripts/go-fetch.sh deps packages/envoy ./internal/broker/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig ./loadtest
