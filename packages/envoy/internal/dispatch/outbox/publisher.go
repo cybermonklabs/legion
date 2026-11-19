@@ -121,6 +121,11 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// PrivateHubsReady reports whether every hub admits this Dispatch to the private projects'
+	// subjects, the proof a private event waits on before it is published (the private-delivery
+	// hold). Nothing in this package reads it yet; cmd/dispatch sets it once a hub can prove it. A
+	// nil func holds nothing, which is safe while no project can be private.
+	PrivateHubsReady func() bool
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,

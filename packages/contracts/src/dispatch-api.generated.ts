@@ -3327,6 +3327,8 @@ export interface components {
       last_seen: number;
       machine_id: string;
       open_asks: number;
+      /** @description Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9) */
+      projects?: string[];
       roles: string[] | null;
       session_id: string;
       state: string;

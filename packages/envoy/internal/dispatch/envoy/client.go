@@ -164,7 +164,13 @@ type Session struct {
 	TmuxPlace    *TmuxPlace `json:"tmux_place,omitempty"`
 	Roles        []string   `json:"roles"`
 	Capabilities []string   `json:"capabilities"`
-	LastSeen     int64      `json:"last_seen"`
+	// Projects is the listener's sorted list of the projects the session's credential names (K6),
+	// never null once normalized: a listener that does not send it names none, and every session
+	// reads [] until the listener learns each session's projects. Dispatch reads it to filter the
+	// agents list and serves it to no caller: agentResponse shadows it with a field nothing sets,
+	// and omitempty keeps an empty list out of the route roster's stored rows.
+	Projects []string `json:"projects,omitempty" description:"Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9)"`
+	LastSeen int64    `json:"last_seen"`
 	// State is StateLive, StateUnresponsive or StateGone, as the listener judged this record
 	// when it answered, or StateStopped, which only SessionIncludingStopped reads. A listener
 	// that predates the field names none, and normalize reads that as StateLive: every session
@@ -205,6 +211,9 @@ func (s *Session) normalize(sessionID string) {
 	}
 	if s.Capabilities == nil {
 		s.Capabilities = []string{}
+	}
+	if s.Projects == nil {
+		s.Projects = []string{}
 	}
 	if s.State == "" {
 		s.State = StateLive

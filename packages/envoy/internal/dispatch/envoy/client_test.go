@@ -147,6 +147,7 @@ func TestSessionsMapsListenerRowsAndDefaultsMissingSlices(t *testing.T) {
 		MachineID:    "m1",
 		Roles:        []string{"legion-planner"},
 		Capabilities: []string{},
+		Projects:     []string{},
 		LastSeen:     1700000000000,
 		State:        StateLive,
 	}}
@@ -160,6 +161,39 @@ func TestSessionsMapsListenerRowsAndDefaultsMissingSlices(t *testing.T) {
 	for _, hidden := range []string{"port", "topics", "self_subscribed"} {
 		if strings.Contains(string(encoded), hidden) {
 			t.Fatalf("%s leaked into %s", hidden, encoded)
+		}
+	}
+}
+
+// TestSessionsDecodesEachSessionsProjects: a session row's projects, the listener's sorted list
+// of the projects the session's credential names, decode as the listener sent them, and a row
+// with no projects key, or a null one, decodes to an empty list, as roles and capabilities do: no
+// listener sends the key before it learns each session's projects, so every session reads [] until
+// then, and no served row says null.
+//
+// Control: normalize leaves projects as the decoder found it; the two rows decode nil, and the test
+// fails naming them.
+func TestSessionsDecodesEachSessionsProjects(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[` +
+			`{"session_id":"listed","machine_id":"m1","projects":["PRIV","PUB"],"last_seen":1700000000000},` +
+			`{"session_id":"absent","machine_id":"m1","last_seen":1700000000000},` +
+			`{"session_id":"null","machine_id":"m1","projects":null,"last_seen":1700000000000}]`))
+	}))
+	defer listener.Close()
+
+	sessions, err := New(listener.URL + "/").Sessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{"listed": {"PRIV", "PUB"}, "absent": {}, "null": {}}
+	if len(sessions) != len(want) {
+		t.Fatalf("sessions = %#v, want the %d rows sent", sessions, len(want))
+	}
+	for _, session := range sessions {
+		if got := session.Projects; got == nil || !reflect.DeepEqual(got, want[session.SessionID]) {
+			t.Errorf("session %s decodes projects %#v, want %#v", session.SessionID, got, want[session.SessionID])
 		}
 	}
 }
@@ -563,7 +597,7 @@ func TestSessionDecodesTheListenerRowAndFillsWhatItOmits(t *testing.T) {
 				`"updated_at":1700000000000,"last_seen":1700000000001}`,
 			want: Session{
 				SessionID: "s1", Title: "planner", Dir: "/w/legion", MachineID: "m1", Host: "h1",
-				Roles: []string{"legion-planner"}, Capabilities: []string{"aside", "btw"},
+				Roles: []string{"legion-planner"}, Capabilities: []string{"aside", "btw"}, Projects: []string{},
 				LastSeen: 1700000000001, State: StateLive,
 			},
 		},
@@ -572,7 +606,7 @@ func TestSessionDecodesTheListenerRowAndFillsWhatItOmits(t *testing.T) {
 			body: `{"machine_id":"m1","host":"h1","dir":"/w/legion","title":"planner","last_seen":42}`,
 			want: Session{
 				SessionID: "s1", Title: "planner", Dir: "/w/legion", MachineID: "m1", Host: "h1",
-				Roles: []string{}, Capabilities: []string{}, LastSeen: 42, State: StateLive,
+				Roles: []string{}, Capabilities: []string{}, Projects: []string{}, LastSeen: 42, State: StateLive,
 			},
 		},
 		{
@@ -583,7 +617,7 @@ func TestSessionDecodesTheListenerRowAndFillsWhatItOmits(t *testing.T) {
 			name: "a row the listener names unresponsive",
 			body: `{"session_id":"s1","title":"planner","state":"unresponsive","last_seen":1700000000002}`,
 			want: Session{
-				SessionID: "s1", Title: "planner", Roles: []string{}, Capabilities: []string{},
+				SessionID: "s1", Title: "planner", Roles: []string{}, Capabilities: []string{}, Projects: []string{},
 				LastSeen: 1700000000002, State: StateUnresponsive,
 			},
 		},

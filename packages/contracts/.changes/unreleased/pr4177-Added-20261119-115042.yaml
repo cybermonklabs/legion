@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+    `Agent` declares an optional `projects`, which no answer of `GET /api/v1/agents` carries: Dispatch reads a session's projects from the listener to filter the agents list, and serves them to no caller.
+time: 2026-11-19T11:50:42.358448579Z
+custom:
+    Issue: pr4177
