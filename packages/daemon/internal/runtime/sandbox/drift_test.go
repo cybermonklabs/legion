@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // driftOf is why loc's pod has drifted from the configuration r would build one from now
@@ -239,6 +240,44 @@ func TestPodShapeEncodesEqualConfigurationsIdentically(t *testing.T) {
 	}}}
 	if drifted := podShapeDrift(built, podShape(otherwise, issuePod{}, nil)); len(drifted) > 0 {
 		t.Errorf("podShapeDrift = %q, want nothing: the same amounts spelled otherwise are the same configuration", drifted)
+	}
+}
+
+// The cache trimmer's settings are no part of a pod's recorded shape: no running pod is built from
+// them — its launcher is told them afresh on the answer to every hello, a reconnect after a daemon
+// restart included (LauncherResolver) — so a pod whose annotation was written before any were
+// configured has drifted from nothing. Were they recorded, the deploy that configured them would
+// read every pod of the fleet as drifted at once and replace it.
+func TestPodShapeIgnoresTheCacheTrimmersSettings(t *testing.T) {
+	shaped := func(trim *shimwire.LauncherVolumeTrim) *Runtime {
+		t.Helper()
+		opts := testOptions()
+		opts.Pod = Pod{Volumes: []corev1.Volume{operatorVolume}, VolumeMounts: []corev1.VolumeMount{operatorMount}}
+		opts.VolumeTrim = trim
+		r, err := configure(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	none := shaped(nil)
+	trimming := shaped(&shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60})
+	// Each shape a pod is built from: either kind in gVisor, and either kind in a microVM.
+	for _, shape := range []struct {
+		kind    podKind
+		microVM *MicroVM
+	}{{issuePod{}, nil}, {controllerPod{}, nil}, {issuePod{}, testMicroVM()}, {controllerPod{}, testMicroVM()}} {
+		if podShape(none, shape.kind, shape.microVM) != podShape(trimming, shape.kind, shape.microVM) {
+			t.Fatalf("%T (microvm %v) encodes differently once the trimmer is configured:\n%s\n%s", shape.kind, shape.microVM != nil,
+				podShape(none, shape.kind, shape.microVM), podShape(trimming, shape.kind, shape.microVM))
+		}
+	}
+	// The fixture pod's annotation predates this change, read by a daemon that has settings now.
+	built := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{
+		Metadata: podMetadata{Annotations: map[string]string{podShapeAnnotation: podShape(none, issuePod{}, nil)}},
+	}}}
+	if drifted := podShapeDrift(built, podShape(trimming, issuePod{}, nil)); len(drifted) > 0 {
+		t.Errorf("podShapeDrift = %q, want nothing: the trimmer's settings are no part of a pod's shape", drifted)
 	}
 }
 

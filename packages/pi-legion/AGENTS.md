@@ -95,7 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 155 (dispatch://INFRA-3531:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 168 (dispatch://INFRA-3531:
 the daemon's answer to the hello of the project controller's pod's launcher carries that pod's own
 memory guard settings in `memoryGuard`, from `runtime.kubernetes.memory_guard.controller_pod`, and
 that launcher reports each process its guard ended in `launcher_memory_kill`, which the daemon tells

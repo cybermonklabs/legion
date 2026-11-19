@@ -131,6 +131,9 @@ type Runtime struct {
 	// launcher of the controller's pod is handed on the answer to each hello (LauncherResolver),
 	// nil for a deployment that turned that pod's guard off.
 	controllerMemoryGuard *shimwire.LauncherMemoryGuard
+	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
+	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
+	volumeTrim *shimwire.LauncherVolumeTrim
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -411,7 +414,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres,
-		memoryGuard:  opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard,
+		memoryGuard:  opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -431,10 +434,10 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
 	// before any of its roles start, take its memory guard's kill reports, an issue pod's and the
-	// controller pod's, and log what they could not carry or record, so they are built once the
-	// runtime's log is settled.
+	// controller pod's, and its cache trimmer's sweep reports, and log what they could not carry or
+	// record, so they are built once the runtime's log is settled.
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
-		opts.ControllerMemoryGuardKilled, r.log)
+		opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.

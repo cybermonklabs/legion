@@ -29,9 +29,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -132,11 +134,16 @@ func Render(token, app string, expiresAt time.Time) Rendered {
 	return Rendered{Hosts: Hosts(token), Config: Config, App: app, ExpiresAt: expiresAt}
 }
 
-// Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if
-// it is gone, config.yml written once when absent or different, and hosts.yml replaced
-// (replaceFile), so the gh reading it never sees a half-written file, only when its content
-// differs. It reports whether hosts.yml changed. WriteBundle calls it for each directory of a
-// bundle.
+// Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if it is
+// gone, and config.yml and hosts.yml each replaced (replaceFile) only where its content differs, so
+// the gh reading them never sees a half-written file. It reports whether hosts.yml changed.
+// WriteBundle calls it for each directory of a bundle.
+//
+// A pane can put anything at those paths between two writes, a named pipe or a symbolic link
+// among them, and swap it in between any check and any open. replaceFile reads what is there only
+// through ReadRegular, which never waits on a pipe and never follows a link, and writes only by
+// renaming a file of its own over the path, so no such swap stalls the refresh, and with it every
+// pane's, and none redirects a write.
 func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err
@@ -144,28 +151,98 @@ func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return false, err
 	}
-	config := filepath.Join(dir, ConfigFile)
-	if current, err := os.ReadFile(config); err != nil || string(current) != rendered.Config {
-		if err := os.WriteFile(config, []byte(rendered.Config), 0o600); err != nil {
-			return false, err
-		}
+	if _, err := replaceFile(filepath.Join(dir, ConfigFile), rendered.Config); err != nil {
+		return false, err
 	}
 	return replaceFile(filepath.Join(dir, HostsFile), rendered.Hosts)
 }
 
+// MaxFileBytes is the most ReadRegular reads of one file: far beyond any hosts.yml, config.yml or
+// pairs file the daemon writes, each a few hundred bytes, and small enough that a file a pane
+// planted costs its reader nothing.
+const MaxFileBytes = 1 << 20
+
+// ErrNotRegular is ReadRegular's answer for a path that is no regular file: a symbolic link, a
+// named pipe, a directory, a socket or a device, none of which it reads from.
+var ErrNotRegular = errors.New("is no regular file")
+
+// ErrTooLarge is ReadRegular's answer for a regular file larger than MaxFileBytes.
+var ErrTooLarge = fmt.Errorf("is larger than %d bytes, which no file the daemon writes is", MaxFileBytes)
+
+// ReadRegular reads the regular file at path whole and refuses anything else without reading from
+// it. It opens path with O_NOFOLLOW, so a symbolic link is refused rather than followed, and
+// O_NONBLOCK, so a named pipe opens at once rather than waiting for a writer; it then asks the
+// open file what it is (fstat), not the path, so a pane that swaps the path between a check and
+// the open wins nothing; and it reads through a limit, so a file that grows while it is read is
+// refused too. A path that is not there is fs.ErrNotExist; one that is no regular file is
+// ErrNotRegular; one larger than MaxFileBytes is ErrTooLarge.
+//
+// Only the last component goes unfollowed. A pod's Secret volume shows each item's top directory
+// as a link into the volume's `..data`, so an owner's directory is a link there, while the
+// hosts.yml and config.yml inside it are regular files, which this reads as they are.
+func ReadRegular(path string) ([]byte, error) { return readRegular(path, syscall.O_NOFOLLOW) }
+
+// readRegularFollowing is ReadRegular for a file that a Secret volume shows as a link: the bundle's
+// pairs file sits at the volume's top, so the kubelet makes it a link into `..data` (ReadPairs).
+// It follows that link, and reads what it reaches only as ReadRegular reads: without waiting on a
+// pipe, refusing anything the open file says is no regular file, and through the same limit.
+func readRegularFollowing(path string) ([]byte, error) { return readRegular(path, 0) }
+
+func readRegular(path string, follow int) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|follow, 0)
+	if err != nil {
+		// ELOOP is a symbolic link under O_NOFOLLOW; ENXIO and EOPNOTSUPP a socket; ENODEV a device
+		// with no driver.
+		var errno syscall.Errno
+		if errors.As(err, &errno) && (errno == syscall.ELOOP || errno == syscall.ENXIO || errno == syscall.EOPNOTSUPP || errno == syscall.ENODEV) {
+			return nil, fmt.Errorf("%s %w", path, ErrNotRegular)
+		}
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s %w", path, ErrNotRegular)
+	}
+	if info.Size() > MaxFileBytes {
+		return nil, fmt.Errorf("%s %w", path, ErrTooLarge)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > MaxFileBytes {
+		return nil, fmt.Errorf("%s %w", path, ErrTooLarge)
+	}
+	return data, nil
+}
+
 // replaceFile brings path to content and reports whether it changed: a temporary file beside it
 // (0600, as os.CreateTemp makes it) renamed over it, so a reader of the file — the gh of a pane
-// reading a hosts.yml, the `legion gh` or `legion git-credential` of one reading the bundle's
-// pairs file — never sees a half-written one. A file whose content already is content is left
-// alone, which is what keeps a bundle's writer from touching the files a lease's turn did not
-// change (WriteBundle, Write).
+// reading a hosts.yml or a config.yml, the `legion gh` or `legion git-credential` of one reading
+// the bundle's pairs file — never sees a half-written one, and a reader that opened the old file
+// keeps reading it whole. A file whose content already is content is left alone, which is what
+// keeps a bundle's writer from touching the files a lease's turn did not change (WriteBundle,
+// Write). What is at path is read only through ReadRegular: anything that is no regular file is
+// removed first, since a rename replaces a link or a pipe but not a directory, and one too large
+// to read is simply replaced.
 func replaceFile(path, content string) (changed bool, err error) {
-	current, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	current, err := ReadRegular(path)
+	switch {
+	case err == nil:
+		if bytes.Equal(current, []byte(content)) {
+			return false, nil
+		}
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, ErrTooLarge):
+	case errors.Is(err, ErrNotRegular):
+		if err := os.RemoveAll(path); err != nil {
+			return false, err
+		}
+	default:
 		return false, err
-	}
-	if err == nil && bytes.Equal(current, []byte(content)) {
-		return false, nil
 	}
 	dir := filepath.Dir(path)
 	temporary, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-")

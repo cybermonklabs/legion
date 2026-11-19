@@ -240,7 +240,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",
@@ -879,8 +879,9 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 // broker_policy_store_reads_total holds the boot's whole-namespace loads; one reread through the
 // API is one more read="describe" there and no list. broker_unservable_secrets holds one series,
 // the secret whose owner tag names nobody, labelled by its store id, its reason and the empty
-// owner, and none for the secrets the broker serves. That port answers nothing else, and the
-// API's address answers GET /metrics 404, so no caller of the API reaches the scrape.
+// owner, and none for the secrets the broker serves. That port answers GET /livez too, 200 for a
+// broker that runs no NATS auth service, and nothing else; the API's address answers GET /metrics
+// and GET /livez 404, so no caller of the API reaches either.
 func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
 	metricsAddr := broker.MetricsAddr(t)
@@ -911,9 +912,11 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 		status            int
 	}{
 		{"the scrape", http.MethodGet, "http://" + metricsAddr + "/metrics", http.StatusOK},
+		{"the liveness of a broker with no auth service", http.MethodGet, "http://" + metricsAddr + "/livez", http.StatusOK},
 		{"another path on the metrics port", http.MethodGet, "http://" + metricsAddr + "/healthz", http.StatusNotFound},
 		{"another method on the metrics port", http.MethodPost, "http://" + metricsAddr + "/metrics", http.StatusMethodNotAllowed},
 		{"the scrape on the API's port", http.MethodGet, "http://" + broker.Addr + "/metrics", http.StatusNotFound},
+		{"the liveness on the API's port", http.MethodGet, "http://" + broker.Addr + "/livez", http.StatusNotFound},
 	} {
 		req, err := http.NewRequest(row.method, row.url, nil)
 		if err != nil {
@@ -927,7 +930,7 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 		if resp.StatusCode != row.status {
 			t.Errorf("%s: %s %s = %d; want %d", row.name, row.method, row.url, resp.StatusCode, row.status)
 		}
-		if row.status == http.StatusOK && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain; version=0.0.4") {
+		if row.status == http.StatusOK && strings.HasSuffix(row.url, "/metrics") && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain; version=0.0.4") {
 			t.Errorf("%s: Content-Type %q; want the Prometheus text format's text/plain; version=0.0.4", row.name, resp.Header.Get("Content-Type"))
 		}
 	}
@@ -1073,8 +1076,8 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
 		"an entry the airlock refuses": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": []}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "no host"},
+			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "judge": 1800}]}`),
+			want: []string{"secrets[0]", "DEEL_API_KEY", "1800", "900"},
 		},
 		// An entry whose name is not of the policy's form matches no release, so the file
 		// would hold back nothing of the secret a reviewer read it as covering.

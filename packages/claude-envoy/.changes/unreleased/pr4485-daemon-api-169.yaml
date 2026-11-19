@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    The plugin declares daemon API contract 169, and its copy of the controller's skill reads the
+    `memory-guard-kill on <PROJECT>` wake of a microVM controller pod, whose own kernel stopped a
+    command or one of the processes that run the controller's session.
+custom:
+    Issue: pr4485

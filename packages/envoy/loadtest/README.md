@@ -42,7 +42,8 @@ same step before and after its change, and compares the two rows.
 | `sample.go` | The 5 s sampler: CPU, RSS, Postgres connections, goroutines, pool waiters, NATS `/varz`, and the heap every 15 s under `-heap-samples`. The transaction-id probe. |
 | `lockprobe.go` | The one-second sampler of the commit-order lock |
 | `locksampler.go` | The 1 s sampler of every ungranted lock in `pg_locks` |
-| `pgpoll.go` | The poll loop of the lock probes (`pollPG`) and of the room sampler (`poll`), and the error policy of the probes' reads, which the 5 s sampler shares: failed reads are counted, the first three are logged, and so is their total past three |
+| `xactsampler.go` | The 10 ms sampler of `pg_stat_activity` that times how long each Dispatch transaction holds a transaction id (`-xact-interval`) |
+| `pgpoll.go` | The poll loop of the lock probes and the transaction-id hold sampler (`pollPG`) and of the room sampler (`poll`), and the error policy of the probes' reads, which the 5 s sampler shares: failed reads are counted, the first three are logged, and so is their total past three |
 | `live.go` | The dashboard live sockets' reader of `GET /ws/live` event frames, and the live frame latencies |
 | `editors.go` | The browser-editor workload: Yjs peers on the document websocket, the relay latency and the durable-latency probe (Editors, below) |
 | `rooms.go` | The document rooms' measurements: the 100 ms sampler of the connections rooms hold, and the window's readings of the proxy's wire counts, `dispatch_rooms` and `artifact_versions` (Document rooms, below) |
@@ -140,15 +141,16 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_ROOT` | `${TMPDIR:-/tmp}/dispatch-loadtest` | The directory that holds all the stack's state, binaries and step output. On a Legion pod, `$TMPDIR` is `/legion/scratch/tmp`, the issue's volume. |
 | `LOADTEST_SRC` | The checkout that holds the script | The checkout that `stack.sh setup` builds `envoy-listener` and `loadgen` from, and `envoy-dispatch` unless `LOADTEST_DISPATCH_SRC` or `LOADTEST_DISPATCH_COMMIT` names another. |
 | `LOADTEST_DISPATCH_SRC` | `LOADTEST_SRC` | The checkout that `stack.sh setup` builds `envoy-dispatch` from. It need not hold this package (Before and after across commits, below). `build-info`, `meta.json` and `seed.meta.json` record its commit. |
-| `LOADTEST_PG_PORT` | `15000 + 10k` | The Postgres port. |
-| `LOADTEST_PROXY_PORT` | `15001 + 10k` | The latency proxy port. |
-| `LOADTEST_PROXY_STATS_PORT` | `15007 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
-| `LOADTEST_NATS_PORT` | `15002 + 10k` | The NATS client port. |
-| `LOADTEST_NATS_MONITOR_PORT` | `15003 + 10k` | The NATS monitoring port (`/varz`). |
-| `LOADTEST_LISTENER_PORT` | `15004 + 10k` | The Envoy listener port. |
-| `LOADTEST_DISPATCH_PORT` | `15005 + 10k` | The Dispatch HTTP port. |
-| `LOADTEST_PPROF_PORT` | `15006 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
-| `LOADTEST_ENVOY_PROXY_PORT` | `15008 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
+| `LOADTEST_PG_PORT` | `B + 10k` | The Postgres port. |
+| `LOADTEST_PROXY_PORT` | `B + 1 + 10k` | The latency proxy port. |
+| `LOADTEST_PROXY_STATS_PORT` | `B + 7 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
+| `LOADTEST_NATS_PORT` | `B + 2 + 10k` | The NATS client port. |
+| `LOADTEST_NATS_MONITOR_PORT` | `B + 3 + 10k` | The NATS monitoring port (`/varz`). |
+| `LOADTEST_LISTENER_PORT` | `B + 4 + 10k` | The Envoy listener port. |
+| `LOADTEST_DISPATCH_PORT` | `B + 5 + 10k` | The Dispatch HTTP port. |
+| `LOADTEST_PPROF_PORT` | `B + 6 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
+| `LOADTEST_ENVOY_PROXY_PORT` | `B + 8 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
+| `LOADTEST_PORT_RANGE_FILE` | `/proc/sys/net/ipv4/ip_local_port_range` | The file the ephemeral range is read from, which decides `B` (below). Another file is for a test of a range this machine does not have. |
 | `LOADTEST_PROXY_RTT` | `1ms` | The round trip that the proxy adds, as a Go duration. Read when the proxy starts. |
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
 | `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |
@@ -161,8 +163,16 @@ same step before and after its change, and compares the two rows.
 
 Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
 `k` is the first 8 hex digits of the sha256 of its physical path, modulo 200, and each port is
-`15000 + 10k` plus the offset above, so every port lies between 15000 and 16998 and no two ports of
-a root meet. The block is a hash, not a reservation: two roots land in one block about 1 pair in
+`B + 10k` plus the offset above, so every port lies between `B` and `B + 1998` and no two ports of
+a root meet. `B` keeps every port below the machine's ephemeral range, from which the kernel takes
+the source port of every outgoing connection, so no connection of the stack can take a stack port
+before its process binds it. `B` is 15000 when the range starts at 17000 or above, as Linux's
+default (32768-60999) does. Otherwise it is the 2000 ports just below the range: a gVisor pod's
+range is 16000-65535, so there the ports are 14000-15998. When the range starts too low to leave
+2000 ports above 1023, `stack.sh setup` refuses and names both ranges, unless every
+`LOADTEST_*_PORT` is set. `stack.sh start` refuses a port inside the range, and `stack.sh setup`
+moves a port `stack.json` recorded inside it to the root's default below it. The block is a hash,
+not a reservation: two roots land in one block about 1 pair in
 200, and then they hold the same 9 ports. Two Legion roles of one pod, each with its own
 `LOADTEST_ROOT`, therefore almost always run a stack each with no port variable set; on a collision
 `stack.sh start` refuses the second stack (`check_port`, so no stack is ever shared) and the
@@ -190,7 +200,8 @@ the key stays the same across steps. `stack.sh` stops each process by the pid in
 ```bash
 packages/envoy/loadtest/run-step.sh <name> --events <per s> --sessions <n> --requests <per s> \
   [--duration 180s] [--warmup 30s] [--grace 20s] [--event-mix <preset or kind=w,...>] \
-  [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed 1] [--heap-samples] [--out <dir>] \
+  [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed 1] [--xact-interval 10ms] \
+  [--heap-samples] [--out <dir>] \
   [--live-resume 0|1] [--live-stale <n>] [--restart-at <duration>] \
   [--mention-frac <0..1>] [--mentions <n>] [--envoy-rtt <duration>] \
   [--editors 0] [--editor-rate 2] [--editor-docs 10]
@@ -220,6 +231,7 @@ value but `--heap-samples` and `--replay`, which take none.
 | `--human` | `0.1` | The share of writes that a person makes, 0 to 1. |
 | `--live` | `max(1, round(requests/30))` | Dashboard streams, each subscribed to the event feed as a dashboard tab is: 2 at 60 req/s, 20 at 600 req/s. They open `GET /ws/live`, or `GET /api/v1/events` against a build that serves no live socket (The dashboard stream, below). |
 | `--rng-seed` | `1` | The seed of the event, request and editor schedules. |
+| `--xact-interval` | `10ms` | The interval of the transaction-id hold sampler (Transaction-id holds, below). `0` turns it off, for a control step without its reads. |
 | `--heap-samples` | off (no value) | Read Dispatch's heap profile every 15 s inside the window, which fills the `heap live MiB` column. Off by default: Dispatch writes the profile itself, so the read is charged to the CPU the step measures (Resources, below). |
 | `--out` | `$LOADTEST_ROOT/runs/<name>` | The step directory. It must not exist, or it must be empty. |
 | `--live-resume` | `0` | `1`: each live socket reconnects as the dashboard does, subscribing with `resume: {since: <last id>}`, and its reconnects are measured (The restart scenario, below). |
@@ -453,9 +465,10 @@ series directory.
   1,000 at 10x. That is 400·f up to 1x, and 400 + 600·(f − 1)/9 above it.
   `loadgen series-sessions <f>` prints the value.
 - The series passes every other step flag to each step: `--duration`, `--warmup`, `--grace`,
-  `--event-mix`, `--route-mix`, `--human`, `--rng-seed`, the restart scenario's flags, and
-  `--editors`, `--editor-rate` and `--editor-docs` (Editors, below), which it does not scale. It
-  refuses `--events`, `--sessions`, `--requests`, `--live` and `--out`, because it sets them.
+  `--event-mix`, `--route-mix`, `--human`, `--rng-seed`, `--xact-interval`, the restart scenario's
+  flags, and `--editors`, `--editor-rate` and `--editor-docs` (Editors, below), which it does not
+  scale. It refuses `--events`, `--sessions`, `--requests`, `--live` and `--out`, because it sets
+  them.
 - With the default window, a step takes about 5 minutes and a series about 30 minutes.
 - `run-series.sh` runs the setup (one build of the checkout), the start, the seed and the migration
   check once, before the series directory exists, and reads the build's commit and dirty flag once
@@ -794,7 +807,7 @@ fixture, and a meaning search over it would rank a fraction of the seed. So `see
 
 ```bash
 packages/envoy/loadtest/stack.sh loadgen seed-finish (-pg <postgres url> | -pg-file <path>) \
-  -url <dispatch url> (-token <bearer> | -token-file <path>) [-embed-timeout 8h] [-embed-progress <path>]
+  -url <dispatch url> -token-file <path> [-embed-timeout 8h] [-embed-progress <path>]
 ```
 
 Without `-url`, `seed-finish` does what it always did (The seed, above) and says that it is not
@@ -824,7 +837,7 @@ It refuses rather than waits wherever waiting cannot help:
 resource:
 
 ```bash
-packages/envoy/loadtest/stack.sh loadgen stub-embed (-key <api-key> | -key-file <path>) \
+packages/envoy/loadtest/stack.sh loadgen stub-embed -key-file <path> \
   [-listen 127.0.0.1:8443] [-cert-out $LOADTEST_ROOT/stub-embed.pem] [-host <name or address>] [-throttle-every 0]
 ```
 
@@ -853,7 +866,7 @@ stub:
 ```text
 DISPATCH_EMBEDDER=azure
 DISPATCH_AZURE_EMBED_ENDPOINT=https://127.0.0.1:8443
-DISPATCH_AZURE_EMBED_KEY=<the stub's -key>
+DISPATCH_AZURE_EMBED_KEY=<the key in the stub's -key-file>
 DISPATCH_AZURE_EMBED_TOKENS_PER_MINUTE=1000000
 SSL_CERT_FILE=<the stub's -cert-out>
 ```
@@ -2031,7 +2044,7 @@ Every percentile in the harness is the lower nearest rank: the value at index
 | --- | --- |
 | `summary.json` | The step's results. Every table cell comes from it (The tables, below). `config.marker_nonce` is the run's marker nonce (Event kinds, above). `config.dashboard` is the dashboard stream the build under test served, `live` or `sse` (The dashboard stream, above), and `config.live` their count. `sessions.stream_consumers` is `ENVOY_NOTIFICATIONS`'s own `consumer_count` at the step's `start` and `end`, beside `sessions.registered`; a count `null`, with `start_error` or `end_error`, is a read that failed. `stack_exits` is there only when a stack process exited during the step: each entry's `name`, `pid` and `first_seen_gone`. Such a step failed. `events.commits_error` is there only when the run's commit rows could not be read (Delivery latency, above). Such a step failed too, and so did a step whose `sessions.stream_consumers.end` is above twice `sessions.registered` (Run one step, above). `live_reconnects`, `restart` and `comment_mentions` are `null` without `--live-resume`, `--restart-at` and `--mention-frac`. |
 | `TABLES.md` | The tables of this step. `loadgen tables` writes it. |
-| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, with the values of `-token` and `-listener-token` replaced by `<redacted>`, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. A credential given as a file (`-token-file`, `-listener-token-file`, `-pg-file`: The guard, above) is recorded as the path it names, which is no credential. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
+| `meta.json` | Mode 600 (owner only). The step name and arguments (`args`: the normalized flag list, each flag given to `loadgen run` once as `-name=value` in name order, the URL of each of `-url`, `-listener`, `-nats-mon` and `-pprof` read whole by Go's `net/url` and written without its userinfo and its `password` parameter, and `-nats` split at commas as nats.go splits it, each server without its own userinfo; the user name goes too, since nats.go takes a user name with no password as the NATS token. `-pg` is written from pgx's own parse of it (`pgconn.ParseConfig`, the parser `pgx.Connect` uses), never from the text given: `postgres://`, each host and port pgx would try, comma-separated (a port the URL leaves out as pgx fills it in, such as 5432), then `/` and the database, such as `postgres://127.0.0.1:15432/dispatch`; never its user, password, `sslpassword` or any other parameter, and `<redacted>` when pgx does not read it as a URL. The two tokens come only from their files (`-token-file`, `-listener-token-file`), and a Postgres URL with a password only from `-pg-file` (The guard, above); each of those flags is recorded as the path it names, which is no credential. No file of the step, and no line that `loadgen run` prints, holds a token, a URL password or a NATS token), `start`, `window_start`, `window_end`, `end`, `nproc`, CPU model, kernel, `box_busy_before` and `box_busy_before_window_s` (5), `GOMAXPROCS` of Dispatch (`unset` by default), the Postgres version (`postgres_version`: empty when it could not be read, and then `postgres_version_error` says why), `build_commit` and `build_dirty` (the Dispatch checkout `stack.sh` built from), `dispatch_commit`, `dispatch_binary_sha256` and `dispatch_build` (the whole of `$LOADTEST_ROOT/bin/envoy-dispatch.json`: the Dispatch binary this step ran, which `--dispatch-commit`/`LOADTEST_DISPATCH_COMMIT` makes another commit than `build_commit`; empty, and `run.log` says so, when that file is absent), the seed meta, the `stack.json` path, `pg_direct` (always `false` under `-allow-foreign`, which takes nothing about the target from `stack.json`), `envoy_rtt` (`--envoy-rtt`; `""` without it, and always under `-allow-foreign`), `allow_foreign`, the pids at the start and `marker_nonce`. `box_busy_before` is the share of the box's CPU time, all CPUs, that was not idle or I/O wait over 5 s just before the step, from two `/proc/stat` reads: `run-step.sh` reads it with `loadgen box-busy` before its reset and passes it as `-box-busy-before`; a `loadgen run` without that flag reads it itself (Requirements, above). `null` when `/proc/stat` gave no ticks. |
 | `run.log` | `loadgen run`'s log: the configuration with the marker nonce, the guard, the dashboard choice (the stream count, `live` or `sse`, and the URL), a warning when `box_busy_before` is above 10%, the sampler's pids, the NATS subscriptions, the registrations, the stream's consumer count at the step's start and at its end (or why that read failed), the window, the refetch routes under `--live-resume`, the restart's `restart:` lines, failed writes, the first three failed reads of each Postgres probe and of the 5 s sampler's Postgres, pprof and NATS reads (and each one's total, past three), a failed read of the commit rows, of the transaction ids or of the Postgres version, the result line, and the failure line when a stack process exited, the commit rows were not read or the stream gained more consumers over the step than its sessions allow. An endpoint that a line names is written without its URL password. |
 | `samples.json` | The 5 s samples: CPU ticks (each process's ticks across its pids) and RSS per process, `/proc/stat` ticks, Postgres connections by state, goroutines, pool waiters, the heap (every 15 s, under `-heap-samples` alone), NATS `/varz`. With `--restart-at`, one more sample at the restart's start. The heap is `heap_live_bytes` and `heap_live_objects`: the sums of `inuse_space` and `inuse_objects` in Dispatch's binary heap profile (`/debug/pprof/heap`), which the runtime scales from its sampled records to estimates of the live heap as of its last GC. It is not runtime.MemStats `HeapInuse`, and the sampler never reads `?debug=1`: that text formats every heap record, grew past 500 MB, and its reads took 29% of Dispatch's CPU in the r16 replay. Without `-heap-samples`, which is the default, no sample holds a heap read at all and the harness asks Dispatch for no heap profile inside the window (Resources, below). An older run's `samples.json` holds `heap_inuse` (with `heap_alloc` and `heap_sys`, read in each sample, with no `heap_at`), runtime.MemStats from `?debug=1`; `loadgen curves` still reads it, under its own name. `failed_reads` names a sample's reads that failed (`postgres`, `goroutines`, `heap`, `nats`); their values in that sample are 0 (`nats` empty) and enter no statistic. A read that failed once the run had ended is neither named nor counted. Dispatch's pprof reads fail while `--restart-at` restarts it. The heap read runs on its own, one at a time with up to 2 minutes each, so a slow read of a large heap delays no sample: each read lands in the first sample after it ends, with its end in `heap_at`, and enters the window (`heap_in_window`, `resources.heap_live_mib`, `pprof_read_errors`) by that time. |
 | `reconnects.json` | Under `--live-resume`: every reconnect of every live socket, in and out of the window (The restart scenario, above). |
@@ -2153,8 +2166,8 @@ of 0, which would read as a step that began with an empty database.
 
 ## The tables
 
-`TABLES.md` has fourteen tables, with one row per step (two tables, Live reconnects and Requests
-by route, have more rows), and a fifteenth, Replay, when a step replayed.
+`TABLES.md` has fifteen tables, with one row per step (two tables, Live reconnects and Requests
+by route, have more rows), and a sixteenth, Replay, when a step replayed.
 The window is the measured window (`--duration`). "Cores" means CPU-seconds per second. A cell is
 `-` when it has no value, and also when the read that it comes from failed; a failed read also
 marks the step name with `(commit rows not read)`, `(1 failed read)` or `(<n> failed reads)`
@@ -2242,7 +2255,7 @@ divided by 100 ticks per second and by the seconds between the two samples.
 | `heap live MiB p50 / max` | MiB | Dispatch's live heap, read every 15 s under `-heap-samples`: the in-use bytes of its heap profile (`/debug/pprof/heap`, the sum of `inuse_space`), a sampled estimate, not runtime.MemStats `HeapInuse`. `-` for a step run without that flag, which is the default: it read no heap (Why the harness reads no heap profile in the window, below). A step of an older run, whose `summary.json` holds `resources.heap_inuse_mib` (runtime.MemStats `HeapInuse` from `?debug=1`) in its place, shows that with the mark `(MemStats HeapInuse, older run)`, and a note under the table says it is a different metric. | `resources.heap_live_mib`, or an older run's `resources.heap_inuse_mib` |
 | `goroutines p50 / max` | count | Dispatch's goroutines, from `/debug/pprof/goroutine?debug=1`. | `resources.goroutines` |
 | `goroutines waiting for a pool connection p50 / max` | count | Dispatch's goroutines with a pgx pool `Acquire` frame (puddle) in their stack. | `resources.pool_acquire_goroutines` |
-| `Postgres connections max` | count | The highest number of `pg_stat_activity` rows for database `dispatch`. It includes up to 4 connections of `loadgen`: the sampler, the lock probe, the ungranted-lock sampler and the transaction-id probe; a step with editors adds 2 (the room sampler and the durable probe), and the window's two readings of `artifact_versions` hold 1 for a moment each. | `resources.pg_conns_total.max` |
+| `Postgres connections max` | count | The highest number of `pg_stat_activity` rows for database `dispatch`. It includes up to 5 connections of `loadgen`: the sampler, the lock probe, the ungranted-lock sampler, the transaction-id hold sampler and the transaction-id probe; a step with editors adds 2 (the room sampler and the durable probe), and the window's two readings of `artifact_versions` hold 1 for a moment each. | `resources.pg_conns_total.max` |
 | `connections waiting on a lock p50` | count | The p50 of `dispatch` connections with state `active` and wait event type `Lock`, over the samples that saw at least one. `0` when no sample saw one. An advisory lock wait has this type. | `resources.pg_conns_by_state["active\|Lock"]` |
 | `Dispatch CPU-s per operation` | CPU-seconds | Dispatch's mean cores divided by the operation rate. An operation is a committed write or a sent request in the window. `-` when the commit rows were not read. | `resources.dispatch_cpu_s_per_op` |
 
@@ -2332,15 +2345,16 @@ and about 0.82 of one of the instance's 8 cores.
 | `what the holder was doing (share of held samples)` | text, percent | Up to four holder states, most frequent first, each with its share of held samples. A state is `<state> (<wait event type>:<wait event>)`, or `active: <query>` with the query cut to 70 characters. `idle in transaction (Client:ClientRead)` means that Postgres waits for Dispatch to send the next statement. | `commit_order_lock.holder_doing` (up to 12 entries) |
 
 **The failed-reads mark.** `(<n> failed reads)`, or `(1 failed read)`, after the step name, in this
-table and in the ungranted-locks table, means that n of that probe's reads of `pg_locks` failed: a
-failed query, or a failed connect, which counts as one and leaves the probe with no sample.
-`commit_order_lock.errors` and `ungranted_locks.errors` count them, and `run.log` shows the first
-three of each probe and their total. The probe's samples miss those reads, so its shares are over
-the reads that worked, and a row with no sample reads `-`, not 0: a probe that failed is never
-shown as a lock nobody held. `TABLES.md` repeats this under the table when a row has the mark. The
-transaction-ids table uses the mark `(1 failed read)` for its probe (Transaction ids, below). None
-of these probes feeds the committed, receipt or delivery columns, so a failed read marks its own
-table and does not fail the step.
+table, the ungranted-locks table and the transaction-id holds table, means that n of that probe's
+reads (of `pg_locks`; of `pg_stat_activity` for the transaction-id hold sampler) failed: a failed
+query, or a failed connect, which counts as one and leaves the probe with no sample.
+`commit_order_lock.errors`, `ungranted_locks.errors` and `xid_holds.errors` count them, and
+`run.log` shows the first three of each probe and their total. The probe's samples miss those
+reads, so its shares are over the reads that worked, and a row with no sample reads `-`, not 0: a
+probe that failed is never shown as a lock nobody held. `TABLES.md` repeats this under the table
+when a row has the mark. The transaction-ids table uses the mark `(1 failed read)` for its probe
+(Transaction ids, below). None of these probes feeds the committed, receipt or delivery columns, so
+a failed read marks its own table and does not fail the step.
 
 When the event-lock change removes the commit-order lock, this table reads 0 by construction. No
 backend can hold or wait for a lock that Dispatch does not take. The ungranted-locks table
@@ -2432,6 +2446,42 @@ step whose sampler took no sample has `-` in every cell.
 | --- | --- | --- | --- |
 | `step` | name | The step name, with the mark `(1 failed read)` when the transaction-id probe's connect or one of its two reads failed (Commit-order lock, above). | `config.step`, `resources.xid_read_error` |
 | `transaction ids per s` | transaction ids per second | The transaction ids that Postgres assigned per second in the window, in all databases of the server. The transaction-id probe reads the next transaction id (`pg_snapshot_xmax(pg_current_snapshot())`) at the window start and at the window end. It divides the difference by the seconds between the two reads. The probe assigns no transaction id itself. `-` with the mark when a read failed (`resources.xid_read_error` holds the error, and `run.log` shows it); `-` alone when `resources` is null. | `resources.xids_per_s` |
+
+### Transaction-id holds
+
+The transaction-id hold sampler reads `pg_stat_activity` every `--xact-interval` (10 ms by default)
+from the window start to the window end, over a direct Postgres connection, not through the proxy.
+Each read lists the client backends of database `dispatch` that are in a transaction (`xact_start`
+set), the sampler's own backend excluded: the pid, `xact_start`, whether `backend_xid` is set, the
+state and the first 80 characters of the statement. It reads no `pg_locks`. `--xact-interval 0`
+turns the sampler off, for a control step against a step with it on; the row then reads `off`.
+
+One transaction is one pid and `xact_start`. It ends at the first read that does not show it. A
+transaction counts when a read showed it with a transaction id (`backend_xid` set) and it ended in
+the window: one still open at the last read has no known end and is not counted. A transaction
+gets its id at its first write and keeps it to its end, so the hold leaves out the reads before the
+first write, which `transaction ms` and the idle time without an id include.
+
+A read sees a transaction only while it is open. A hold shorter than the interval is seen with a
+chance of about its length over the interval, so the sampler misses many short holds:
+`xid holders / committed events` falls as holds shorten, and the percentiles are over the holds
+that a read saw.
+
+| Column | Unit | What it shows | Source |
+| --- | --- | --- | --- |
+| `step` | name | The step name, with the mark `(<n> failed reads)` when the sampler had failed reads (Commit-order lock, above). | `config.step`, `xid_holds.errors` |
+| `interval ms (samples/s)` | ms, reads per second | The interval, then the reads per second that the sampler made: the reads minus one, divided by the seconds from the first read to the last. Below 1,000 / interval, slow reads made it skip slots (`pgpoll.go`). `off` when `--xact-interval 0` turned the sampler off. | `xid_holds.interval_ms`, `xid_holds.samples_per_s` |
+| `xid holders / committed events` | count | The transactions counted (above), then the committed writes of the window. | `xid_holds.xid_holders`, `xid_holds.committed_events` (`events.committed`) |
+| `xid hold ms` | ms, p50 / p99 / max | From the transaction's first read with a transaction id to its last, plus one interval. A hold that one read saw is one interval. | `xid_holds.xid_hold_ms` |
+| `transaction ms` | ms, p50 / p99 / max | From `xact_start` to the transaction's last read. | `xid_holds.xact_ms` |
+| `idle in transaction with xid ms` | ms, p50 / p99 / max | The transaction's reads in state `idle in transaction` with a transaction id, times the interval: Postgres waited for Dispatch's next statement while the transaction held its id. | `xid_holds.idle_in_xact_with_xid_ms` |
+| `idle in transaction without xid ms` | ms, p50 / p99 / max | The same, without a transaction id: before the transaction's first write. | `xid_holds.idle_in_xact_without_xid_ms` |
+| `longest xid holders: hold ms, last statement` | ms, text | The five longest holds, longest first, each with the transaction's statement at its last read, whitespace collapsed. `(none)` is an empty statement. | `xid_holds.longest_xid_holders[]`: `xid_hold_ms`, `xact_ms`, `last_query` |
+
+Each value of the four ms columns is one transaction counted. `xid_holds.samples` is the number of
+reads and `xid_holds.errors` the failed reads; each statistic also has its p90. A step whose
+sampler made no read has `-` in every cell. A `summary.json` written by a `loadgen` without the
+sampler has `xid_holds` null, and its row is all `-`.
 
 ### Live reconnects
 
@@ -2621,9 +2671,10 @@ read every endpoint and token from `stack.json`. Never point them at the pod's l
 (`127.0.0.1:9020`) or at production. A step writes comments and document versions at the rate it
 is given. The guard stops a mistaken target before the first write:
 
-1. An endpoint flag (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`, `-pg`, `-token`,
-   `-listener-token`) that differs from `stack.json` is refused before any connection, unless
-   `-allow-foreign` is given. The refusal names the flag and `-allow-foreign`. Under
+1. An endpoint flag (`-url`, `-listener`, `-nats`, `-nats-mon`, `-pprof`, `-pg`, `-token-file`,
+   `-listener-token-file`) that differs from `stack.json` is refused before any connection, unless
+   `-allow-foreign` is given; a token file differs when the token it holds does. The refusal names
+   the flag and `-allow-foreign`. Under
    `-allow-foreign`, every one of these flags is required, and the first one left empty is refused
    by name before any connection; so is a URL flag whose value is not a URL with a scheme and a
    host as Go's `net/url` reads it (for `-nats`, a comma-separated list of servers, each naming a
@@ -2631,19 +2682,36 @@ is given. The guard stops a mistaken target before the first write:
    as pgx checks it) or that pgx's own parser (`pgconn.ParseConfig`) refuses. Each is refused by
    its name and the reason alone, never the value or pgx's error, since an error that printed the
    value would print its credentials.
-2. Every flag that carries a secret has a file form, here and in the four commands that take a
-   credential of their own: the guard's `-token-file`, `-listener-token-file` and `-pg-file`,
-   `loop-seed-check`'s and `loop-seed-export`'s `-pg-file`, `seed-finish`'s `-pg-file` and
-   `-token-file`, and `stub-embed`'s `-key-file`. One reader serves them all
-   (`readCredentials`), so each reads the same way: the file's content, with its trailing white
-   space trimmed, is the value, so a file written with a final newline carries the credential
-   itself. Either form satisfies `-allow-foreign`. A credential given in both forms is refused,
-   naming the two flags; a file that cannot be read, or that holds nothing, is refused by the
-   flag and the path, before any connection. Give the file form wherever the caller can write a
-   file of mode 600: every argument of every process is readable by anything that can list
-   processes (`ps -eo args`), here and on any machine an `ssh` carries the command to. `vm.sh`
-   gives every one of them (Running on the deployment, below); the local stack and `cluster.sh`
-   give the values, which never leave the pod.
+2. No credential is taken on the command line, where every user of the machine reads every
+   argument of every process (`/proc/<pid>/cmdline`, `ps -eo args`) for as long as it runs, here
+   and on any machine an `ssh` carries the command to. Each comes from a file of mode 600 that the
+   caller writes: the guard's `-token-file`, `-listener-token-file` and `-pg-file`,
+   `loop-seed-check`'s, `loop-seed-export`'s, `pg-statements`' and `pg-size`'s `-pg-file`,
+   `seed-finish`'s `-pg-file` and `-token-file`, and `stub-embed`'s `-key-file`. `-token`,
+   `-listener-token` and `stub-embed`'s `-key` are removed: given a value, empty or not, each is
+   refused right after the flags are parsed, before the command checks, reads or opens anything
+   else, naming its file form, and the refusal holds nothing of the value.
+   So is one given after a positional argument or `--`, where the flag package stops reading flags.
+   A `-h`, or a parse error beside one (an unknown flag, a bad number, one of these flags given no value at all),
+   is handled as each command handles its own flag errors,
+   and prints nothing of the value either: these flags never fail their own parse, and the usage shows none of their values.
+   `-pg` still takes a URL that sets no password, as the local
+   stack's own does. Every `-pg` the command line gives is judged, not the last alone, and after
+   a positional argument or `--` too, and as text, before anything reads a file it names: one
+   that sets a password where pgx reads one (a `postgres://` URL's userinfo, which pgx ends at the
+   first `@` before any `/`, or a `password` or `sslpassword` key of a keyword list or of a URL's
+   query, percent-encoded or not) is refused the same way, naming `-pg-file`. The other URL flags
+   are not judged: no caller puts a user or a password in one, so a check of them guards against
+   nothing anyone has seen. One reader serves every credential (`readCredentials`), so
+   each reads the same way: the file's content, with its trailing white space trimmed, is the
+   value, so a file written with a final newline carries the credential itself. The file form
+   satisfies `-allow-foreign`.
+   A `-pg` given with `-pg-file` too is refused, naming the two flags; a file that cannot be read,
+   or that holds nothing, is refused by the flag and the path, before any connection. `vm.sh`
+   writes every credential file on the machine its command runs on (Running on the deployment,
+   below) and `cluster.sh` writes them in the runner for the one job that reads them (Running on
+   a cluster copy, below); the local stack's commands read the tokens from `stack.json` and give
+   `-pg` a URL with no password.
 3. Before its first write, `loadgen` checks:
    - NATS `/varz` `server_name` is the stack name.
    - Dispatch answers `GET /api/v1/projects` with the stack's random agent token.
@@ -2656,7 +2724,7 @@ The pod's live listener and production Dispatch hold other tokens, so a mistaken
 check.
 
 `-allow-foreign` is for a stack that is not local, such as the cluster load test's copy.
-With it, every endpoint and token comes from its flag, and none from `stack.json`. A flag that fell
+With it, every endpoint and token comes from its flag or its file, and none from `stack.json`. A flag that fell
 back to the local stack would have a run write to the remote Dispatch while it counted commits in
 the local database or profiled the local Dispatch, with no error.
 Give `-nats-server-name` to keep the NATS check. The sampler gets no pids. `meta.json` records
@@ -2868,6 +2936,23 @@ a file read in the runner or a container) and fails on a transient API server er
 dialing backend`, as in `Error from server: error dialing backend: dial timeout, backstop`, or a
 refused or reset connection to the API server) is retried once, 5 s later, with one line saying
 so. A write (`drop database`, a `kubectl cp`, a start in the runner) is never retried.
+
+No credential of the copy is an argument of anything, on this pod or in the runner, where every
+argument of every process is readable by every user of the machine (`/proc/<pid>/cmdline`). `up`
+makes the copy's four secrets (the Postgres password, the two tokens, the signing key) and gives
+each to the `jq` that writes `state.json` as a file it reads (`--rawfile` from a pipe), never as
+a value; each manifest takes them through `sed`'s standard input. Each `loadgen` job that reads
+the Dispatch agent token, the listener token or the Postgres URL with its password — `seed`,
+`seed-refs` and `seed-finish`, a step's and a replay's `loadgen run`, and `replay-checksum` —
+gets them on the standard input of the `kubectl exec` that starts it. The
+runner's `sh` writes them into `/work/secrets/<job>.<random>`, a directory of mode 700 that one
+start alone claims (its `mkdir` fails on one that is there, and then nothing is written, removed
+or started), each in a file of mode 600, and `loadgen` is given `-token-file`,
+`-listener-token-file` and `-pg-file` (The guard, above). The `sh` that waits on the job removes
+the directory once the job has ended, however it ended, and on a `HUP` or `TERM` of its own
+(a detached job's shell ignores `INT`, as `sh` does in every background job, so an `INT` leaves
+it running with its job), so no credential outlives the job that read it, and two starts of one
+job name never share a directory. Browser typing is given none.
 
 | Subcommand | What it does |
 | --- | --- |

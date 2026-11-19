@@ -261,7 +261,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "gates", Default: "`design: [spec]`, the root issue's primary document", RequiredBy: "no",
-			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or the merger's `READY` is accepted.",
+			Description: "The design gate: the documents of a tree's root a person approves before any phase of the tree starts, any released child starts or a merger of the tree starts.",
 			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
 		},
 		{
@@ -607,6 +607,8 @@ var nestedKeys = []memberGroup{
 			Description: "How long an issue's pod may be quiet before the daemon releases it, and how long after that release a worker whose phase is open is brought back whatever else wakes it."},
 		{Name: "memory_guard", Default: "the guard runs in every gVisor issue pod and in the gVisor controller's pod, at the defaults of `memory_guard.issue_pods` and `memory_guard.controller_pod`", RequiredBy: "no",
 			Description: "The memory guard in the launcher of each gVisor issue pod and of the gVisor controller's pod, which near the container's memory limit ends with SIGKILL, of the processes that are neither Legion's own nor an agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the guard's first kill while the reading stays near the limit, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and, from halfway between its act share and the limit, every process that grew over its last few reads and, where one it may end is not new to its stay near the limit, every one new to it that holds memory of its own, each a kill of its own, and tells the role whose process it was, so the pod's agents keep their turns rather than ending with the whole container; a microVM pod's launcher, an issue pod's or the controller's, runs the guest memory watch instead, whatever this block says."},
+		{Name: "volume_trim", Default: "every issue pod's launcher sweeps its cache roots at 85% of the volume, toward 70%, deleting nothing modified in the last 15 minutes, and reads the volume every 60 seconds", RequiredBy: "no",
+			Description: "The cache trimmer in each issue pod's launcher process: when it reads the volume, at which used fraction it sweeps the pod's four cache roots, of which `$TMPDIR` gives up only Go's own build trees, toward which fraction, and how old an entry must be to be deleted."},
 		{Name: "sandbox", Default: "every issue pod and the controller's pod run in gVisor", RequiredBy: "no",
 			Description: "The sandbox the project's issue pods and its controller's pod run in, gVisor or a GKE Sandbox microVM, the issues whose pods run in the other one for a canary, and where a microVM pod runs; the controller's pod follows `type` alone, and the repository cache pods and the image probe run in gVisor whatever it says."},
 	}},
@@ -797,6 +799,18 @@ var nestedKeys = []memberGroup{
 			Description: "The exact `@sjawhar/pi-legion` a stale-plugin relaunch installs into a kept pod, as an exact version, an absolute tarball path or an http(s) URL the pod can read, never a dist-tag or a range."},
 		{Name: "pi_envoy", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_legion` is set: a relaunch installs the pair together or not at all",
 			Description: "The exact `@sjawhar/pi-envoy` that relaunch installs beside it, in the same three forms."},
+	}},
+	{Path: kubernetesKey + ".volume_trim", Members: []member{
+		{Name: "enabled", Default: "`true`", RequiredBy: "no",
+			Description: "Whether the daemon hands each issue pod's launcher the trimmer's settings; `false` hands it none, and its trimmer then reads and deletes nothing."},
+		{Name: "high_percent", Default: "`85`", RequiredBy: "no",
+			Description: "The used fraction of the issue volume, as `df` computes it, at or above which the trimmer sweeps, a whole percentage from 1 to 99."},
+		{Name: "low_percent", Default: "`70`", RequiredBy: "no",
+			Description: "The used fraction the sweep stops deleting at, if nothing stops it sooner, a whole percentage that must be below `high_percent`, which the loader refuses otherwise."},
+		{Name: "min_age_minutes", Default: "`15`", RequiredBy: "no",
+			Description: "How long nothing in an entry may have been modified before the sweep may delete it, an hour more in the Go build cache, as Go's own trim judges it; at most a week."},
+		{Name: "interval_seconds", Default: "`60`", RequiredBy: "no",
+			Description: "How often the trimmer reads the volume, at most an hour; `0` is refused."},
 	}},
 	{Path: kubernetesKey + ".idle_release", Members: []member{
 		{Name: "idle_minutes", Default: "`10`", RequiredBy: "no",
